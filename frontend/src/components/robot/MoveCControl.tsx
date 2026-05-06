@@ -1,5 +1,10 @@
 import { useCallback, useState } from "react";
-import type { TCPPose, MoveCRequest, TrajectoryState } from "@/types/motion";
+import type {
+  TCPPose,
+  MoveCRequest,
+  TrajectoryState,
+  Vec3,
+} from "@/types/motion";
 import { mmToMVec3, mToMmVec3 } from "@/lib/robot/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,9 +35,7 @@ export function MoveCControl({
   onMoveC,
   onStop,
 }: Props) {
-  const [points, setPoints] = useState<
-    Record<PointKey, [number, number, number]>
-  >({
+  const [points, setPoints] = useState<Record<PointKey, Vec3>>({
     via: [0, 0, 0],
     end: [0, 0, 0],
   });
@@ -44,7 +47,7 @@ export function MoveCControl({
     const num = parseFloat(value);
     if (!isNaN(num)) {
       setPoints((prev) => {
-        const next: [number, number, number] = [...prev[key]];
+        const next: Vec3 = [...prev[key]];
         next[axis] = num;
         return { ...prev, [key]: next };
       });
@@ -71,7 +74,7 @@ export function MoveCControl({
       }
       setSyncing(false);
     },
-    [onGetTCP]
+    [onGetTCP],
   );
 
   const handleExecute = async () => {

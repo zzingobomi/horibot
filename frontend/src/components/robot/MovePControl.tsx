@@ -3,14 +3,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
-import type { TCPPose, MovePRequest, TrajectoryState } from "@/types/motion";
+import type {
+  TCPPose,
+  MovePRequest,
+  TrajectoryState,
+  Vec3,
+} from "@/types/motion";
 import { mmToMVec3, mToMmVec3 } from "@/lib/robot/utils";
 
 const AXES = ["X", "Y", "Z"] as const;
 
 interface WaypointRow {
   id: number;
-  pos: [number, number, number]; // mm
+  pos: Vec3; // mm
 }
 
 let _nextId = 1;
@@ -44,10 +49,10 @@ export function MovePControl({
       setRows((prev) =>
         prev.map((r) => {
           if (r.id !== id) return r;
-          const next: [number, number, number] = [...r.pos];
+          const next: Vec3 = [...r.pos];
           next[axis] = num;
           return { ...r, pos: next };
-        })
+        }),
       );
     }
   };
@@ -78,8 +83,8 @@ export function MovePControl({
                     Math.round(mm[1] * 10) / 10,
                     Math.round(mm[2] * 10) / 10,
                   ],
-                }
-          )
+                },
+          ),
         );
         setError(null);
       } else {
@@ -87,7 +92,7 @@ export function MovePControl({
       }
       setSyncing(null);
     },
-    [onGetTCP]
+    [onGetTCP],
   );
 
   const handleExecute = async () => {

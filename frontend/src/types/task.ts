@@ -1,3 +1,5 @@
+import type { Vec3 } from "./motion";
+
 export type TaskStatus =
   | "idle"
   | "running"
@@ -17,7 +19,7 @@ export interface TaskState {
 
 export interface RunTaskRequest {
   task: "pick_and_place";
-  place_position: [number, number, number];
+  place_position: Vec3;
 }
 
 export const defaultTaskState: TaskState = {

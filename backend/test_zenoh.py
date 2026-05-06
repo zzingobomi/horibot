@@ -6,6 +6,7 @@ import numpy as np
 import zenoh
 
 from core.topic_map import Topic, Service
+from core.units import raw_to_deg
 
 PUBLISH_HZ = 20
 
@@ -288,7 +289,7 @@ def main():
                     "id": mid,
                     "name": name,
                     "position": round(actual_positions[mid]),
-                    "degree": round((actual_positions[mid] / 4095) * 360, 2),
+                    "degree": raw_to_deg(round(actual_positions[mid])),
                 }
                 for mid, name in MOTOR_IDS
             ]

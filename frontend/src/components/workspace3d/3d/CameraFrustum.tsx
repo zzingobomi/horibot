@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import * as THREE from "three";
 import { Line } from "@react-three/drei";
 import type { IntrinsicData } from "@/hooks/useCalibrationResults";
+import type { Vec3 } from "@/types/motion";
 
 interface CameraFrustumProps {
   intrinsic: IntrinsicData;
@@ -34,12 +35,9 @@ export function CameraFrustum({
       [(w - cx) / fx, (0 - cy) / fy, 1],
       [(w - cx) / fx, (h - cy) / fy, 1],
       [(0 - cx) / fx, (h - cy) / fy, 1],
-    ].map(
-      ([x, y, z]) =>
-        [x * depth, y * depth, z * depth] as [number, number, number]
-    );
+    ].map(([x, y, z]) => [x * depth, y * depth, z * depth] as Vec3);
 
-    const o: [number, number, number] = [0, 0, 0];
+    const o: Vec3 = [0, 0, 0];
 
     return [
       // From origin to each corner
@@ -52,7 +50,7 @@ export function CameraFrustum({
       [corners[1], corners[2]],
       [corners[2], corners[3]],
       [corners[3], corners[0]],
-    ] as Array<[[number, number, number], [number, number, number]]>;
+    ] as Array<[Vec3, Vec3]>;
   }, [intrinsic, depth]);
 
   return (

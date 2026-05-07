@@ -95,3 +95,35 @@ State is sliced into Zustand stores under [frontend/src/store/](frontend/src/sto
 - Frontend imports use the `@/` alias mapped to [frontend/src/](frontend/src/) (see [frontend/vite.config.ts](frontend/vite.config.ts)).
 - Service handlers must always return `{"success": bool, "message": str, "data": dict}` — the bridge and `BridgeClient.callService` rely on this shape.
 - Model weights (`*.pt`, `*.pth`) and `.venv/`, `node_modules/`, `frontend/dist/`, `uv.lock` are gitignored.
+
+## In-progress: Intel RealSense D405 migration
+
+The OpenCV-based USB camera ([backend/modules/camera/capture.py](backend/modules/camera/capture.py)) is being replaced by an **Intel RealSense D405**. D405 is treated as a general-purpose RGBD device, not just a pick-and-place sensor — eventual uses include live point cloud preview in Workspace3D, PLY snapshots for inspection, ICP registration against reference PLYs, and replacing the Z=0 plane assumption in the detector with direct depth lookup. This is a phased rollout — earlier phases must be merged and validated before later ones land.
+
+### Phased plan
+
+1. **RGB-only swap (smallest blast radius).** Keep `CameraNode`, all topics/services, and the frontend unchanged. Replace the internals of [CameraCapture](backend/modules/camera/capture.py) only — `cv2.VideoCapture` → `pyrealsense2` color stream. Add `pyrealsense2` to [backend/pyproject.toml](backend/pyproject.toml). At the end of this phase: pull D405 factory intrinsics into [robot/calibration/intrinsic.npz](robot/calibration/intrinsic.npz) (skip checkerboard re-cal — D405 factory cal is accurate), and **redo hand-eye calibration** since the physical mount has changed — the existing `hand_eye.npz` is invalid and detector results cannot be trusted until this is regenerated.
+
+2. **Binary WebSocket payload protocol.** Extend [backend/bridge/zenoh_bridge.py](backend/bridge/zenoh_bridge.py) and [BridgeClient](frontend/src/api/bridge.ts) to support binary WS frames alongside the current JSON envelope. JSON-only forces base64 encoding for point cloud buffers (~33% overhead + parse cost), which is impractical at the rates we want. The MJPEG `/camera/stream` HTTP endpoint stays as-is.
+
+3. **Live point cloud preview.** Introduce a new `PointCloudNode` plus a shared `RealsenseCapture` singleton (same pattern as [JointStateCache](backend/core/joint_state_cache.py)) so `CameraNode` (color) and `PointCloudNode` (depth + cloud) can both read from one `rs.pipeline()` — D405 is a single physical device, two pipelines cannot coexist. Live stream uses Open3D voxel downsampling (~5–10mm grid → ~10k points, 5–10Hz) emitted as binary `Float32 XYZ + UInt8 RGB`. Frontend renders via react-three-fiber `<points>` in a new dockview panel ([panelComponents.ts](frontend/src/components/workspace3d/dockview/panelComponents.ts)); toggleable, **off by default**. Backend exposes a service to enable/disable + adjust voxel size so it doesn't run when nothing is listening.
+
+4. **PLY snapshot capture/load.** "Capture" button → full-resolution one-shot point cloud → saved to `robot/scans/scan_<timestamp>.ply` → also pushed once to the frontend as a static layer in the scene (separate from the live preview layer). Add services to list and re-load saved PLYs from `robot/scans/` and `robot/models/`. PLY I/O via Open3D `read_point_cloud` / `write_point_cloud`.
+
+5. **ICP registration.** Open3D-based ICP (point-to-point and/or point-to-plane) as a `PointCloudNode` service. Inputs: source PLY path + target (current cloud or PLY path). Output: 4×4 transform. Frontend visualizes source/target overlaid in Workspace3D, with toggle for pre/post-transform.
+
+6. **Detector depth-lookup swap.** Replace the plane-Z=0 inversion in [detector_node.py:120-135](backend/nodes/detector_node.py#L120-L135) (`Z_cam = -t_total[2] / denom`) with a direct depth lookup at the centroid pixel (NxN median around the centroid for noise robustness). Removes the on-plane-only constraint of object detection.
+
+### Naming / structural decisions already made
+
+- The new node is **`PointCloudNode`**, not `PerceptionNode` — matches the existing concrete-naming convention (`MotorNode`, `MotionNode`, `DetectorNode`). Topic/service namespace will likely be `omx/pointcloud/...`.
+- Existing `CameraNode` is **not** renamed or replaced. After phase 3 it owns RGB + status; `PointCloudNode` owns depth + cloud + PLY + ICP. Both share one `RealsenseCapture` singleton.
+- **Open3D** is the chosen library for PLY I/O, voxel downsampling, normal estimation, and ICP. Don't roll these by hand.
+- Live preview is **not** PLY streaming. PLY only appears at capture/load events. The live track is just an `XYZ + RGB` binary buffer — PLY is a file format for persistence, not a streaming format.
+- D405 RGB-only mode (phase 1) is exercised first to de-risk hardware/driver/install issues before adding depth complexity. If something breaks in phase 1, blast radius is one file.
+
+### Files to keep in sync as phases land
+
+- [backend/core/topic_map.py](backend/core/topic_map.py) ↔ [frontend/src/constants/topics.ts](frontend/src/constants/topics.ts) — every new topic/service in both files, exact string match.
+- [robot/calibration/](robot/calibration/) — `intrinsic.npz` and `hand_eye.npz` must be regenerated in phase 1.
+- `.gitignore` — `robot/scans/*.ply` should be ignored; `robot/models/*.ply` may be committed as ICP reference assets.

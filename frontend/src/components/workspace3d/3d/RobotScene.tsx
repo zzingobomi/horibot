@@ -97,7 +97,9 @@ function SceneContent({
       )}
 
       {options.showBaseFrame && (
-        <AxisFrame size={0.06} label="BASE" labelColor="#ffffff" />
+        <group rotation={[-Math.PI / 2, 0, 0]}>
+          <AxisFrame size={0.06} label="BASE" labelColor="#ffffff" />
+        </group>
       )}
 
       <URDFRobot
@@ -108,16 +110,16 @@ function SceneContent({
         visible={options.showRobot}
       />
 
-      {options.showTCPFrame && tcpMatrix && (
+      {/* {options.showTCPFrame && tcpMatrix && (
         <AxisFrame
           matrix={tcpMatrix}
           size={0.04}
           label="TCP"
           labelColor="#ffcc44"
         />
-      )}
+      )} */}
 
-      {options.showCameraFrame && cameraMatrix && (
+      {/* {options.showCameraFrame && cameraMatrix && (
         <>
           <AxisFrame
             matrix={cameraMatrix}
@@ -138,7 +140,7 @@ function SceneContent({
             </group>
           )}
         </>
-      )}
+      )} */}
 
       <OrbitControls
         makeDefault
@@ -155,7 +157,7 @@ function SceneContent({
 export function RobotScene(props: RobotSceneProps) {
   return (
     <Canvas
-      camera={{ position: [0.4, 0.35, 0.4], fov: 45, near: 0.001, far: 10 }}
+      camera={{ position: [0.35, 0.35, 0.35], fov: 45, near: 0.001, far: 10 }}
       gl={{ antialias: true, alpha: false }}
       onCreated={({ gl }) => {
         gl.shadowMap.enabled = true;

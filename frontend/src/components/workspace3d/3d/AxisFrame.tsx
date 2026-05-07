@@ -39,19 +39,19 @@ function Arrow({
 
   return (
     <group quaternion={q}>
-      {/* 샤프트: 로컬 Y축 방향, 중심을 shaftLen/2 에 배치 */}
+      {/* 화살표 축 */}
       <mesh position={[0, shaftLen / 2, 0]}>
         <cylinderGeometry args={[shaftR, shaftR, shaftLen, 10, 1]} />
         <meshStandardMaterial color={color} roughness={0.25} metalness={0.5} />
       </mesh>
 
-      {/* 원뿔: 샤프트 끝에서 시작, 중심을 coneLen/2 더 위에 */}
+      {/* 화살표 머리 (원뿔) */}
       <mesh position={[0, shaftLen + coneLen / 2, 0]}>
         <coneGeometry args={[coneR, coneLen, 10, 1]} />
         <meshStandardMaterial color={color} roughness={0.25} metalness={0.5} />
       </mesh>
 
-      {/* 축 레이블 (X / Y / Z) — 원뿔 끝 바깥 */}
+      {/* 축 레이블 (X / Y / Z) */}
       <Text
         position={[0, shaftLen + coneLen + size * 0.15, 0]}
         fontSize={size * 0.32}
@@ -67,7 +67,6 @@ function Arrow({
   );
 }
 
-// ── 좌표계 프레임 ──────────────────────────────────────────────────────────
 export function AxisFrame({
   matrix,
   size = 0.06,
@@ -78,8 +77,6 @@ export function AxisFrame({
 
   useFrame(() => {
     if (!groupRef.current || !matrix) return;
-    // matrix를 분해해서 position/quaternion/scale에 적용
-    // (scale은 적용하지 않아 화살표 크기 일정 유지)
     const pos = new THREE.Vector3();
     const quat = new THREE.Quaternion();
     const scl = new THREE.Vector3();

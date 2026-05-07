@@ -44,6 +44,9 @@ class PybulletSolver:
 
         self._joint_indices: list[int] = []
         self._ee_index: int = -1
+        self._lower_limits: list[float] = []
+        self._upper_limits: list[float] = []
+        self._joint_ranges: list[float] = []
 
         num_joints = p.getNumJoints(self._robot, physicsClientId=self._client)
         for i in range(num_joints):
@@ -52,6 +55,14 @@ class PybulletSolver:
             link_name: str = info[12].decode()
             if joint_type == p.JOINT_REVOLUTE:
                 self._joint_indices.append(i)
+                lower = info[8]
+                upper = info[9]
+                # URDF limit이 없거나 역전된 경우 fallback
+                if lower >= upper:
+                    lower, upper = -6.2832, 6.2832
+                self._lower_limits.append(float(lower))
+                self._upper_limits.append(float(upper))
+                self._joint_ranges.append(float(upper - lower))
             if link_name == "end_effector_link":
                 self._ee_index = i
 
@@ -88,6 +99,13 @@ class PybulletSolver:
         current_joint_angles: list[float] | None = None,
     ) -> list[float] | None:
         with self._sim_lock:
+            n = len(self._joint_indices)
+
+            # restPoses: current_joint_angles 기준으로 가장 가까운 해 선호
+            # 없으면 0으로 초기화 (홈 포지션 근처에서만 시작할 때는 무방)
+            rest = list(current_joint_angles) if current_joint_angles else [
+                0.0] * n
+
             if current_joint_angles:
                 self._set_joint_positions(current_joint_angles)
 
@@ -95,6 +113,10 @@ class PybulletSolver:
                 bodyUniqueId=self._robot,
                 endEffectorLinkIndex=self._ee_index,
                 targetPosition=target_position,
+                lowerLimits=self._lower_limits,
+                upperLimits=self._upper_limits,
+                jointRanges=self._joint_ranges,
+                restPoses=rest,
                 maxNumIterations=IK_MAX_ITER,
                 residualThreshold=IK_TOLERANCE,
                 physicsClientId=self._client,
@@ -103,7 +125,7 @@ class PybulletSolver:
                 kwargs["targetOrientation"] = target_quaternion
 
             result = p.calculateInverseKinematics(**kwargs)
-            angles = list(result[: len(self._joint_indices)])
+            angles = list(result[:n])
 
             # 수렴 검증
             self._set_joint_positions(angles)

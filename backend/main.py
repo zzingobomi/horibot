@@ -37,11 +37,12 @@ def main():
     calib_node = CalibrationNode(camera=camera_node.camera)
     task_node = TaskNode(camera=camera_node.camera)
     detector_node = DetectorNode(camera=camera_node.camera)
-    gamepad_node = GamepadNode()
+    # FIXME: gamepad_node 활성화하면 기존 모터 제어 방식과 충돌하는듯 (개선 필요)
+    # gamepad_node = GamepadNode()
 
     # ─── 노드 시작 (별도 스레드) ──────────────────────────────
     nodes = [motor_node, camera_node, motion_node,
-             calib_node, task_node, detector_node, gamepad_node]
+             calib_node, task_node, detector_node]
     for node in nodes:
         node.start()
         logger.info(f"노드 시작됨: {node.node_name}")

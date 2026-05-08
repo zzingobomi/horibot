@@ -3,7 +3,7 @@ import type { CalibrationResults } from "@/hooks/useCalibrationResults";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Grid, Environment } from "@react-three/drei";
 import * as THREE from "three";
-import { URDFRobot } from "./URDFRobot";
+import { RobotModel } from "./RobotModel";
 import { AxisFrame } from "./AxisFrame";
 import { CameraFrustum } from "./CameraFrustum";
 
@@ -50,14 +50,17 @@ function SceneContent({
       setTcpMatrix(m.clone());
       onTCPMatrix?.(m);
     },
-    [onTCPMatrix]
+    [onTCPMatrix],
   );
 
+  // tool flange(wrist) 기준과 tool tip 기준(gripper 끝)이 있음
+  // 현재 방식은 gripper tip 기준
   const handEyeMatrix = useMemo(() => {
     if (!calibration?.hand_eye?.R || !calibration?.hand_eye?.t) return null;
     return buildMatrix4(calibration.hand_eye.R, calibration.hand_eye.t);
   }, [calibration]);
 
+  // TCP → Camera 변환 행렬
   const cameraMatrix = useMemo(() => {
     if (!tcpMatrix || !handEyeMatrix) return null;
     return tcpMatrix.clone().multiply(handEyeMatrix);
@@ -96,13 +99,15 @@ function SceneContent({
         />
       )}
 
+      {/* group 에서 z-up을 y-up으로 변환 */}
       {options.showBaseFrame && (
         <group rotation={[-Math.PI / 2, 0, 0]}>
           <AxisFrame size={0.06} label="BASE" labelColor="#ffffff" />
         </group>
       )}
 
-      <URDFRobot
+      {/* group 에서 z-up을 y-up으로 변환 */}
+      <RobotModel
         jointAngles={jointAngles}
         onTCPMatrix={handleTCPMatrix}
         onLinksLoaded={onLinksLoaded}
@@ -110,16 +115,21 @@ function SceneContent({
         visible={options.showRobot}
       />
 
-      {/* {options.showTCPFrame && tcpMatrix && (
+      {/* TCP 프레임은 RobotModel에서 계산되므로 변환하지 않음 */}
+      {options.showTCPFrame && tcpMatrix && (
         <AxisFrame
           matrix={tcpMatrix}
           size={0.04}
           label="TCP"
           labelColor="#ffcc44"
         />
-      )} */}
+      )}
 
-      {/* {options.showCameraFrame && cameraMatrix && (
+      {/* 이미지 픽셀 좌표가 u (x축, 오른쪽으로 증가), (y축, 아래로 증가) */}
+      {/* OpenCV 개발자들이 생각한 건 이미지 좌표가 오른쪽 +x, 아래 +y인데, 3D 카메라 좌표계도 똑같이 맞추면 편하지 않을까? */}
+      {/* OpenCV로 캘하면 → +Z forward, +X right, +Y down 기준의 R, t가 나옴 */}
+      {/* TCP 좌표계를 기준으로 한 상대값이라 y-up 변환 불필요 */}
+      {options.showCameraFrame && cameraMatrix && (
         <>
           <AxisFrame
             matrix={cameraMatrix}
@@ -133,14 +143,14 @@ function SceneContent({
                 .setFromMatrixPosition(cameraMatrix)
                 .toArray()}
               quaternion={new THREE.Quaternion().setFromRotationMatrix(
-                cameraMatrix
+                cameraMatrix,
               )}
             >
-              <CameraFrustum intrinsic={calibration.intrinsic} depth={0.12} />
+              <CameraFrustum intrinsic={calibration.intrinsic} />
             </group>
           )}
         </>
-      )} */}
+      )}
 
       <OrbitControls
         makeDefault

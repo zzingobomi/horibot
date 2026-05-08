@@ -13,16 +13,16 @@ STREAM_FPS = 30
 
 
 class CameraNode(BaseNode):
-    def __init__(self, camera_index: int = 0):
+    def __init__(self):
         super().__init__("camera_node")
-        self.camera = CameraCapture(camera_index)
+        self.camera = CameraCapture()
         self._stream_thread: threading.Thread | None = None
 
     def start(self) -> None:
         connected = self.camera.open()
         self._publish_status(connected)
         if connected:
-            self.log("info", f"카메라 노드 시작 (index={self.camera.camera_index})")
+            self.log("info", "카메라 노드 시작 (RealSense D405)")
         else:
             self.log("error", "카메라 연결 실패")
 

@@ -5,13 +5,15 @@ import uvicorn
 
 
 from core.zenoh_session import ZenohSession
+from modules.calibration.loader import CALIB_DIR
+from modules.camera.factory_intrinsic import seed_d405_intrinsic_if_missing
 from nodes.motor_node import MotorNode
 from nodes.camera_node import CameraNode
 from nodes.motion_node import MotionNode
 from nodes.calibration_node import CalibrationNode
 from nodes.task_node import TaskNode
 from nodes.detector_node import DetectorNode
-from nodes.gamepad_node import GamepadNode
+# from nodes.gamepad_node import GamepadNode
 from bridge.zenoh_bridge import app, setup_zenoh_subscribers
 
 logging.basicConfig(
@@ -29,6 +31,9 @@ def main():
 
     # ─── Zenoh 세션 초기화 ────────────────────────────────────
     ZenohSession.init()
+
+    # ─── D405 intrinsic load ────────────────────────────────
+    seed_d405_intrinsic_if_missing(CALIB_DIR / "intrinsic.npz")
 
     # ─── 노드 초기화 ─────────────────────────────────────────
     motor_node = MotorNode()

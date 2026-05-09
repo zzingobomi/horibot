@@ -11,6 +11,7 @@ import type { TrajectoryState } from "@/types/motion";
 import { useTaskStore } from "@/store/taskStore";
 import type { TaskState } from "@/types/task";
 import { useDetectorStore, type Detection } from "@/store/detectorStore";
+import { usePointCloudStore } from "@/store/pointCloudStore";
 
 export function useBridge() {
   const setBridgeConnected = useSystemStore((s) => s.setBridgeConnected);
@@ -100,6 +101,9 @@ export function useBridge() {
       setDetections(detections ?? [], timestamp ?? 0);
     });
 
+    // PointCloud 상태 + 바이너리 스트림 구독
+    const unsubPointCloud = usePointCloudStore.getState()._attach();
+
     return () => {
       unsubJoint();
       unsubHeartbeat();
@@ -108,6 +112,7 @@ export function useBridge() {
       unsubTraj();
       unsubTask();
       unsubDetector();
+      unsubPointCloud();
       bridge.disconnect();
     };
   }, [

@@ -50,6 +50,7 @@ def _encode_binary_topic(topic: str, payload: bytes) -> bytes:
 
 _loop: asyncio.AbstractEventLoop | None = None
 _camera_queues: set[asyncio.Queue] = set()
+_pointcloud_queues: dict[WebSocket, asyncio.Queue] = {}
 
 
 @asynccontextmanager
@@ -112,20 +113,6 @@ class ConnectionManager:
         for ws in dead:
             self.remove_client(ws)
 
-    async def broadcast_topic_bytes(self, topic: str, payload: bytes) -> None:
-        clients = self._subscriptions.get(topic, set()).copy()
-        if not clients:
-            return
-        frame = _encode_binary_topic(topic, payload)
-        dead = set()
-        for ws in clients:
-            try:
-                await ws.send_bytes(frame)
-            except Exception:
-                dead.add(ws)
-        for ws in dead:
-            self.remove_client(ws)
-
 
 manager = ConnectionManager()
 
@@ -136,13 +123,6 @@ def _zenoh_callback(topic: str, data: dict) -> None:
     if _loop and not _loop.is_closed():
         asyncio.run_coroutine_threadsafe(
             manager.broadcast_topic(topic, data), _loop
-        )
-
-
-def _zenoh_callback_bytes(topic: str, payload: bytes) -> None:
-    if _loop and not _loop.is_closed():
-        asyncio.run_coroutine_threadsafe(
-            manager.broadcast_topic_bytes(topic, payload), _loop
         )
 
 
@@ -157,6 +137,36 @@ def _camera_callback(jpeg_bytes: bytes) -> None:
     if _loop and not _loop.is_closed():
         for q in _camera_queues.copy():
             _loop.call_soon_threadsafe(_put_frame, q, jpeg_bytes)
+
+
+# ─── Pointcloud 큐/드롭 구조 ─────────────────────────────────
+
+def _put_pointcloud_frame(q: asyncio.Queue, frame: bytes) -> None:
+    try:
+        q.put_nowait(frame)
+    except asyncio.QueueFull:
+        try:
+            q.get_nowait()  # 이전 프레임 버림
+        except asyncio.QueueEmpty:
+            pass
+        q.put_nowait(frame)  # 최신 프레임 삽입
+
+
+def _pointcloud_callback(payload: bytes) -> None:
+    if _loop and not _loop.is_closed():
+        frame = _encode_binary_topic(Topic.POINTCLOUD_STREAM, payload)
+        for q in _pointcloud_queues.values():
+            _loop.call_soon_threadsafe(_put_pointcloud_frame, q, frame)
+
+
+async def _pointcloud_sender(ws: WebSocket, q: asyncio.Queue) -> None:
+    try:
+        while True:
+            frame = await q.get()
+            await ws.send_bytes(frame)
+    except Exception:
+        manager.remove_client(ws)
+        _pointcloud_queues.pop(ws, None)
 
 
 _ALWAYS_SUBSCRIBE = [
@@ -194,11 +204,9 @@ def setup_zenoh_subscribers() -> None:
     _zenoh_subs.append(session.declare_subscriber(
         Topic.CAMERA_STREAM_RAW, camera_handler))
 
-    # 포인트클라우드는 바이너리 WS 프레임으로 직송
+    # 포인트클라우드는 큐/드롭 구조로 처리
     def pointcloud_handler(sample: zenoh.Sample):
-        _zenoh_callback_bytes(
-            Topic.POINTCLOUD_STREAM, sample.payload.to_bytes()
-        )
+        _pointcloud_callback(sample.payload.to_bytes())
     _zenoh_subs.append(session.declare_subscriber(
         Topic.POINTCLOUD_STREAM, pointcloud_handler))
 
@@ -223,6 +231,7 @@ async def websocket_endpoint(ws: WebSocket):
         logger.error(f"WebSocket 오류: {e}")
     finally:
         manager.remove_client(ws)
+        _pointcloud_queues.pop(ws, None)
 
 
 # ─── MJPEG HTTP 스트림 ───────────────────────────────────────
@@ -258,7 +267,14 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
     session = ZenohSession.get()
 
     if msg_type == MsgType.SUBSCRIBE:
-        manager.subscribe(ws, msg.get("topic", ""))
+        topic = msg.get("topic", "")
+        manager.subscribe(ws, topic)
+
+        # pointcloud는 별도 큐 + sender task
+        if topic == Topic.POINTCLOUD_STREAM and ws not in _pointcloud_queues:
+            q: asyncio.Queue = asyncio.Queue(maxsize=1)
+            _pointcloud_queues[ws] = q
+            asyncio.create_task(_pointcloud_sender(ws, q))
 
     elif msg_type == MsgType.UNSUBSCRIBE:
         manager.unsubscribe(ws, msg.get("topic", ""))

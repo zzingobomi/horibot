@@ -127,3 +127,34 @@ The OpenCV-based USB camera ([backend/modules/camera/capture.py](backend/modules
 - [backend/core/topic_map.py](backend/core/topic_map.py) ↔ [frontend/src/constants/topics.ts](frontend/src/constants/topics.ts) — every new topic/service in both files, exact string match.
 - [robot/calibration/](robot/calibration/) — `intrinsic.npz` and `hand_eye.npz` must be regenerated in phase 1.
 - `.gitignore` — `robot/scans/*.ply` should be ignored; `robot/models/*.ply` may be committed as ICP reference assets.
+
+### 현재 진행상황
+
+- D405 연결됨
+- 핸드아이 캘리브레이션 진행
+- Workspace3D LivePointCloud 작업중 (binary websocket 구현했음)
+- snapshot 아직 진행 안함
+
+### issue
+
+- 포인터 클라우드 데이터가 잠깐 보이고
+
+```
+2026-05-10 05:22:20,403 [WARNING] modules.dynamixel.driver - SyncRead 실패: [TxRxResult] There is no status packet!
+2026-05-10 05:22:20,453 [WARNING] nodes.motor_node - 모터 1(joint1) 위치 읽기 실패
+2026-05-10 05:22:20,454 [WARNING] nodes.motor_node - 모터 2(joint2) 위치 읽기 실패
+2026-05-10 05:22:20,455 [WARNING] nodes.motor_node - 모터 3(joint3) 위치 읽기 실패
+2026-05-10 05:22:20,455 [WARNING] nodes.motor_node - 모터 4(joint4) 위치 읽기 실패
+2026-05-10 05:22:20,455 [WARNING] nodes.motor_node - 모터 5(joint5) 위치 읽기 실패
+2026-05-10 05:22:20,456 [WARNING] nodes.motor_node - 모터 6(gripper_joint_1) 위치 읽기 실패
+```
+
+에러 발생
+
+- 실시간 포인트 클라우드 기능 안키면 동작 잘함
+- pointcloud 들어오면 queue 에 최신 프레임만 유지 -> 별도 sender task 가 천천히 소비 구조로 수정하면 실시간은 나오는데 다이나믹셀 에러는 여전히 뜸
+- D405를 PC 뒤에 꽂으면 마우스가 먹통됨
+- 별도 sender task 가 천천히 소비 구조로 가는건 맞는지 아키텍처 검증 필요
+  - 필요성 검증 (라즈베리 파이로 분리해도 필요한가?)
+  - 필요하다면 지금 짜여져 있는 코드는 괜찮게 구현되어 있나?
+- 어떻게 usb 분배해야 마우스 키보드 모터 다 잘 동작할지 아키텍처 설계 필요 (모터는 라즈베리 파이 적용?)

@@ -19,6 +19,11 @@ export const Topic = {
 
   // Detector
   DETECTOR_STATE: "omx/detector/state",
+
+  // PointCloud
+  POINTCLOUD_STREAM: "omx/pointcloud/stream",
+  POINTCLOUD_SNAPSHOT: "omx/pointcloud/snapshot",
+  POINTCLOUD_STATE: "omx/pointcloud/state",
 } as const;
 
 export const ServiceKey = {
@@ -53,4 +58,7 @@ export const ServiceKey = {
   TASK_PAUSE: "omx/task/srv/pause",
   TASK_RESUME: "omx/task/srv/resume",
   TASK_STATUS: "omx/task/srv/status",
+
+  // PointCloud
+  POINTCLOUD_CONFIGURE: "omx/pointcloud/srv/configure",
 } as const;

@@ -38,7 +38,7 @@ export function Workspace3D() {
       const v = new THREE.Vector3().setFromMatrixPosition(m);
       setTcpPos([v.x, v.y, v.z]);
     },
-    [setTcpPos],
+    [setTcpPos]
   );
 
   const onReady = useCallback((event: DockviewReadyEvent) => {
@@ -61,6 +61,13 @@ export function Workspace3D() {
       component: "calibration",
       title: "Calibration",
       floating: { x: 16, y: 622, width: 260, height: 260 },
+      params: {},
+    });
+    event.api.addPanel({
+      id: "point-cloud",
+      component: "pointCloud",
+      title: "Point Cloud",
+      floating: { x: 16, y: 900, width: 260, height: 240 },
       params: {},
     });
   }, []);

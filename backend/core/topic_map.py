@@ -20,6 +20,11 @@ class Topic:
     # ─── Detector ─────────────────────────────────────────────
     DETECTOR_STATE = "omx/detector/state"
 
+    # ─── PointCloud ───────────────────────────────────────────
+    POINTCLOUD_STREAM = "omx/pointcloud/stream"
+    POINTCLOUD_SNAPSHOT = "omx/pointcloud/snapshot"
+    POINTCLOUD_STATE = "omx/pointcloud/state"
+
 
 class Service:
     # ─── Motor ───────────────────────────────────────────────
@@ -58,3 +63,6 @@ class Service:
 
     # ─── Detector ─────────────────────────────────────────────
     DETECT_SERVICE = "omx/detector/srv/detect"
+
+    # ─── PointCloud ───────────────────────────────────────────
+    POINTCLOUD_CONFIGURE = "omx/pointcloud/srv/configure"

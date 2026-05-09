@@ -13,6 +13,7 @@ from nodes.motion_node import MotionNode
 from nodes.calibration_node import CalibrationNode
 from nodes.task_node import TaskNode
 from nodes.detector_node import DetectorNode
+from nodes.pointcloud_node import PointCloudNode
 # from nodes.gamepad_node import GamepadNode
 from bridge.zenoh_bridge import app, setup_zenoh_subscribers
 
@@ -42,12 +43,13 @@ def main():
     calib_node = CalibrationNode(camera=camera_node.camera)
     task_node = TaskNode(camera=camera_node.camera)
     detector_node = DetectorNode(camera=camera_node.camera)
+    pointcloud_node = PointCloudNode()
     # FIXME: gamepad_node 활성화하면 기존 모터 제어 방식과 충돌하는듯 (개선 필요)
     # gamepad_node = GamepadNode()
 
     # ─── 노드 시작 (별도 스레드) ──────────────────────────────
     nodes = [motor_node, camera_node, motion_node,
-             calib_node, task_node, detector_node]
+             calib_node, task_node, detector_node, pointcloud_node]
     for node in nodes:
         node.start()
         logger.info(f"노드 시작됨: {node.node_name}")

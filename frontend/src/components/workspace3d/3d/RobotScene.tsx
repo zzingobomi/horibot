@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { RobotModel } from "./RobotModel";
 import { AxisFrame } from "./AxisFrame";
 import { CameraFrustum } from "./CameraFrustum";
+import { LivePointCloudLayer } from "./PointCloudLayer";
 
 export interface SceneOptions {
   showRobot: boolean;
@@ -50,7 +51,7 @@ function SceneContent({
       setTcpMatrix(m.clone());
       onTCPMatrix?.(m);
     },
-    [onTCPMatrix],
+    [onTCPMatrix]
   );
 
   // tool flange(wrist) 기준과 tool tip 기준(gripper 끝)이 있음
@@ -143,7 +144,7 @@ function SceneContent({
                 .setFromMatrixPosition(cameraMatrix)
                 .toArray()}
               quaternion={new THREE.Quaternion().setFromRotationMatrix(
-                cameraMatrix,
+                cameraMatrix
               )}
             >
               <CameraFrustum intrinsic={calibration.intrinsic} />
@@ -151,6 +152,8 @@ function SceneContent({
           )}
         </>
       )}
+
+      <LivePointCloudLayer cameraMatrix={cameraMatrix} />
 
       <OrbitControls
         makeDefault

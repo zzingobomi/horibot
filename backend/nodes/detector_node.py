@@ -1,34 +1,29 @@
 import time
 import logging
 import threading
-from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 
 from core.common import GRIPPER_ID
 from core.base_node import BaseNode
+from core.frame_cache import FrameCache
 from core.joint_state_cache import JointStateCache
 from core.topic_map import Service, Topic
 from modules.calibration.loader import load_calibration
 from modules.detector.yolo_detector import YoloDetector
 from modules.dynamixel.motor_config import MotorConfig, load_motor_config
 
-if TYPE_CHECKING:
-    from modules.camera.capture import CameraCapture
 
 logger = logging.getLogger(__name__)
 
-DETECTION_INTERVAL = 0.2   # 5fps (초)
+DETECTION_INTERVAL = 0.2  # 5fps (초)
 
 
 class DetectorNode(BaseNode):
-    def __init__(
-        self,
-        camera: "CameraCapture",
-    ) -> None:
+    def __init__(self) -> None:
         super().__init__("detector_node")
 
-        self._camera = camera
+        self._frame_cache = FrameCache()
         _, self._motor_cfgs = load_motor_config()
         self._arm_cfgs: list[MotorConfig] = [
             m for m in self._motor_cfgs if m.id != GRIPPER_ID
@@ -48,6 +43,7 @@ class DetectorNode(BaseNode):
 
     def start(self) -> None:
         self._joint_cache.subscribe(self)
+        self._frame_cache.subscribe(self)
         self.create_service(Service.DETECT_SERVICE, self._handle_detect)
         super().start()
 
@@ -62,13 +58,16 @@ class DetectorNode(BaseNode):
     def _detection_loop(self) -> None:
         while self._running:
             try:
-                ret, frame = self._camera.read()
+                ret, frame = self._frame_cache.get_frame()
                 if ret and frame is not None:
                     results = self._detector.raw_detect(frame)
-                    self.publish(Topic.DETECTOR_STATE, {
-                        "timestamp": time.time(),
-                        "detections": results,
-                    })
+                    self.publish(
+                        Topic.DETECTOR_STATE,
+                        {
+                            "timestamp": time.time(),
+                            "detections": results,
+                        },
+                    )
             except Exception as e:
                 logger.debug("detection loop 오류: %s", e)
             time.sleep(DETECTION_INTERVAL)
@@ -78,7 +77,7 @@ class DetectorNode(BaseNode):
             return {"success": False, "message": "캘리브레이션 미완료", "data": {}}
 
         # ── 카메라 프레임 취득 ────────────────────
-        ret, frame = self._camera.read()
+        ret, frame = self._frame_cache.get_frame()
         if not ret or frame is None:
             return {"success": False, "message": "카메라 프레임 취득 실패", "data": {}}
 
@@ -102,7 +101,11 @@ class DetectorNode(BaseNode):
         # ── FK: get_tcp → R_be, t_be ──────────────
         res = self.call_service(Service.MOTION_GET_TCP, {})
         if not res.get("success"):
-            return {"success": False, "message": f"get_tcp 실패: {res.get('message')}", "data": {}}
+            return {
+                "success": False,
+                "message": f"get_tcp 실패: {res.get('message')}",
+                "data": {},
+            }
 
         tcp_data = res.get("data", {})
         pos = tcp_data.get("position")
@@ -110,11 +113,11 @@ class DetectorNode(BaseNode):
         if pos is None or quat is None:
             return {"success": False, "message": "TCP pose 없음", "data": {}}
 
-        R_be = _quat_to_rot(quat)   # end-effector → base
+        R_be = _quat_to_rot(quat)  # end-effector → base
         t_be = np.array(pos)
 
         # ── hand-eye 행렬 ─────────────────────────
-        R_ce = self._calib.hand_eye.R           # camera → end-effector
+        R_ce = self._calib.hand_eye.R  # camera → end-effector
         t_ce = self._calib.hand_eye.t.flatten()
 
         # ── base frame Z=0 조건으로 Z_cam 역산 ───
@@ -130,7 +133,11 @@ class DetectorNode(BaseNode):
 
         Z_cam = -t_total[2] / denom
         if Z_cam <= 0:
-            return {"success": False, "message": f"Z_cam 음수 ({Z_cam:.3f}), 캘리브레이션 확인 필요", "data": {}}
+            return {
+                "success": False,
+                "message": f"Z_cam 음수 ({Z_cam:.3f}), 캘리브레이션 확인 필요",
+                "data": {},
+            }
 
         logger.info("Z_cam 역산: %.3fm", Z_cam)
 
@@ -151,8 +158,11 @@ class DetectorNode(BaseNode):
 def _quat_to_rot(quat: list[float]) -> np.ndarray:
     """quaternion [x, y, z, w] → 3x3 회전 행렬."""
     x, y, z, w = quat
-    return np.array([
-        [1 - 2*(y*y + z*z),   2*(x*y - z*w),     2*(x*z + y*w)],
-        [2*(x*y + z*w),       1 - 2*(x*x + z*z), 2*(y*z - x*w)],
-        [2*(x*z - y*w),       2*(y*z + x*w),     1 - 2*(x*x + y*y)],
-    ], dtype=np.float64)
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )

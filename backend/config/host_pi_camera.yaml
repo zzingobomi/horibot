@@ -1,0 +1,22 @@
+# 카메라 Pi (192.168.0.102).
+#
+# 시작 예:
+#   # pyrealsense2는 사전에 소스 빌드해서 별도 설치
+#   uv sync --only-group pi-camera --no-install-package pyrealsense2
+#   uv run python main.py --host pi_camera
+host_name: pi_camera
+
+zenoh:
+  mode: peer
+  connect: []
+  # 분산 환경에서 멀티캐스트 scout이 안 통하면 명시:
+  # - "tcp/192.168.0.5:7447"    # PC
+  # - "tcp/192.168.0.101:7447"  # pi-motor
+  # listen:
+  #   - "tcp/0.0.0.0:7447"
+
+nodes:
+  - camera
+
+bridge:
+  enabled: false

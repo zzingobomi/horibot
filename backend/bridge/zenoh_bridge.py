@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from core.zenoh_session import ZenohSession
 from core.topic_map import Topic
 from bridge.calibration_router import calibration_router
+from bridge.client_stream import ConnectionManager
 
 logger = logging.getLogger(__name__)
 
@@ -78,72 +79,30 @@ app.add_middleware(
 )
 
 
-class ConnectionManager:
-    def __init__(self):
-        self._subscriptions: dict[str, set[WebSocket]] = {}
-        self._client_topics: dict[WebSocket, set[str]] = {}
-
-    def subscribe(self, ws: WebSocket, topic: str) -> None:
-        self._subscriptions.setdefault(topic, set()).add(ws)
-        self._client_topics.setdefault(ws, set()).add(topic)
-
-    def unsubscribe(self, ws: WebSocket, topic: str) -> None:
-        self._subscriptions.get(topic, set()).discard(ws)
-        self._client_topics.get(ws, set()).discard(topic)
-
-    def remove_client(self, ws: WebSocket) -> None:
-        topics = self._client_topics.pop(ws, set())
-        for topic in topics:
-            self._subscriptions.get(topic, set()).discard(ws)
-
-    async def broadcast_topic(self, topic: str, data: dict) -> None:
-        clients = self._subscriptions.get(topic, set()).copy()
-        msg = json.dumps({
-            "type":  MsgType.TOPIC_DATA,
-            "topic": topic,
-            "data":  data,
-        })
-        dead = set()
-        for ws in clients:
-            try:
-                await ws.send_text(msg)
-            except Exception:
-                dead.add(ws)
-        for ws in dead:
-            self.remove_client(ws)
-
-    async def broadcast_topic_bytes(self, topic: str, payload: bytes) -> None:
-        clients = self._subscriptions.get(topic, set()).copy()
-        if not clients:
-            return
-        frame = _encode_binary_topic(topic, payload)
-        dead = set()
-        for ws in clients:
-            try:
-                await ws.send_bytes(frame)
-            except Exception:
-                dead.add(ws)
-        for ws in dead:
-            self.remove_client(ws)
-
-
 manager = ConnectionManager()
 
 
 # ─── Zenoh → asyncio 브릿지 ──────────────────────────────────
 
+
 def _zenoh_callback(topic: str, data: dict) -> None:
-    if _loop and not _loop.is_closed():
-        asyncio.run_coroutine_threadsafe(
-            manager.broadcast_topic(topic, data), _loop
-        )
+    if _loop is None or _loop.is_closed():
+        return
+    text = json.dumps(
+        {
+            "type": MsgType.TOPIC_DATA,
+            "topic": topic,
+            "data": data,
+        }
+    )
+    _loop.call_soon_threadsafe(manager.fanout, topic, text)
 
 
 def _zenoh_callback_bytes(topic: str, payload: bytes) -> None:
-    if _loop and not _loop.is_closed():
-        asyncio.run_coroutine_threadsafe(
-            manager.broadcast_topic_bytes(topic, payload), _loop
-        )
+    if _loop is None or _loop.is_closed():
+        return
+    frame = _encode_binary_topic(topic, payload)
+    _loop.call_soon_threadsafe(manager.fanout, topic, frame)
 
 
 def _put_frame(q: asyncio.Queue, frame: bytes) -> None:
@@ -177,6 +136,7 @@ def setup_zenoh_subscribers() -> None:
     session = ZenohSession.get()
 
     for topic in _ALWAYS_SUBSCRIBE:
+
         def make_handler(tp: str):
             def handler(sample: zenoh.Sample):
                 try:
@@ -184,23 +144,26 @@ def setup_zenoh_subscribers() -> None:
                     _zenoh_callback(tp, data)
                 except Exception as e:
                     logger.error(f"bridge subscriber 오류 ({tp}): {e}")
+
             return handler
-        _zenoh_subs.append(session.declare_subscriber(
-            topic, make_handler(topic)))
+
+        _zenoh_subs.append(session.declare_subscriber(topic, make_handler(topic)))
 
     # 카메라는 raw bytes로 수신
     def camera_handler(sample: zenoh.Sample):
         _camera_callback(sample.payload.to_bytes())
-    _zenoh_subs.append(session.declare_subscriber(
-        Topic.CAMERA_STREAM_RAW, camera_handler))
+
+    _zenoh_subs.append(
+        session.declare_subscriber(Topic.CAMERA_STREAM_RAW, camera_handler)
+    )
 
     # 포인트클라우드는 바이너리 WS 프레임으로 직송
     def pointcloud_handler(sample: zenoh.Sample):
-        _zenoh_callback_bytes(
-            Topic.POINTCLOUD_STREAM, sample.payload.to_bytes()
-        )
-    _zenoh_subs.append(session.declare_subscriber(
-        Topic.POINTCLOUD_STREAM, pointcloud_handler))
+        _zenoh_callback_bytes(Topic.POINTCLOUD_STREAM, sample.payload.to_bytes())
+
+    _zenoh_subs.append(
+        session.declare_subscriber(Topic.POINTCLOUD_STREAM, pointcloud_handler)
+    )
 
     logger.info("Zenoh 구독 설정 완료")
 
@@ -227,6 +190,7 @@ async def websocket_endpoint(ws: WebSocket):
 
 # ─── MJPEG HTTP 스트림 ───────────────────────────────────────
 
+
 @app.get("/camera/stream")
 async def camera_stream():
     q: asyncio.Queue = asyncio.Queue(maxsize=2)
@@ -236,22 +200,17 @@ async def camera_stream():
         try:
             while True:
                 frame = await q.get()
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n"
-                    + frame +
-                    b"\r\n"
-                )
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
         finally:
             _camera_queues.discard(q)
 
     return StreamingResponse(
-        generate(),
-        media_type="multipart/x-mixed-replace; boundary=frame"
+        generate(), media_type="multipart/x-mixed-replace; boundary=frame"
     )
 
 
 # ─── 메시지 라우팅 ───────────────────────────────────────────
+
 
 async def _handle_message(ws: WebSocket, msg: dict) -> None:
     msg_type = msg.get("type")
@@ -273,11 +232,13 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
         request_id = msg.get("request_id", "")
         data = msg.get("data", {})
 
-        req_payload = json.dumps({
-            "request_id": request_id,
-            "timestamp":  time.time(),
-            "data":       data,
-        }).encode()
+        req_payload = json.dumps(
+            {
+                "request_id": request_id,
+                "timestamp": time.time(),
+                "data": data,
+            }
+        ).encode()
 
         try:
             replies = session.get(key, payload=req_payload, timeout=5.0)
@@ -286,19 +247,30 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
                 res = json.loads(reply.ok.payload.to_bytes())
                 break
 
-            await ws.send_text(json.dumps({
-                "type":       MsgType.SERVICE_RESPONSE,
-                "request_id": request_id,
-                **(res or {"success": False, "message": "응답 없음", "data": {}}),
-            }))
+            await ws.send_text(
+                json.dumps(
+                    {
+                        "type": MsgType.SERVICE_RESPONSE,
+                        "request_id": request_id,
+                        **(
+                            res
+                            or {"success": False, "message": "응답 없음", "data": {}}
+                        ),
+                    }
+                )
+            )
         except Exception as e:
-            await ws.send_text(json.dumps({
-                "type":       MsgType.SERVICE_RESPONSE,
-                "request_id": request_id,
-                "success":    False,
-                "message":    str(e),
-                "data":       {},
-            }))
+            await ws.send_text(
+                json.dumps(
+                    {
+                        "type": MsgType.SERVICE_RESPONSE,
+                        "request_id": request_id,
+                        "success": False,
+                        "message": str(e),
+                        "data": {},
+                    }
+                )
+            )
 
     else:
         logger.warning(f"알 수 없는 메시지 타입: {msg_type}")

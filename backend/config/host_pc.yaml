@@ -1,0 +1,26 @@
+# 분산 모드에서 PC 역할 — heavy 연산 + 브릿지.
+# 실행:
+#   uv run python main.py --host pc
+host_name: pc
+
+zenoh:
+  mode: peer
+  # 같은 LAN + 멀티캐스트 정상이면 Pi 두 대 자동 발견.
+  # 안 잡히면 endpoint 명시:
+  connect: []
+  # - "tcp/192.168.0.101:7447"  # pi-motor
+  # - "tcp/192.168.0.102:7447"  # pi-camera
+  # 방화벽 룰 고정용 listen 포트 (선택):
+  # listen:
+  #   - "tcp/0.0.0.0:7447"
+
+nodes:
+  - calibration
+  - task
+  - detector
+  - pointcloud
+
+bridge:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8000

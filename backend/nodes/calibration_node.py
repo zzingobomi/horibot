@@ -4,10 +4,10 @@ from pathlib import Path
 
 from core.base_node import BaseNode
 from core.topic_map import Service
+from core.frame_cache import FrameCache
 from core.joint_state_cache import JointStateCache
 from core.common import GRIPPER_ID
 from modules.dynamixel.motor_config import load_motor_config
-from modules.camera.capture import CameraCapture
 from modules.camera.stream import frame_to_base64
 from modules.calibration.intrinsic import IntrinsicCalibration
 from modules.calibration.hand_eye import HandEyeCalibration, Pose
@@ -20,10 +20,10 @@ SAVE_DIR = Path(__file__).parents[2] / "robot" / "calibration"
 
 
 class CalibrationNode(BaseNode):
-    def __init__(self, camera: CameraCapture):
+    def __init__(self) -> None:
         super().__init__("calibration_node")
 
-        self.camera = camera
+        self._frame_cache = FrameCache()
         self.intrinsic = IntrinsicCalibration()
         self.hand_eye = HandEyeCalibration()
         self.pose_estimator = PoseEstimator()
@@ -33,6 +33,7 @@ class CalibrationNode(BaseNode):
         self._arm_cfgs = [m for m in motor_cfgs if m.id != GRIPPER_ID]
         self._cache = JointStateCache()
         self._cache.subscribe(self)
+        self._frame_cache.subscribe(self)
 
         path = SAVE_DIR / "intrinsic.npz"
         loaded = self.intrinsic.load(path)
@@ -56,7 +57,7 @@ class CalibrationNode(BaseNode):
     def _srv_capture(self, req: dict) -> dict:
         mode = req.get("data", {}).get("mode", "intrinsic")
 
-        ret, frame = self.camera.read()
+        ret, frame = self._frame_cache.get_frame()
         if not ret or frame is None:
             return {
                 "success": False,
@@ -86,7 +87,15 @@ class CalibrationNode(BaseNode):
         return {"success": True, "message": "내부 캘리브레이션 초기화됨", "data": {}}
 
     def _srv_intrinsic_save(self, req: dict) -> dict:
-        image_size = (self.camera.width, self.camera.height)
+        width = self._frame_cache.width
+        height = self._frame_cache.height
+        if width is None or height is None:
+            return {
+                "success": False,
+                "message": "카메라 status(width/height) 미수신",
+                "data": {},
+            }
+        image_size = (width, height)
         result = self.intrinsic.calibrate(image_size)
 
         if result is None:
@@ -134,7 +143,7 @@ class CalibrationNode(BaseNode):
         gripper_t = np.array(t_list).reshape(3, 1)
 
         # 카메라 캡처 + 체커보드 검출
-        ret, frame = self.camera.read()
+        ret, frame = self._frame_cache.get_frame()
         if not ret or frame is None:
             return {"success": False, "message": "카메라 프레임 읽기 실패", "data": {}}
 

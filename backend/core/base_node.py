@@ -23,26 +23,34 @@ class BaseNode:
 
     # ─── Subscriber ──────────────────────────────────────────
 
-    def create_subscriber(
-        self, topic: str, callback: Callable[[dict], None]
-    ) -> None:
+    def create_subscriber(self, topic: str, callback: Callable[[dict], None]) -> None:
         def _handler(sample: zenoh.Sample) -> None:
             try:
                 data = json.loads(sample.payload.to_bytes())
                 callback(data)
             except Exception as e:
-                logger.error(
-                    f"[{self.node_name}] subscriber 처리 오류 ({topic}): {e}")
+                logger.error(f"[{self.node_name}] subscriber 처리 오류 ({topic}): {e}")
 
         sub = self.session.declare_subscriber(topic, _handler)
         self._subscribers.append(sub)
         logger.debug(f"[{self.node_name}] subscriber 등록: {topic}")
 
+    def create_raw_subscriber(
+        self, topic: str, callback: Callable[[bytes], None]
+    ) -> None:
+        def _handler(sample: zenoh.Sample) -> None:
+            try:
+                callback(sample.payload.to_bytes())
+            except Exception as e:
+                logger.error(f"[{self.node_name}] raw subscriber 오류 ({topic}): {e}")
+
+        sub = self.session.declare_subscriber(topic, _handler)
+        self._subscribers.append(sub)
+        logger.debug(f"[{self.node_name}] raw subscriber 등록: {topic}")
+
     # ─── Service (Queryable / 서버) ──────────────────────────
 
-    def create_service(
-        self, key: str, handler: Callable[[dict], dict]
-    ) -> None:
+    def create_service(self, key: str, handler: Callable[[dict], dict]) -> None:
         def _handler(query: zenoh.Query) -> None:
             try:
                 payload = query.payload
@@ -79,10 +87,12 @@ class BaseNode:
             {"success": bool, "message": str, "data": dict}
             타임아웃 또는 오류 시 success=False 반환.
         """
-        payload = json.dumps({
-            "timestamp": time.time(),
-            "data":      data,
-        }).encode()
+        payload = json.dumps(
+            {
+                "timestamp": time.time(),
+                "data": data,
+            }
+        ).encode()
 
         try:
             replies = self.session.get(key, payload=payload, timeout=timeout)
@@ -138,20 +148,26 @@ class BaseNode:
 
     def _heartbeat_loop(self) -> None:
         while self._running:
-            self.publish(Topic.SYSTEM_HEARTBEAT, {
-                "node":      self.node_name,
-                "timestamp": time.time(),
-                "status":    "ok",
-            })
+            self.publish(
+                Topic.SYSTEM_HEARTBEAT,
+                {
+                    "node": self.node_name,
+                    "timestamp": time.time(),
+                    "status": "ok",
+                },
+            )
             time.sleep(1.0)
 
     # ─── Log ─────────────────────────────────────────────────
 
     def log(self, level: str, msg: str) -> None:
-        self.publish(Topic.SYSTEM_LOG, {
-            "node":      self.node_name,
-            "timestamp": time.time(),
-            "level":     level,
-            "message":   msg,
-        })
+        self.publish(
+            Topic.SYSTEM_LOG,
+            {
+                "node": self.node_name,
+                "timestamp": time.time(),
+                "level": level,
+                "message": msg,
+            },
+        )
         getattr(logger, level, logger.info)(f"[{self.node_name}] {msg}")

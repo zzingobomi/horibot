@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from core.base_node import BaseNode
     from core.joint_state_cache import JointStateCache
     from modules.dynamixel.motor_config import MotorConfig
-    from modules.camera.capture import CameraCapture
 
 
 logger = logging.getLogger(__name__)
@@ -36,13 +35,11 @@ class StepExecutor:
         node: "BaseNode",
         joint_cache: "JointStateCache",
         arm_cfgs: list["MotorConfig"],
-        camera: "CameraCapture | None" = None,
         calibration: CalibrationData | None = None,
     ) -> None:
         self._node = node
         self._joint_cache = joint_cache
         self._arm_cfgs = arm_cfgs
-        self._camera = camera
         self._calib = calibration
 
         self._traj_event = threading.Event()

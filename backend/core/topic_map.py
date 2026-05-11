@@ -6,6 +6,7 @@ class Topic:
     # ─── Camera ──────────────────────────────────────────────
     CAMERA_STREAM_RAW = "omx/camera/stream/raw"
     CAMERA_STATE_STATUS = "omx/camera/state/status"
+    CAMERA_DEPTH_FRAME = "omx/camera/stream/depth_frame"
 
     # ─── System ──────────────────────────────────────────────
     SYSTEM_HEARTBEAT = "omx/system/heartbeat"
@@ -34,6 +35,9 @@ class Service:
     MOTOR_REBOOT = "omx/motor/srv/reboot"
     MOTOR_GET_CONFIG = "omx/motor/srv/get_config"
     MOTOR_GRIPPER = "omx/motor/srv/gripper"
+
+    # ─── Camera ──────────────────────────────────────────────
+    CAMERA_SET_DEPTH_STREAM = "omx/camera/srv/set_depth_stream"
 
     # ─── Motion ───────────────────────────────────────────────
     MOTION_GET_TCP = "omx/motion/srv/get_tcp"

@@ -19,7 +19,7 @@ TASK_REGISTRY = {
 
 
 class TaskNode(BaseNode):
-    def __init__(self, camera) -> None:
+    def __init__(self) -> None:
         super().__init__("task_node")
 
         _, self._motor_cfgs = load_motor_config()
@@ -41,7 +41,6 @@ class TaskNode(BaseNode):
             node=self,
             joint_cache=self._joint_cache,
             arm_cfgs=self._arm_cfgs,
-            camera=camera,
             calibration=calib,
         )
         self._runner = TaskRunner(

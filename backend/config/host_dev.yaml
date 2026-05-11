@@ -1,0 +1,23 @@
+# 단일 머신
+# 실행:
+#   uv run python main.py --host dev
+host_name: dev
+
+zenoh:
+  mode: peer
+  # 단일 프로세스라 사실상 자기 자신만 peer. 분산 안 함.
+  connect: []
+
+nodes:
+  - motor
+  - camera
+  - motion
+  - calibration
+  - task
+  - detector
+  - pointcloud
+
+bridge:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8000

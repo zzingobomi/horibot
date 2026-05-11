@@ -1,15 +1,19 @@
-import time
 import logging
 import threading
+import time
+
 from core.base_node import BaseNode
-from core.topic_map import Topic
+from core.topic_map import Service, Topic
 from core.zenoh_session import ZenohSession
 from modules.camera.capture import CameraCapture
+from modules.camera.depth_frame import encode as encode_depth_frame
 from modules.camera.stream import frame_to_jpeg_bytes
 
 logger = logging.getLogger(__name__)
 
 STREAM_FPS = 30
+DEPTH_FPS = 8
+DEPTH_IDLE_SLEEP = 0.1
 
 
 class CameraNode(BaseNode):
@@ -17,6 +21,10 @@ class CameraNode(BaseNode):
         super().__init__("camera_node")
         self.camera = CameraCapture()
         self._stream_thread: threading.Thread | None = None
+        self._depth_thread: threading.Thread | None = None
+
+        self._depth_lock = threading.Lock()
+        self._depth_enabled = False
 
     def start(self) -> None:
         connected = self.camera.open()
@@ -25,6 +33,11 @@ class CameraNode(BaseNode):
             self.log("info", "카메라 노드 시작 (RealSense D405)")
         else:
             self.log("error", "카메라 연결 실패")
+
+        self.create_service(
+            Service.CAMERA_SET_DEPTH_STREAM,
+            self._srv_set_depth_stream,
+        )
 
         super().start()
 
@@ -35,9 +48,18 @@ class CameraNode(BaseNode):
         )
         self._stream_thread.start()
 
+        self._depth_thread = threading.Thread(
+            target=self._depth_loop,
+            name="camera-depth-stream",
+            daemon=True,
+        )
+        self._depth_thread.start()
+
     def stop(self) -> None:
         super().stop()
         self.camera.close()
+
+    # ─── Color 스트림 ────────────────────────────────────────
 
     def _stream_loop(self) -> None:
         interval = 1.0 / STREAM_FPS
@@ -62,15 +84,82 @@ class CameraNode(BaseNode):
                     jpeg_bytes = frame_to_jpeg_bytes(frame)
                     session.put(Topic.CAMERA_STREAM_RAW, jpeg_bytes)
                 except Exception as e:
-                    logger.error(f"스트림 발행 오류: {e}")
+                    logger.error(f"color 스트림 발행 오류: {e}")
 
             time.sleep(interval)
 
+    # ─── Depth 스트림 ────────────────────────────────────────
+
+    def _depth_loop(self) -> None:
+        period = 1.0 / DEPTH_FPS
+        session = ZenohSession.get()
+
+        while self._running:
+            with self._depth_lock:
+                enabled = self._depth_enabled
+
+            if not enabled or not self.camera.is_opened:
+                time.sleep(DEPTH_IDLE_SLEEP)
+                continue
+
+            t0 = time.time()
+            color, depth, intr = self.camera.read_aligned()
+            if color is None or depth is None or intr is None:
+                # 첫 프레임은 RealsenseCapture 내부 producer가 cloud_enabled를 받고 다음 사이클에 채움. 잠깐 대기.
+                time.sleep(DEPTH_IDLE_SLEEP)
+                continue
+
+            try:
+                payload = encode_depth_frame(
+                    timestamp=time.time(),
+                    color_bgr=color,
+                    depth_z16=depth,
+                    depth_scale=self.camera.depth_scale,
+                    fx=intr.fx,
+                    fy=intr.fy,
+                    cx=intr.ppx,
+                    cy=intr.ppy,
+                )
+                session.put(Topic.CAMERA_DEPTH_FRAME, payload)
+            except Exception as e:
+                logger.warning(f"depth_frame 인코드/발행 실패: {e}")
+
+            elapsed = time.time() - t0
+            time.sleep(max(0.0, period - elapsed))
+
+    # ─── Services ────────────────────────────────────────────
+
+    def _srv_set_depth_stream(self, req: dict) -> dict:
+        data = req.get("data", {}) or {}
+        if "enabled" not in data:
+            return {
+                "success": False,
+                "message": "'enabled' 필드 필요",
+                "data": {},
+            }
+
+        enabled = bool(data["enabled"])
+        self.camera.set_cloud_enabled(enabled)
+        with self._depth_lock:
+            self._depth_enabled = enabled
+        logger.info("depth 스트림 %s", "ON" if enabled else "OFF")
+        return {
+            "success": True,
+            "message": "ok",
+            "data": {"enabled": enabled},
+        }
+
+    # ─── Status ──────────────────────────────────────────────
+
     def _publish_status(self, connected: bool) -> None:
-        self.publish(Topic.CAMERA_STATE_STATUS, {
-            "timestamp": time.time(),
-            "connected": connected,
-            "width":     self.camera.width,
-            "height":    self.camera.height,
-            "fps":       self.camera.fps,
-        })
+        self.publish(
+            Topic.CAMERA_STATE_STATUS,
+            {
+                "timestamp": time.time(),
+                "connected": connected,
+                "width": self.camera.width,
+                "height": self.camera.height,
+                "fps": self.camera.fps,
+                "depth_scale": self.camera.depth_scale,
+            },
+        )

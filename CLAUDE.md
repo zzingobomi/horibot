@@ -288,3 +288,113 @@ OpenCV USB 카메라 → **Intel RealSense D405** 전환. 단순 pick-and-place 
 - IP: 192.168.0.101 (모터), 192.168.0.102 (카메라)
 - 일반 의존성은 Pi 둘 다 `uv sync --only-group <role>` 가능
 - `pyrealsense2`와 `open3d`는 aarch64 wheel 이슈 있음 — `pyrealsense2`는 카메라 Pi 소스 빌드, `open3d`는 PC만 필요하니 무관
+
+### 모터 Pi (U2D2) 첫 부팅 체크리스트
+
+Windows에서는 그냥 USB 꽂으면 `COM6`로 잡혔지만, **Pi에서는 4가지 추가 설정**을 안 하면 한 군데씩 막힌다. 새 Pi에 처음 올릴 때 순서대로:
+
+#### 1. 포트 enumerate 확인 — `/dev/ttyUSB0`로 잡혔는가
+
+```bash
+# U2D2 꽂기 전후 비교
+ls -l /dev/ttyUSB*
+dmesg | tail -20                # "FTDI USB Serial Device converter now attached to ttyUSB0" 보여야 정상
+lsusb | grep -i ftdi            # "Future Technology Devices ... FT232" 비슷한 줄
+```
+
+- 안 잡히면: 케이블, USB 포트 교체 시도. USB 2.0 포트에 꽂아도 U2D2는 OK (USB 3.0은 카메라용으로 양보).
+- `/dev/ttyUSB1`로 잡히면: 다른 FTDI/CDC 장치 같이 꽂혀 있는 것. 운영 안정성을 위해 아래 udev rule로 symlink 고정 권장.
+
+#### 2. 권한 — `dialout` 그룹 가입
+
+기본적으로 `/dev/ttyUSB*`는 `root:dialout` 소유. 사용자가 그룹에 없으면 `serial.serialutil.SerialException: [Errno 13] could not open port` 같은 에러로 깨짐.
+
+```bash
+groups                          # dialout 이미 있으면 skip
+sudo usermod -a -G dialout $USER
+# 로그아웃/재로그인 또는 newgrp dialout — 안 하면 같은 셸에서는 권한 그대로
+```
+
+확인:
+```bash
+ls -l /dev/ttyUSB0              # crw-rw---- root dialout 이어야
+```
+
+#### 3. **Latency timer = 1ms** (가장 자주 물리는 함정)
+
+FTDI 기본 latency timer가 리눅스에서 **16ms**. 100Hz trajectory publish (`MOTOR_CMD_JOINT`) + 20Hz state read가 USB round-trip에 막혀 trajectory가 끊기거나 지터난다. Windows는 드라이버가 보통 1ms로 설정돼 있어 이슈 안 보임 → **Pi에서만 갑자기 안 되는 1순위 원인**.
+
+영구 적용 (`/etc/udev/rules.d/99-u2d2.rules` 생성):
+```
+SUBSYSTEM=="usb-serial", DRIVER=="ftdi_sio", ATTR{latency_timer}="1"
+```
+
+적용:
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+# U2D2 뽑았다 다시 꽂거나
+echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+```
+
+확인:
+```bash
+cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer   # 반드시 1
+```
+
+#### 4. (선택) 포트 이름 고정 — udev symlink
+
+USB 허브에 다른 FTDI 장치를 꽂게 될 가능성이 있거나 enumerate 순서가 흔들리면 시리얼 번호 기반 symlink로 고정.
+
+```bash
+udevadm info -a -n /dev/ttyUSB0 | grep -i 'serial\|product' | head -5
+# ATTRS{serial}=="FT..." 값 확인
+```
+
+위 99-u2d2.rules에 추가:
+```
+SUBSYSTEM=="tty", ATTRS{serial}=="FT여기에값", SYMLINK+="u2d2"
+```
+
+그 뒤 `motors.yaml`의 `linux:` 값을 `/dev/u2d2`로 바꿔두면 평생 안 흔들림.
+
+#### 5. 백엔드 기동
+
+```bash
+cd ~/omx-control/backend
+uv sync --only-group pi-motor
+uv run python main.py --host pi_motor
+```
+
+기대 로그 (`omx/system/log`):
+- `MotorNode: Connected to /dev/ttyUSB0 @ 1000000bps`
+- `MotorNode: 모터 6개 detect` (혹은 ping 성공)
+- `Heartbeat` 1Hz
+
+#### 6. PC 측에서 발견되는지 확인
+
+PC에서 `uv run python main.py --host pc` 띄운 뒤:
+- 시스템 로그에서 모터 state(`omx/motor/state/joint`)가 들어오는지
+- 안 들어오면 Zenoh 멀티캐스트 scout 실패 — `host_pc.yaml`의 `zenoh.connect`에 `tcp/192.168.0.101:7447` 명시하고 모터 Pi `host_pi_motor.yaml`의 `zenoh.listen`에 `tcp/0.0.0.0:7447` 열기.
+- 방화벽: `sudo ufw status` — active면 7447/tcp 허용 또는 비활성화.
+
+#### 트러블슈팅 빠른 표
+
+| 증상                                            | 원인                          | 확인                                              |
+| ----------------------------------------------- | ----------------------------- | ------------------------------------------------- |
+| `could not open port /dev/ttyUSB0` (Errno 13)   | dialout 그룹 미가입           | `groups`                                          |
+| `[Errno 2] No such file or directory`           | enumerate 안 됨               | `dmesg`, 케이블/포트                              |
+| 연결은 되는데 trajectory가 뚝뚝 끊기거나 지터   | **latency_timer 16ms (기본)** | `cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer` |
+| 일부 모터만 ping 실패                           | 전원/체결, baudrate 불일치    | 모터 펌웨어의 baudrate가 1Mbps인지                |
+| PC에서 모터 상태가 안 들어옴                    | Zenoh 스카우트 실패           | 같은 LAN, `zenoh.connect` 명시                    |
+| 300ms마다 같은 위치 명령 반복                   | watchdog 작동 (정상)          | PC 쪽 motion publisher 없거나 끊김                |
+
+#### Windows ↔ Pi 차이 한눈에
+
+| 항목            | Windows                       | Raspberry Pi (Ubuntu)                   |
+| --------------- | ----------------------------- | --------------------------------------- |
+| 포트 이름       | `COM6`                        | `/dev/ttyUSB0`                          |
+| 드라이버        | FTDI 공식 (자동 설치)         | `ftdi_sio` 커널 모듈 (기본 포함)        |
+| 권한            | 별도 필요 없음                | `dialout` 그룹 필요                     |
+| Latency         | 드라이버 GUI에서 1ms 기본     | **수동 설정 안 하면 16ms**              |
+| 포트 안정성     | 보통 고정                     | enumerate 순서 따라 흔들림 → udev 권장  |

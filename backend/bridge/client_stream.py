@@ -25,9 +25,12 @@ def _policy_for(topic: str) -> tuple[str, int]:
 
 
 class ClientStream:
-    def __init__(self, ws: WebSocket, topic: str) -> None:
+    def __init__(
+        self, ws: WebSocket, topic: str, send_lock: asyncio.Lock
+    ) -> None:
         self.ws = ws
         self.topic = topic
+        self.send_lock = send_lock
         self.policy, maxsize = _policy_for(topic)
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self.task: asyncio.Task = asyncio.create_task(self._run())
@@ -45,18 +48,24 @@ class ClientStream:
             except asyncio.QueueFull:
                 pass  # 이론상 도달 불가 (단일 스레드)
 
+    # 여러 topic stream task가 동일 WebSocket에 동시에 send하지 않도록
+    # 실제 ws.send_* 호출은 send_lock으로 직렬화한다.
+    # pcd stream 과 motor stream이 동시에 send 할때 assertion error 발생했었음
     async def _run(self) -> None:
-        try:
-            while True:
+        while True:
+            try:
                 payload = await self.queue.get()
-                if isinstance(payload, bytes):
-                    await self.ws.send_bytes(payload)
-                else:
-                    await self.ws.send_text(payload)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.debug(f"ClientStream({self.topic}) 종료: {e}")
+                async with self.send_lock:
+                    if isinstance(payload, bytes):
+                        await self.ws.send_bytes(payload)
+                    else:
+                        await self.ws.send_text(payload)
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.warning(
+                    f"ClientStream({self.topic}) send 실패, 계속 진행: {e!r}"
+                )
 
     def close(self) -> None:
         self.task.cancel()
@@ -65,11 +74,13 @@ class ClientStream:
 class ConnectionManager:
     def __init__(self):
         self._streams: dict[WebSocket, dict[str, ClientStream]] = {}
+        self._send_locks: dict[WebSocket, asyncio.Lock] = {}
 
     def subscribe(self, ws: WebSocket, topic: str) -> None:
         client = self._streams.setdefault(ws, {})
+        lock = self._send_locks.setdefault(ws, asyncio.Lock())
         if topic not in client:
-            client[topic] = ClientStream(ws, topic)
+            client[topic] = ClientStream(ws, topic, lock)
 
     def unsubscribe(self, ws: WebSocket, topic: str) -> None:
         client = self._streams.get(ws)
@@ -81,6 +92,7 @@ class ConnectionManager:
 
     def remove_client(self, ws: WebSocket) -> None:
         client = self._streams.pop(ws, None)
+        self._send_locks.pop(ws, None)
         if not client:
             return
         for stream in client.values():

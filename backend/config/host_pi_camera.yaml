@@ -3,7 +3,7 @@
 # 시작 예:
 #   # pyrealsense2는 사전에 소스 빌드해서 별도 설치
 #   uv sync --only-group pi-camera --no-install-package pyrealsense2
-#   uv run python main.py --host pi_camera
+#   uv run --no-sync python main.py --host pi_camera
 host_name: pi_camera
 
 zenoh:

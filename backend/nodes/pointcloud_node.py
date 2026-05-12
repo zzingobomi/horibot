@@ -12,10 +12,10 @@ from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_VOXEL_SIZE = 0.008  # 8mm
+DEFAULT_VOXEL_SIZE = 0.005  # 5mm
 TARGET_FPS = 8.0
 IDLE_SLEEP = 0.1
-DEPTH_TRUNC = 1.5  # m
+DEPTH_TRUNC = 1.0  # m
 
 
 class PointCloudNode(BaseNode):
@@ -32,7 +32,8 @@ class PointCloudNode(BaseNode):
 
     def start(self) -> None:
         self.create_service(Service.POINTCLOUD_CONFIGURE, self._srv_configure)
-        self.create_raw_subscriber(Topic.CAMERA_DEPTH_FRAME, self._on_depth_frame)
+        self.create_raw_subscriber(
+            Topic.CAMERA_DEPTH_FRAME, self._on_depth_frame)
         super().start()
         self._stream_thread = threading.Thread(
             target=self._stream_loop,

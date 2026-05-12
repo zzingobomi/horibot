@@ -134,19 +134,26 @@ class RealsenseCapture:
             aligned_color_np: np.ndarray | None = None
             depth_intr = None
             if self._cloud_enabled:
-                aligned = align.process(frames)
-                aligned_color = aligned.get_color_frame()
-                depth = aligned.get_depth_frame()
-                if aligned_color and depth:
-                    aligned_color_np = np.asanyarray(
-                        aligned_color.get_data()
-                    ).copy()
-                    depth_np = np.asanyarray(depth.get_data()).copy()
-                    if self._depth_intrinsics is None:
-                        depth_intr = (
-                            depth.profile.as_video_stream_profile()
-                            .get_intrinsics()
-                        )
+                raw_depth = frames.get_depth_frame()
+                if color and raw_depth:
+                    try:
+                        aligned = align.process(frames)
+                        aligned_color = aligned.get_color_frame()
+                        depth = aligned.get_depth_frame()
+                    except RuntimeError as e:
+                        logger.debug(f"RS align err: {e}")
+                        aligned_color = None
+                        depth = None
+                    if aligned_color and depth:
+                        aligned_color_np = np.asanyarray(
+                            aligned_color.get_data()
+                        ).copy()
+                        depth_np = np.asanyarray(depth.get_data()).copy()
+                        if self._depth_intrinsics is None:
+                            depth_intr = (
+                                depth.profile.as_video_stream_profile()
+                                .get_intrinsics()
+                            )
 
             with self._frame_lock:
                 if color_np is not None:

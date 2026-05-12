@@ -13,10 +13,6 @@ logger = logging.getLogger(__name__)
 
 STATE_PUBLISH_HZ = 20  # 초당 상태 발행 횟수
 
-# Watchdog 관련 상수
-CMD_TIMEOUT_SEC = 0.3
-WATCHDOG_HZ = 10  # 100ms 주기 체크
-
 # Gripper 관련 상수
 GRIPPER_OPEN_RAW = 2600
 GRIPPER_CLOSE_RAW = 1800  # current 제한이 있으므로 여유있게
@@ -34,20 +30,14 @@ class MotorNode(BaseNode):
         self.connected = False
         self.torque_enabled = False
 
-        # Watchdog 상태
-        self._last_cmd_time: float | None = None
-        self._holding = False  # 이미 hold 발동했는지
-        self._watchdog_lock = threading.Lock()
-        self._last_positions: dict[int, int] = {}
-        self._state_lock = threading.Lock()
         self._state_thread: threading.Thread | None = None
-        self._watchdog_thread: threading.Thread | None = None
 
         self.create_subscriber(Topic.MOTOR_CMD_JOINT, self._on_cmd_joint)
         self.create_service(Service.MOTOR_ENABLE, self._srv_enable)
         self.create_service(Service.MOTOR_REBOOT, self._srv_reboot)
         self.create_service(Service.MOTOR_SET_PROFILE, self._srv_set_profile)
-        self.create_service(Service.MOTOR_SET_PROFILE_ALL, self._srv_set_profile_all)
+        self.create_service(Service.MOTOR_SET_PROFILE_ALL,
+                            self._srv_set_profile_all)
         self.create_service(Service.MOTOR_GET_CONFIG, self._srv_get_config)
         self.create_service(Service.MOTOR_GRIPPER, self._srv_gripper)
 
@@ -56,6 +46,7 @@ class MotorNode(BaseNode):
     def start(self) -> None:
         self.connected = self.driver.connect()
         if self.connected:
+            self._apply_position_pid()
             self.driver.torque_enable_all()
             self.torque_enabled = True
             self.log("info", f"모터 노드 시작 ({self.port})")
@@ -72,17 +63,26 @@ class MotorNode(BaseNode):
         )
         self._state_thread.start()
 
-        self._watchdog_thread = threading.Thread(
-            target=self._watchdog_loop,
-            name="motor-watchdog",
-            daemon=True,
-        )
-        self._watchdog_thread.start()
-
     def stop(self) -> None:
         super().stop()
         if self.connected:
             self.driver.disconnect()
+
+    def _apply_position_pid(self) -> None:
+        for cfg in self.motor_cfgs:
+            if cfg.pid_p is None and cfg.pid_i is None and cfg.pid_d is None:
+                continue
+            try:
+                self.driver.set_position_pid(
+                    cfg.id, p=cfg.pid_p, i=cfg.pid_i, d=cfg.pid_d
+                )
+                self.log(
+                    "info",
+                    f"모터 {cfg.id}({cfg.name}) PID 적용 "
+                    f"P={cfg.pid_p} I={cfg.pid_i} D={cfg.pid_d}",
+                )
+            except Exception as e:
+                logger.error(f"모터 {cfg.id} PID 적용 실패: {e}")
 
     # ─── Publishers ──────────────────────────────────────────
 
@@ -97,13 +97,11 @@ class MotorNode(BaseNode):
         try:
             positions = self.driver.get_present_positions()
             joints = []
-            valid_positions: dict[int, int] = {}
             for cfg in self.motor_cfgs:
                 raw = positions.get(cfg.id)
                 if raw is None:
                     logger.warning(f"모터 {cfg.id}({cfg.name}) 위치 읽기 실패")
                     continue
-                valid_positions[cfg.id] = raw
                 joints.append(
                     {
                         "id": cfg.id,
@@ -114,9 +112,6 @@ class MotorNode(BaseNode):
                         "torque": 0.0,
                     }
                 )
-            # watchdog가 시리얼 재read 없이 쓸 수 있도록 캐시
-            with self._state_lock:
-                self._last_positions = valid_positions
             self.publish(
                 Topic.MOTOR_STATE_JOINT,
                 {
@@ -126,48 +121,6 @@ class MotorNode(BaseNode):
             )
         except Exception as e:
             logger.error(f"상태 발행 오류: {e}")
-
-    # ─── Watchdog ────────────────────────────────────────────
-
-    def _watchdog_loop(self) -> None:
-        interval = 1.0 / WATCHDOG_HZ
-        while self._running:
-            time.sleep(interval)
-            if not self.connected or not self.torque_enabled:
-                continue
-
-            with self._watchdog_lock:
-                last = self._last_cmd_time
-                already_holding = self._holding
-
-            if last is None or already_holding:
-                # 아직 명령을 한 번도 못 받았거나, 이미 홀드한 상태 — 재발동 안 함.
-                continue
-
-            if time.time() - last > CMD_TIMEOUT_SEC:
-                self._hold_current_position()
-
-    def _hold_current_position(self) -> None:
-        with self._state_lock:
-            arm_positions = {
-                mid: pos
-                for mid, pos in self._last_positions.items()
-                if mid != GRIPPER_ID
-            }
-        if not arm_positions:
-            logger.warning("watchdog: 캐시된 측정 위치 없음, 홀드 건너뜀")
-            return
-        try:
-            self.driver.set_goal_positions_sync(arm_positions)
-            self.log(
-                "warning",
-                f"명령 타임아웃 ({CMD_TIMEOUT_SEC}s) — 현재 위치 홀드 "
-                f"({len(arm_positions)}개 arm 모터)",
-            )
-        except Exception as e:
-            logger.error(f"watchdog 홀드 실패: {e}")
-        with self._watchdog_lock:
-            self._holding = True
 
     # ─── Subscribers ─────────────────────────────────────────
 
@@ -182,10 +135,6 @@ class MotorNode(BaseNode):
                 if "id" in j and "position" in j
             }
             if positions:
-                # watchdog 갱신: 새 명령 도착 → 홀드 해제
-                with self._watchdog_lock:
-                    self._last_cmd_time = time.time()
-                    self._holding = False
                 self.driver.set_goal_positions_sync(positions)
         except Exception as e:
             logger.error(f"joint 명령 처리 오류: {e}")
@@ -226,7 +175,8 @@ class MotorNode(BaseNode):
             if motor_id and velocity is not None:
                 self.driver.set_profile_velocity(motor_id, int(velocity))
             if motor_id and acceleration is not None:
-                self.driver.set_profile_acceleration(motor_id, int(acceleration))
+                self.driver.set_profile_acceleration(
+                    motor_id, int(acceleration))
             return {"success": True, "message": "ok", "data": {}}
         except Exception as e:
             return {"success": False, "message": str(e), "data": {}}

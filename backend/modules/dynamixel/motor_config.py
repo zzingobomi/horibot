@@ -14,6 +14,9 @@ class MotorConfig:
     limit_min: int
     limit_max: int
     reverse: bool
+    pid_p: int | None = None
+    pid_i: int | None = None
+    pid_d: int | None = None
 
 
 @dataclass
@@ -39,18 +42,23 @@ def load_motor_config(path: str | Path | None = None) -> tuple[PortConfig, list[
         linux=raw["port"]["linux"],
     )
 
-    motors = [
-        MotorConfig(
-            id=m["id"],
-            name=m["name"],
-            model=m["model"],
-            mode=m["mode"],
-            home=m["home"],
-            limit_min=m["limit"]["min"],
-            limit_max=m["limit"]["max"],
-            reverse=m.get("reverse", False),
+    motors = []
+    for m in raw["motors"]:
+        pid = m.get("pid") or {}
+        motors.append(
+            MotorConfig(
+                id=m["id"],
+                name=m["name"],
+                model=m["model"],
+                mode=m["mode"],
+                home=m["home"],
+                limit_min=m["limit"]["min"],
+                limit_max=m["limit"]["max"],
+                reverse=m.get("reverse", False),
+                pid_p=pid.get("p"),
+                pid_i=pid.get("i"),
+                pid_d=pid.get("d"),
+            )
         )
-        for m in raw["motors"]
-    ]
 
     return port, motors

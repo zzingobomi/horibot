@@ -1,8 +1,10 @@
 port:
   windows: "COM6"
-  linux: "/dev/ttyUSB0"
+  linux: /dev/ttyACM0
 
 baudrate: 1000000
+
+# Default: XL430 P=640/I=0/D=3600, XL330 P=400/I=0/D=0.
 
 motors:
   - id: 1
@@ -14,6 +16,10 @@ motors:
       min: 0 # -180°
       max: 4095 #  180°
     reverse: false
+    pid: # base, 중력 무관
+      p: 640
+      i: 0
+      d: 3600
 
   - id: 2
     name: "joint2"
@@ -24,6 +30,10 @@ motors:
       min: 1024 # -90°
       max: 3072 #  90°
     reverse: false
+    pid: # shoulder, 중력 부하 큼
+      p: 1500
+      i: 0
+      d: 3600
 
   - id: 3
     name: "joint3"
@@ -34,6 +44,10 @@ motors:
       min: 1024 # -90°
       max: 3072 #  90°
     reverse: false
+    pid: # elbow, 중력 부하 큼
+      p: 1500
+      i: 0
+      d: 3600
 
   - id: 4
     name: "joint4"
@@ -44,6 +58,10 @@ motors:
       min: 1024
       max: 3072
     reverse: false
+    pid: # wrist
+      p: 800
+      i: 0
+      d: 600
 
   - id: 5
     name: "joint5"
@@ -54,13 +72,21 @@ motors:
       min: 0
       max: 4095
     reverse: false
+    pid:
+      p: 800
+      i: 0
+      d: 0
 
   - id: 6
     name: "gripper_joint_1"
     model: "XL330-M288"
-    mode: "position"
+    mode: "current_position"
     home: 2048
     limit:
       min: 1800
       max: 2600
     reverse: false
+    pid:
+      p: 800
+      i: 0
+      d: 0

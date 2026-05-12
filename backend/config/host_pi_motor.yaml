@@ -3,7 +3,7 @@
 #
 # 시작 예:
 #   uv sync --only-group pi-motor
-#   uv run python main.py --host pi_motor
+#   uv run --no-sync python main.py --host pi_motor
 host_name: pi_motor
 
 zenoh:

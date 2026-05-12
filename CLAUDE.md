@@ -49,7 +49,7 @@ uv run python main.py --host pi_camera
 - `host_pi_motor.yaml` — 분산 모터 Pi (motor/motion)
 - `host_pi_camera.yaml` — 분산 카메라 Pi (camera)
 
-기본 모터 포트는 Windows `COM6` / Linux `/dev/ttyUSB0` ([robot/config/motors.yaml](robot/config/motors.yaml)).
+기본 모터 포트는 Windows `COM6` / Linux `/dev/ttyACM0` ([robot/config/motors.yaml](robot/config/motors.yaml)). 모터 인터페이스는 U2D2가 아닌 **OpenRB-150** — U2D2 호환 스케치가 올라가 있어 동작은 같지만 Linux에선 FTDI(`ttyUSB*`)가 아니라 CDC-ACM(`ttyACM*`)로 잡힌다.
 
 ### Frontend (pnpm, [frontend/](frontend/)에서 실행)
 
@@ -77,7 +77,7 @@ pnpm lint       # eslint
 
 이 분배의 핵심 이유:
 
-- (a) USB 대역폭 경합 해소 — D405와 U2D2가 한 USB 컨트롤러를 공유하지 않음
+- (a) USB 대역폭 경합 해소 — D405와 OpenRB-150이 한 USB 컨트롤러를 공유하지 않음
 - (b) 100Hz 제어 명령(`MOTOR_CMD_JOINT`)을 네트워크로 안 보냄 — TrajectoryRunner와 MotorNode 같은 머신
 - (c) 무거운 연산(YOLO, Open3D, PyBullet PC 측)은 PC
 
@@ -182,12 +182,6 @@ Pi 빌드 노트: `pyrealsense2`는 aarch64 PyPI wheel이 없어 카메라 Pi에
 
 아암은 운동학적으로 **5DOF** (모터 ID 1–5), ID 6은 그리퍼로 `core.common.GRIPPER_ID`로 필터링. 단위 변환은 [backend/core/units.py](backend/core/units.py) — Dynamixel raw는 `0..4095`, 중심 `2048`(=0°). [robot/config/motors.yaml](robot/config/motors.yaml)의 각 모터에 `reverse` 플래그와 `limit.min/max` raw 클램프 (rad_to_raw이 강제).
 
-### Motor watchdog
-
-`MotorNode`가 `MOTOR_CMD_JOINT` 무수신 **300ms 초과** 시 현재 측정 위치를 새 goal로 발행해 그 자리에 홀드 (`_watchdog_loop` 10Hz, `_hold_current_position`). PC 다운/네트워크 단절/trajectory 중단 시 안전장치. 그리퍼(`GRIPPER_ID`)는 별도 service 경로로 동작 중일 수 있으므로 watchdog가 가로채지 않음. 새 명령 도착 시 자동 해제(`_holding=False`).
-
-측정값은 state loop에서 이미 읽는 걸 `_last_positions`에 캐시 → watchdog가 시리얼 추가 read 안 함 (USB 경합 같은 상황 안전).
-
 ### Task 시스템
 
 Task는 선언형 step 리스트 ([backend/modules/task/step_types.py](backend/modules/task/step_types.py): `MoveTCPStep`, `DetectStep`, `GripperStep`, `HomeStep`, `WaitStep`). `TASK_REGISTRY`는 [backend/nodes/task_node.py](backend/nodes/task_node.py)에. `StepExecutor`가 각 step 실행(motion/detector/motor 서비스 호출), `TaskRunner`가 상태 머신(`run/pause/resume/stop`), 진행은 `omx/task/state`로 발행. `DetectStep`은 결과를 context dict(`output_key`)에 쓰고, 이후 `MoveTCPStep`이 `position_key` + `offset`으로 소비 — [backend/modules/task/tasks/pick_and_place.py](backend/modules/task/tasks/pick_and_place.py)가 정규 예시.
@@ -267,7 +261,6 @@ OpenCV USB 카메라 → **Intel RealSense D405** 전환. 단순 pick-and-place 
 - **호스트 config** ([backend/config/](backend/config/)) — `host_dev.yaml` / `host_pc.yaml` / `host_pi_motor.yaml` / `host_pi_camera.yaml`. main.py가 `--host` 또는 hostname으로 선택, 실패 시 `host_dev.yaml` fallback.
 - **`ZenohSession.init(cfg_dict)`** — host config의 `zenoh` 섹션을 zenoh.Config로 변환 (mode/connect/listen).
 - **FrameCache** ([backend/core/frame_cache.py](backend/core/frame_cache.py)) — detector/calibration이 토픽 기반으로 카메라 프레임을 받게 → 분산 호환. TaskNode/StepExecutor의 카메라 인자는 미사용이라 제거.
-- **Motor watchdog** ([backend/nodes/motor_node.py](backend/nodes/motor_node.py)) — 300ms 명령 미수신 시 현재 위치 홀드 (state loop의 `_last_positions` 캐시 재사용).
 - **CAMERA_DEPTH_FRAME 파이프라인** ([backend/modules/camera/depth_frame.py](backend/modules/camera/depth_frame.py), [backend/nodes/camera_node.py](backend/nodes/camera_node.py), [backend/nodes/pointcloud_node.py](backend/nodes/pointcloud_node.py)) — 카메라 Pi에서 무손실 압축 depth + JPEG color + intrinsics 한 메시지로 발행, PC PointCloudNode가 구독해 cloud 생성. `POINTCLOUD_CONFIGURE`가 카메라 측 enable을 forward.
 - **브릿지 백프레셔 + 바이너리 프레이밍** ([backend/bridge/zenoh_bridge.py](backend/bridge/zenoh_bridge.py), [backend/bridge/client_stream.py](backend/bridge/client_stream.py)) — 클라이언트별/토픽별 bounded queue, LATEST_WINS 기본 / SYSTEM_LOG는 BOUNDED_FIFO. 바이너리 토픽은 `[u8 ver][u8 type][u16 topic_len][topic][payload]`로 인코딩해 binary WS로 송신.
 
@@ -289,112 +282,3 @@ OpenCV USB 카메라 → **Intel RealSense D405** 전환. 단순 pick-and-place 
 - 일반 의존성은 Pi 둘 다 `uv sync --only-group <role>` 가능
 - `pyrealsense2`와 `open3d`는 aarch64 wheel 이슈 있음 — `pyrealsense2`는 카메라 Pi 소스 빌드, `open3d`는 PC만 필요하니 무관
 
-### 모터 Pi (U2D2) 첫 부팅 체크리스트
-
-Windows에서는 그냥 USB 꽂으면 `COM6`로 잡혔지만, **Pi에서는 4가지 추가 설정**을 안 하면 한 군데씩 막힌다. 새 Pi에 처음 올릴 때 순서대로:
-
-#### 1. 포트 enumerate 확인 — `/dev/ttyUSB0`로 잡혔는가
-
-```bash
-# U2D2 꽂기 전후 비교
-ls -l /dev/ttyUSB*
-dmesg | tail -20                # "FTDI USB Serial Device converter now attached to ttyUSB0" 보여야 정상
-lsusb | grep -i ftdi            # "Future Technology Devices ... FT232" 비슷한 줄
-```
-
-- 안 잡히면: 케이블, USB 포트 교체 시도. USB 2.0 포트에 꽂아도 U2D2는 OK (USB 3.0은 카메라용으로 양보).
-- `/dev/ttyUSB1`로 잡히면: 다른 FTDI/CDC 장치 같이 꽂혀 있는 것. 운영 안정성을 위해 아래 udev rule로 symlink 고정 권장.
-
-#### 2. 권한 — `dialout` 그룹 가입
-
-기본적으로 `/dev/ttyUSB*`는 `root:dialout` 소유. 사용자가 그룹에 없으면 `serial.serialutil.SerialException: [Errno 13] could not open port` 같은 에러로 깨짐.
-
-```bash
-groups                          # dialout 이미 있으면 skip
-sudo usermod -a -G dialout $USER
-# 로그아웃/재로그인 또는 newgrp dialout — 안 하면 같은 셸에서는 권한 그대로
-```
-
-확인:
-```bash
-ls -l /dev/ttyUSB0              # crw-rw---- root dialout 이어야
-```
-
-#### 3. **Latency timer = 1ms** (가장 자주 물리는 함정)
-
-FTDI 기본 latency timer가 리눅스에서 **16ms**. 100Hz trajectory publish (`MOTOR_CMD_JOINT`) + 20Hz state read가 USB round-trip에 막혀 trajectory가 끊기거나 지터난다. Windows는 드라이버가 보통 1ms로 설정돼 있어 이슈 안 보임 → **Pi에서만 갑자기 안 되는 1순위 원인**.
-
-영구 적용 (`/etc/udev/rules.d/99-u2d2.rules` 생성):
-```
-SUBSYSTEM=="usb-serial", DRIVER=="ftdi_sio", ATTR{latency_timer}="1"
-```
-
-적용:
-```bash
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-# U2D2 뽑았다 다시 꽂거나
-echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
-```
-
-확인:
-```bash
-cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer   # 반드시 1
-```
-
-#### 4. (선택) 포트 이름 고정 — udev symlink
-
-USB 허브에 다른 FTDI 장치를 꽂게 될 가능성이 있거나 enumerate 순서가 흔들리면 시리얼 번호 기반 symlink로 고정.
-
-```bash
-udevadm info -a -n /dev/ttyUSB0 | grep -i 'serial\|product' | head -5
-# ATTRS{serial}=="FT..." 값 확인
-```
-
-위 99-u2d2.rules에 추가:
-```
-SUBSYSTEM=="tty", ATTRS{serial}=="FT여기에값", SYMLINK+="u2d2"
-```
-
-그 뒤 `motors.yaml`의 `linux:` 값을 `/dev/u2d2`로 바꿔두면 평생 안 흔들림.
-
-#### 5. 백엔드 기동
-
-```bash
-cd ~/omx-control/backend
-uv sync --only-group pi-motor
-uv run python main.py --host pi_motor
-```
-
-기대 로그 (`omx/system/log`):
-- `MotorNode: Connected to /dev/ttyUSB0 @ 1000000bps`
-- `MotorNode: 모터 6개 detect` (혹은 ping 성공)
-- `Heartbeat` 1Hz
-
-#### 6. PC 측에서 발견되는지 확인
-
-PC에서 `uv run python main.py --host pc` 띄운 뒤:
-- 시스템 로그에서 모터 state(`omx/motor/state/joint`)가 들어오는지
-- 안 들어오면 Zenoh 멀티캐스트 scout 실패 — `host_pc.yaml`의 `zenoh.connect`에 `tcp/192.168.0.101:7447` 명시하고 모터 Pi `host_pi_motor.yaml`의 `zenoh.listen`에 `tcp/0.0.0.0:7447` 열기.
-- 방화벽: `sudo ufw status` — active면 7447/tcp 허용 또는 비활성화.
-
-#### 트러블슈팅 빠른 표
-
-| 증상                                            | 원인                          | 확인                                              |
-| ----------------------------------------------- | ----------------------------- | ------------------------------------------------- |
-| `could not open port /dev/ttyUSB0` (Errno 13)   | dialout 그룹 미가입           | `groups`                                          |
-| `[Errno 2] No such file or directory`           | enumerate 안 됨               | `dmesg`, 케이블/포트                              |
-| 연결은 되는데 trajectory가 뚝뚝 끊기거나 지터   | **latency_timer 16ms (기본)** | `cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer` |
-| 일부 모터만 ping 실패                           | 전원/체결, baudrate 불일치    | 모터 펌웨어의 baudrate가 1Mbps인지                |
-| PC에서 모터 상태가 안 들어옴                    | Zenoh 스카우트 실패           | 같은 LAN, `zenoh.connect` 명시                    |
-| 300ms마다 같은 위치 명령 반복                   | watchdog 작동 (정상)          | PC 쪽 motion publisher 없거나 끊김                |
-
-#### Windows ↔ Pi 차이 한눈에
-
-| 항목            | Windows                       | Raspberry Pi (Ubuntu)                   |
-| --------------- | ----------------------------- | --------------------------------------- |
-| 포트 이름       | `COM6`                        | `/dev/ttyUSB0`                          |
-| 드라이버        | FTDI 공식 (자동 설치)         | `ftdi_sio` 커널 모듈 (기본 포함)        |
-| 권한            | 별도 필요 없음                | `dialout` 그룹 필요                     |
-| Latency         | 드라이버 GUI에서 1ms 기본     | **수동 설정 안 하면 16ms**              |
-| 포트 안정성     | 보통 고정                     | enumerate 순서 따라 흔들림 → udev 권장  |

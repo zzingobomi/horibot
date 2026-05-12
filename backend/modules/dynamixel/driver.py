@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 # ─── Control Table (XL430 / XL330 공통) ───────────────────────
 ADDR_OPERATING_MODE = 11
 ADDR_TORQUE_ENABLE = 64
+ADDR_POSITION_D_GAIN = 80
+ADDR_POSITION_I_GAIN = 82
+ADDR_POSITION_P_GAIN = 84
 ADDR_GOAL_CURRENT = 102
 ADDR_PROFILE_ACCELERATION = 108
 ADDR_PROFILE_VELOCITY = 112
@@ -27,6 +30,7 @@ ADDR_PRESENT_LOAD = 126
 ADDR_PRESENT_VELOCITY = 128
 ADDR_PRESENT_POSITION = 132
 
+LEN_POSITION_GAIN = 2
 LEN_GOAL_CURRENT = 2
 LEN_PROFILE_ACCEL = 4
 LEN_PROFILE_VELOCITY = 4
@@ -169,6 +173,22 @@ class DynamixelDriver:
         권장 파지력: 100~300 (물체 크기/무게에 따라 조정)
         """
         self._write2(motor_id, ADDR_GOAL_CURRENT, current)
+
+    # ─── Position PID gain ──────────────────────────────────
+
+    def set_position_pid(
+        self,
+        motor_id: int,
+        p: int | None = None,
+        i: int | None = None,
+        d: int | None = None,
+    ) -> None:
+        if d is not None:
+            self._write2(motor_id, ADDR_POSITION_D_GAIN, int(d))
+        if i is not None:
+            self._write2(motor_id, ADDR_POSITION_I_GAIN, int(i))
+        if p is not None:
+            self._write2(motor_id, ADDR_POSITION_P_GAIN, int(p))
 
     # ─── 프로파일 설정 ────────────────────────────────────────
 

@@ -5,7 +5,7 @@ import { PanelShell } from "../ui/PanelShell";
 import { Section } from "../ui/Section";
 import { ToggleRow } from "../ui/ToggleRow";
 
-const VOXEL_PRESETS = [0.005, 0.008, 0.012, 0.02];
+const VOXEL_PRESETS = [0.003, 0.005, 0.008];
 
 export function PointCloudPanel(_: IDockviewPanelProps<object>) {
   const enabled = usePointCloudStore((s) => s.enabled);

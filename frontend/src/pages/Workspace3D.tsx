@@ -42,6 +42,8 @@ export function Workspace3D() {
   );
 
   const onReady = useCallback((event: DockviewReadyEvent) => {
+    const pointCloudWidth = 260;
+    const pointCloudX = Math.max(16, window.innerWidth - pointCloudWidth - 16);
     event.api.addPanel({
       id: "robot-state",
       component: "robotState",
@@ -67,7 +69,7 @@ export function Workspace3D() {
       id: "point-cloud",
       component: "pointCloud",
       title: "Point Cloud",
-      floating: { x: 16, y: 900, width: 260, height: 240 },
+      floating: { x: pointCloudX, y: 16, width: pointCloudWidth, height: 240 },
       params: {},
     });
   }, []);

@@ -1,6 +1,7 @@
 import json
 import logging
 import asyncio
+import os
 from contextlib import asynccontextmanager
 import time
 from pathlib import Path
@@ -71,9 +72,23 @@ app.mount("/robot", StaticFiles(directory=str(ROBOT_DIR)), name="robot")
 
 app.include_router(calibration_router)
 
+_extra_origins = [
+    o.strip()
+    for o in os.getenv("BRIDGE_CORS_ORIGINS", "").split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origin_regex=(
+        r"^https?://("
+        r"localhost|127\.0\.0\.1|"
+        r"10\.\d+\.\d+\.\d+|"
+        r"192\.168\.\d+\.\d+|"
+        r"172\.(1[6-9]|2\d|3[01])\.\d+\.\d+"
+        r")(:\d+)?$"
+    ),
+    allow_origins=_extra_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -147,7 +162,8 @@ def setup_zenoh_subscribers() -> None:
 
             return handler
 
-        _zenoh_subs.append(session.declare_subscriber(topic, make_handler(topic)))
+        _zenoh_subs.append(session.declare_subscriber(
+            topic, make_handler(topic)))
 
     # 카메라는 raw bytes로 수신
     def camera_handler(sample: zenoh.Sample):
@@ -159,7 +175,8 @@ def setup_zenoh_subscribers() -> None:
 
     # 포인트클라우드는 바이너리 WS 프레임으로 직송
     def pointcloud_handler(sample: zenoh.Sample):
-        _zenoh_callback_bytes(Topic.POINTCLOUD_STREAM, sample.payload.to_bytes())
+        _zenoh_callback_bytes(Topic.POINTCLOUD_STREAM,
+                              sample.payload.to_bytes())
 
     _zenoh_subs.append(
         session.declare_subscriber(Topic.POINTCLOUD_STREAM, pointcloud_handler)

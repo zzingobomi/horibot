@@ -15,6 +15,18 @@ type ServiceResolver = (res: {
 const BIN_VERSION = 1;
 const BIN_TYPE_TOPIC_DATA = 1;
 
+function makeRequestId(): string {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+  return `req-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
+
 function decodeBinaryTopic(
   buf: ArrayBuffer
 ): { topic: string; payload: ArrayBuffer } | null {
@@ -191,7 +203,7 @@ class BridgeClient {
     data: Record<string, unknown>;
   }> {
     return new Promise((resolve) => {
-      const request_id = crypto.randomUUID();
+      const request_id = makeRequestId();
       this.pendingServices.set(request_id, resolve);
       this._send({ type: WsMsgType.Service, key, request_id, data });
 

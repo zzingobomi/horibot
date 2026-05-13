@@ -41,9 +41,14 @@ export function Workspace3D() {
     [setTcpPos]
   );
 
+  // TODO: panel 들 위치 하드코딩 말고 자동으로 배치하는 로직 필요
   const onReady = useCallback((event: DockviewReadyEvent) => {
+    const sidebarWidth = 207;
     const pointCloudWidth = 260;
-    const pointCloudX = Math.max(16, window.innerWidth - pointCloudWidth - 16);
+    const pointCloudX = Math.max(
+      16,
+      window.innerWidth - pointCloudWidth - 16 - sidebarWidth
+    );
     event.api.addPanel({
       id: "robot-state",
       component: "robotState",

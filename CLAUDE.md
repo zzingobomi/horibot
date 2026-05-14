@@ -63,6 +63,43 @@ pnpm lint       # eslint
 
 브릿지 URL은 `VITE_WS_URL` / `VITE_BASE_URL`에서 읽고, 기본값은 `ws://localhost:8000/ws`와 `http://localhost:8000` ([src/constants/index.ts](frontend/src/constants/index.ts)).
 
+## 하드웨어 구성
+
+### 모터 컨트롤러
+
+- **OpenRB-150** (SAMD21 기반, Arduino MKR Zero 호환). U2D2 정품(FTDI)이 아님.
+- ROBOTIS의 "USB to Dynamixel" 예제 스케치를 올려 **U2D2 호환 모드**로 사용 (소프트 USB↔TTL 패킷 릴레이).
+- USB **CDC-ACM** 클래스 → Pi에서 `/dev/ttyACM0`로 enumerate.
+
+### 모터 (5DOF arm + 그리퍼)
+
+| Joint             | Model      | 정격 전압 (operating) | 비고                     |
+| ----------------- | ---------- | --------------------- | ------------------------ |
+| 1 (base rotation) | XL430-W250 | 10.0~14.8V (12V 권장) |                          |
+| 2 (shoulder)      | XL430-W250 | "                     | 중력 부하 큼             |
+| 3 (elbow)         | XL430-W250 | "                     | 중력 부하 큼             |
+| 4 (wrist pitch)   | XL330-M288 | 3.7~6.0V (5V 권장)    |                          |
+| 5 (wrist roll)    | XL330-M288 | "                     |                          |
+| 6 (gripper)       | XL330-M288 | "                     | `core.common.GRIPPER_ID` |
+
+운동학상으로는 **5DOF** (ID 1~5), ID 6은 그리퍼라 IK/FK 대상 아님.
+
+### 전원 토폴로지
+
+```
+[메인 PSU 11V] ──── OpenRB-150 (배럴잭, 또한 통신/스케치)
+                      │
+                      ├─ 직접 분기 ──── XL430 체인 (joint 1, 2, 3) @ 11V
+                      │                    (정격 10~14.8V — 하한 가까움, 마진 작음)
+                      │
+                      └─ XL4015 DC-DC 강압 모듈 (CV/CC 5A) ──── XL330 체인 (joint 4, 5, 6) @ 5V
+                                                                  (정격 3.7~6V — 정중앙)
+```
+
+- 데이지 체인은 두 그룹으로 분리되어 있으나 **TTL 데이터 라인은 같은 버스를 공유** (Dynamixel half-duplex). 즉 ID 1~6이 모두 한 패킷 버스 위에 있음.
+- Wizard에서 확인된 실측: XL430 그룹 10~11V, XL330 그룹 ~5V — 둘 다 정격 안.
+- XL430 그룹이 정격 하한 근처라 토크 마진이 작을 수 있음 (필요 시 12V로 올리는 것 검토).
+
 ## 아키텍처
 
 ### 분산 토폴로지 — PC + 모터 Pi + 카메라 Pi

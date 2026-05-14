@@ -18,7 +18,7 @@ const VISIBILITY_ITEMS: {
   { key: "showGrid", label: "Grid", color: "bg-zinc-400" },
 ];
 
-export function SceneControlsPanel(_: IDockviewPanelProps<object>) {
+export function SceneControlsPanel(props: IDockviewPanelProps<object>) {
   const options = useSceneStore((s) => s.options);
   const linkNames = useSceneStore((s) => s.linkNames);
   const linkVisibility = useSceneStore((s) => s.linkVisibility);
@@ -32,7 +32,12 @@ export function SceneControlsPanel(_: IDockviewPanelProps<object>) {
     linkNames.length > 0 && linkNames.every((n) => linkVisibility[n] !== false);
 
   return (
-    <PanelShell icon={<Eye className="w-3.5 h-3.5" />} title="Scene Controls">
+    <PanelShell
+      icon={<Eye className="w-3.5 h-3.5" />}
+      title="Scene Controls"
+      panelId={props.api.id}
+      api={props.api}
+    >
       <Section label="Visibility">
         <div className="space-y-1">
           {VISIBILITY_ITEMS.map(({ key, label, color }) => (

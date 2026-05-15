@@ -1,11 +1,22 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { DockviewReact, type DockviewReadyEvent } from "dockview";
+import { RotateCcw } from "lucide-react";
 import { RobotScene } from "@/components/workspace3d/3d/RobotScene";
 import { useCalibrationResults } from "@/hooks/useCalibrationResults";
 import { useRobotStore } from "@/store/robotStore";
 import { useSceneStore } from "@/store/sceneStore";
-import { PANEL_COMPONENTS } from "@/components/workspace3d/dockview/panelComponents";
+import {
+  PANEL_COMPONENTS,
+  type PanelComponentKey,
+} from "@/components/workspace3d/dockview/panelComponents";
+import {
+  PANEL_HEADER_HEIGHT,
+  loadCollapsed,
+  loadLayout,
+  resetWorkspaceLayout,
+  saveLayout,
+} from "@/lib/workspaceLayout";
 
 export function Workspace3D() {
   const { results } = useCalibrationResults();
@@ -41,46 +52,100 @@ export function Workspace3D() {
     [setTcpPos]
   );
 
-  // TODO: panel 들 위치 하드코딩 말고 자동으로 배치하는 로직 필요
-  const onReady = useCallback((event: DockviewReadyEvent) => {
-    const sidebarWidth = 207;
-    const pointCloudWidth = 260;
-    const pointCloudX = Math.max(
-      16,
-      window.innerWidth - pointCloudWidth - 16 - sidebarWidth
-    );
-    event.api.addPanel({
-      id: "robot-state",
-      component: "robotState",
-      title: "Robot State",
-      floating: { x: 16, y: 16, width: 260, height: 270 },
-      params: {},
-    });
-    event.api.addPanel({
-      id: "scene-controls",
-      component: "sceneControls",
-      title: "Scene Controls",
-      floating: { x: 16, y: 304, width: 260, height: 300 },
-      params: {},
-    });
-    event.api.addPanel({
-      id: "calibration",
-      component: "calibration",
-      title: "Calibration",
-      floating: { x: 16, y: 622, width: 260, height: 260 },
-      params: {},
-    });
-    event.api.addPanel({
-      id: "point-cloud",
-      component: "pointCloud",
-      title: "Point Cloud",
-      floating: { x: pointCloudX, y: 16, width: pointCloudWidth, height: 240 },
-      params: {},
-    });
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  type PanelSpec = {
+    id: string;
+    component: PanelComponentKey;
+    title: string;
+    width: number;
+    height: number;
+  };
+
+  const PANELS: PanelSpec[] = useMemo(
+    () => [
+      { id: "robot-state", component: "robotState", title: "Robot State", width: 260, height: 270 },
+      { id: "scene-controls", component: "sceneControls", title: "Scene Controls", width: 260, height: 300 },
+      { id: "calibration", component: "calibration", title: "Calibration", width: 260, height: 260 },
+      { id: "point-cloud", component: "pointCloud", title: "Point Cloud", width: 260, height: 240 },
+    ],
+    []
+  );
+
+  const addDefaultLayout = useCallback(
+    (event: DockviewReadyEvent) => {
+      const MARGIN = 16;
+      const GAP_X = 12;
+      const GAP_Y = 18;
+      const containerWidth =
+        containerRef.current?.clientWidth ?? window.innerWidth;
+
+      let x = MARGIN;
+      let y = MARGIN;
+      let rowHeight = 0;
+
+      for (const p of PANELS) {
+        if (x + p.width > containerWidth - MARGIN && x > MARGIN) {
+          // 줄바꿈
+          x = MARGIN;
+          y += rowHeight + GAP_Y;
+          rowHeight = 0;
+        }
+        const collapsed = loadCollapsed(p.id);
+        event.api.addPanel({
+          id: p.id,
+          component: p.component,
+          title: p.title,
+          floating: {
+            x,
+            y,
+            width: p.width,
+            height: collapsed ? PANEL_HEADER_HEIGHT : p.height,
+          },
+          params: {},
+        });
+        x += p.width + GAP_X;
+        rowHeight = Math.max(rowHeight, collapsed ? PANEL_HEADER_HEIGHT : p.height);
+      }
+    },
+    [PANELS]
+  );
+
+  const onReady = useCallback(
+    (event: DockviewReadyEvent) => {
+      // 1) 저장된 layout 있으면 그걸로 복원, 없으면 default
+      const saved = loadLayout();
+      if (saved) {
+        try {
+          event.api.fromJSON(saved as Parameters<typeof event.api.fromJSON>[0]);
+        } catch {
+          // 저장본이 깨졌으면 무시하고 default
+          addDefaultLayout(event);
+        }
+      } else {
+        addDefaultLayout(event);
+      }
+
+      // 2) 사용자 인터랙션(드래그/리사이즈/추가/제거)마다 layout 저장 (debounce)
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      event.api.onDidLayoutChange(() => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          saveLayout(event.api.toJSON());
+        }, 300);
+      });
+    },
+    [addDefaultLayout]
+  );
+
+  const handleReset = useCallback(() => {
+    resetWorkspaceLayout();
+    window.location.reload();
   }, []);
 
   return (
     <div
+      ref={containerRef}
       className="relative w-full h-full overflow-hidden bg-[#080c12]"
       style={{ fontFamily: "'JetBrains Mono', 'Fira Code', monospace" }}
     >
@@ -102,6 +167,15 @@ export function Workspace3D() {
           onReady={onReady}
         />
       </div>
+
+      <button
+        onClick={handleReset}
+        title="패널 레이아웃 초기화"
+        className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-2 py-1 rounded bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-700/60 text-zinc-400 hover:text-zinc-100 text-[10px] font-mono pointer-events-auto transition-colors"
+      >
+        <RotateCcw className="w-3 h-3" />
+        Reset layout
+      </button>
     </div>
   );
 }

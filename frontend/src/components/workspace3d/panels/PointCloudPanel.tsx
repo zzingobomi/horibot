@@ -7,7 +7,7 @@ import { ToggleRow } from "../ui/ToggleRow";
 
 const VOXEL_PRESETS = [0.003, 0.005, 0.008];
 
-export function PointCloudPanel(_: IDockviewPanelProps<object>) {
+export function PointCloudPanel(props: IDockviewPanelProps<object>) {
   const enabled = usePointCloudStore((s) => s.enabled);
   const voxelSize = usePointCloudStore((s) => s.voxelSize);
   const frame = usePointCloudStore((s) => s.frame);
@@ -15,7 +15,12 @@ export function PointCloudPanel(_: IDockviewPanelProps<object>) {
   const setVoxelSize = usePointCloudStore((s) => s.setVoxelSize);
 
   return (
-    <PanelShell icon={<Cloud className="w-3.5 h-3.5" />} title="Point Cloud">
+    <PanelShell
+      icon={<Cloud className="w-3.5 h-3.5" />}
+      title="Point Cloud"
+      panelId={props.api.id}
+      api={props.api}
+    >
       <Section label="Live Stream">
         <ToggleRow
           label={enabled ? "Streaming" : "Off"}

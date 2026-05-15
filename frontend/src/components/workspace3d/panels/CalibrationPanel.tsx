@@ -6,11 +6,16 @@ import { PanelShell } from "../ui/PanelShell";
 import { Section } from "../ui/Section";
 import { MatrixTable } from "../ui//MatrixTable";
 
-export function CalibrationPanel(_: IDockviewPanelProps<object>) {
+export function CalibrationPanel(props: IDockviewPanelProps<object>) {
   const { results, loading, error, refetch } = useCalibrationResults();
 
   return (
-    <PanelShell icon={<Camera className="w-3.5 h-3.5" />} title="Calibration">
+    <PanelShell
+      icon={<Camera className="w-3.5 h-3.5" />}
+      title="Calibration"
+      panelId={props.api.id}
+      api={props.api}
+    >
       <Section label="Status">
         <div className="flex items-start justify-between">
           <div className="space-y-1.5">

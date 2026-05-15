@@ -6,7 +6,7 @@ import { useSceneStore } from "@/store/sceneStore";
 import { PanelShell } from "../ui/PanelShell";
 import { Section } from "../ui/Section";
 
-export function RobotStatePanel(_: IDockviewPanelProps<object>) {
+export function RobotStatePanel(props: IDockviewPanelProps<object>) {
   const joints = useRobotStore((s) => s.joints);
   const tcpPos = useSceneStore((s) => s.tcpPos);
 
@@ -24,7 +24,12 @@ export function RobotStatePanel(_: IDockviewPanelProps<object>) {
   }, [joints]);
 
   return (
-    <PanelShell icon={<Activity className="w-3.5 h-3.5" />} title="Robot State">
+    <PanelShell
+      icon={<Activity className="w-3.5 h-3.5" />}
+      title="Robot State"
+      panelId={props.api.id}
+      api={props.api}
+    >
       <Section label="Joint Angles">
         <div className="font-mono text-[11px] space-y-1">
           {jointAngles.map((rad, i) => (

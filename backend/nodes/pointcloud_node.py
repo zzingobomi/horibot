@@ -45,6 +45,10 @@ CAPTURE_TIMEOUT = 3.0
 
 ROBOT_DIR = Path(__file__).parents[2] / "robot"
 SCANS_DIR = ROBOT_DIR / "scans"
+MODELS_DIR = ROBOT_DIR / "models"
+
+DEFAULT_TSDF_VOXEL = 0.002  # 2mm
+DEFAULT_TSDF_DEPTH_TRUNC = 0.8  # m
 
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
@@ -72,6 +76,10 @@ class PointCloudNode(BaseNode):
         self.create_service(Service.POINTCLOUD_LOAD_SCAN, self._srv_load_scan)
         self.create_service(
             Service.POINTCLOUD_CLEAR_SNAPSHOT, self._srv_clear_snapshot
+        )
+        self.create_service(Service.POINTCLOUD_BUILD_MESH, self._srv_build_mesh)
+        self.create_service(
+            Service.POINTCLOUD_LIST_MESHES, self._srv_list_meshes
         )
         self.create_raw_subscriber(
             Topic.CAMERA_DEPTH_FRAME, self._on_depth_frame
@@ -507,6 +515,164 @@ class PointCloudNode(BaseNode):
             return {"success": False, "message": str(e), "data": {}}
         return {"success": True, "message": "ok", "data": {}}
 
+    # ─── Service: build_mesh (TSDF) ──────────────────────────
+
+    def _srv_build_mesh(self, req: dict) -> dict:
+        data = req.get("data", {}) or {}
+        sid = data.get("session_id")
+        if not sid:
+            return {"success": False, "message": "session_id 필요", "data": {}}
+        sid = str(sid)
+        if not _SESSION_ID_RE.match(sid):
+            return {
+                "success": False,
+                "message": "session_id는 영문/숫자/_- 만 허용",
+                "data": {},
+            }
+
+        session_dir = SCANS_DIR / sid
+        if not session_dir.exists():
+            return {
+                "success": False,
+                "message": f"세션 없음: {sid}",
+                "data": {},
+            }
+
+        npz_paths = sorted(session_dir.glob("scan_*.npz"))
+        if not npz_paths:
+            return {
+                "success": False,
+                "message": f"scan_*.npz 없음 (session={sid})",
+                "data": {},
+            }
+
+        voxel = float(data.get("voxel_size", DEFAULT_TSDF_VOXEL))
+        sdf_trunc = float(data.get("sdf_trunc", voxel * 5))
+        depth_trunc = float(data.get("depth_trunc", DEFAULT_TSDF_DEPTH_TRUNC))
+        if voxel <= 0 or sdf_trunc <= 0 or depth_trunc <= 0:
+            return {
+                "success": False,
+                "message": "voxel_size / sdf_trunc / depth_trunc는 양수",
+                "data": {},
+            }
+
+        t0 = time.time()
+        try:
+            volume = o3d.pipelines.integration.ScalableTSDFVolume(
+                voxel_length=voxel,
+                sdf_trunc=sdf_trunc,
+                color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8,
+            )
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"TSDFVolume 생성 실패: {e}",
+                "data": {},
+            }
+
+        integrated = 0
+        for npz_path in npz_paths:
+            try:
+                _integrate_scan(volume, npz_path, depth_trunc)
+                integrated += 1
+            except Exception as e:
+                logger.warning(f"scan {npz_path.name} 적분 실패: {e}")
+
+        if integrated == 0:
+            return {
+                "success": False,
+                "message": "모든 scan 적분 실패",
+                "data": {},
+            }
+
+        try:
+            mesh = volume.extract_triangle_mesh()
+            mesh.compute_vertex_normals()
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"메시 추출 실패: {e}",
+                "data": {},
+            }
+
+        vertex_count = len(mesh.vertices)
+        triangle_count = len(mesh.triangles)
+        if vertex_count == 0:
+            return {
+                "success": False,
+                "message": "메시 비어있음 (volume 적분 결과 없음)",
+                "data": {},
+            }
+
+        try:
+            MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return {
+                "success": False,
+                "message": f"models 디렉토리 생성 실패: {e}",
+                "data": {},
+            }
+
+        out_path = MODELS_DIR / f"mesh_{sid}.ply"
+        try:
+            o3d.io.write_triangle_mesh(
+                str(out_path), mesh, write_vertex_normals=True
+            )
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"PLY 저장 실패: {e}",
+                "data": {},
+            }
+
+        elapsed = time.time() - t0
+        rel = out_path.relative_to(ROBOT_DIR).as_posix()
+        logger.info(
+            f"build_mesh session={sid} scans={integrated}/{len(npz_paths)} "
+            f"vertices={vertex_count} triangles={triangle_count} "
+            f"voxel={voxel*1000:.1f}mm elapsed={elapsed:.2f}s"
+        )
+        return {
+            "success": True,
+            "message": (
+                f"mesh: {rel} ({vertex_count} vertices, {triangle_count} triangles)"
+            ),
+            "data": {
+                "session_id": sid,
+                "path": rel,
+                "vertex_count": vertex_count,
+                "triangle_count": triangle_count,
+                "integrated_scans": integrated,
+                "total_scans": len(npz_paths),
+                "voxel_size": voxel,
+                "sdf_trunc": sdf_trunc,
+                "depth_trunc": depth_trunc,
+                "elapsed": elapsed,
+            },
+        }
+
+    # ─── Service: list_meshes ────────────────────────────────
+
+    def _srv_list_meshes(self, _req: dict) -> dict:
+        meshes: list[dict] = []
+        if MODELS_DIR.exists():
+            for ply in sorted(MODELS_DIR.glob("mesh_*.ply")):
+                try:
+                    st = ply.stat()
+                except OSError:
+                    continue
+                meshes.append({
+                    "name": ply.stem,
+                    "path": ply.relative_to(ROBOT_DIR).as_posix(),
+                    "size": st.st_size,
+                    "mtime": st.st_mtime,
+                })
+        return {
+            "success": True,
+            "message": "ok",
+            "data": {"meshes": meshes},
+        }
+
     # ─── Snapshot publish ────────────────────────────────────
 
     def _publish_snapshot(self, pcd: "o3d.geometry.PointCloud") -> None:
@@ -674,6 +840,53 @@ def _build_cam_to_base(
     T_ce[:3, :3] = R_ce
     T_ce[:3, 3] = t_ce
     return T_eb @ T_ce
+
+
+def _integrate_scan(
+    volume: "o3d.pipelines.integration.ScalableTSDFVolume",
+    npz_path: Path,
+    depth_trunc: float,
+) -> None:
+    """단일 scan_*.npz를 TSDF volume에 적분.
+
+    Open3D `volume.integrate(rgbd, intrinsic, extrinsic)`의 extrinsic은
+    `T_camera ← world` 컨벤션 (world point를 camera frame으로 변환).
+    npz에 저장된 hand_eye(R/t)와 tcp_quaternion/position으로
+    `T_cam_to_base = T_base←ee · T_ee←cam`을 빌드하고 그 역행렬을 넘긴다.
+    """
+    s = np.load(npz_path)
+    color_bgr = s["color_bgr"]
+    depth_z16 = s["depth_z16"]
+    fx = float(s["fx"])
+    fy = float(s["fy"])
+    cx = float(s["cx"])
+    cy = float(s["cy"])
+    width = int(s["width"])
+    height = int(s["height"])
+    depth_scale = float(s["depth_scale"])
+
+    rgb = np.ascontiguousarray(color_bgr[:, :, ::-1])
+    color_o3d = o3d.geometry.Image(rgb)
+    depth_o3d = o3d.geometry.Image(depth_z16)
+    rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+        color_o3d,
+        depth_o3d,
+        depth_scale=1.0 / depth_scale,
+        depth_trunc=depth_trunc,
+        convert_rgb_to_intensity=False,
+    )
+    intrinsic = o3d.camera.PinholeCameraIntrinsic(
+        width=width, height=height, fx=fx, fy=fy, cx=cx, cy=cy
+    )
+
+    T_cam_to_base = _build_cam_to_base(
+        s["tcp_quaternion"].tolist(),
+        s["tcp_position"].tolist(),
+        np.asarray(s["hand_eye_R"], dtype=np.float64),
+        np.asarray(s["hand_eye_t"], dtype=np.float64).flatten(),
+    )
+    extrinsic = np.linalg.inv(T_cam_to_base)
+    volume.integrate(rgbd, intrinsic, extrinsic)
 
 
 def _quat_to_rot(q: list[float]) -> np.ndarray:

@@ -20,6 +20,24 @@ export interface ScanEntry {
   size: number;
 }
 
+export interface MeshEntry {
+  name: string;
+  path: string;
+  size: number;
+  mtime: number;
+}
+
+export interface MeshBuildResult {
+  success: boolean;
+  message: string;
+  path?: string;
+  vertexCount?: number;
+  triangleCount?: number;
+  integratedScans?: number;
+  totalScans?: number;
+  elapsed?: number;
+}
+
 interface PointCloudState {
   // 라이브 스트림
   enabled: boolean;
@@ -33,6 +51,13 @@ interface PointCloudState {
   snapshot: PointCloudFrame | null;
   snapshotLabel: string | null; // 어떤 스캔인지(또는 capture 결과 path)
   busy: boolean;
+
+  // 메시 (TSDF)
+  meshes: MeshEntry[];
+  meshPath: string | null; // 표시 중인 메시 PLY 경로 (robot/... relative)
+  meshLabel: string | null;
+  meshVisible: boolean;
+  meshBusy: boolean;
 
   // 라이브
   setEnabled: (enabled: boolean) => Promise<void>;
@@ -52,6 +77,16 @@ interface PointCloudState {
   ) => Promise<{ success: boolean; message: string }>;
   clearSnapshot: () => Promise<void>;
   selectSession: (sessionId: string | null) => Promise<void>;
+
+  // 메시
+  buildMesh: (
+    sessionId: string,
+    opts?: { voxelSize?: number; sdfTrunc?: number; depthTrunc?: number }
+  ) => Promise<MeshBuildResult>;
+  refreshMeshes: () => Promise<void>;
+  showMesh: (path: string) => void;
+  hideMesh: () => void;
+  setMeshVisible: (visible: boolean) => void;
 
   _onState: (data: {
     enabled?: boolean;
@@ -93,6 +128,12 @@ export const usePointCloudStore = create<PointCloudState>((set, get) => ({
   snapshot: null,
   snapshotLabel: null,
   busy: false,
+
+  meshes: [],
+  meshPath: null,
+  meshLabel: null,
+  meshVisible: true,
+  meshBusy: false,
 
   setEnabled: async (enabled) => {
     set({ enabled });
@@ -199,6 +240,53 @@ export const usePointCloudStore = create<PointCloudState>((set, get) => ({
     await bridge.callService(ServiceKey.POINTCLOUD_CLEAR_SNAPSHOT, {});
     set({ snapshot: null, snapshotLabel: null });
   },
+
+  buildMesh: async (sessionId, opts) => {
+    set({ meshBusy: true });
+    try {
+      const payload: Record<string, unknown> = { session_id: sessionId };
+      if (opts?.voxelSize !== undefined) payload.voxel_size = opts.voxelSize;
+      if (opts?.sdfTrunc !== undefined) payload.sdf_trunc = opts.sdfTrunc;
+      if (opts?.depthTrunc !== undefined) payload.depth_trunc = opts.depthTrunc;
+      const res = await bridge.callService(
+        ServiceKey.POINTCLOUD_BUILD_MESH,
+        payload
+      );
+      if (res.success) {
+        const path = res.data?.path as string | undefined;
+        if (path) {
+          set({ meshPath: path, meshLabel: path, meshVisible: true });
+        }
+        await get().refreshMeshes();
+      }
+      return {
+        success: res.success,
+        message: res.message,
+        path: res.data?.path as string | undefined,
+        vertexCount: res.data?.vertex_count as number | undefined,
+        triangleCount: res.data?.triangle_count as number | undefined,
+        integratedScans: res.data?.integrated_scans as number | undefined,
+        totalScans: res.data?.total_scans as number | undefined,
+        elapsed: res.data?.elapsed as number | undefined,
+      };
+    } finally {
+      set({ meshBusy: false });
+    }
+  },
+
+  refreshMeshes: async () => {
+    const res = await bridge.callService(
+      ServiceKey.POINTCLOUD_LIST_MESHES,
+      {}
+    );
+    if (!res.success) return;
+    const meshes = (res.data?.meshes as MeshEntry[]) ?? [];
+    set({ meshes });
+  },
+
+  showMesh: (path) => set({ meshPath: path, meshLabel: path, meshVisible: true }),
+  hideMesh: () => set({ meshVisible: false }),
+  setMeshVisible: (visible) => set({ meshVisible: visible }),
 
   _onState: (data) => {
     const next: Partial<PointCloudState> = {};

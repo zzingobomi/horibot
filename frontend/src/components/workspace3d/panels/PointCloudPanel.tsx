@@ -6,6 +6,9 @@ import {
   X,
   RefreshCw,
   Plus,
+  Boxes,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
 import { usePointCloudStore } from "@/store/pointCloudStore";
@@ -15,6 +18,7 @@ import { ToggleRow } from "../ui/ToggleRow";
 
 const VOXEL_PRESETS = [0.003, 0.005, 0.008];
 const CAPTURE_FRAMES = 5;
+const MESH_VOXEL_PRESETS = [0.002, 0.003, 0.005]; // 2/3/5mm
 
 export function PointCloudPanel(props: IDockviewPanelProps<object>) {
   const enabled = usePointCloudStore((s) => s.enabled);
@@ -27,6 +31,11 @@ export function PointCloudPanel(props: IDockviewPanelProps<object>) {
   const currentSessionId = usePointCloudStore((s) => s.currentSessionId);
   const busy = usePointCloudStore((s) => s.busy);
 
+  const meshes = usePointCloudStore((s) => s.meshes);
+  const meshPath = usePointCloudStore((s) => s.meshPath);
+  const meshVisible = usePointCloudStore((s) => s.meshVisible);
+  const meshBusy = usePointCloudStore((s) => s.meshBusy);
+
   const setEnabled = usePointCloudStore((s) => s.setEnabled);
   const setVoxelSize = usePointCloudStore((s) => s.setVoxelSize);
   const newSession = usePointCloudStore((s) => s.newSession);
@@ -36,11 +45,18 @@ export function PointCloudPanel(props: IDockviewPanelProps<object>) {
   const loadScan = usePointCloudStore((s) => s.loadScan);
   const clearSnapshot = usePointCloudStore((s) => s.clearSnapshot);
 
+  const buildMesh = usePointCloudStore((s) => s.buildMesh);
+  const refreshMeshes = usePointCloudStore((s) => s.refreshMeshes);
+  const showMesh = usePointCloudStore((s) => s.showMesh);
+  const setMeshVisible = usePointCloudStore((s) => s.setMeshVisible);
+
   const [status, setStatus] = useState<string>("");
+  const [meshVoxel, setMeshVoxel] = useState<number>(MESH_VOXEL_PRESETS[0]);
 
   useEffect(() => {
     refreshSessions();
-  }, [refreshSessions]);
+    refreshMeshes();
+  }, [refreshSessions, refreshMeshes]);
 
   const handleNewSession = async () => {
     const res = await newSession();
@@ -64,6 +80,23 @@ export function PointCloudPanel(props: IDockviewPanelProps<object>) {
   const handleClear = async () => {
     await clearSnapshot();
     setStatus("snapshot 제거");
+  };
+
+  const handleBuildMesh = async () => {
+    if (!currentSessionId) {
+      setStatus("실패: 세션 미선택");
+      return;
+    }
+    setStatus(`메시 빌드 중 (voxel=${(meshVoxel * 1000).toFixed(0)}mm)…`);
+    const res = await buildMesh(currentSessionId, { voxelSize: meshVoxel });
+    if (res.success) {
+      setStatus(
+        `메시: ${res.path} (V=${res.vertexCount}, F=${res.triangleCount}, ` +
+          `${res.integratedScans}/${res.totalScans} scans, ${res.elapsed?.toFixed(1)}s)`
+      );
+    } else {
+      setStatus(`실패: ${res.message}`);
+    }
   };
 
   return (
@@ -191,6 +224,93 @@ export function PointCloudPanel(props: IDockviewPanelProps<object>) {
               </button>
             ))
           )}
+        </div>
+      </Section>
+
+      <Section label="Mesh (TSDF)">
+        <div className="flex flex-col gap-2">
+          <div className="grid grid-cols-3 gap-1">
+            {MESH_VOXEL_PRESETS.map((v) => {
+              const active = Math.abs(v - meshVoxel) < 1e-6;
+              return (
+                <button
+                  key={v}
+                  onClick={() => setMeshVoxel(v)}
+                  className={`text-[10px] font-mono py-1 rounded transition-colors ${
+                    active
+                      ? "bg-violet-500/20 text-violet-300"
+                      : "bg-zinc-900 text-zinc-500 hover:bg-zinc-800"
+                  }`}
+                  title="TSDF voxel size"
+                >
+                  {(v * 1000).toFixed(0)}mm
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex gap-1">
+            <button
+              onClick={handleBuildMesh}
+              disabled={meshBusy || !currentSessionId}
+              className="flex-1 flex items-center justify-center gap-1 text-[11px] font-mono py-1.5 rounded bg-violet-500/20 text-violet-300 hover:bg-violet-500/30 disabled:opacity-50 transition-colors"
+              title={
+                currentSessionId
+                  ? `세션 ${currentSessionId}의 모든 scan을 TSDF로 적분`
+                  : "세션 선택 필요"
+              }
+            >
+              <Boxes className="w-3 h-3" />
+              {meshBusy ? "Building…" : "Build Mesh"}
+            </button>
+            <button
+              onClick={() => setMeshVisible(!meshVisible)}
+              disabled={!meshPath}
+              className="flex items-center justify-center px-2 text-[11px] font-mono py-1.5 rounded bg-zinc-800 text-zinc-400 hover:bg-zinc-700 disabled:opacity-30 transition-colors"
+              title={meshVisible ? "메시 숨기기" : "메시 보이기"}
+            >
+              {meshVisible ? (
+                <Eye className="w-3 h-3" />
+              ) : (
+                <EyeOff className="w-3 h-3" />
+              )}
+            </button>
+            <button
+              onClick={refreshMeshes}
+              className="flex items-center justify-center px-2 text-[11px] font-mono py-1.5 rounded bg-zinc-800 text-zinc-400 hover:bg-zinc-700 transition-colors"
+              title="메시 목록 새로고침"
+            >
+              <RefreshCw className="w-3 h-3" />
+            </button>
+          </div>
+          <div className="flex flex-col gap-1 max-h-32 overflow-y-auto">
+            {meshes.length === 0 ? (
+              <p className="text-[10px] font-mono text-zinc-600 text-center py-2">
+                (no mesh)
+              </p>
+            ) : (
+              meshes.map((m) => {
+                const active = m.path === meshPath;
+                return (
+                  <button
+                    key={m.path}
+                    onClick={() => showMesh(m.path)}
+                    className={`flex items-center gap-2 px-2 py-1 rounded text-[10px] font-mono text-left transition-colors ${
+                      active
+                        ? "bg-violet-500/20 text-violet-200"
+                        : "bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
+                    }`}
+                    title={m.path}
+                  >
+                    <Boxes className="w-3 h-3 shrink-0 text-violet-400/70" />
+                    <span className="truncate flex-1">{m.name}</span>
+                    <span className="text-zinc-600 shrink-0">
+                      {(m.size / 1024).toFixed(0)}KB
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
         </div>
       </Section>
 

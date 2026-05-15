@@ -66,4 +66,6 @@ export const ServiceKey = {
   POINTCLOUD_LIST_SCANS: "omx/pointcloud/srv/list_scans",
   POINTCLOUD_LOAD_SCAN: "omx/pointcloud/srv/load_scan",
   POINTCLOUD_CLEAR_SNAPSHOT: "omx/pointcloud/srv/clear_snapshot",
+  POINTCLOUD_BUILD_MESH: "omx/pointcloud/srv/build_mesh",
+  POINTCLOUD_LIST_MESHES: "omx/pointcloud/srv/list_meshes",
 } as const;

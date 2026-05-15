@@ -10,6 +10,7 @@ import {
   LivePointCloudLayer,
   SnapshotPointCloudLayer,
 } from "./PointCloudLayer";
+import { MeshLayer } from "./MeshLayer";
 
 export interface SceneOptions {
   showRobot: boolean;
@@ -158,6 +159,7 @@ function SceneContent({
 
       <LivePointCloudLayer cameraMatrix={cameraMatrix} />
       <SnapshotPointCloudLayer />
+      <MeshLayer />
 
       <OrbitControls
         makeDefault

@@ -55,7 +55,9 @@ interface SnapshotProps {
   pointSize?: number;
 }
 
-// snapshot은 백엔드에서 이미 base frame으로 변환된 상태로 발행 → 추가 transform 불필요
+// snapshot은 백엔드에서 base frame(z-up)으로 변환된 상태로 발행됨.
+// 씬은 y-up이라 z-up → y-up 회전을 부모 group으로 씌워야 정합됨
+// (RobotModel과 BASE AxisFrame이 동일 회전을 적용 — RobotScene 참조).
 export function SnapshotPointCloudLayer({
   pointSize = 0.003,
 }: SnapshotProps) {
@@ -65,8 +67,10 @@ export function SnapshotPointCloudLayer({
   if (!geometry) return null;
 
   return (
-    <points geometry={geometry}>
-      <pointsMaterial size={pointSize} sizeAttenuation vertexColors />
-    </points>
+    <group rotation={[-Math.PI / 2, 0, 0]}>
+      <points geometry={geometry}>
+        <pointsMaterial size={pointSize} sizeAttenuation vertexColors />
+      </points>
+    </group>
   );
 }

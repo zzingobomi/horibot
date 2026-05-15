@@ -61,4 +61,9 @@ export const ServiceKey = {
 
   // PointCloud
   POINTCLOUD_CONFIGURE: "omx/pointcloud/srv/configure",
+  POINTCLOUD_CAPTURE: "omx/pointcloud/srv/capture",
+  POINTCLOUD_NEW_SESSION: "omx/pointcloud/srv/new_session",
+  POINTCLOUD_LIST_SCANS: "omx/pointcloud/srv/list_scans",
+  POINTCLOUD_LOAD_SCAN: "omx/pointcloud/srv/load_scan",
+  POINTCLOUD_CLEAR_SNAPSHOT: "omx/pointcloud/srv/clear_snapshot",
 } as const;

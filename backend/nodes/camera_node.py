@@ -1,3 +1,4 @@
+import base64
 import logging
 import threading
 import time
@@ -6,7 +7,10 @@ from core.base_node import BaseNode
 from core.topic_map import Service, Topic
 from core.zenoh_session import ZenohSession
 from modules.camera.capture import CameraCapture
-from modules.camera.depth_frame import encode as encode_depth_frame
+from modules.camera.depth_frame import (
+    encode as encode_depth_frame,
+    envelope_encode,
+)
 from modules.camera.stream import frame_to_jpeg_bytes
 
 logger = logging.getLogger(__name__)
@@ -37,6 +41,10 @@ class CameraNode(BaseNode):
         self.create_service(
             Service.CAMERA_SET_DEPTH_STREAM,
             self._srv_set_depth_stream,
+        )
+        self.create_service(
+            Service.CAMERA_CAPTURE_DEPTH_FRAMES,
+            self._srv_capture_depth_frames,
         )
 
         super().start()
@@ -147,6 +155,81 @@ class CameraNode(BaseNode):
             "success": True,
             "message": "ok",
             "data": {"enabled": enabled},
+        }
+
+    def _srv_capture_depth_frames(self, req: dict) -> dict:
+        """정지 자세에서 N개의 raw depth_frame을 묶어 base64 응답으로 반환.
+
+        스트림 ON이든 OFF든 호출 가능. OFF면 임시로 cloud_enabled 켜고 N장 수집 후 복원.
+        """
+        if not self.camera.is_opened:
+            return {
+                "success": False,
+                "message": "카메라 연결 안 됨",
+                "data": {},
+            }
+
+        data = req.get("data", {}) or {}
+        try:
+            n = int(data.get("num_frames", 5))
+        except (TypeError, ValueError):
+            return {
+                "success": False,
+                "message": "num_frames는 정수여야 함",
+                "data": {},
+            }
+        if n <= 0 or n > 30:
+            return {
+                "success": False,
+                "message": "num_frames는 1~30 범위",
+                "data": {},
+            }
+        try:
+            timeout = float(data.get("timeout", 2.0))
+        except (TypeError, ValueError):
+            timeout = 2.0
+
+        frames = self.camera.grab_n_aligned_blocking(n, timeout=timeout)
+        if not frames:
+            return {
+                "success": False,
+                "message": f"frame 획득 실패 ({n}장 타임아웃)",
+                "data": {},
+            }
+
+        depth_scale = self.camera.depth_scale
+        encoded: list[bytes] = []
+        ts0 = time.time()
+        for i, (color, depth, intr) in enumerate(frames):
+            try:
+                encoded.append(
+                    encode_depth_frame(
+                        timestamp=ts0 + i * 1e-6,
+                        color_bgr=color,
+                        depth_z16=depth,
+                        depth_scale=depth_scale,
+                        fx=intr.fx,
+                        fy=intr.fy,
+                        cx=intr.ppx,
+                        cy=intr.ppy,
+                    )
+                )
+            except Exception as e:
+                return {
+                    "success": False,
+                    "message": f"depth_frame 인코드 실패: {e}",
+                    "data": {},
+                }
+
+        payload = envelope_encode(encoded)
+        payload_b64 = base64.b64encode(payload).decode("ascii")
+        return {
+            "success": True,
+            "message": "ok",
+            "data": {
+                "num_frames": len(encoded),
+                "payload_b64": payload_b64,
+            },
         }
 
     # ─── Status ──────────────────────────────────────────────

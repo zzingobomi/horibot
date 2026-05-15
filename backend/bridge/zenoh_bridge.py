@@ -173,14 +173,16 @@ def setup_zenoh_subscribers() -> None:
         session.declare_subscriber(Topic.CAMERA_STREAM_RAW, camera_handler)
     )
 
-    # 포인트클라우드는 바이너리 WS 프레임으로 직송
-    def pointcloud_handler(sample: zenoh.Sample):
-        _zenoh_callback_bytes(Topic.POINTCLOUD_STREAM,
-                              sample.payload.to_bytes())
+    # 포인트클라우드는 바이너리 WS 프레임으로 직송 (라이브 스트림 + 스냅샷)
+    def make_pointcloud_handler(tp: str):
+        def handler(sample: zenoh.Sample):
+            _zenoh_callback_bytes(tp, sample.payload.to_bytes())
+        return handler
 
-    _zenoh_subs.append(
-        session.declare_subscriber(Topic.POINTCLOUD_STREAM, pointcloud_handler)
-    )
+    for pc_topic in (Topic.POINTCLOUD_STREAM, Topic.POINTCLOUD_SNAPSHOT):
+        _zenoh_subs.append(
+            session.declare_subscriber(pc_topic, make_pointcloud_handler(pc_topic))
+        )
 
     logger.info("Zenoh 구독 설정 완료")
 

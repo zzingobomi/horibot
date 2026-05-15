@@ -6,7 +6,10 @@ import * as THREE from "three";
 import { RobotModel } from "./RobotModel";
 import { AxisFrame } from "./AxisFrame";
 import { CameraFrustum } from "./CameraFrustum";
-import { LivePointCloudLayer } from "./PointCloudLayer";
+import {
+  LivePointCloudLayer,
+  SnapshotPointCloudLayer,
+} from "./PointCloudLayer";
 
 export interface SceneOptions {
   showRobot: boolean;
@@ -154,6 +157,7 @@ function SceneContent({
       )}
 
       <LivePointCloudLayer cameraMatrix={cameraMatrix} />
+      <SnapshotPointCloudLayer />
 
       <OrbitControls
         makeDefault

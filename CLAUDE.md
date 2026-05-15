@@ -371,9 +371,177 @@ PointCloudNode가 RANSAC plane fit으로 바닥 평면을 추출 → 평면 norm
 
 ### D405 마이그레이션 잔여 phase
 
-- **Phase 4 — PLY 스냅샷 캡처/로드.** `depth_frame` 페이로드 그대로 디스크 저장 (PLY + npz with TCP pose) + Open3D PLY 변환. `POINTCLOUD_SNAPSHOT` 토픽 자리만 예약돼 있음.
-- **Phase 5 — ICP 등록.** PointCloudNode 서비스로.
+- **Phase 4 — 멀티-뷰 캡처 → PLY/npz 저장 → TSDF → 메시.** 아래 § Phase 4 구현 가이드 참조.
+- **Phase 5 — ICP 등록.** PointCloudNode 서비스로. (TSDF 자체로 hand-eye 작은 오차는 어느 정도 흡수되지만, 부족하면 자세별 ICP refinement 추가.)
 - **Phase 6 — Detector depth lookup 전환.** 현재의 평면-Z=0 역산 자리에 depth 직접 lookup.
+
+### Phase 4 구현 가이드 (2026-05-15 아키텍처 합의)
+
+**목적:** 로봇이 여러 자세를 순회하며 정지 캡처 → 자세별 npz/PLY 저장 → TSDF 적분 → 메시 export. 단일 거대 PLY/메시 1개 생성이 최종 산출물.
+
+#### 핵심 결정
+
+1. **캡처는 스트림 frame 재사용 X, 전용 서비스 신설.** 스트림(8 FPS, voxel down, 라이브 프리뷰)과 캡처(정밀도 최우선, multi-frame averaging 가능)는 성격이 다름. 한 frame을 양쪽 용도로 쓰면 한쪽 튜닝이 다른 쪽을 망침.
+2. **카메라 Pi는 raw 데이터 획득만, PC가 가공/판단.** Pi는 N장 raw frame을 묶어 service 응답으로 반환. averaging/filter/cam→base 변환/저장/TSDF는 전부 PC. 알고리즘 튜닝 시 Pi 안 건드림.
+3. **정지 후 캡처가 전제.** D405는 active stereo라 움직이면서 캡처 불가능 + 정지가 TCP 포즈 시간 정합 문제도 해결. 캡처 직전 motion stop + ~0.5s wait.
+4. **TSDF/메시 빌드는 PC PointCloudNode 안 서비스.** open3d가 PC 그룹에만 있고 (aarch64 wheel 부재) Pi는 어차피 못 함.
+5. **저장은 로컬 파일시스템 — MinIO/FTP 도입 X.** 단일 사용자 + PC 한 대 처리 + 세션당 ~수십 MB라 over-engineering. 미래 산업급 카메라(Photoneo 25MB/Zivid 10MB)까지는 동일 패턴 유지 가능. 그 위 metrology급으로 가면 어차피 transport/compute 레이어 통째 재설계라 미리 추상화해도 못 맞춤. **storage 추상화 인터페이스 만들지 않음.** `pathlib.Path` 직접 사용.
+6. **Service-response envelope으로 N frame 묶음 통째 전송.** 1MB 수준이라 Zenoh queryable 응답으로 충분. 별도 토픽 + ack 패턴은 race condition 위험만 추가.
+
+#### 데이터 흐름
+
+```
+[로봇 자세 i로 이동 → motion stop → 0.5s wait]
+
+PC PointCloudNode
+  ──CAMERA_CAPTURE_DEPTH_FRAMES { num_frames: 5 }──>  카메라 Pi CameraNode
+                                                       wait_for_frames N장,
+                                                       align(color↔depth),
+                                                       각각 zstd(depth) + JPEG(color),
+                                                       N개 depth_frame을 envelope으로 묶음
+  <──{ frames: [depth_frame×N], intrinsics }─────────  ~500KB~1MB
+  ──MOTION_GET_TCP──> 모터 Pi
+  <──{ position, quaternion }─
+
+PC PointCloudNode
+  - depth N장 median (averaging)
+  - color 중 1장 채택 (또는 평균)
+  - cam→base 변환 (T_cam_to_base = T_world←ee · T_gripper←cam, [[d405-handeye-convention]])
+  - PLY 빌드 (base frame)
+  - npz 저장 (재가공/TSDF용 원본)
+  - PLY 저장 (시각화/라이브러리용)
+  - POINTCLOUD_SNAPSHOT 토픽 발행
+```
+
+#### 저장 레이아웃
+
+```
+robot/scans/{session_id}/
+  scan_001.npz   ← 원본 (TSDF 입력)
+  scan_001.ply   ← base-frame, 시각화용
+  scan_002.npz
+  scan_002.ply
+  ...
+robot/models/
+  mesh_{session_id}.ply   ← TSDF 결과 메시
+```
+
+`session_id`: `session_YYYYMMDD_HHMMSS` 같은 timestamp slug. 사용자가 별도 이름 줄 수 있게 옵션.
+
+npz 내용:
+```python
+{
+  "depth_z16":   uint16 (H, W),       # averaging 후 1장
+  "color_bgr":   uint8 (H, W, 3),     # 또는 color_jpeg: bytes
+  "fx fy cx cy width height": float,
+  "depth_scale": float,
+  "tcp_position": float (3,),
+  "tcp_quaternion": float (4,),       # xyzw
+  "hand_eye_R":  float (3, 3),
+  "hand_eye_t":  float (3,),
+  "timestamp":   float,
+  "depth_trunc": float,               # 캡처 시 사용 값
+  "num_frames":  int,                 # averaging에 쓴 frame 수
+}
+```
+
+#### 토픽/서비스 추가
+
+[backend/core/topic_map.py](backend/core/topic_map.py) + [frontend/src/constants/topics.ts](frontend/src/constants/topics.ts) **양쪽 모두**:
+
+- `Service.CAMERA_CAPTURE_DEPTH_FRAMES = "omx/camera/srv/capture_depth_frames"` (카메라 Pi, 신설)
+- `Service.POINTCLOUD_CAPTURE = "omx/pointcloud/srv/capture"` (PC, 신설)
+- `Service.POINTCLOUD_LIST_SCANS = "omx/pointcloud/srv/list_scans"` (신설)
+- `Service.POINTCLOUD_LOAD_SCAN = "omx/pointcloud/srv/load_scan"` (신설)
+- `Service.POINTCLOUD_CLEAR_SNAPSHOT = "omx/pointcloud/srv/clear_snapshot"` (신설)
+- `Service.POINTCLOUD_BUILD_MESH = "omx/pointcloud/srv/build_mesh"` (TSDF, 신설)
+- `Topic.POINTCLOUD_SNAPSHOT = "omx/pointcloud/snapshot"` (이미 토픽맵에 예약돼 있을 가능성 — 확인 후 미정의면 추가)
+
+#### feat/realsense-d405 브랜치에서 그대로 재사용 가능한 코드
+
+단일 머신 전제로 작성됐지만 도메인 로직은 분산과 무관:
+
+- `_build_pcd(color_bgr, depth_z16, intr, depth_scale)` — RGBD → PointCloud
+- `_build_cam_to_base(quat, t_eb, R_ce, t_ce)` — 4x4 변환 행렬 빌드
+- `_quat_to_rot(q)` — xyzw quaternion → 3x3
+- `_publish_snapshot(pcd)` — PLY를 SNAPSHOT 토픽 binary 페이로드로 발행
+- `_srv_list_ply` / `_srv_load_ply` — 디렉토리 탈출 검증 포함된 라이브러리 서비스
+- 프론트 [PointCloudPanel.tsx](frontend/src/components/workspace3d/panels/PointCloudPanel.tsx) — Capture/Library/Clear UI (세션 개념만 얹으면 됨)
+
+가져올 때 주의: `RealsenseCapture` 직접 사용 부분(`_srv_capture`의 `grab_aligned_blocking`)은 분산에 맞지 않으므로 위 § 데이터 흐름대로 재작성.
+
+#### Pi 측 캡처 서비스 구현 핵심
+
+```python
+def _srv_capture_depth_frames(self, req):
+    n = (req.get("data") or {}).get("num_frames", 5)
+    # 스트림이 켜져있어도 같은 producer thread가 다음 N frame을 처리.
+    # 별도 lock으로 latest_frame 캐시 비우고 N장 모일 때까지 대기.
+    frames = self._rs.grab_n_aligned_blocking(n, timeout=2.0)
+    if not frames:
+        return {"success": False, "message": "frame 획득 실패", "data": {}}
+
+    encoded = [depth_frame.encode(c, d, intr, depth_scale) for c, d in frames]
+    payload = envelope_encode(encoded)  # [u32 N][u32 len1][frame1][u32 len2][frame2]...
+    return {"success": True, "message": f"{n} frames", "data": {"payload_b64": ...}}
+    # 또는 raw bytes 응답을 zenoh service가 받는 방식에 맞춰 변환
+```
+
+(envelope 포맷은 binary WS 프레이밍 패턴 그대로 차용 가능. base64는 service response가 dict라 어쩔 수 없이 필요할 가능성 — Zenoh service가 raw bytes 응답 가능한지 [base_node.py:call_service](backend/core/base_node.py) 시그니처 먼저 확인.)
+
+#### PC 측 averaging
+
+```python
+depths = np.stack([f.depth for f in frames])  # (N, H, W) uint16
+# 0(invalid)은 median에서 제외하기 위해 mask 처리
+masked = np.where(depths == 0, np.iinfo(np.uint16).max, depths)
+depth_med = np.median(masked, axis=0).astype(np.uint16)
+depth_med[depth_med == np.iinfo(np.uint16).max] = 0
+```
+
+color는 일단 마지막 1장 채택. 차후 평균 필요해지면 LAB 색공간에서 평균.
+
+#### 초기 기본값
+
+- `num_frames`: **5** (시작값, 노이즈/시간 trade-off 보고 조정)
+- `depth_trunc`: **0.8m** (TSDF용. 라이브 1.0m보다 짧게 잡아 noise 컷)
+- TSDF voxel: **2mm** (시작값. 메시 디테일 vs 메모리 trade-off)
+- RealSense post-processing filter: **일단 적용 안 함** (raw frame median으로 시작). 부족하면 PC 측에서 temporal/spatial filter 추가.
+
+#### TSDF 빌드 (POINTCLOUD_BUILD_MESH)
+
+```python
+def _srv_build_mesh(self, req):
+    session_id = req["data"]["session_id"]
+    voxel = req["data"].get("voxel_size", 0.002)
+    sdf_trunc = req["data"].get("sdf_trunc", voxel * 5)
+
+    vol = o3d.pipelines.integration.ScalableTSDFVolume(
+        voxel_length=voxel, sdf_trunc=sdf_trunc,
+        color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8,
+    )
+
+    for npz_path in sorted((SCANS_DIR / session_id).glob("*.npz")):
+        s = np.load(npz_path)
+        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(...)
+        intr = o3d.camera.PinholeCameraIntrinsic(...)
+        extrinsic = np.linalg.inv(T_cam_to_base(s))  # TSDF는 world←cam의 inverse를 받음 — Open3D 컨벤션 재확인 필요
+        vol.integrate(rgbd, intr, extrinsic)
+
+    mesh = vol.extract_triangle_mesh()
+    mesh.compute_vertex_normals()
+    out = MODELS_DIR / f"mesh_{session_id}.ply"
+    o3d.io.write_triangle_mesh(str(out), mesh)
+    return {"success": True, "data": {"path": ..., "vertex_count": ...}}
+```
+
+⚠️ Open3D `vol.integrate()`의 extrinsic 컨벤션이 `T_world←cam`인지 `T_cam←world`인지 문서 한 번 더 확인 (보통 후자).
+
+#### 정확도 측면 메모
+
+- hand-eye 1.5° 회전 오차가 TSDF 누적에서 ghosting/double-wall로 보일 가능성 있음. TSDF의 voxel averaging이 작은 오차는 흡수해주지만, 자세 간 회전 차이가 크면 누적됨. 메시 품질 보고 hand-eye 재캘이 더 우선일지 판단.
+- 캡처 자세 다양성: 30~45° 간격으로 물체 둘레, 위/옆 mix. 5DOF 한계 안에서.
+- D405 textureless 표면 hole: TSDF는 hole에 surface 안 만들지만 메시에 구멍 남음. 캡처 시 텍스처 있는 배경/표면 위에.
 
 ### 분산 / 인프라
 

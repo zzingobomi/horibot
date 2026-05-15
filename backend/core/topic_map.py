@@ -38,6 +38,7 @@ class Service:
 
     # ─── Camera ──────────────────────────────────────────────
     CAMERA_SET_DEPTH_STREAM = "omx/camera/srv/set_depth_stream"
+    CAMERA_CAPTURE_DEPTH_FRAMES = "omx/camera/srv/capture_depth_frames"
 
     # ─── Motion ───────────────────────────────────────────────
     MOTION_GET_TCP = "omx/motion/srv/get_tcp"
@@ -70,3 +71,8 @@ class Service:
 
     # ─── PointCloud ───────────────────────────────────────────
     POINTCLOUD_CONFIGURE = "omx/pointcloud/srv/configure"
+    POINTCLOUD_CAPTURE = "omx/pointcloud/srv/capture"
+    POINTCLOUD_NEW_SESSION = "omx/pointcloud/srv/new_session"
+    POINTCLOUD_LIST_SCANS = "omx/pointcloud/srv/list_scans"
+    POINTCLOUD_LOAD_SCAN = "omx/pointcloud/srv/load_scan"
+    POINTCLOUD_CLEAR_SNAPSHOT = "omx/pointcloud/srv/clear_snapshot"

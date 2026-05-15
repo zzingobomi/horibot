@@ -50,3 +50,23 @@ export function LivePointCloudLayer({
     </group>
   );
 }
+
+interface SnapshotProps {
+  pointSize?: number;
+}
+
+// snapshot은 백엔드에서 이미 base frame으로 변환된 상태로 발행 → 추가 transform 불필요
+export function SnapshotPointCloudLayer({
+  pointSize = 0.003,
+}: SnapshotProps) {
+  const snapshot = usePointCloudStore((s) => s.snapshot);
+  const geometry = useGeometry(snapshot);
+
+  if (!geometry) return null;
+
+  return (
+    <points geometry={geometry}>
+      <pointsMaterial size={pointSize} sizeAttenuation vertexColors />
+    </points>
+  );
+}

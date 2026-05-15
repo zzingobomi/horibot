@@ -34,6 +34,13 @@ class CameraCapture:
         intr = self._rs.depth_intrinsics
         return color, depth, intr
 
+    def grab_n_aligned_blocking(
+        self,
+        n: int,
+        timeout: float = 2.0,
+    ) -> list[tuple[np.ndarray, np.ndarray, Any]]:
+        return self._rs.grab_n_aligned_blocking(n, timeout=timeout)
+
     # ─── Properties ──────────────────────────────────────────
 
     @property

@@ -125,3 +125,28 @@ def decode(payload: bytes) -> DepthFrame:
         color_bgr=color_bgr,
         depth_z16=depth_z16,
     )
+
+
+def envelope_encode(frames: list[bytes]) -> bytes:
+    """N개의 depth_frame 페이로드를 하나의 바이너리 envelope로 묶는다.
+    [u32 N][u32 len_1][frame_1 bytes][u32 len_2][frame_2 bytes]...
+    """
+    out = bytearray()
+    out += struct.pack("<I", len(frames))
+    for f in frames:
+        out += struct.pack("<I", len(f))
+        out += f
+    return bytes(out)
+
+
+def envelope_decode(payload: bytes) -> list[bytes]:
+    offset = 0
+    (n,) = struct.unpack_from("<I", payload, offset)
+    offset += 4
+    out: list[bytes] = []
+    for _ in range(n):
+        (length,) = struct.unpack_from("<I", payload, offset)
+        offset += 4
+        out.append(payload[offset : offset + length])
+        offset += length
+    return out

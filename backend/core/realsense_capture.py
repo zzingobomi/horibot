@@ -48,6 +48,7 @@ class RealsenseCapture:
         self._latest_color: np.ndarray | None = None
         self._latest_aligned_color: np.ndarray | None = None
         self._latest_depth: np.ndarray | None = None
+        self._aligned_frame_seq: int = 0  # 새 aligned 쌍이 쓰일 때마다 +1
         self._frame_lock = threading.Lock()
 
     # ─── Lifecycle ───────────────────────────────────────────
@@ -161,6 +162,7 @@ class RealsenseCapture:
                 if depth_np is not None and aligned_color_np is not None:
                     self._latest_aligned_color = aligned_color_np
                     self._latest_depth = depth_np
+                    self._aligned_frame_seq += 1
                     if depth_intr is not None and self._depth_intrinsics is None:
                         self._depth_intrinsics = depth_intr
 
@@ -209,6 +211,62 @@ class RealsenseCapture:
                     return color, depth, intr
                 time.sleep(0.03)
             return None, None, None
+        finally:
+            if not prev_enabled:
+                self._cloud_enabled = False
+                with self._frame_lock:
+                    self._latest_aligned_color = None
+                    self._latest_depth = None
+
+    def grab_n_aligned_blocking(
+        self,
+        n: int,
+        timeout: float = 2.0,
+    ) -> list[tuple[np.ndarray, np.ndarray, Any]]:
+        """정지한 자세에서 N개의 서로 다른 aligned (color, depth, intr) 프레임을 수집.
+
+        producer가 새 aligned 쌍을 쓸 때마다 _aligned_frame_seq가 증가하는 걸 이용.
+        seq가 바뀔 때마다 한 장씩 채취 → N장 모일 때까지 반복.
+        시간 안에 못 모으면 빈 리스트 반환.
+        """
+        if not self._opened or n <= 0:
+            return []
+
+        prev_enabled = self._cloud_enabled
+        if not prev_enabled:
+            with self._frame_lock:
+                self._latest_aligned_color = None
+                self._latest_depth = None
+            self._cloud_enabled = True
+
+        deadline = time.time() + timeout
+        collected: list[tuple[np.ndarray, np.ndarray, Any]] = []
+        last_seq = -1
+        try:
+            while len(collected) < n and time.time() < deadline:
+                with self._frame_lock:
+                    seq = self._aligned_frame_seq
+                    color = self._latest_aligned_color
+                    depth = self._latest_depth
+                    intr = self._depth_intrinsics
+
+                if (
+                    seq != last_seq
+                    and color is not None
+                    and depth is not None
+                    and intr is not None
+                ):
+                    collected.append((color.copy(), depth.copy(), intr))
+                    last_seq = seq
+                else:
+                    time.sleep(0.005)
+
+            if len(collected) < n:
+                logger.warning(
+                    f"grab_n_aligned_blocking 타임아웃: {len(collected)}/{n}"
+                )
+                return []
+            return collected
         finally:
             if not prev_enabled:
                 self._cloud_enabled = False

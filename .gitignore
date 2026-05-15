@@ -44,3 +44,7 @@ desktop.ini
 # ─── Weights ───────────────────────────────────────────────────
 *.pt
 *.pth
+
+# ─── Scan / mesh outputs ──────────────────────────────────────
+robot/scans/
+robot/models/

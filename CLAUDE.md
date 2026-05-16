@@ -296,7 +296,8 @@ PointCloudNode (PC)
   ```
 - t_cam2gripper = (-46.7mm, 7.4mm, 45.3mm)
 - method 비교: PARK Δrot=1.461°, DANIILIDIS Δrot=0.883° → self-consistency 경계선.
-- 시각 검증: 라이브 클라우드 바닥이 Z=0 그리드 대비 살짝 사선 + ~2cm 들림 (1.5° 회전 오차와 일치). 이전 캘 대비 명확히 개선됨. 더 줄이려면 워크플로우 개선 후 재캘 (TODO 참조).
+- 시각 검증: 라이브 클라우드 바닥이 Z=0 그리드 대비 살짝 사선 + ~2cm 들림 (1.5° 회전 오차와 일치). 이전 캘 대비 명확히 개선됨.
+- TSDF 적용 시 캘 정확도가 결과 품질의 가장 큰 결정 요소 — 1° 미만으로 끌어내려야 함. 현 다포즈 + cv2.calibrateHandEye 방식은 자세 더 추가해도 정체될 가능성 큼 (아래 § 정확도 향상 로드맵).
 
 ### Hand-Eye 재캘 절차
 
@@ -330,23 +331,146 @@ PointCloudNode (PC)
 - Δrot 1~3° → 자세 다양성 부족. 회전축 분포 재점검 후 추가 캡처.
 - Δrot > 3° → 자세 품질 문제 (흔들림, 체커보드 부분 가림, PnP 실패에 가까운 자세). reset 후 다시.
 
-### 정확도 시각 검증 (검토 중)
+### 정확도 향상 로드맵 (2026-05-17 설계)
 
-캘 직후 "잘된 캘인지"를 화면에서 즉시 확인하는 방법. 현재는 콘솔 로그(method 비교)와 사용자 눈으로 바닥 기울기 보는 게 전부. 후보:
+#### 문제 진단
 
-**A. 바닥 평면 fit 라이브 표시** (낮은 구현 비용)
-PointCloudNode가 RANSAC plane fit으로 바닥 평면을 추출 → 평면 normal과 (0,0,1) 사이 각도(°), Z=0 평면으로부터 평균 거리(mm)를 토픽으로 발행 → 패널 한쪽에 라이브 수치 표시. 좋은 캘이면 < 0.5°, < 5mm 수준. 단점: 평평한 바닥이 카메라에 항상 잡혀야 의미 있음.
+현재 1.5° 정체는 cv2.calibrateHandEye 알고리즘이 아니라 **FK 입력의 systematic 오차**가 원인일 가능성이 높음. 25자세 평균해도 줄지 않는다는 건 랜덤 노이즈가 아니라 자세마다 일관된 방향의 오차가 있다는 뜻.
 
-**B. 멀티 자세 누적 클라우드** (가장 강한 시각 증거)
-"검증 모드" 토글로 PointCloudNode가 최근 N개 프레임을 base 프레임에 그대로 누적(replace 안 함). 로봇을 다양한 자세로 천천히 움직이면서 동일 정적 장면을 비추면 — 좋은 캘이면 한 점으로 모이고, 나쁜 캘이면 ghosting/double-wall로 흐려짐. 단점: 별도 누적 버퍼 필요, 메모리/렌더 비용.
+FK 오차의 출처 (DIY 5축에서 큼):
 
-**C. 그리드 vs 클라우드 시각 비교** (이미 거의 됨)
-[RobotScene.tsx](frontend/src/components/workspace3d/3d/RobotScene.tsx)에 `<Grid>`로 Z=0 평면이 이미 그려져 있음. 바닥 클라우드가 그 그리드와 평행하고 거의 일치하면 OK. 무료지만 정량 수치 없음 — 1° 미만의 미세한 어긋남은 눈으로 못 잡음.
+- **모터 zero offset** — `joint_rad = (raw - 2048)/4095 * 2π`는 "raw 2048 = URDF zero"를 가정. Dynamixel 혼(horn) 조립 시 한 톱니 어긋나면 ~1°. `motors.yaml`에 `zero_offset` 보정 없음 → 각 모터 ±1~2° 오차 상존.
+- **링크 길이** — OMX_F는 Robotis OMX의 커스텀 변형. URDF의 link geometry가 너의 물리 조립과 정확히 일치한다는 보장 없음. 3D프린트 파트면 ±0.3mm.
+- **중력 처짐** — XL430 그룹이 11V (정격 10~14.8V 하한). joint 2/3에서 자세 의존적 sag.
+- **체커보드 PnP** — D405 factory intrinsic + 체커보드면 보통 0.1~0.3° 수준. 보통 FK보다 정확.
 
-**D. 알려진 마커 위치 비교**
-체커보드를 베이스 좌표 (X, Y, 0) 같이 ground-truth 위치에 두고, 디텍터로 위치 추정 → ground-truth와의 차이를 표시. 단 PnP 자체 정확도가 섞여 들어와서 hand-eye만 따로 분리 안 됨.
+→ "URDF가 검증됐다"는 운동학 수식의 검증이지 너의 물리 로봇과의 일치 보장이 아님.
 
-추천 (구현 순): **A를 1순위** (낮은 비용으로 즉시 수치 피드백), **B를 2순위**. C는 무료라 일단 눈으로 항상 확인.
+#### 핀포인트 방식은 제외
+
+지그(jig) 정확도 = 결과 정확도. CNC/정밀 캘 블록 없으면 자(尺)·3D프린트 정확도(±0.3~2mm)가 그대로 결과로 들어와서 현재 다포즈 방식보다 못함. **지그 제작 가능해지기 전까지 핀포인트는 보류.**
+
+#### 4단계 작업 계획
+
+UI는 **캘 패널 하나**에 섹션 4개로 통합 (탭 추가 X). 1~4단계 결과물이 같은 패널 안에 누적.
+
+```
+[Hand-Eye Calibration 패널]
+├─ 라이브 프리뷰 (Step 1)
+│    카메라 스트림 위에 체커보드 코너 오버레이
+│    검출 성공/실패 색, 화면 점유율, 기울기, 자세 다양성 힌트
+├─ 캡처 컨트롤 (Step 2)
+│    START / RESET / 자세 리스트 + 개별 삭제
+├─ 계산 (Step 2 + Step 4)
+│    [COMPUTE: cv2 ▼ | bundle-adjust ▼]
+│    결과 미리보기 (R, t, method 비교, 잔차, 포즈별 잔차)
+│    [COMMIT] → hand_eye.npz 저장 (+ BA 시 joint_offset도 같이)
+└─ 검증 (Step 3)
+     [FK 흩어짐 분석 실행] — 캡처된 포즈로 후처리
+     σ_rot, σ_t, 자세별 T_base←board 편차
+```
+
+##### Step 1 — 라이브 체커보드 검출 피드백 (Backend + Frontend)
+
+배경: 지금은 자세 옮긴 뒤 `CALIB_HANDEYE_START` 호출해야 검출 결과를 알 수 있음. 시행착오 비용이 큼 — 자세 옮길 때 잘 보이는지 실시간으로 모르니까.
+
+**Backend** ([backend/nodes/calibration_node.py](backend/nodes/calibration_node.py)):
+
+- 5~10Hz `_preview_loop` 추가 (DetectorNode의 `_detection_loop` 패턴 차용).
+- FrameCache에서 프레임 받아 체커보드 검출만 시도 (PnP는 선택). `pose_estimator.find_corners()` 같은 메서드 활용.
+- 발행 토픽: `omx/calibration/state/handeye_preview` (신규)
+  - 페이로드: `{detected: bool, corners: [[x,y], ...], coverage_ratio: float, tilt_deg: float, timestamp: float}`
+- 구독자가 있을 때만 루프 active (불필요한 CPU 안 씀). `subscribe`/`unsubscribe` 이벤트로 토글.
+- `Topic` 클래스 ([backend/core/topic_map.py](backend/core/topic_map.py))에 `CALIB_HANDEYE_PREVIEW` 추가.
+
+**Frontend**:
+
+- [frontend/src/constants/topics.ts](frontend/src/constants/topics.ts)의 `Topic`에 동일 키 추가.
+- 캘 패널 컴포넌트에서 이 토픽 구독 → 카메라 스트림 위에 SVG/Canvas 오버레이로 코너 표시.
+- 패널이 마운트될 때만 구독 → 자동으로 백엔드 루프 켜짐.
+
+##### Step 2 — 워크플로우 개선 (Backend + Frontend)
+
+배경: `CALIB_HANDEYE_START`가 reset이 아니라 "캡처 + 추가" 동작. reset하려면 백엔드 재시작 필요. SAVE가 calibrate + 파일 저장을 한 번에 → "결과 확인 후 채택/기각" 흐름 없음.
+
+**Backend 변경** ([backend/nodes/calibration_node.py](backend/nodes/calibration_node.py)):
+
+- 신규 서비스:
+  - `CALIB_HANDEYE_RESET` — `self.hand_eye.reset()` 호출 (메서드는 이미 존재, 노출만 안 됨)
+  - `CALIB_HANDEYE_COMPUTE` — `calibrate()`만 실행. 결과 + method 비교 + AX=XB 잔차 + 포즈별 잔차 반환. 파일 저장 X.
+  - `CALIB_HANDEYE_COMMIT` — 마지막 COMPUTE 결과를 `hand_eye.npz`로 저장.
+  - `CALIB_HANDEYE_REMOVE_POSE` — 특정 인덱스 포즈 삭제 (outlier 제거용).
+  - `CALIB_HANDEYE_LIST_POSES` — 현재 누적된 포즈 메타데이터 (이미지 썸네일, joint angles, 캡처 시각) 반환.
+- `HandEyeCalibration`에 잔차 계산 추가 — AX=XB에서 모든 (A_i, B_i) 페어의 reprojection residual.
+- `Service` 클래스 ([backend/core/topic_map.py](backend/core/topic_map.py)) + 프론트 `ServiceKey` 양쪽 갱신.
+
+**Frontend 변경**:
+
+- 캘 패널의 캡처 컨트롤 / 계산 섹션 재구성 (위 UI 도식 참조).
+- 포즈별 잔차 표 + 개별 삭제 버튼.
+- COMPUTE 결과 미리보기 후 COMMIT 따로 누르는 흐름.
+
+##### Step 3 — FK 흩어짐 검증 (Backend + Frontend)
+
+배경: FK가 진짜 병목인지 숫자로 확정. 같은 (고정된) 체커보드를 여러 자세에서 본 결과 `T_base←board = T_base←ee · T_ee←cam · T_cam←board`가 자세마다 얼마나 흩어지는지 측정.
+
+좋은 캘이면 모든 자세에서 같은 값(체커보드가 안 움직였으니까). 흩어짐 = (hand-eye 오차) + (FK 오차) 합. 같은 자세 반복 시 PnP 분산이 0.1° 안이면 → 자세 간 분산은 FK 오차.
+
+**구현 — 별도 데이터 캡처 불필요**. Step 2의 캡처된 포즈를 그대로 재사용.
+
+- 신규 서비스 `CALIB_HANDEYE_VALIDATE`:
+  - 입력: 사용할 hand_eye (현재 캘 파일 or 최근 COMPUTE 결과)
+  - 처리: 모든 포즈에 대해 `T_base←board` 계산 → 평균과의 차이 (Δrot°, Δt mm) per pose
+  - 출력: `{sigma_rot_deg, sigma_t_mm, per_pose: [{idx, drot_deg, dt_mm}, ...]}`
+- 프론트는 "검증" 섹션에 버튼 + 결과 표/히스토그램.
+
+##### Step 4 — Bundle Adjustment (Backend, 핵심 정확도 향상)
+
+배경: 1~3은 UX/진단. 실제 정확도는 BA로 깬다.
+
+**원리**: 모든 자세의 관측을 동시에 최적화해 FK 오차도 흡수.
+
+```
+변수: joint_zero_offset[5], R_cam2gripper(3 = rodrigues), t_cam2gripper(3)
+       총 11개. 선택적으로 링크 길이 보정 추가.
+
+목적함수: Σ_pose Σ_corner ||proj(corner_world_estimated) - corner_pixel_observed||²
+  - corner_world: 체커보드의 알려진 3D 격자 위치 + 추정된 board pose (board pose는 marginalize)
+  - proj: K · [R|t]_cam_world · corner_world
+  - 또는 더 단순: Σ_pose ||T_base←board(pose) - mean_T_base←board||² (Step 3 흩어짐 직접 최소화)
+
+해결: scipy.optimize.least_squares(method='lm') — Levenberg-Marquardt
+초기값: 현재 cv2.calibrateHandEye 결과를 seed (joint_offset은 0으로 시작)
+```
+
+**파일 배치**:
+
+- `backend/modules/calibration/bundle_adjust.py` 신규.
+- `HandEyeCalibration.calibrate(method=...)` API에 `"bundle"` 모드 추가하거나 별도 클래스.
+- joint_offset 결과는 `robot/calibration/joint_offsets.npz` (신규)에 저장.
+- `motor_node`가 raw→rad 변환 시 이 파일을 로드해 자동 반영. 없으면 0으로 동작 (하위 호환).
+- [backend/core/units.py](backend/core/units.py)의 `raw_to_rad` 시그니처에 offset 받도록 확장 검토.
+
+**Frontend 변경**:
+
+- 계산 섹션의 알고리즘 드롭다운에 `bundle-adjust` 추가.
+- BA 결과에 joint_offset 5개도 같이 표시.
+- COMMIT 시 "joint_offset도 함께 적용하시겠습니까?" 확인 다이얼로그.
+
+**검증 흐름**: BA 적용 후 Step 3 흩어짐 테스트가 0.5° 미만 / 5mm 미만으로 떨어지면 성공. PARK/DANIILIDIS Δrot 비교도 같이 떨어져야 진짜 개선임 (안 그러면 BA가 다른 오차로 흡수해버린 거).
+
+#### 작업 순서 정당화
+
+- 1 → 2 순서: 라이브 피드백이 워크플로우 개선의 일부 (자세 평가 정보가 캡처 UI에 필요).
+- 2 → 3 순서: 흩어짐 검증은 Step 2의 캡처 포즈를 재사용. 별도 캡처 안 만들려면 2 먼저.
+- 3 → 4 순서: BA가 정말 필요한지 3의 숫자로 확정. 만약 3에서 σ < 0.3°면 BA 안 가도 됨.
+
+#### 미사용 옵션 (참고만)
+
+이전에 검토했던 안들. 위 4단계가 더 직접적인 진단/개선 경로라 후순위:
+
+- **바닥 평면 RANSAC fit** — PointCloudNode가 plane fit → Z=0 대비 각도/거리 발행. 간접 검증이고 평평한 바닥이 카메라에 항상 잡혀야 함. Step 3 흩어짐이 더 직접적.
+- **멀티 자세 누적 클라우드** — 시각적으로 강력하지만 정량 수치 없음. 이미 RobotScene의 `<Grid>`와 라이브 클라우드로 정성 비교는 됨.
 
 ## 운영 메모
 
@@ -357,17 +481,34 @@ PointCloudNode가 RANSAC plane fit으로 바닥 평면을 추출 → 평면 norm
 
 ## TODO / 다음 단계
 
-### 캘리브레이션
+### 캘리브레이션 (정확도 향상 4단계 — 위 § 정확도 향상 로드맵 참조)
 
-- **캘 워크플로우 개선** — 현재 한 번 시작하면 reset 수단이 없고(백엔드 재시작 필요), `CALIB_HANDEYE_SAVE`가 calibrate + 파일 저장을 한 번에 수행해서 "결과 확인 후 채택/기각" 흐름이 없음. 개선 방향:
-  - `CALIB_HANDEYE_RESET` 서비스 신설 (poses 비우기)
-  - SAVE를 **CALIB_HANDEYE_COMPUTE** (calibrate만 수행 + 결과 + method 비교 + 잔차 반환)와 **CALIB_HANDEYE_COMMIT** (마지막 compute 결과를 `hand_eye.npz`로 저장) 두 단계로 분리
-  - `_srv_handeye_save`에 AX=XB 잔차 출력 추가
-  - 잔차 기반 outlier 포즈 제거 (한 포즈가 큰 잔차 → 그 포즈만 빼고 재계산 옵션)
-  - 자세 자동 추천 (현재 누적된 포즈들의 회전축 분포를 보고 부족한 축 가이드)
-  - 프론트 캘리브 패널에 포즈별 잔차 표 + 개별 삭제 UI
-- **캘 정확도 시각 검증 구현** — 위 § 정확도 시각 검증 옵션 A(바닥 평면 RANSAC 라이브 수치) 1순위.
-- 워크플로우 개선 후 자세 다양성 신경 써서 hand-eye **재캘 2차** — PARK Δrot 1° 미만 목표.
+> TSDF 적용 시 캘 정확도가 핵심. 지그 제작 불가 → 핀포인트 방식 제외. **다포즈 + Bundle Adjustment**가 정해진 경로. UI는 캘 패널 1개에 섹션 4개로 통합.
+
+**Step 1 — 라이브 체커보드 검출 피드백** (가장 시급, UX 차단)
+- Backend: CalibrationNode에 5~10Hz `_preview_loop` + `CALIB_HANDEYE_PREVIEW` 토픽 발행 (`{detected, corners, coverage_ratio, tilt_deg}`)
+- Frontend: 카메라 스트림 위 코너 오버레이 + 자세 품질 힌트
+- Topic/ServiceKey 양쪽 동기화
+
+**Step 2 — 워크플로우 개선** (캡처/계산/커밋 분리)
+- Backend 신규 서비스: `CALIB_HANDEYE_RESET`, `CALIB_HANDEYE_COMPUTE`, `CALIB_HANDEYE_COMMIT`, `CALIB_HANDEYE_REMOVE_POSE`, `CALIB_HANDEYE_LIST_POSES`
+- `HandEyeCalibration`에 포즈별 AX=XB 잔차 계산 추가
+- Frontend: 포즈 리스트 + 개별 삭제, COMPUTE 결과 미리보기 → COMMIT 분리
+
+**Step 3 — FK 흩어짐 검증** (BA 필요성 진단)
+- Step 2의 캡처 포즈 재사용. 별도 캡처 X.
+- 신규 서비스 `CALIB_HANDEYE_VALIDATE` — 모든 포즈의 `T_base←board` 분산 (σ_rot, σ_t, per-pose 편차)
+- Frontend "검증" 섹션 버튼 + 결과 표
+- σ < 0.3° 나오면 Step 4 불필요. 그 이상이면 FK가 floor 확정 → Step 4 진행.
+
+**Step 4 — Bundle Adjustment** (실제 정확도 향상)
+- `backend/modules/calibration/bundle_adjust.py` 신규
+- 변수: joint_zero_offset[5] + R/t_cam2gripper (11개). scipy.optimize.least_squares(LM)
+- 초기값: cv2.calibrateHandEye 결과를 seed
+- joint_offset은 `robot/calibration/joint_offsets.npz`에 저장. `motor_node`가 raw→rad 시 자동 반영
+- `units.raw_to_rad` 시그니처에 offset 추가 검토
+- Frontend 계산 드롭다운에 `bundle-adjust` 모드 추가, COMMIT 시 joint_offset 적용 확인 다이얼로그
+- 목표: PARK Δrot < 1°, Step 3 흩어짐 σ_rot < 0.5° / σ_t < 5mm
 
 ### D405 마이그레이션 잔여 phase
 

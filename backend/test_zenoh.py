@@ -222,14 +222,14 @@ def on_calib_capture(query):
     )
 
 
-def on_handeye_start(query):
-    print("[mock] HANDEYE START")
+def on_handeye_capture(query):
+    print("[mock] HANDEYE CAPTURE")
 
     query.reply(query.key_expr, json.dumps({"success": True}))
 
 
-def on_handeye_save(query):
-    print("[mock] HANDEYE SAVE")
+def on_handeye_commit(query):
+    print("[mock] HANDEYE COMMIT")
 
     query.reply(
         query.key_expr,
@@ -267,8 +267,8 @@ def main():
     session.declare_queryable(Service.MOTION_STOP, on_stop)
 
     session.declare_queryable(Service.CALIB_CAPTURE, on_calib_capture)
-    session.declare_queryable(Service.CALIB_HANDEYE_START, on_handeye_start)
-    session.declare_queryable(Service.CALIB_HANDEYE_SAVE, on_handeye_save)
+    session.declare_queryable(Service.CALIB_HANDEYE_CAPTURE, on_handeye_capture)
+    session.declare_queryable(Service.CALIB_HANDEYE_COMMIT, on_handeye_commit)
 
     print("[mock] started")
 

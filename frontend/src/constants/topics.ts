@@ -24,6 +24,9 @@ export const Topic = {
   POINTCLOUD_STREAM: "omx/pointcloud/stream",
   POINTCLOUD_SNAPSHOT: "omx/pointcloud/snapshot",
   POINTCLOUD_STATE: "omx/pointcloud/state",
+
+  // Calibration
+  CALIB_HANDEYE_PREVIEW: "omx/calibration/state/handeye_preview",
 } as const;
 
 export const ServiceKey = {
@@ -46,8 +49,14 @@ export const ServiceKey = {
   CALIB_CAPTURE: "omx/calib/srv/capture",
   CALIB_INTRINSIC_START: "omx/calib/srv/intrinsic/start",
   CALIB_INTRINSIC_SAVE: "omx/calib/srv/intrinsic/save",
-  CALIB_HANDEYE_START: "omx/calib/srv/handeye/start",
-  CALIB_HANDEYE_SAVE: "omx/calib/srv/handeye/save",
+  CALIB_HANDEYE_CAPTURE: "omx/calib/srv/handeye/capture",
+  CALIB_HANDEYE_RESET: "omx/calib/srv/handeye/reset",
+  CALIB_HANDEYE_COMPUTE: "omx/calib/srv/handeye/compute",
+  CALIB_HANDEYE_COMMIT: "omx/calib/srv/handeye/commit",
+  CALIB_HANDEYE_REMOVE_POSE: "omx/calib/srv/handeye/remove_pose",
+  CALIB_HANDEYE_LIST_POSES: "omx/calib/srv/handeye/list_poses",
+  CALIB_HANDEYE_VALIDATE: "omx/calib/srv/handeye/validate",
+  CALIB_HANDEYE_PREVIEW_ENABLE: "omx/calib/srv/handeye/preview_enable",
 
   // System
   SYSTEM_NODE_STATUS: "omx/system/srv/node_status",

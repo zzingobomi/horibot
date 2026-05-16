@@ -142,6 +142,7 @@ _ALWAYS_SUBSCRIBE = [
     Topic.TASK_STATE,
     Topic.DETECTOR_STATE,
     Topic.POINTCLOUD_STATE,
+    Topic.CALIB_HANDEYE_PREVIEW,
 ]
 
 _zenoh_subs: list[zenoh.Subscriber] = []

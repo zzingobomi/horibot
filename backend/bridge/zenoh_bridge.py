@@ -136,6 +136,7 @@ def _camera_callback(jpeg_bytes: bytes) -> None:
 _ALWAYS_SUBSCRIBE = [
     Topic.MOTOR_STATE_JOINT,
     Topic.CAMERA_STATE_STATUS,
+    Topic.CALIB_HANDEYE_PREVIEW,
     Topic.SYSTEM_HEARTBEAT,
     Topic.SYSTEM_LOG,
     Topic.MOTION_STATE_TRAJ,

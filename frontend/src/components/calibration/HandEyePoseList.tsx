@@ -23,6 +23,29 @@ export function HandEyePoseList({
       <div className="text-[10px] text-muted-foreground font-mono mb-1 px-1">
         {poses.length}개 누적
       </div>
+      <ul className="space-y-0.5">
+        {poses.map((p) => {
+          const ts = new Date(p.timestamp * 1000);
+          const time = ts.toLocaleTimeString("ko-KR", { hour12: false });
+          return (
+            <li
+              key={p.index}
+              className="flex items-center justify-between gap-2 px-2 py-1 rounded text-xs font-mono hover:bg-muted/60"
+            >
+              <span className="text-muted-foreground">#{p.index}</span>
+              <span className="flex-1 text-[11px]">{time}</span>
+              <button
+                onClick={() => onRemove(p.index)}
+                disabled={disabled}
+                title="삭제"
+                className="text-muted-foreground hover:text-destructive disabled:opacity-40"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

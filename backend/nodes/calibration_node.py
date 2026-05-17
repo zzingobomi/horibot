@@ -259,13 +259,110 @@ class CalibrationNode(BaseNode):
         }
 
     def _srv_handeye_compute(self, req: dict) -> dict:
-        pass
+        diag = self.hand_eye.compute_with_diagnostics()
+        if diag is None:
+            return {
+                "success": False,
+                "message": f"Hand-Eye 실패 (포즈 수: {len(self.hand_eye.poses)})",
+                "data": {},
+            }
+        self._last_compute = diag
+        return {
+            "success": True,
+            "message": f"compute 완료 (poses={diag['pose_count']})",
+            "data": diag,
+        }
 
     def _srv_handeye_validate(self, req: dict) -> dict:
-        pass
+        """누적된 포즈로 주어진 hand-eye의 흩어짐(σ_rot, σ_t) 검증.
+
+        source:
+          - "saved": robot/calibration/hand_eye.npz 로드해서 검증
+          - "compute": 마지막 COMPUTE 결과(in-memory)로 검증
+          - "custom": data.R_cam2gripper / t_cam2gripper 직접 받음 (BA 결과 검증 등)
+        """
+        data = req.get("data", {})
+        source = str(data.get("source", "saved"))
+
+        R: np.ndarray | None = None
+        t: np.ndarray | None = None
+        source_label = source
+
+        if source == "saved":
+            path = SAVE_DIR / "hand_eye.npz"
+            if not path.exists():
+                return {
+                    "success": False,
+                    "message": f"저장된 hand_eye.npz 없음: {path}",
+                    "data": {},
+                }
+            loaded = np.load(str(path), allow_pickle=True)
+            R = np.asarray(loaded["R_cam2gripper"])
+            t = np.asarray(loaded["t_cam2gripper"]).reshape(3)
+            source_label = f"saved ({str(loaded.get('method', 'UNKNOWN'))})"
+        elif source == "compute":
+            if self.hand_eye.result is None:
+                return {
+                    "success": False,
+                    "message": "COMPUTE 결과 없음 — 먼저 COMPUTE 실행",
+                    "data": {},
+                }
+            R = self.hand_eye.result.R_cam2gripper
+            t = self.hand_eye.result.t_cam2gripper.reshape(3)
+            source_label = f"compute ({self.hand_eye.result.method})"
+        elif source == "custom":
+            try:
+                R = np.asarray(data["R_cam2gripper"], dtype=np.float64)
+                t = np.asarray(data["t_cam2gripper"],
+                               dtype=np.float64).reshape(3)
+            except (KeyError, ValueError) as e:
+                return {
+                    "success": False,
+                    "message": f"custom source는 R_cam2gripper/t_cam2gripper 필요: {e}",
+                    "data": {},
+                }
+        else:
+            return {
+                "success": False,
+                "message": f"알 수 없는 source: {source}",
+                "data": {},
+            }
+
+        result = self.hand_eye.validate(R, t)
+        if result is None:
+            return {
+                "success": False,
+                "message": f"검증 불가 (포즈 수: {len(self.hand_eye.poses)}, 최소 2 필요)",
+                "data": {},
+            }
+
+        return {
+            "success": True,
+            "message": f"validate 완료 (source={source_label})",
+            "data": {
+                **result,
+                "source": source_label,
+            },
+        }
 
     def _srv_handeye_commit(self, req: dict) -> dict:
-        pass
+        if self._last_compute is None or self.hand_eye.result is None:
+            return {
+                "success": False,
+                "message": "먼저 COMPUTE를 실행하세요",
+                "data": {},
+            }
+        path = SAVE_DIR / "hand_eye.npz"
+        self.hand_eye.save(path)
+
+        return {
+            "success": True,
+            "message": f"저장 완료: {path}",
+            "data": {
+                "path": str(path),
+                "method": self.hand_eye.result.method,
+            },
+        }
 
     def _srv_handeye_preview_enable(self, req: dict) -> dict:
         enabled = bool(req.get("data", {}).get("enabled", False))

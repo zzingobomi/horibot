@@ -1,8 +1,9 @@
 import cv2
 import numpy as np
 import logging
+import time
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,23 @@ class Pose:
     t_gripper2base: np.ndarray  # 로봇 FK에서 얻은 이동 벡터
     R_target2cam: np.ndarray  # 체커보드 → 카메라 회전
     t_target2cam: np.ndarray  # 체커보드 → 카메라 이동
+    timestamp: float = field(default_factory=time.time)
+    joint_angles_rad: list[float] = field(default_factory=list)
+
+
+_METHOD_NAMES = {
+    cv2.CALIB_HAND_EYE_TSAI: "TSAI",
+    cv2.CALIB_HAND_EYE_PARK: "PARK",
+    cv2.CALIB_HAND_EYE_HORAUD: "HORAUD",
+    cv2.CALIB_HAND_EYE_ANDREFF: "ANDREFF",
+    cv2.CALIB_HAND_EYE_DANIILIDIS: "DANIILIDIS",
+}
+
+_COMPARE_METHODS = [
+    cv2.CALIB_HAND_EYE_TSAI,
+    cv2.CALIB_HAND_EYE_PARK,
+    cv2.CALIB_HAND_EYE_DANIILIDIS,
+]
 
 
 class HandEyeCalibration:
@@ -31,6 +49,13 @@ class HandEyeCalibration:
         self.poses.append(pose)
         logger.info(f"포즈 추가됨 ({len(self.poses)}개)")
 
+    def remove_pose(self, index: int) -> bool:
+        if not (0 <= index < len(self.poses)):
+            return False
+        del self.poses[index]
+        logger.info(f"포즈 #{index} 제거됨 (남은 포즈: {len(self.poses)}개)")
+        return True
+
     def calibrate(self, method: int = cv2.CALIB_HAND_EYE_TSAI) -> HandEyeResult | None:
         if len(self.poses) < 3:
             logger.warning(f"포즈 부족: {len(self.poses)}개 (최소 3개 필요)")
@@ -40,14 +65,6 @@ class HandEyeCalibration:
         t_gripper2base = [p.t_gripper2base for p in self.poses]
         R_target2cam = [p.R_target2cam for p in self.poses]
         t_target2cam = [p.t_target2cam for p in self.poses]
-
-        method_name = {
-            cv2.CALIB_HAND_EYE_TSAI: "TSAI",
-            cv2.CALIB_HAND_EYE_PARK: "PARK",
-            cv2.CALIB_HAND_EYE_HORAUD: "HORAUD",
-            cv2.CALIB_HAND_EYE_ANDREFF: "ANDREFF",
-            cv2.CALIB_HAND_EYE_DANIILIDIS: "DANIILIDIS",
-        }
 
         R, t = cv2.calibrateHandEye(
             R_gripper2base,
@@ -60,53 +77,23 @@ class HandEyeCalibration:
         self.result = HandEyeResult(
             R_cam2gripper=R,
             t_cam2gripper=t,
-            method=method_name.get(method, "UNKNOWN"),
+            method=_METHOD_NAMES.get(method, "UNKNOWN"),
         )
         logger.info(
             f"Hand-Eye 캘리브레이션 완료 (method={self.result.method}, "
             f"poses={len(self.poses)})"
         )
-
-        # multi-method 진단 — 같은 데이터로 다른 method도 풀어 self-consistency 확인.
-        # 셋이 1° 이내면 데이터 일관성 OK(자세 추가 필요), 크면 자세 다양성/품질 부족.
-        compare_methods = [
-            cv2.CALIB_HAND_EYE_TSAI,
-            cv2.CALIB_HAND_EYE_PARK,
-            cv2.CALIB_HAND_EYE_DANIILIDIS,
-        ]
-        results: list[tuple[str, np.ndarray, np.ndarray]] = []
-        for m in compare_methods:
-            try:
-                Rm, tm = cv2.calibrateHandEye(
-                    R_gripper2base,
-                    t_gripper2base,
-                    R_target2cam,
-                    t_target2cam,
-                    method=m,
-                )
-                results.append((method_name.get(m, "?"), Rm, tm))
-            except cv2.error as e:
-                logger.warning(f"  {method_name.get(m, '?')} 실패: {e}")
-
-        if results:
-            ref_name, ref_R, ref_t = results[0]
-            logger.info("─── method 비교 (기준: %s) ───", ref_name)
-            logger.info(
-                "  %-12s  Δrot=  0.000°  Δt=  0.0mm  (기준)", ref_name
-            )
-            for name, Rm, tm in results[1:]:
-                drot_deg = _rotation_diff_deg(ref_R, Rm)
-                dt_mm = float(np.linalg.norm(ref_t - tm)) * 1000.0
-                logger.info(
-                    "  %-12s  Δrot=%6.3f°  Δt=%5.1fmm",
-                    name, drot_deg, dt_mm,
-                )
-            logger.info(
-                "  해석: Δrot이 셋 다 1° 미만이면 데이터 self-consistent — "
-                "자세 추가/체커보드 점검 방향. 크면 자세 다양성/품질 부족."
-            )
-
         return self.result
+
+    def list_poses_meta(self) -> list[dict]:
+        return [
+            {
+                "index": i,
+                "timestamp": p.timestamp,
+                "joint_angles_rad": p.joint_angles_rad,
+            }
+            for i, p in enumerate(self.poses)
+        ]
 
     def save(self, path: str | Path) -> bool:
         if self.result is None:

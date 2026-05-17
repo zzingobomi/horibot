@@ -1,15 +1,18 @@
 import logging
+import threading
+import time
+import cv2
 import numpy as np
 from pathlib import Path
 
 from core.base_node import BaseNode
-from core.topic_map import Service
+from core.topic_map import Service, Topic
 from core.frame_cache import FrameCache
 from core.joint_state_cache import JointStateCache
 from core.common import GRIPPER_ID
 from modules.dynamixel.motor_config import load_motor_config
 from modules.camera.stream import frame_to_base64
-from modules.calibration.intrinsic import IntrinsicCalibration
+from modules.calibration.intrinsic import CHECKERBOARD, IntrinsicCalibration
 from modules.calibration.hand_eye import HandEyeCalibration, Pose
 from modules.calibration.pose_estimator import PoseEstimator
 from modules.kinematics.solver import PybulletSolver
@@ -17,6 +20,8 @@ from modules.kinematics.solver import PybulletSolver
 logger = logging.getLogger(__name__)
 
 SAVE_DIR = Path(__file__).parents[2] / "robot" / "calibration"
+
+PREVIEW_INTERVAL = 0.2  # 5Hz
 
 
 class CalibrationNode(BaseNode):
@@ -43,14 +48,47 @@ class CalibrationNode(BaseNode):
         else:
             logger.warning("Intrinsic 파일 없음")
 
+        self._last_compute: dict | None = None
+        self._preview_enabled = False
+        self._preview_thread: threading.Thread | None = None
+
         # 내부 캘리브레이션
         self.create_service(Service.CALIB_CAPTURE, self._srv_capture)
-        self.create_service(Service.CALIB_INTRINSIC_START, self._srv_intrinsic_start)
-        self.create_service(Service.CALIB_INTRINSIC_SAVE, self._srv_intrinsic_save)
+        self.create_service(Service.CALIB_INTRINSIC_START,
+                            self._srv_intrinsic_start)
+        self.create_service(Service.CALIB_INTRINSIC_SAVE,
+                            self._srv_intrinsic_save)
 
         # Hand-Eye 캘리브레이션
-        self.create_service(Service.CALIB_HANDEYE_START, self._srv_handeye_start)
-        self.create_service(Service.CALIB_HANDEYE_SAVE, self._srv_handeye_save)
+        self.create_service(Service.CALIB_HANDEYE_CAPTURE,
+                            self._srv_handeye_capture)
+        self.create_service(Service.CALIB_HANDEYE_RESET,
+                            self._srv_handeye_reset)
+        self.create_service(Service.CALIB_HANDEYE_COMPUTE,
+                            self._srv_handeye_compute)
+        self.create_service(Service.CALIB_HANDEYE_COMMIT,
+                            self._srv_handeye_commit)
+        self.create_service(
+            Service.CALIB_HANDEYE_REMOVE_POSE, self._srv_handeye_remove_pose
+        )
+        self.create_service(
+            Service.CALIB_HANDEYE_LIST_POSES, self._srv_handeye_list_poses
+        )
+        self.create_service(
+            Service.CALIB_HANDEYE_VALIDATE, self._srv_handeye_validate
+        )
+        self.create_service(
+            Service.CALIB_HANDEYE_PREVIEW_ENABLE, self._srv_handeye_preview_enable
+        )
+
+    def start(self) -> None:
+        super().start()
+        self._preview_thread = threading.Thread(
+            target=self._preview_loop,
+            daemon=True,
+            name="calib-preview",
+        )
+        self._preview_thread.start()
 
     # ─── 이미지 캡처 ─────────────────────────────────────────
 
@@ -121,7 +159,7 @@ class CalibrationNode(BaseNode):
 
     # ─── Hand-Eye 캘리브레이션 ────────────────────────────────
 
-    def _srv_handeye_start(self, req: dict) -> dict:
+    def _srv_handeye_capture(self, req: dict) -> dict:
         if self.intrinsic.result is None:
             return {
                 "success": False,
@@ -170,8 +208,11 @@ class CalibrationNode(BaseNode):
                 t_gripper2base=gripper_t,
                 R_target2cam=pose.R,
                 t_target2cam=pose.t,
+                joint_angles_rad=list(joint_angles),
             )
         )
+
+        self._last_compute = None  # 새 포즈 추가 시 이전 계산 결과 무효화
 
         return {
             "success": True,
@@ -182,24 +223,109 @@ class CalibrationNode(BaseNode):
             },
         }
 
-    def _srv_handeye_save(self, req: dict) -> dict:
-        result = self.hand_eye.calibrate()
-        if result is None:
-            return {
-                "success": False,
-                "message": f"Hand-Eye 실패 (포즈 수: {len(self.hand_eye.poses)})",
-                "data": {},
-            }
-
-        path = SAVE_DIR / "hand_eye.npz"
-        self.hand_eye.save(path)
-
+    def _srv_handeye_reset(self, req: dict) -> dict:
+        self.hand_eye.reset()
+        self._last_compute = None
         return {
             "success": True,
-            "message": f"저장 완료: {path}",
+            "message": "Hand-Eye 누적 포즈 초기화됨",
+            "data": {"pose_count": 0},
+        }
+
+    def _srv_handeye_remove_pose(self, req: dict) -> dict:
+        index = int(req.get("data", {}).get("index", -1))
+        ok = self.hand_eye.remove_pose(index)
+        if not ok:
+            return {
+                "success": False,
+                "message": f"포즈 #{index} 제거 실패 (범위 밖)",
+                "data": {"pose_count": len(self.hand_eye.poses)},
+            }
+        self._last_compute = None
+        return {
+            "success": True,
+            "message": f"포즈 #{index} 제거됨",
+            "data": {"pose_count": len(self.hand_eye.poses)},
+        }
+
+    def _srv_handeye_list_poses(self, req: dict) -> dict:
+        return {
+            "success": True,
+            "message": "ok",
             "data": {
-                "R_cam2gripper": result.R_cam2gripper.tolist(),
-                "t_cam2gripper": result.t_cam2gripper.tolist(),
-                "method": result.method,
+                "poses": self.hand_eye.list_poses_meta(),
+                "pose_count": len(self.hand_eye.poses),
             },
         }
+
+    def _srv_handeye_compute(self, req: dict) -> dict:
+        pass
+
+    def _srv_handeye_validate(self, req: dict) -> dict:
+        pass
+
+    def _srv_handeye_commit(self, req: dict) -> dict:
+        pass
+
+    def _srv_handeye_preview_enable(self, req: dict) -> dict:
+        enabled = bool(req.get("data", {}).get("enabled", False))
+        self._preview_enabled = enabled
+        return {
+            "success": True,
+            "message": f"preview {'enabled' if enabled else 'disabled'}",
+            "data": {"enabled": enabled},
+        }
+
+    def _preview_loop(self) -> None:
+        flags = cv2.CALIB_CB_FAST_CHECK | cv2.CALIB_CB_NORMALIZE_IMAGE
+        while self._running:
+            if not self._preview_enabled:
+                time.sleep(PREVIEW_INTERVAL)
+                continue
+
+            try:
+                ret, frame = self._frame_cache.get_frame()
+                if not ret or frame is None:
+                    self.publish(
+                        Topic.CALIB_HANDEYE_PREVIEW,
+                        {
+                            "timestamp": time.time(),
+                            "detected": False,
+                            "reason": "no_frame",
+                        },
+                    )
+                    time.sleep(PREVIEW_INTERVAL)
+                    continue
+
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                h, w = gray.shape[:2]
+                found, corners = cv2.findChessboardCorners(
+                    gray, CHECKERBOARD, flags=flags
+                )
+
+                payload: dict = {
+                    "timestamp": time.time(),
+                    "detected": bool(found),
+                    "image_size": [int(w), int(h)],
+                }
+
+                if found and corners is not None:
+                    pts = corners.reshape(-1, 2)
+                    payload["corners"] = pts.tolist()
+                    xs, ys = pts[:, 0], pts[:, 1]
+                    bbox_w = float(xs.max() - xs.min())
+                    bbox_h = float(ys.max() - ys.min())
+                    payload["bbox"] = [
+                        float(xs.min()),
+                        float(ys.min()),
+                        bbox_w,
+                        bbox_h,
+                    ]
+                    payload["coverage_ratio"] = (
+                        bbox_w * bbox_h) / float(w * h)
+
+                self.publish(Topic.CALIB_HANDEYE_PREVIEW, payload)
+            except Exception as e:
+                logger.debug("preview loop 오류: %s", e)
+
+            time.sleep(PREVIEW_INTERVAL)

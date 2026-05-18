@@ -75,9 +75,6 @@ class CalibrationNode(BaseNode):
             Service.CALIB_HANDEYE_LIST_POSES, self._srv_handeye_list_poses
         )
         self.create_service(
-            Service.CALIB_HANDEYE_VALIDATE, self._srv_handeye_validate
-        )
-        self.create_service(
             Service.CALIB_HANDEYE_PREVIEW_ENABLE, self._srv_handeye_preview_enable
         )
 
@@ -233,18 +230,25 @@ class CalibrationNode(BaseNode):
         }
 
     def _srv_handeye_remove_pose(self, req: dict) -> dict:
-        index = int(req.get("data", {}).get("index", -1))
-        ok = self.hand_eye.remove_pose(index)
+        data = req.get("data", {})
+        if "id" not in data:
+            return {
+                "success": False,
+                "message": "id 필드 필요",
+                "data": {"pose_count": len(self.hand_eye.poses)},
+            }
+        pose_id = int(data["id"])
+        ok = self.hand_eye.remove_pose_by_id(pose_id)
         if not ok:
             return {
                 "success": False,
-                "message": f"포즈 #{index} 제거 실패 (범위 밖)",
+                "message": f"포즈 #{pose_id} 제거 실패 (id 없음)",
                 "data": {"pose_count": len(self.hand_eye.poses)},
             }
         self._last_compute = None
         return {
             "success": True,
-            "message": f"포즈 #{index} 제거됨",
+            "message": f"포즈 #{pose_id} 제거됨",
             "data": {"pose_count": len(self.hand_eye.poses)},
         }
 
@@ -271,78 +275,6 @@ class CalibrationNode(BaseNode):
             "success": True,
             "message": f"compute 완료 (poses={diag['pose_count']})",
             "data": diag,
-        }
-
-    def _srv_handeye_validate(self, req: dict) -> dict:
-        """누적된 포즈로 주어진 hand-eye의 흩어짐(σ_rot, σ_t) 검증.
-
-        source:
-          - "saved": robot/calibration/hand_eye.npz 로드해서 검증
-          - "compute": 마지막 COMPUTE 결과(in-memory)로 검증
-          - "custom": data.R_cam2gripper / t_cam2gripper 직접 받음 (BA 결과 검증 등)
-        """
-        data = req.get("data", {})
-        source = str(data.get("source", "saved"))
-
-        R: np.ndarray | None = None
-        t: np.ndarray | None = None
-        source_label = source
-
-        if source == "saved":
-            path = SAVE_DIR / "hand_eye.npz"
-            if not path.exists():
-                return {
-                    "success": False,
-                    "message": f"저장된 hand_eye.npz 없음: {path}",
-                    "data": {},
-                }
-            loaded = np.load(str(path), allow_pickle=True)
-            R = np.asarray(loaded["R_cam2gripper"])
-            t = np.asarray(loaded["t_cam2gripper"]).reshape(3)
-            source_label = f"saved ({str(loaded.get('method', 'UNKNOWN'))})"
-        elif source == "compute":
-            if self.hand_eye.result is None:
-                return {
-                    "success": False,
-                    "message": "COMPUTE 결과 없음 — 먼저 COMPUTE 실행",
-                    "data": {},
-                }
-            R = self.hand_eye.result.R_cam2gripper
-            t = self.hand_eye.result.t_cam2gripper.reshape(3)
-            source_label = f"compute ({self.hand_eye.result.method})"
-        elif source == "custom":
-            try:
-                R = np.asarray(data["R_cam2gripper"], dtype=np.float64)
-                t = np.asarray(data["t_cam2gripper"],
-                               dtype=np.float64).reshape(3)
-            except (KeyError, ValueError) as e:
-                return {
-                    "success": False,
-                    "message": f"custom source는 R_cam2gripper/t_cam2gripper 필요: {e}",
-                    "data": {},
-                }
-        else:
-            return {
-                "success": False,
-                "message": f"알 수 없는 source: {source}",
-                "data": {},
-            }
-
-        result = self.hand_eye.validate(R, t)
-        if result is None:
-            return {
-                "success": False,
-                "message": f"검증 불가 (포즈 수: {len(self.hand_eye.poses)}, 최소 2 필요)",
-                "data": {},
-            }
-
-        return {
-            "success": True,
-            "message": f"validate 완료 (source={source_label})",
-            "data": {
-                **result,
-                "source": source_label,
-            },
         }
 
     def _srv_handeye_commit(self, req: dict) -> dict:
@@ -420,6 +352,26 @@ class CalibrationNode(BaseNode):
                     ]
                     payload["coverage_ratio"] = (
                         bbox_w * bbox_h) / float(w * h)
+
+                    # tilt: 보드 평면과 카메라 이미지 평면 사이 각도.
+                    # R_target2cam의 board Z축이 카메라 Z축과 얼마나 평행한가로 측정.
+                    if self.intrinsic.result is not None:
+                        try:
+                            ok, rvec, _tvec = cv2.solvePnP(
+                                self.intrinsic._objp_template,
+                                corners,
+                                self.intrinsic.result.camera_matrix,
+                                self.intrinsic.result.dist_coeffs,
+                                flags=cv2.SOLVEPNP_ITERATIVE,
+                            )
+                            R, _ = cv2.Rodrigues(rvec)
+                            # R[2,2] = board Z축의 카메라 Z성분.
+                            # |R[2,2]|=1 → 보드 평면이 이미지 평면과 평행 → tilt 0°
+                            cos_v = float(np.clip(abs(R[2, 2]), 0.0, 1.0))
+                            payload["tilt_deg"] = float(
+                                np.degrees(np.arccos(cos_v)))
+                        except cv2.error:
+                            pass
 
                 self.publish(Topic.CALIB_HANDEYE_PREVIEW, payload)
             except Exception as e:

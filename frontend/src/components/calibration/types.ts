@@ -5,6 +5,7 @@ export type HandEyePreview = {
   corners?: [number, number][];
   bbox?: [number, number, number, number];
   coverage_ratio?: number; // 체커보드가 화면에서 차지하는 비율 (너무 작거나 크면 PnP 부정확)
+  tilt_deg?: number; // 보드 평면 vs 이미지 평면 각도. 0°=정면(모호), 90°=edge-on. 20~65°가 좋음.
   reason?: string;
 };
 
@@ -12,7 +13,7 @@ export type HandEyePreview = {
  * 캡처한 자세 1개의 메타데이터.
  */
 export type PoseMeta = {
-  index: number;
+  id: number;
   timestamp: number;
   joint_angles_rad: number[];
 };
@@ -38,11 +39,10 @@ export type MethodCompareEntry = {
 /**
  * 자세별 잔차 한 줄. 값이 크면 outlier 후보 → 개별 삭제 후 재계산.
  *
- * - ComputeData에선  AX=XB 잔차
- * - ValidateData에선 T_base←board의 평균 대비 흩어짐
+ * T_base←board의 평균 대비 흩어짐.
  */
 export type PerPoseResidual = {
-  index: number;
+  id: number;
   drot_deg: number;
   dt_mm: number;
 };
@@ -63,21 +63,4 @@ export type ComputeData = {
   per_pose_residual: PerPoseResidual[];
   sigma_rot_deg: number; // 회전 잔차의 표준편차 (도)
   sigma_t_mm: number; // 평행이동 잔차의 표준편차 (mm)
-};
-
-/**
- * `CALIB_HANDEYE_VALIDATE` 응답.
- *
- * 같은 캡처 포즈들을 가지고 T_base←board가 자세별로 얼마나 흩어지는지 측정.
- * 좋은 캘이면 모두 같은 값(체커보드는 안 움직였으니까).
- * 흩어짐 = (hand-eye 오차) + (FK 오차). σ가 충분히 작으면 캘 OK, 크면 캘 실패 또는 자세 품질 문제.
- *
- * 목표치: σ_rot < 0.5°, σ_t < 5mm
- */
-export type ValidateData = {
-  source: string;
-  pose_count: number;
-  per_pose_residual: PerPoseResidual[];
-  sigma_rot_deg: number;
-  sigma_t_mm: number;
 };

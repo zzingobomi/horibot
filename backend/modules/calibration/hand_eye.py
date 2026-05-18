@@ -21,6 +21,7 @@ class Pose:
     t_gripper2base: np.ndarray  # 로봇 FK에서 얻은 이동 벡터
     R_target2cam: np.ndarray  # 체커보드 → 카메라 회전
     t_target2cam: np.ndarray  # 체커보드 → 카메라 이동
+    id: int = -1
     timestamp: float = field(default_factory=time.time)
     joint_angles_rad: list[float] = field(default_factory=list)
 
@@ -42,19 +43,28 @@ _COMPARE_METHODS = [
 
 class HandEyeCalibration:
     def __init__(self):
+        self._next_id: int = 0
         self.poses: list[Pose] = []
         self.result: HandEyeResult | None = None
 
     def add_pose(self, pose: Pose) -> None:
+        if pose.id < 0:
+            pose.id = self._next_id
+            self._next_id += 1
+        else:
+            self._next_id = max(self._next_id, pose.id + 1)
         self.poses.append(pose)
-        logger.info(f"포즈 추가됨 ({len(self.poses)}개)")
+        logger.info(f"포즈 #{pose.id} 추가됨 ({len(self.poses)}개)")
 
-    def remove_pose(self, index: int) -> bool:
-        if not (0 <= index < len(self.poses)):
-            return False
-        del self.poses[index]
-        logger.info(f"포즈 #{index} 제거됨 (남은 포즈: {len(self.poses)}개)")
-        return True
+    def remove_pose_by_id(self, pose_id: int) -> bool:
+        for i, p in enumerate(self.poses):
+            if p.id == pose_id:
+                del self.poses[i]
+                logger.info(
+                    f"포즈 #{pose_id} 제거됨 (남은 포즈: {len(self.poses)}개)"
+                )
+                return True
+        return False
 
     def calibrate(self, method: int = cv2.CALIB_HAND_EYE_TSAI) -> HandEyeResult | None:
         if len(self.poses) < 3:
@@ -154,26 +164,6 @@ class HandEyeCalibration:
             "per_pose_residual": per_pose,
             "sigma_rot_deg": sigma_rot_deg,
             "sigma_t_mm": sigma_t_mm,
-        }
-
-    def validate(
-        self, R_cam2gripper: np.ndarray, t_cam2gripper: np.ndarray
-    ) -> dict | None:
-        """주어진 hand-eye 행렬로 누적된 포즈들의 T_target←base 분산을 계산.
-
-        cv2.calibrateHandEye 결과(자기 자신) 검증뿐 아니라, 저장된 .npz나
-        Bundle Adjustment 결과 같은 임의의 R/t로도 검증할 때 사용.
-        """
-        if len(self.poses) < 2:
-            return None
-        per_pose, sigma_rot, sigma_t = self._compute_residuals(
-            R_cam2gripper, t_cam2gripper
-        )
-        return {
-            "pose_count": len(self.poses),
-            "per_pose_residual": per_pose,
-            "sigma_rot_deg": sigma_rot,
-            "sigma_t_mm": sigma_t,
         }
 
     def _compute_residuals(

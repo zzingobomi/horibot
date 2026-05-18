@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { HandEyePreview } from "./types";
 
 interface Props {
@@ -5,7 +6,27 @@ interface Props {
   stale: boolean;
 }
 
+const TILT_ENTER_MIN = 12;
+const TILT_ENTER_MAX = 73;
+const TILT_EXIT_MIN = 10;
+const TILT_EXIT_MAX = 75;
+
 export function CheckerboardOverlay({ preview, stale }: Props) {
+  const tilt = preview?.tilt_deg ?? null;
+  const [tiltOk, setTiltOk] = useState(false);
+  const [prevTilt, setPrevTilt] = useState<number | null>(null);
+
+  if (tilt !== prevTilt) {
+    setPrevTilt(tilt);
+    if (tilt == null) {
+      if (tiltOk) setTiltOk(false);
+    } else if (tiltOk) {
+      if (tilt < TILT_EXIT_MIN || tilt > TILT_EXIT_MAX) setTiltOk(false);
+    } else {
+      if (tilt >= TILT_ENTER_MIN && tilt <= TILT_ENTER_MAX) setTiltOk(true);
+    }
+  }
+
   if (!preview) {
     return (
       <div className="absolute top-2 right-2 rounded bg-black/60 px-2 py-1 font-mono text-xs text-white/70">
@@ -18,19 +39,29 @@ export function CheckerboardOverlay({ preview, stale }: Props) {
   const detected = preview.detected && !stale;
   const corners = preview.corners ?? [];
   const bbox = preview.bbox;
-  const coverage = preview.coverage_ratio;
 
-  const badgeClass = stale
-    ? "bg-yellow-600/80"
-    : detected
-    ? "bg-emerald-600/85"
-    : "bg-red-600/85";
-
-  const badgeText = stale
-    ? "신호 끊김"
-    : detected
-    ? `✓ 감지됨${coverage != null ? ` · ${(coverage * 100).toFixed(1)}%` : ""}`
-    : "✗ 미감지";
+  let badgeClass: string;
+  let badgeText: string;
+  if (stale) {
+    badgeClass = "bg-red-600/85";
+    badgeText = "캡처 금지 · 신호 끊김";
+  } else if (!preview.detected) {
+    badgeClass = "bg-red-600/85";
+    badgeText = "캡처 금지 · 미검출";
+  } else if (!tiltOk) {
+    badgeClass = "bg-red-600/85";
+    const reason =
+      tilt == null
+        ? ""
+        : tilt < TILT_EXIT_MIN
+        ? ` · tilt ${tilt.toFixed(0)}° 너무 정면`
+        : ` · tilt ${tilt.toFixed(0)}° 너무 비스듬`;
+    badgeText = `캡처 금지${reason}`;
+  } else {
+    badgeClass = "bg-emerald-600/85";
+    const tiltStr = tilt != null ? ` · tilt ${tilt.toFixed(0)}°` : "";
+    badgeText = `캡처 가능${tiltStr}`;
+  }
 
   return (
     <>

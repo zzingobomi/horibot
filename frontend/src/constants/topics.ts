@@ -55,7 +55,6 @@ export const ServiceKey = {
   CALIB_HANDEYE_COMMIT: "omx/calib/srv/handeye/commit",
   CALIB_HANDEYE_REMOVE_POSE: "omx/calib/srv/handeye/remove_pose",
   CALIB_HANDEYE_LIST_POSES: "omx/calib/srv/handeye/list_poses",
-  CALIB_HANDEYE_VALIDATE: "omx/calib/srv/handeye/validate",
   CALIB_HANDEYE_PREVIEW_ENABLE: "omx/calib/srv/handeye/preview_enable",
 
   // System

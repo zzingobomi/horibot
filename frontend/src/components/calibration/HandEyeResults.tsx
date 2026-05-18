@@ -1,4 +1,4 @@
-import type { ComputeData, PerPoseResidual, ValidateData } from "./types";
+import type { ComputeData, PerPoseResidual } from "./types";
 
 function sigmaRotColor(deg: number): string {
   return deg < 0.5
@@ -22,8 +22,8 @@ function PerPoseResidualTable({ rows }: { rows: PerPoseResidual[] }) {
       <table className="w-full text-[11px] font-mono">
         <tbody>
           {rows.map((r) => (
-            <tr key={r.index}>
-              <td className="py-0.5 text-muted-foreground">#{r.index}</td>
+            <tr key={r.id}>
+              <td className="py-0.5 text-muted-foreground">#{r.id}</td>
               <td className={`py-0.5 text-right ${sigmaRotColor(r.drot_deg)}`}>
                 {r.drot_deg.toFixed(3)}°
               </td>
@@ -107,32 +107,6 @@ export function ComputePreview({ data }: { data: ComputeData }) {
         </p>
         <PerPoseResidualTable rows={data.per_pose_residual} />
       </div>
-    </div>
-  );
-}
-
-export function ValidatePreview({ data }: { data: ValidateData }) {
-  return (
-    <div className="space-y-2 text-xs">
-      <div className="rounded-md bg-muted p-2 space-y-1 font-mono">
-        <div className="flex justify-between">
-          <span className="text-muted-foreground">source</span>
-          <span className="text-[10px]">{data.source}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-muted-foreground">σ_rot</span>
-          <span className={sigmaRotColor(data.sigma_rot_deg)}>
-            {data.sigma_rot_deg.toFixed(3)}°
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-muted-foreground">σ_t</span>
-          <span className={sigmaTColor(data.sigma_t_mm)}>
-            {data.sigma_t_mm.toFixed(1)}mm
-          </span>
-        </div>
-      </div>
-      <PerPoseResidualTable rows={data.per_pose_residual} />
     </div>
   );
 }

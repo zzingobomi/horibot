@@ -1,18 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { CameraFeed } from "@/components/camera/CameraFeed";
 import { Button } from "@/components/ui/button";
-import { MoveTCPControl } from "@/components/robot/MoveTCPControl";
-import { useJointControl } from "@/hooks/useJointControl";
-import { useMotion } from "@/hooks/useMotion";
-import type {
-  ComputeData,
-  HandEyePreview,
-  PoseMeta,
-  ValidateData,
-} from "./types";
+import { CalibJointBar } from "./CalibJointBar";
+import type { ComputeData, HandEyePreview, PoseMeta } from "./types";
 import { HandEyePoseList } from "./HandEyePoseList";
 import { CheckerboardOverlay } from "./CheckerboardOverlay";
-import { ComputePreview, ValidatePreview } from "./HandEyeResults";
+import { ComputePreview } from "./HandEyeResults";
 import { ServiceKey, Topic } from "@/constants/topics";
 import { bridge } from "@/api/bridge";
 
@@ -27,13 +20,10 @@ export function HandEyeTab() {
   const [poses, setPoses] = useState<PoseMeta[]>([]);
   const [compute, setCompute] = useState<ComputeData | null>(null);
   const [computeStale, setComputeStale] = useState(false);
-  const [validate, setValidate] = useState<ValidateData | null>(null);
 
   // utils
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("");
-  const motion = useMotion();
-  const { torqueEnabled, enableTorque } = useJointControl();
 
   // checkerboard preview
   useEffect(() => {
@@ -152,55 +142,19 @@ export function HandEyeTab() {
     setStatus(res.success ? `✅ ${res.message}` : `❌ ${res.message}`);
   };
 
-  const handleValidate = async (source: "saved" | "compute") => {
-    setLoading(true);
-    const res = await bridge.callService(ServiceKey.CALIB_HANDEYE_VALIDATE, {
-      source,
-    });
-    setLoading(false);
-    if (res.success) {
-      setValidate(res.data as unknown as ValidateData);
-      setStatus(`validate (${source}) 완료`);
-    } else {
-      setStatus(`❌ ${res.message}`);
-    }
-  };
-
   return (
     <div className="flex h-full gap-4 min-h-0">
-      {/* 좌측: 카메라 피드 + Move TCP */}
+      {/* 좌측: 카메라 피드 + Joint Control */}
       <div className="flex-1 flex flex-col gap-4 min-h-0">
         <CameraFeed
           className="flex-1 w-full min-h-0"
           overlay={
-            <CheckerboardOverlay preview={preview} stale={previewStale} />
+            <>
+              <CalibJointBar />
+              <CheckerboardOverlay preview={preview} stale={previewStale} />
+            </>
           }
         />
-
-        <div className="rounded-lg border bg-card p-4 flex gap-4 shrink-0">
-          <div className="flex flex-col gap-2 w-32 shrink-0">
-            <h2 className="text-sm font-semibold">Move TCP</h2>
-            <Button
-              size="sm"
-              variant={torqueEnabled ? "destructive" : "default"}
-              onClick={() => enableTorque(!torqueEnabled)}
-            >
-              {torqueEnabled ? "Torque OFF" : "Torque ON"}
-            </Button>
-            {motion.error && (
-              <p className="text-[11px] text-destructive">{motion.error}</p>
-            )}
-          </div>
-          <div className="flex-1 max-w-xs">
-            <MoveTCPControl
-              tcpPose={motion.tcpPose}
-              loading={motion.loading}
-              compact
-              onMoveTCP={motion.moveTCP}
-              onGetTCP={motion.getTCP}
-            />
-          </div>
-        </div>
       </div>
 
       {/* 가운데 컬럼: Capture + Commit */}
@@ -281,47 +235,6 @@ export function HandEyeTab() {
             ) : (
               <p className="text-xs text-muted-foreground">
                 포즈 캡처 후 COMPUTE를 실행하면 결과 미리보기가 표시됩니다.
-              </p>
-            )}
-          </div>
-        </div>
-
-        <div className="rounded-lg border bg-card flex flex-col flex-1 min-h-0">
-          <div className="p-4 pb-2 flex flex-col gap-3 shrink-0">
-            <h2 className="text-sm font-semibold">Validate</h2>
-            <p className="text-xs text-muted-foreground">
-              누적된 포즈로 hand-eye 행렬을 검증 (T_target←base 흩어짐). σ_rot
-              &lt; 0.5° / σ_t &lt; 5mm 가 목표.
-            </p>
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                className="flex-1"
-                onClick={() => handleValidate("saved")}
-                disabled={loading || poses.length < 2}
-                title="robot/calibration/hand_eye.npz 로드해서 검증"
-              >
-                저장된 .npz
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="flex-1"
-                onClick={() => handleValidate("compute")}
-                disabled={loading || poses.length < 2 || !compute}
-                title="마지막 COMPUTE 결과로 검증"
-              >
-                최근 COMPUTE
-              </Button>
-            </div>
-          </div>
-          <div className="px-4 pb-4 flex-1 min-h-0 overflow-y-auto">
-            {validate ? (
-              <ValidatePreview data={validate} />
-            ) : (
-              <p className="text-xs text-muted-foreground italic">
-                검증 결과 없음.
               </p>
             )}
           </div>

@@ -128,6 +128,9 @@ class MotionNode(BaseNode):
     # ─── Internal ────────────────────────────────────────────
 
     def _publish_cmd(self, angles_rad: list[float]) -> None:
+        # JointStateCache가 raw→rad에 더하는 offset을 명령 출력에서 차감해야
+        # motor 실제 위치가 URDF zero 기준과 정렬됨 (시각화/캡처와 일관).
+        offsets = self._cache.get_joint_offsets_rad()
         self.publish(Topic.MOTOR_CMD_JOINT, {
             "timestamp": time.time(),
             "joints": [
@@ -138,6 +141,7 @@ class MotionNode(BaseNode):
                         reverse=cfg.reverse,
                         min_raw=cfg.limit_min,
                         max_raw=cfg.limit_max,
+                        offset_rad=offsets.get(cfg.id, 0.0),
                     ),
                 }
                 for cfg, angle in zip(self._arm_cfgs, angles_rad)

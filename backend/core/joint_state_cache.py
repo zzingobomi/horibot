@@ -60,6 +60,24 @@ class JointStateCache:
             return
         self._subscribed = True
         node.create_subscriber(Topic.MOTOR_STATE_JOINT, self._on_motor_state)
+        # 분산 모드: 모터 Pi엔 joint_offsets.npz 파일이 없으므로 PC가 발행하는
+        # CALIB_STATE_JOINT_OFFSETS 토픽으로 받아 메모리에 반영.
+        node.create_subscriber(
+            Topic.CALIB_STATE_JOINT_OFFSETS, self._on_joint_offsets
+        )
+
+    def _on_joint_offsets(self, data: dict) -> None:
+        offsets = {
+            int(e["motor_id"]): float(e["offset_rad"])
+            for e in data.get("offsets", [])
+        }
+        with self._cache_lock:
+            self._joint_offsets_rad = offsets
+        import logging
+        logging.getLogger(__name__).info(
+            "joint_offsets 토픽 수신/적용: %s",
+            {i: round(o, 5) for i, o in offsets.items()},
+        )
 
     def _on_motor_state(self, data: dict) -> None:
         joints = data.get("joints", [])

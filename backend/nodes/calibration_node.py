@@ -14,12 +14,15 @@ from modules.dynamixel.motor_config import load_motor_config
 from modules.camera.stream import frame_to_base64
 from modules.calibration.intrinsic import CHECKERBOARD, IntrinsicCalibration
 from modules.calibration.hand_eye import HandEyeCalibration, Pose
+from modules.calibration import joint_offsets as joint_offsets_io
+from modules.calibration import thresholds as calib_thresholds
 from modules.calibration.pose_estimator import PoseEstimator
 from modules.kinematics.solver import PybulletSolver
 
 logger = logging.getLogger(__name__)
 
 SAVE_DIR = Path(__file__).parents[2] / "robot" / "calibration"
+HANDEYE_POSES_PATH = SAVE_DIR / "handeye_poses.npz"
 
 PREVIEW_INTERVAL = 0.2  # 5Hz
 
@@ -69,13 +72,13 @@ class CalibrationNode(BaseNode):
         self.create_service(Service.CALIB_HANDEYE_COMMIT,
                             self._srv_handeye_commit)
         self.create_service(
-            Service.CALIB_HANDEYE_REMOVE_POSE, self._srv_handeye_remove_pose
-        )
-        self.create_service(
             Service.CALIB_HANDEYE_LIST_POSES, self._srv_handeye_list_poses
         )
         self.create_service(
             Service.CALIB_HANDEYE_PREVIEW_ENABLE, self._srv_handeye_preview_enable
+        )
+        self.create_service(
+            Service.CALIB_HANDEYE_THRESHOLDS, self._srv_handeye_thresholds
         )
 
     def start(self) -> None:
@@ -86,6 +89,25 @@ class CalibrationNode(BaseNode):
             name="calib-preview",
         )
         self._preview_thread.start()
+        # 시작 시 현재 적용 중인 joint offsets 1회 발행 (frontend가 mount 시 받게)
+        self._publish_joint_offsets()
+        # 이전 세션에서 캡처한 포즈가 디스크에 있으면 복원 (thresholds 튜닝 사이클).
+        loaded = self.hand_eye.load_poses(HANDEYE_POSES_PATH)
+        if loaded > 0:
+            logger.info(f"이전 Hand-Eye 포즈 {loaded}개 복원됨")
+
+    def _publish_joint_offsets(self) -> None:
+        """현재 디스크에 있는 joint_offsets.npz 상태를 프론트엔드/구독자에게 브로드캐스트."""
+        path = SAVE_DIR / "joint_offsets.npz"
+        offsets = joint_offsets_io.load(path)
+        payload = {
+            "timestamp": time.time(),
+            "offsets": [
+                {"motor_id": int(mid), "offset_rad": float(off)}
+                for mid, off in sorted(offsets.items())
+            ],
+        }
+        self.publish(Topic.CALIB_STATE_JOINT_OFFSETS, payload)
 
     # ─── 이미지 캡처 ─────────────────────────────────────────
 
@@ -210,6 +232,11 @@ class CalibrationNode(BaseNode):
         )
 
         self._last_compute = None  # 새 포즈 추가 시 이전 계산 결과 무효화
+        # 디스크 영구화 — threshold 튜닝/재시작 후에도 보존.
+        try:
+            self.hand_eye.save_poses(HANDEYE_POSES_PATH)
+        except Exception as e:
+            logger.warning("포즈 디스크 저장 실패 (메모리에는 남음): %s", e)
 
         return {
             "success": True,
@@ -223,33 +250,16 @@ class CalibrationNode(BaseNode):
     def _srv_handeye_reset(self, req: dict) -> dict:
         self.hand_eye.reset()
         self._last_compute = None
+        # 디스크 파일도 삭제 — "처음부터 다시" 의도와 일치.
+        if HANDEYE_POSES_PATH.exists():
+            try:
+                HANDEYE_POSES_PATH.unlink()
+            except OSError as e:
+                logger.warning("포즈 파일 삭제 실패: %s", e)
         return {
             "success": True,
             "message": "Hand-Eye 누적 포즈 초기화됨",
             "data": {"pose_count": 0},
-        }
-
-    def _srv_handeye_remove_pose(self, req: dict) -> dict:
-        data = req.get("data", {})
-        if "id" not in data:
-            return {
-                "success": False,
-                "message": "id 필드 필요",
-                "data": {"pose_count": len(self.hand_eye.poses)},
-            }
-        pose_id = int(data["id"])
-        ok = self.hand_eye.remove_pose_by_id(pose_id)
-        if not ok:
-            return {
-                "success": False,
-                "message": f"포즈 #{pose_id} 제거 실패 (id 없음)",
-                "data": {"pose_count": len(self.hand_eye.poses)},
-            }
-        self._last_compute = None
-        return {
-            "success": True,
-            "message": f"포즈 #{pose_id} 제거됨",
-            "data": {"pose_count": len(self.hand_eye.poses)},
         }
 
     def _srv_handeye_list_poses(self, req: dict) -> dict:
@@ -263,7 +273,11 @@ class CalibrationNode(BaseNode):
         }
 
     def _srv_handeye_compute(self, req: dict) -> dict:
-        diag = self.hand_eye.compute_with_diagnostics()
+        arm_motor_ids = [cfg.id for cfg in self._arm_cfgs]
+        diag = self.hand_eye.compute_with_diagnostics(
+            fk_fn=self.solver.fk_to_matrix,
+            arm_motor_ids=arm_motor_ids,
+        )
         if diag is None:
             return {
                 "success": False,
@@ -284,16 +298,52 @@ class CalibrationNode(BaseNode):
                 "message": "먼저 COMPUTE를 실행하세요",
                 "data": {},
             }
-        path = SAVE_DIR / "hand_eye.npz"
-        self.hand_eye.save(path)
+
+        # 1) hand_eye.npz — 카메라↔그리퍼 외부 보정
+        hand_eye_path = SAVE_DIR / "hand_eye.npz"
+        self.hand_eye.save(hand_eye_path)
+
+        # 2) joint_offsets.npz — BA가 추정한 delta offset을 기존 값에 cumulative 합산.
+        offset_msg = ""
+        if self._last_compute.get("joint_offset_estimated"):
+            delta_list = self._last_compute.get("joint_offset_delta", [])
+            delta_by_id = {
+                int(e["motor_id"]): float(e["offset_rad"]) for e in delta_list
+            }
+            offsets_path = SAVE_DIR / "joint_offsets.npz"
+            existing = joint_offsets_io.load(offsets_path)
+            merged = joint_offsets_io.merge_delta(existing, delta_by_id)
+            joint_offsets_io.save(
+                offsets_path,
+                merged,
+                method=self.hand_eye.result.method,
+            )
+            # 즉시 적용
+            applied = self._cache.reload_joint_offsets()
+            applied_deg = {i: round(float(np.degrees(v)), 3) for i, v in applied.items()}
+            offset_msg = f" + joint_offsets 갱신 (cumulative, deg={applied_deg})"
+            logger.info("joint_offsets 즉시 적용: %s", applied_deg)
+            # 프론트엔드 URDF가 즉시 보정되도록 브로드캐스트
+            self._publish_joint_offsets()
 
         return {
             "success": True,
-            "message": f"저장 완료: {path}",
+            "message": f"저장 완료: {hand_eye_path}{offset_msg}",
             "data": {
-                "path": str(path),
+                "path": str(hand_eye_path),
                 "method": self.hand_eye.result.method,
+                "joint_offsets_applied": self._last_compute.get(
+                    "joint_offset_estimated", False
+                ),
             },
+        }
+
+    def _srv_handeye_thresholds(self, req: dict) -> dict:
+        """프론트엔드가 mount 시 1회 fetch. 단일 출처 보장."""
+        return {
+            "success": True,
+            "message": "ok",
+            "data": calib_thresholds.as_dict(),
         }
 
     def _srv_handeye_preview_enable(self, req: dict) -> dict:
@@ -306,7 +356,8 @@ class CalibrationNode(BaseNode):
         }
 
     def _preview_loop(self) -> None:
-        flags = cv2.CALIB_CB_FAST_CHECK | cv2.CALIB_CB_NORMALIZE_IMAGE
+        # SB는 조명/블러에 강함. preview는 속도 우선이라 EXHAUSTIVE/ACCURACY 미사용.
+        flags = cv2.CALIB_CB_NORMALIZE_IMAGE
         while self._running:
             if not self._preview_enabled:
                 time.sleep(PREVIEW_INTERVAL)
@@ -328,7 +379,7 @@ class CalibrationNode(BaseNode):
 
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 h, w = gray.shape[:2]
-                found, corners = cv2.findChessboardCorners(
+                found, corners = cv2.findChessboardCornersSB(
                     gray, CHECKERBOARD, flags=flags
                 )
 

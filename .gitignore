@@ -44,3 +44,8 @@ desktop.ini
 # ─── Weights ───────────────────────────────────────────────────
 *.pt
 *.pth
+
+# ─── Calibration intermediate ─────────────────────────────────
+# 사용자 세션의 누적 캡처 포즈 (threshold 튜닝 사이클용 — 공유 불필요).
+# 캘 *결과*(hand_eye.npz, intrinsic.npz, joint_offsets.npz)는 commit.
+robot/calibration/handeye_poses.npz

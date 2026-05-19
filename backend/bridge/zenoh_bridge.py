@@ -137,6 +137,7 @@ _ALWAYS_SUBSCRIBE = [
     Topic.MOTOR_STATE_JOINT,
     Topic.CAMERA_STATE_STATUS,
     Topic.CALIB_HANDEYE_PREVIEW,
+    Topic.CALIB_STATE_JOINT_OFFSETS,
     Topic.SYSTEM_HEARTBEAT,
     Topic.SYSTEM_LOG,
     Topic.MOTION_STATE_TRAJ,
@@ -249,6 +250,7 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
         key = msg.get("key", "")
         request_id = msg.get("request_id", "")
         data = msg.get("data", {})
+        timeout = float(msg.get("timeout") or 5.0)
 
         req_payload = json.dumps(
             {
@@ -259,7 +261,7 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
         ).encode()
 
         try:
-            replies = session.get(key, payload=req_payload, timeout=5.0)
+            replies = session.get(key, payload=req_payload, timeout=timeout)
             res = None
             for reply in replies:
                 res = json.loads(reply.ok.payload.to_bytes())

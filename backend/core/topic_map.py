@@ -17,6 +17,9 @@ class Topic:
 
     # ─── Calibration ─────────────────────────────────────────
     CALIB_HANDEYE_PREVIEW = "omx/calibration/state/handeye_preview"
+    # joint_offsets.npz의 현재 상태 — 시작 시 + COMMIT 직후 발행 (latest-wins).
+    # 프론트엔드는 raw motor position에 이 offset을 더해 URDF에 적용.
+    CALIB_STATE_JOINT_OFFSETS = "omx/calibration/state/joint_offsets"
 
     # ─── Task ────────────────────────────────────────────────
     TASK_STATE = "omx/task/state"
@@ -58,9 +61,9 @@ class Service:
     CALIB_HANDEYE_RESET = "omx/calib/srv/handeye/reset"
     CALIB_HANDEYE_COMPUTE = "omx/calib/srv/handeye/compute"
     CALIB_HANDEYE_COMMIT = "omx/calib/srv/handeye/commit"
-    CALIB_HANDEYE_REMOVE_POSE = "omx/calib/srv/handeye/remove_pose"
     CALIB_HANDEYE_LIST_POSES = "omx/calib/srv/handeye/list_poses"
     CALIB_HANDEYE_PREVIEW_ENABLE = "omx/calib/srv/handeye/preview_enable"
+    CALIB_HANDEYE_THRESHOLDS = "omx/calib/srv/handeye/thresholds"
     CALIB_CAPTURE = "omx/calib/srv/capture"
 
     # ─── System ──────────────────────────────────────────────

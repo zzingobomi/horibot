@@ -8,6 +8,7 @@ import { Section } from "../ui/Section";
 
 export function RobotStatePanel(props: IDockviewPanelProps<object>) {
   const joints = useRobotStore((s) => s.joints);
+  const jointOffsetsRad = useRobotStore((s) => s.jointOffsetsRad);
   const tcpPos = useSceneStore((s) => s.tcpPos);
 
   const jointAngles = useMemo(() => {
@@ -16,12 +17,15 @@ export function RobotStatePanel(props: IDockviewPanelProps<object>) {
       .filter((j) => j.id >= 1 && j.id <= 5)
       .sort((a, b) => a.id - b.id)
       .map((j) => {
-        if (j.degree !== undefined) return (j.degree * Math.PI) / 180;
-        if (j.position !== undefined)
-          return ((j.position - 2048) / 4095) * 2 * Math.PI;
-        return 0;
+        const baseRad =
+          j.degree !== undefined
+            ? (j.degree * Math.PI) / 180
+            : j.position !== undefined
+            ? ((j.position - 2048) / 4095) * 2 * Math.PI
+            : 0;
+        return baseRad + (jointOffsetsRad[j.id] ?? 0);
       });
-  }, [joints]);
+  }, [joints, jointOffsetsRad]);
 
   return (
     <PanelShell

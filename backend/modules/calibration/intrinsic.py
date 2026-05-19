@@ -36,12 +36,17 @@ class IntrinsicCalibration:
 
     def capture(self, frame: np.ndarray) -> tuple[bool, np.ndarray]:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        ret, corners = cv2.findChessboardCorners(gray, CHECKERBOARD, None)
+        # SB(sector-based)는 조명/블러에 강하고 sub-pixel 정확도까지 내장 → cornerSubPix 불필요.
+        # 캡처 경로는 정확도 우선이라 ACCURACY + EXHAUSTIVE까지 켬.
+        flags = (
+            cv2.CALIB_CB_NORMALIZE_IMAGE
+            | cv2.CALIB_CB_EXHAUSTIVE
+            | cv2.CALIB_CB_ACCURACY
+        )
+        ret, corners = cv2.findChessboardCornersSB(gray, CHECKERBOARD, flags=flags)
 
         vis = frame.copy()
         if ret:
-            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-            corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
             cv2.drawChessboardCorners(vis, CHECKERBOARD, corners, ret)
 
             self.obj_points.append(self._objp_template.copy())

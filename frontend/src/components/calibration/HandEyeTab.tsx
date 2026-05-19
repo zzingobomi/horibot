@@ -2,7 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import { CameraFeed } from "@/components/camera/CameraFeed";
 import { Button } from "@/components/ui/button";
 import { CalibJointBar } from "./CalibJointBar";
-import type { ComputeData, HandEyePreview, PoseMeta } from "./types";
+import type {
+  CalibThresholds,
+  ComputeData,
+  HandEyePreview,
+  PoseMeta,
+} from "./types";
 import { HandEyePoseList } from "./HandEyePoseList";
 import { CheckerboardOverlay } from "./CheckerboardOverlay";
 import { ComputePreview } from "./HandEyeResults";
@@ -20,9 +25,11 @@ export function HandEyeTab() {
   const [poses, setPoses] = useState<PoseMeta[]>([]);
   const [compute, setCompute] = useState<ComputeData | null>(null);
   const [computeStale, setComputeStale] = useState(false);
+  const [thresholds, setThresholds] = useState<CalibThresholds | null>(null);
 
   // utils
   const [loading, setLoading] = useState(false);
+  const [computing, setComputing] = useState(false);
   const [status, setStatus] = useState("");
 
   // checkerboard preview
@@ -75,6 +82,12 @@ export function HandEyeTab() {
       const data = res.data as { poses: PoseMeta[] };
       setPoses(data.poses ?? []);
     });
+    bridge
+      .callService(ServiceKey.CALIB_HANDEYE_THRESHOLDS, {})
+      .then((res) => {
+        if (cancelled || !res.success) return;
+        setThresholds(res.data as unknown as CalibThresholds);
+      });
     return () => {
       cancelled = true;
     };
@@ -107,24 +120,16 @@ export function HandEyeTab() {
     }
   };
 
-  const handleRemove = async (index: number) => {
-    setLoading(true);
-    const res = await bridge.callService(ServiceKey.CALIB_HANDEYE_REMOVE_POSE, {
-      index,
-    });
-    setLoading(false);
-    if (res.success) {
-      setComputeStale(true);
-      await refreshPoses();
-    } else {
-      setStatus(`❌ ${res.message}`);
-    }
-  };
-
   const handleCompute = async () => {
     setLoading(true);
-    const res = await bridge.callService(ServiceKey.CALIB_HANDEYE_COMPUTE, {});
+    setComputing(true);
+    const res = await bridge.callService(
+      ServiceKey.CALIB_HANDEYE_COMPUTE,
+      {},
+      { timeoutMs: 5 * 60 * 1000 }
+    );
     setLoading(false);
+    setComputing(false);
     if (res.success) {
       setCompute(res.data as unknown as ComputeData);
       setComputeStale(false);
@@ -184,11 +189,7 @@ export function HandEyeTab() {
           </div>
 
           <div className="flex-1 min-h-0 flex flex-col">
-            <HandEyePoseList
-              poses={poses}
-              onRemove={handleRemove}
-              disabled={loading}
-            />
+            <HandEyePoseList poses={poses} />
           </div>
         </div>
 
@@ -226,16 +227,69 @@ export function HandEyeTab() {
               onClick={handleCompute}
               disabled={loading || poses.length < 3}
             >
-              COMPUTE
+              {computing ? (
+                <span className="inline-flex items-center gap-2">
+                  <svg
+                    className="animate-spin h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                  >
+                    <circle
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                      className="opacity-25"
+                    />
+                    <path
+                      d="M4 12a8 8 0 018-8"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                  계산 중...
+                </span>
+              ) : (
+                "COMPUTE"
+              )}
             </Button>
           </div>
-          <div className="px-4 pb-4 flex-1 min-h-0 overflow-y-auto">
-            {compute ? (
-              <ComputePreview data={compute} />
+          <div className="px-4 pb-4 flex-1 min-h-0 overflow-y-auto relative">
+            {compute && thresholds ? (
+              <ComputePreview data={compute} thresholds={thresholds} />
             ) : (
               <p className="text-xs text-muted-foreground">
                 포즈 캡처 후 COMPUTE를 실행하면 결과 미리보기가 표시됩니다.
               </p>
+            )}
+            {computing && (
+              <div className="absolute inset-0 bg-background/70 backdrop-blur-[1px] flex items-center justify-center pointer-events-none">
+                <div className="flex flex-col items-center gap-2 text-xs text-muted-foreground">
+                  <svg
+                    className="animate-spin h-5 w-5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                  >
+                    <circle
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                      className="opacity-25"
+                    />
+                    <path
+                      d="M4 12a8 8 0 018-8"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                  Hand-Eye 계산 중...
+                </div>
+              </div>
             )}
           </div>
         </div>

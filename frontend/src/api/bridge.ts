@@ -196,16 +196,24 @@ class BridgeClient {
 
   callService(
     key: string,
-    data: Record<string, unknown>
+    data: Record<string, unknown>,
+    options?: { timeoutMs?: number }
   ): Promise<{
     success: boolean;
     message: string;
     data: Record<string, unknown>;
   }> {
+    const timeoutMs = options?.timeoutMs ?? 5000;
     return new Promise((resolve) => {
       const request_id = makeRequestId();
       this.pendingServices.set(request_id, resolve);
-      this._send({ type: WsMsgType.Service, key, request_id, data });
+      this._send({
+        type: WsMsgType.Service,
+        key,
+        request_id,
+        data,
+        timeout: timeoutMs / 1000,
+      });
 
       setTimeout(() => {
         if (this.pendingServices.has(request_id)) {
@@ -216,7 +224,7 @@ class BridgeClient {
             data: {},
           });
         }
-      }, 5000);
+      }, timeoutMs);
     });
   }
 

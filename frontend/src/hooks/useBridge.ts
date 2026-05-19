@@ -20,6 +20,7 @@ export function useBridge() {
   const setJoints = useRobotStore((s) => s.setJoints);
   const setConfigs = useRobotStore((s) => s.setConfigs);
   const setTorque = useRobotStore((s) => s.setTorque);
+  const setJointOffsets = useRobotStore((s) => s.setJointOffsets);
   const setStatus = useCameraStore((s) => s.setStatus);
   const setTrajectoryState = useMotionStore((s) => s.setTrajectoryState);
   const setTaskState = useTaskStore((s) => s.setTaskState);
@@ -104,6 +105,21 @@ export function useBridge() {
     // PointCloud 상태 + 바이너리 스트림 구독
     const unsubPointCloud = usePointCloudStore.getState()._attach();
 
+    // Joint offsets — 캘리브레이션이 추정한 motor zero 보정 (단위: rad).
+    // CalibrationNode가 시작 시 1회 + COMMIT 직후 latest-wins로 발행.
+    // 프론트엔드는 URDF 적용 시 raw_to_rad에 더해 워크스페이스가 백엔드와 동기화.
+    const unsubJointOffsets = bridge.subscribe(
+      Topic.CALIB_STATE_JOINT_OFFSETS,
+      (data) => {
+        const { offsets } = data as {
+          offsets: { motor_id: number; offset_rad: number }[];
+        };
+        const map: Record<number, number> = {};
+        for (const e of offsets ?? []) map[e.motor_id] = e.offset_rad;
+        setJointOffsets(map);
+      }
+    );
+
     return () => {
       unsubJoint();
       unsubHeartbeat();
@@ -113,6 +129,7 @@ export function useBridge() {
       unsubTask();
       unsubDetector();
       unsubPointCloud();
+      unsubJointOffsets();
       bridge.disconnect();
     };
   }, [
@@ -123,6 +140,7 @@ export function useBridge() {
     setConfigs,
     setStatus,
     setTorque,
+    setJointOffsets,
     setTrajectoryState,
     setTaskState,
     setLoading,

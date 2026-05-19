@@ -22,18 +22,24 @@ export function Workspace3D() {
   const { results } = useCalibrationResults();
 
   const joints = useRobotStore((s) => s.joints);
+  const jointOffsetsRad = useRobotStore((s) => s.jointOffsetsRad);
   const jointAngles = useMemo<number[]>(() => {
     if (!joints?.length) return [0, 0, 0, 0, 0];
     return joints
       .filter((j) => j.id >= 1 && j.id <= 5)
       .sort((a, b) => a.id - b.id)
       .map((j) => {
-        if (j.degree !== undefined) return (j.degree * Math.PI) / 180;
-        if (j.position !== undefined)
-          return ((j.position - 2048) / 4095) * 2 * Math.PI;
-        return 0;
+        // 백엔드 JointStateCache와 동일한 보정: raw_to_rad + joint_offset.
+        // 캘 안 한 환경에서는 offset이 0이라 기존 동작 그대로.
+        const baseRad =
+          j.degree !== undefined
+            ? (j.degree * Math.PI) / 180
+            : j.position !== undefined
+            ? ((j.position - 2048) / 4095) * 2 * Math.PI
+            : 0;
+        return baseRad + (jointOffsetsRad[j.id] ?? 0);
       });
-  }, [joints]);
+  }, [joints, jointOffsetsRad]);
 
   const options = useSceneStore((s) => s.options);
   const linkVisibility = useSceneStore((s) => s.linkVisibility);

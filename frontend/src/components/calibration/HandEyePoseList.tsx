@@ -7,7 +7,7 @@ export function HandEyePoseList({
   disabled,
 }: {
   poses: PoseMeta[];
-  onRemove: (index: number) => void;
+  onRemove: (id: number) => void;
   disabled: boolean;
 }) {
   if (poses.length === 0) {
@@ -29,13 +29,13 @@ export function HandEyePoseList({
           const time = ts.toLocaleTimeString("ko-KR", { hour12: false });
           return (
             <li
-              key={p.index}
+              key={p.id}
               className="flex items-center justify-between gap-2 px-2 py-1 rounded text-xs font-mono hover:bg-muted/60"
             >
-              <span className="text-muted-foreground">#{p.index}</span>
+              <span className="text-muted-foreground">#{p.id}</span>
               <span className="flex-1 text-[11px]">{time}</span>
               <button
-                onClick={() => onRemove(p.index)}
+                onClick={() => onRemove(p.id)}
                 disabled={disabled}
                 title="삭제"
                 className="text-muted-foreground hover:text-destructive disabled:opacity-40"

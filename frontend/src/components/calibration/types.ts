@@ -5,6 +5,7 @@ export type HandEyePreview = {
   corners?: [number, number][];
   bbox?: [number, number, number, number];
   coverage_ratio?: number; // 체커보드가 화면에서 차지하는 비율 (너무 작거나 크면 PnP 부정확)
+  tilt_deg?: number; // 보드 평면 vs 이미지 평면 각도. 0°=정면(모호), 90°=edge-on. 20~65°가 좋음.
   reason?: string;
 };
 
@@ -12,7 +13,7 @@ export type HandEyePreview = {
  * 캡처한 자세 1개의 메타데이터.
  */
 export type PoseMeta = {
-  index: number;
+  id: number;
   timestamp: number;
   joint_angles_rad: number[];
 };
@@ -37,14 +38,36 @@ export type MethodCompareEntry = {
 
 /**
  * 자세별 잔차 한 줄. 값이 크면 outlier 후보 → 개별 삭제 후 재계산.
- *
- * - ComputeData에선  AX=XB 잔차
- * - ValidateData에선 T_base←board의 평균 대비 흩어짐
+ * T_base←board의 평균 대비 흩어짐.
  */
 export type PerPoseResidual = {
-  index: number;
+  id: number;
   drot_deg: number;
   dt_mm: number;
+};
+
+/**
+ * 백엔드 `_diagnose()`의 결과. 다음 액션을 명시적으로 안내.
+ *
+ * - outlier_present:        한두 포즈가 평균에서 도드라짐 → 삭제 후 재 COMPUTE
+ * - insufficient_diversity: joint 1/4/5 회전 범위가 작음 → 자세 추가 캡처
+ * - good:                   σ 목표 충족 → COMMIT 권장
+ * - fk_floor_reached:       outlier 없음 + 다양성 OK인데 σ 정체 → BA 필요
+ */
+export type DiagnosisStatus =
+  | "outlier_present"
+  | "insufficient_diversity"
+  | "fk_floor_reached"
+  | "good";
+
+export type Diagnosis = {
+  status: DiagnosisStatus;
+  severity: "action_required" | "success";
+  message: string;
+  outlier_ids?: number[];
+  low_diversity_joints?: number[];
+  sigma_rot_deg?: number;
+  park_drot_deg?: number;
 };
 
 /**
@@ -61,23 +84,33 @@ export type ComputeData = {
   pose_count: number;
   method_compare: MethodCompareEntry[];
   per_pose_residual: PerPoseResidual[];
-  sigma_rot_deg: number; // 회전 잔차의 표준편차 (도)
-  sigma_t_mm: number; // 평행이동 잔차의 표준편차 (mm)
+  sigma_rot_deg: number; // T_target←base 회전의 평균 대비 RMS 편차 (도)
+  sigma_t_mm: number; // 위치 버전 (mm)
+  diagnosis: Diagnosis;
 };
 
 /**
- * `CALIB_HANDEYE_VALIDATE` 응답.
+ * `CALIB_HANDEYE_COMPUTE_BA` 응답.
  *
- * 같은 캡처 포즈들을 가지고 T_base←board가 자세별로 얼마나 흩어지는지 측정.
- * 좋은 캘이면 모두 같은 값(체커보드는 안 움직였으니까).
- * 흩어짐 = (hand-eye 오차) + (FK 오차). σ가 충분히 작으면 캘 OK, 크면 캘 실패 또는 자세 품질 문제.
- *
- * 목표치: σ_rot < 0.5°, σ_t < 5mm
+ * Bundle Adjustment 결과. joint zero offset 5개 + hand-eye R/t를 동시 최적화한 결과로,
+ * cv2.calibrateHandEye(TSAI) seed 대비 σ가 얼마나 줄었는지 비교용 필드(`seed_*`)를 포함.
  */
-export type ValidateData = {
-  source: string;
+export type BundleAdjustData = {
+  R_cam2gripper: number[][];
+  t_cam2gripper: number[];
+  joint_offsets_rad: number[];
+  joint_offsets_deg: number[];
+  method: string;
   pose_count: number;
-  per_pose_residual: PerPoseResidual[];
   sigma_rot_deg: number;
   sigma_t_mm: number;
+  per_pose_residual: PerPoseResidual[];
+  seed_sigma_rot_deg: number; // BA 이전 (TSAI seed) σ
+  seed_sigma_t_mm: number;
+  iterations: number;
+  cost_initial: number;
+  cost_final: number;
+  elapsed_sec: number;
+  success: boolean;
 };
+

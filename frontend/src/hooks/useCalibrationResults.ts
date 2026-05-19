@@ -16,6 +16,7 @@ export interface HandEyeData {
 export interface CalibrationResults {
   intrinsic?: IntrinsicData;
   hand_eye?: HandEyeData;
+  joint_offsets_rad?: number[]; // BA 결과. 길이 5 (joint 1..5).
   intrinsic_error?: string;
   hand_eye_error?: string;
 }

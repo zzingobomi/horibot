@@ -22,18 +22,21 @@ export function Workspace3D() {
   const { results } = useCalibrationResults();
 
   const joints = useRobotStore((s) => s.joints);
+  const jointOffsets = results?.joint_offsets_rad;
   const jointAngles = useMemo<number[]>(() => {
     if (!joints?.length) return [0, 0, 0, 0, 0];
     return joints
       .filter((j) => j.id >= 1 && j.id <= 5)
       .sort((a, b) => a.id - b.id)
-      .map((j) => {
-        if (j.degree !== undefined) return (j.degree * Math.PI) / 180;
+      .map((j, idx) => {
+        const offset = jointOffsets?.[idx] ?? 0;
+        if (j.degree !== undefined)
+          return (j.degree * Math.PI) / 180 + offset;
         if (j.position !== undefined)
-          return ((j.position - 2048) / 4095) * 2 * Math.PI;
-        return 0;
+          return ((j.position - 2048) / 4095) * 2 * Math.PI + offset;
+        return offset;
       });
-  }, [joints]);
+  }, [joints, jointOffsets]);
 
   const options = useSceneStore((s) => s.options);
   const linkVisibility = useSceneStore((s) => s.linkVisibility);

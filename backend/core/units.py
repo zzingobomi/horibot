@@ -21,9 +21,14 @@ def deg_to_raw(deg: float) -> int:
     return int(deg / 360.0 * RAW_MAX + RAW_CENTER)
 
 
-def raw_to_rad(raw: int, *, reverse: bool = False) -> float:
+def raw_to_rad(
+    raw: int, *, reverse: bool = False, offset_rad: float = 0.0
+) -> float:
+    """raw → URDF joint rad. offset_rad는 BA에서 추정된 모터 zero offset."""
     angle = (raw - RAW_CENTER) / RAW_MAX * 2.0 * math.pi
-    return -angle if reverse else angle
+    if reverse:
+        angle = -angle
+    return angle + offset_rad
 
 
 def rad_to_raw(
@@ -32,7 +37,10 @@ def rad_to_raw(
     reverse: bool = False,
     min_raw: int = 0,
     max_raw: int = RAW_MAX,
+    offset_rad: float = 0.0,
 ) -> int:
+    """URDF joint rad → raw. offset_rad는 raw_to_rad의 역연산이 되도록 차감."""
+    radian = radian - offset_rad
     if reverse:
         radian = -radian
     raw = int(radian / (2.0 * math.pi) * RAW_MAX + RAW_CENTER)

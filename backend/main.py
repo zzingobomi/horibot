@@ -81,6 +81,12 @@ def main():
     # ─── Zenoh 세션 초기화 ────────────────────────────────────
     ZenohSession.init(cfg.get("zenoh"))
 
+    # ─── joint_offsets 로드 (BA 결과 파일이 있으면) ────────────
+    # raw_to_rad/rad_to_raw 호출 전에 가시성 위해 eager load.
+    from core import joint_offsets as _jo
+
+    _jo.reload()
+
     # ─── D405 intrinsic seed (camera 노드 있을 때만) ──────────
     if "camera" in requested_nodes:
         from modules.calibration.loader import CALIB_DIR

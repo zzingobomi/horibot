@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 from core.topic_map import Topic
 from core.units import raw_to_rad
+from core.joint_offsets import get_joint_offset
 from modules.dynamixel.motor_config import MotorConfig
 
 if TYPE_CHECKING:
@@ -44,11 +45,17 @@ class JointStateCache:
             if not self._raw:
                 return None
             result = []
-            for cfg in arm_cfgs:
+            for idx, cfg in enumerate(arm_cfgs):
                 raw = self._raw.get(cfg.id)
                 if raw is None:
                     return None
-                result.append(raw_to_rad(raw, reverse=cfg.reverse))
+                result.append(
+                    raw_to_rad(
+                        raw,
+                        reverse=cfg.reverse,
+                        offset_rad=get_joint_offset(idx),
+                    )
+                )
             return result
 
     def get_raw(self, motor_id: int) -> int | None:

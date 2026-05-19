@@ -8,6 +8,7 @@ from core.topic_map import Service, Topic
 from core.joint_state_cache import JointStateCache
 from core.common import GRIPPER_ID
 from core.units import rad_to_raw
+from core.joint_offsets import get_joint_offset
 from modules.dynamixel.motor_config import MotorConfig, load_motor_config
 from modules.kinematics.motion_modes import MotionModes
 from modules.kinematics.trajectory_runner import TrajectoryRunner
@@ -138,9 +139,12 @@ class MotionNode(BaseNode):
                         reverse=cfg.reverse,
                         min_raw=cfg.limit_min,
                         max_raw=cfg.limit_max,
+                        offset_rad=get_joint_offset(idx),
                     ),
                 }
-                for cfg, angle in zip(self._arm_cfgs, angles_rad)
+                for idx, (cfg, angle) in enumerate(
+                    zip(self._arm_cfgs, angles_rad)
+                )
             ],
         })
 

@@ -3,25 +3,30 @@ import { Activity } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
 import { useRobotStore } from "@/store/robotStore";
 import { useSceneStore } from "@/store/sceneStore";
+import { useCalibrationResults } from "@/hooks/useCalibrationResults";
 import { PanelShell } from "../ui/PanelShell";
 import { Section } from "../ui/Section";
 
 export function RobotStatePanel(props: IDockviewPanelProps<object>) {
   const joints = useRobotStore((s) => s.joints);
   const tcpPos = useSceneStore((s) => s.tcpPos);
+  const { results } = useCalibrationResults();
+  const jointOffsets = results?.joint_offsets_rad;
 
   const jointAngles = useMemo(() => {
     if (!joints?.length) return Array(5).fill(0) as number[];
     return joints
       .filter((j) => j.id >= 1 && j.id <= 5)
       .sort((a, b) => a.id - b.id)
-      .map((j) => {
-        if (j.degree !== undefined) return (j.degree * Math.PI) / 180;
+      .map((j, idx) => {
+        const offset = jointOffsets?.[idx] ?? 0;
+        if (j.degree !== undefined)
+          return (j.degree * Math.PI) / 180 + offset;
         if (j.position !== undefined)
-          return ((j.position - 2048) / 4095) * 2 * Math.PI;
-        return 0;
+          return ((j.position - 2048) / 4095) * 2 * Math.PI + offset;
+        return offset;
       });
-  }, [joints]);
+  }, [joints, jointOffsets]);
 
   return (
     <PanelShell

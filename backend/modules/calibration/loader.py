@@ -25,6 +25,7 @@ class HandEyeData:
 class CalibrationData:
     intrinsic: IntrinsicData | None = None
     hand_eye: HandEyeData | None = None
+    joint_offsets_rad: list[float] | None = None  # 길이 5, BA 결과
 
     def is_ready(self) -> bool:
         return self.intrinsic is not None and self.hand_eye is not None
@@ -34,7 +35,20 @@ def load_calibration() -> CalibrationData:
     return CalibrationData(
         intrinsic=_load_intrinsic(CALIB_DIR / "intrinsic.npz"),
         hand_eye=_load_hand_eye(CALIB_DIR / "hand_eye.npz"),
+        joint_offsets_rad=_load_joint_offsets(CALIB_DIR / "joint_offsets.npz"),
     )
+
+
+def _load_joint_offsets(path: Path) -> list[float] | None:
+    if not path.exists():
+        return None
+    try:
+        data = np.load(path)
+        arr = np.asarray(data["joint_offsets_rad"], dtype=np.float64)
+        return arr.tolist()
+    except Exception as e:
+        logger.error("joint_offsets.npz 로드 실패 (%s): %s", path, e)
+        return None
 
 
 def _load_intrinsic(path: Path) -> IntrinsicData | None:
@@ -95,5 +109,8 @@ def to_json(data: CalibrationData) -> dict:
             "R": data.hand_eye.R.tolist(),
             "t": data.hand_eye.t.tolist(),
         }
+
+    if data.joint_offsets_rad is not None:
+        result["joint_offsets_rad"] = data.joint_offsets_rad
 
     return result

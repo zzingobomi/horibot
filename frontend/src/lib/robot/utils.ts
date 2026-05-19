@@ -14,6 +14,10 @@ export function rawToDeg(raw: number): number {
   return ((raw - RAW_CENTER) / RAW_RANGE) * 360;
 }
 
+export function rawToRad(raw: number, offsetRad = 0): number {
+  return ((raw - RAW_CENTER) / RAW_RANGE) * 2 * Math.PI + offsetRad;
+}
+
 export function formatDeg(deg: number): number {
   return Math.round(deg * 10) / 10;
 }

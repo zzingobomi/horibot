@@ -308,9 +308,8 @@ PointCloudNode (PC)
 3. **[캡처]** — 프레임 캡처 + 체커보드 검출 + PnP + 포즈 추가. 검출 실패면 사유 표시되고 포즈 미추가.
 4. 8~10자세 반복 (자세 다양성 가이드 ↓).
 5. **Compute 카드 [COMPUTE]** — `cv2.calibrateHandEye` 실행 + method 비교 + per-pose 잔차 표시. **파일 저장 X** (미리보기만).
-6. 결과 해석 (§ 결과 해석 가이드). outlier 포즈는 Capture 리스트의 휴지통으로 삭제 후 다시 COMPUTE.
+6. 결과 해석 (§ 결과 해석 가이드). per-pose 표에서 평균에서 도드라지게 벗어난 빨강 행만 삭제 → 자세 추가 캡처 → 다시 COMPUTE. σ가 충분히 작아질 때까지 반복.
 7. 만족스러우면 **Commit 카드 [COMMIT]** — `hand_eye.npz`에 저장.
-8. (선택) **Validate 카드** — 저장된 .npz 또는 최근 COMPUTE 결과로 T_target←base 흩어짐 σ_rot/σ_t 측정. BA 필요성 진단용.
 
 자세 다양성이 핵심 (5DOF 한계 안에서 최대한):
 
@@ -323,36 +322,36 @@ PointCloudNode (PC)
 
 ### 결과 해석 가이드
 
-COMPUTE / Validate 결과를 보고 어떤 조치를 취할지 판단하는 룰. 색 임계값은 [HandEyeResults.tsx](frontend/src/components/calibration/HandEyeResults.tsx)에 박혀 있음.
+COMPUTE 결과를 보고 어떤 조치를 취할지 판단하는 룰. 색 임계값은 [HandEyeResults.tsx](frontend/src/components/calibration/HandEyeResults.tsx)에 박혀 있음.
 
-#### 색 임계값
+> **주의** — 현재 코드의 per-pose drot/dt + σ_rot/σ_t는 **첫 포즈 기준 + std-of-deviations** 라 통상 의미와 어긋남. § TODO의 "outlier 계산 식 수정"으로 평균 기준 + RMS로 고쳐야 아래 임계값이 진짜로 유효. 그 전에는 다양한 자세를 outlier로 잘못 비춰주므로 워크플로우대로 자세 추가→삭제 반복 시 정확도가 오히려 떨어질 수 있음.
 
-| 항목                       | 의미                                                                                                                                           | 초록 (좋음)  | 노랑 (경계)   | 빨강 (나쁨)   |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | ------------- | ------------- |
-| **σ_rot**                  | T_target←base 회전 분산. 캡처한 모든 포즈에서 본 체커보드를 base 프레임으로 환산했을 때 얼마나 흩어지나. 체커보드는 안 움직였으니 이상적이면 0 | <0.5°        | <1.5°         | ≥1.5°         |
-| **σ_t**                    | 위 위치 버전 (mm)                                                                                                                              | <5           | <15           | ≥15           |
-| **PARK / DANIILIDIS Δrot** | TSAI 대비 다른 알고리즘 결과의 차이. 같은 입력을 세 가지 다른 수학으로 풀어서 합의 정도 → 입력 self-consistency 척도                           | <1°          | <3°           | ≥3°           |
-| **per-pose drot / dt**     | 각 포즈가 평균(또는 첫 포즈) 대비 벗어난 양. outlier 식별                                                                                      | <0.5° / <5mm | <1.5° / <15mm | ≥1.5° / ≥15mm |
+#### 색 임계값 (식 수정 후 기준)
+
+| 항목                       | 의미                                                                                                                 | 초록 (좋음)  | 노랑 (경계)   | 빨강 (나쁨)   |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------ | ------------- | ------------- |
+| **σ_rot**                  | T_target←base 회전의 **평균 대비 RMS** 편차. 체커보드는 안 움직였으니 이상적이면 0. FK + X 오차의 직접 측정치        | <0.5°        | <1.5°         | ≥1.5°         |
+| **σ_t**                    | 위 위치 버전 (mm)                                                                                                    | <5           | <15           | ≥15           |
+| **PARK / DANIILIDIS Δrot** | TSAI 대비 다른 알고리즘 결과의 차이. 같은 입력을 세 가지 다른 수학으로 풀어서 합의 정도 → 입력 self-consistency 척도 | <1°          | <3°           | ≥3°           |
+| **per-pose drot / dt**     | 각 포즈가 **평균** 대비 벗어난 양 (식 수정 후). 한 포즈만 평균에서 떨어진 경우 진짜 outlier 후보                     | <0.5° / <5mm | <1.5° / <15mm | ≥1.5° / ≥15mm |
 
 #### 진단 룰
 
 읽는 순서: **PARK Δrot → per-pose → σ**.
 
-1. **PARK Δrot 노랑/빨강** (≥1°) → 알고리즘 자체 문제 아니라 **입력 포즈에 outlier가 섞여 있음**. PARK이 TSAI보다 outlier에 민감해 가장 먼저 빨강이 됨. per-pose 표에서 빨강 행 식별 → 삭제 → 재 COMPUTE.
-2. **PARK ≤1°인데 σ_rot 빨강** (≥1.5°) → outlier는 정리됐지만 **시스템 전반 오차**. 두 가지 원인:
-   - 자세 다양성 부족 (한 축 위주로 회전했음). 새 자세 추가.
-   - FK 입력 자체 오차 (모터 zero offset, 링크 길이, 중력 처짐). 자세 더 추가해도 정체될 가능성 큼 → **Bundle Adjustment** (§ 정확도 향상 로드맵).
-3. **σ_rot 초록 (<0.5°) + σ_t 초록 (<5mm)** → 캘 품질 충분. COMMIT. TSDF/ICP에 사용 OK.
+1. **per-pose 표에 한두 행만 빨강 (나머진 깨끗)** → 그 포즈가 평균에서 도드라지게 벗어남 → 진짜 outlier. 삭제 후 COMPUTE 재실행 → σ 줄어들어야 함.
+2. **per-pose 표 전체가 비슷한 정도로 색깔 있음** → 특정 자세 outlier 아니라 **시스템 전반 오차** (자세 다양성 부족 or FK floor). 다양성 더 추가하거나 → 정체되면 BA.
+3. **PARK Δrot 노랑/빨강** (≥1°) → 입력 데이터에 outlier 섞여 있을 가능성 (PARK이 TSAI보다 outlier에 민감). per-pose 빨강 행 식별 → 삭제 → 재 COMPUTE.
+4. **σ_rot 초록 (<0.5°) + σ_t 초록 (<5mm)** → 캘 품질 충분. COMMIT.
 
 #### 액션 플레이북
 
-| 상황                                | 조치                                                                      |
-| ----------------------------------- | ------------------------------------------------------------------------- |
-| per-pose에 빨강 1~3개 (나머진 깨끗) | 빨강 포즈 삭제 → COMPUTE 재실행                                           |
-| per-pose에 빨강/노랑이 절반 이상    | 캡처 절차 문제 (로봇 정지 안 함 / 체커보드 가림 / 비스듬). 리셋 후 재캡처 |
-| PARK 노랑, σ_rot 경계               | 자세 다양성 부족 가능 → joint 1/4/5 분포 점검 후 추가 캡처                |
-| 모든 게 깨끗한데 σ_rot ~ 1° 정체    | FK floor 확정 → Bundle Adjustment 필요                                    |
-| Validate σ가 Compute σ보다 큼       | 정상 (Validate는 평균 대비 흩어짐, Compute는 첫 포즈 대비). 의미는 같음   |
+| 상황                                | 조치                                                                  |
+| ----------------------------------- | --------------------------------------------------------------------- |
+| per-pose에 빨강 1~3개 (나머진 깨끗) | 빨강 포즈 삭제 → COMPUTE 재실행 → σ 감소 확인                         |
+| per-pose 전체가 노랑/빨강이 비슷    | 특정 outlier 아님. 자세 다양성 늘려 추가 캡처. 정체되면 FK floor → BA |
+| PARK 노랑, σ_rot 경계               | 자세 다양성 부족 가능 → joint 1/4/5 분포 점검 후 추가 캡처            |
+| 모든 게 깨끗한데 σ_rot ~ 1° 정체    | FK floor 확정 → Bundle Adjustment 필요                                |
 
 > **TSDF 목표치**: σ_rot < 0.5° / σ_t < 5mm. 그 위면 라이브 클라우드 바닥이 Z=0 그리드 대비 눈에 띄게 사선/들림.
 
@@ -428,13 +427,13 @@ FK 오차의 출처 (DIY 5축에서 큼):
 - BA 결과에 joint_offset 5개도 같이 표시.
 - COMMIT 시 "joint_offset도 함께 적용하시겠습니까?" 확인 다이얼로그.
 
-**성공 기준**: BA 적용 후 Validate σ_rot < 0.5° / σ_t < 5mm. PARK/DANIILIDIS Δrot도 같이 떨어져야 진짜 개선 (안 그러면 BA가 다른 오차로 흡수해버린 거).
+**성공 기준**: BA COMPUTE σ_rot < 0.5° / σ_t < 5mm. PARK/DANIILIDIS Δrot도 같이 떨어져야 진짜 개선 (안 그러면 BA가 다른 오차로 흡수해버린 거).
 
 #### 미사용 옵션 (참고만)
 
 이전에 검토했던 안들. 위 경로가 더 직접적인 진단/개선이라 후순위:
 
-- **바닥 평면 RANSAC fit** — PointCloudNode가 plane fit → Z=0 대비 각도/거리 발행. 간접 검증이고 평평한 바닥이 카메라에 항상 잡혀야 함. Validate 흩어짐이 더 직접적.
+- **바닥 평면 RANSAC fit** — PointCloudNode가 plane fit → Z=0 대비 각도/거리 발행. 간접 검증이고 평평한 바닥이 카메라에 항상 잡혀야 함. COMPUTE σ가 더 직접적.
 - **멀티 자세 누적 클라우드** — 시각적으로 강력하지만 정량 수치 없음. 이미 RobotScene의 `<Grid>`와 라이브 클라우드로 정성 비교는 됨.
 
 ## 운영 메모
@@ -448,20 +447,190 @@ FK 오차의 출처 (DIY 5축에서 큼):
 
 ### 캘리브레이션
 
-> 이미 구현: 라이브 체커보드 프리뷰, 캡처/COMPUTE/COMMIT 분리, per-pose 잔차, method 비교, FK 흩어짐 검증, 2-컬럼 Hand-Eye 탭 레이아웃. 결과 판독은 § 결과 해석 가이드 참조.
+> 이미 구현: 라이브 체커보드 프리뷰, 캡처/COMPUTE/COMMIT 분리, Pose 안정 ID + 휴지통 삭제, per-pose 잔차, method 비교, FK 흩어짐 검증, 2-컬럼 Hand-Eye 탭 레이아웃. 결과 판독은 § 결과 해석 가이드 참조.
 
-**다음 작업 1 — Pose 안정 ID 도입** (즉시. outlier 삭제 + 추가 캡처 워크플로우의 인덱스 시프트 문제 해결)
+**목표 워크플로우** (캘 정확도 향상용):
 
-- Backend ([hand_eye.py](backend/modules/calibration/hand_eye.py)): `Pose.id` 필드, `_next_id` 카운터, `remove_pose_by_id`, `_compute_residuals` / `list_poses_meta`에서 enumerate 대신 pose.id 사용. `reset()` 시 카운터도 리셋.
-- Frontend: `PoseMeta` / `PerPoseResidual`에 `id` 필드, `REMOVE_POSE` 호출 시 id 전달, 캡처 리스트 + Compute per-pose 행 모두 `#<id>` 표시, 각 per-pose 행에 휴지통 아이콘 직접 삽입.
-- 자세한 설계는 § 정확도 향상 로드맵의 "다음 작업 1" 참조.
+1. 10장 정도 캡처
+2. **COMPUTE** → 결과 + per-pose outlier 표 확인
+3. 결과 안 좋으면 outlier로 표시된 자세 삭제 + 다양한 자세로 몇 장 더 캡처
+4. 다시 COMPUTE
+5. σ가 충분히 작아질 때까지 3–4 반복
 
-**다음 작업 2 — Bundle Adjustment** (정확도 향상)
+---
 
-- 안정 ID 도입 + 재캘 후 outlier 정리한 σ_rot가 0.5° 못 깨면 BA 진입. 자세 설계는 § 정확도 향상 로드맵의 "다음 작업 2" 참조.
-- 목표: PARK Δrot < 1°, Validate σ_rot < 0.5° / σ_t < 5mm.
+#### 다음 작업 — Outlier 식 수정 + 진단 트리 + UI 배너 (즉시. BA 전 정확도 짜내기)
+
+##### Step 1 — Outlier 계산 식 수정 (정확도 향상의 핵심)
+
+**문제**: 현재 [hand_eye.py `_compute_residuals`](backend/modules/calibration/hand_eye.py)의 outlier 검출이 **holistic이 아님**:
+
+```python
+ref_R = T_target2base_list[0][:3, :3]    # ← pose[0]을 기준으로 고정
+drot = _rotation_diff_deg(ref_R, T[:3, :3])    # 모든 포즈의 회전 편차를 "첫 포즈 대비"로 측정
+sigma_rot = np.std(rot_devs)              # 편차들의 std (RMS 아님)
+sigma_t   = np.std(pos_devs)              # 거리들의 std (RMS 아님)
+```
+
+이 식의 결과:
+
+- **다양성을 outlier로 오인**: 새로 다양한 자세를 추가하면 "첫 포즈와 다르다" → 빨강 → 사용자가 지움 → X가 클러스터에 과적합 → 실제 정확도 ↓.
+- **σ_rot / σ_t 값이 통상 의미와 어긋남**: 이미 "편차 스칼라"인 값들의 std라 진척도 측정 신뢰 불가.
+
+사용자가 워크플로우대로 "캡처→compute→outlier 삭제→재캡처" 반복해도 정확도가 오히려 떨어지는 원인이 이것.
+
+**수정 방향**: 기준을 **첫 포즈 → 평균(holistic)** 로 옮기고, σ를 표준 RMS로.
+
+```python
+# 1) 평균 회전: T_target2base 회전들의 quaternion 평균.
+#    각 R → quaternion q_i → M = Σ q_i q_i^T → numpy.linalg.eigh로 최대 고유벡터 = mean q.
+#    (scipy 의존 없이 numpy로 OK. Markley/Crassidis 표준 방법.)
+# 2) drot[i] = angle(R_i, R_mean)    # 모든 포즈에 대칭. degrees.
+#    dt[i]   = ||t_i - t_mean||      # mm
+# 3) sigma_rot_deg = sqrt(mean(drot_i^2))   # RMS, np.std 아님
+#    sigma_t_mm    = sqrt(mean(dt_i^2))     # RMS
+```
+
+수정 후 효과:
+
+- 진짜 outlier (한 포즈만 평균에서 멀리 떨어짐) → drot 큼 → 빨강 → 삭제하면 σ 줄어듦.
+- 다양한 자세 추가 (분포가 넓어짐) → 모든 자세의 drot이 비슷한 정도로 커짐 → 어느 하나만 빨강이 아니라 σ_rot 전체가 커짐 → 사용자가 "이건 floor 문제구나" 판단 가능.
+
+##### Step 2 — 진단 결정 트리 (Step 1 위에 얹음)
+
+목적: 사용자가 σ / per-pose 색을 보고 직접 추론하지 않아도, 코드가 다음 행동을 명시적으로 안내.
+
+[backend/modules/calibration/hand_eye.py](backend/modules/calibration/hand_eye.py)에 `_diagnose()` 함수 추가. `compute_with_diagnostics()` 응답에 `diagnosis: dict` 필드로 묶어 반환.
+
+판단 순서와 로직:
+
+```python
+def _diagnose(per_pose, sigma_rot_deg, sigma_t_mm, method_compare, poses) -> dict:
+    # 1) 단일 outlier 검출 — MAD 기반 robust
+    drots = np.array([p['drot_deg'] for p in per_pose])
+    median = np.median(drots)
+    mad = np.median(np.abs(drots - median))
+    # MAD가 너무 작으면 모든 자세가 비슷하다는 뜻 → outlier 없음 (분모 0 방지)
+    if mad > 1e-6:
+        threshold = median + 3.0 * mad
+        outlier_ids = [p['id'] for p in per_pose if p['drot_deg'] > threshold]
+        if outlier_ids:
+            return {
+                'status': 'outlier_present',
+                'severity': 'action_required',
+                'message': f"포즈 #{outlier_ids}이(가) 평균에서 도드라짐 — 삭제 후 재 COMPUTE",
+                'outlier_ids': outlier_ids,
+            }
+
+    # 2) 자세 다양성 부족 검출 — joint 1/4/5 회전 범위
+    #    (5DOF arm: joint 1=base yaw, joint 4=wrist pitch, joint 5=wrist roll)
+    joints = np.array([p.joint_angles_rad for p in poses])  # (N, 5)
+    ranges_deg = np.degrees(joints.max(0) - joints.min(0))
+    DIVERSITY_THRESHOLD = {0: 60.0, 3: 40.0, 4: 40.0}  # joint index → 최소 범위
+    insufficient = [
+        (idx + 1, ranges_deg[idx]) for idx, thr in DIVERSITY_THRESHOLD.items()
+        if ranges_deg[idx] < thr
+    ]
+    if insufficient and sigma_rot_deg >= 0.5:
+        names = {1: 'base yaw', 4: 'wrist pitch', 5: 'wrist roll'}
+        details = ', '.join(f"joint {i}({names[i]}) {r:.0f}°" for i, r in insufficient)
+        return {
+            'status': 'insufficient_diversity',
+            'severity': 'action_required',
+            'message': f"다양성 부족: {details} — 부족한 축의 자세 추가 캡처",
+            'low_diversity_joints': [i for i, _ in insufficient],
+        }
+
+    # 3) 캘 품질 충분 — COMMIT 권장
+    if sigma_rot_deg < 0.5 and sigma_t_mm < 5.0:
+        return {
+            'status': 'good',
+            'severity': 'success',
+            'message': f"품질 충분 (σ_rot {sigma_rot_deg:.2f}°, σ_t {sigma_t_mm:.1f}mm) — COMMIT 권장",
+        }
+
+    # 4) FK floor 도달 — BA 필요
+    #    여기 도달 = outlier 없음 + 다양성 OK + σ가 목표 미달
+    park_drot = next((c['drot_deg'] for c in method_compare if c['method'] == 'PARK'), None)
+    park_ok = park_drot is not None and park_drot < 1.0
+    return {
+        'status': 'fk_floor_reached',
+        'severity': 'action_required',
+        'message': (
+            f"σ_rot {sigma_rot_deg:.2f}° 정체 (outlier 없음 + 다양성 충분"
+            f"{' + PARK 합의' if park_ok else ''}) — cv2 한계. Bundle Adjustment 필요."
+        ),
+        'sigma_rot_deg': sigma_rot_deg,
+        'park_drot_deg': park_drot,
+    }
+```
+
+호출부 ([hand_eye.py `compute_with_diagnostics`](backend/modules/calibration/hand_eye.py)) 마지막에:
+
+```python
+return {
+    ...,
+    'diagnosis': self._diagnose(per_pose, sigma_rot_deg, sigma_t_mm, compare, self.poses),
+}
+```
+
+**한계 (의도적)**: "모든 자세에 약간씩 모터 흔들림" 케이스는 σ 전반 증가로만 나타나서 위 트리는 `fk_floor_reached`로 진단함. 실제론 데이터 품질 문제일 수 있는데 구분 불가. 이걸 분리하려면 캡처 시 `reproj_err_px`/`joint_drift_deg` 측정이 필요(향후 작업). 식 수정 + 진단 트리만으로도 정확도는 floor까지 충분히 끌어올림.
+
+##### Step 3 — Frontend: 진단 배너 표시
+
+[frontend/src/components/calibration/types.ts](frontend/src/components/calibration/types.ts):
+
+```ts
+export type DiagnosisStatus =
+  | "outlier_present"
+  | "insufficient_diversity"
+  | "fk_floor_reached"
+  | "good";
+
+export type Diagnosis = {
+  status: DiagnosisStatus;
+  severity: "action_required" | "success";
+  message: string;
+  outlier_ids?: number[];
+  low_diversity_joints?: number[];
+  sigma_rot_deg?: number;
+  park_drot_deg?: number;
+};
+
+// ComputeData에 추가:
+//   diagnosis: Diagnosis;
+```
+
+[frontend/src/components/calibration/HandEyeResults.tsx](frontend/src/components/calibration/HandEyeResults.tsx) `ComputePreview` 상단에 배너 컴포넌트 추가:
+
+- `status === 'good'` → 초록 배너 + COMMIT 강조.
+- `status === 'outlier_present'` → 빨강 배너 + `outlier_ids` 강조 표시 (per-pose 표에서 그 행 하이라이트).
+- `status === 'insufficient_diversity'` → 주황 배너 + 어느 joint 부족한지 명시.
+- `status === 'fk_floor_reached'` → 보라/파랑 배너 + "Bundle Adjustment 필요" 메시지 (BA UI는 아직 없지만 안내만).
+
+##### 검증 시나리오
+
+1. 일부러 한 자세를 흔들면서 캡처 → 다른 자세는 정상 → 진단: `outlier_present` + 그 자세 id.
+2. joint 4(wrist pitch)만 거의 안 움직이고 10개 캡처 → 진단: `insufficient_diversity` + joint 4 명시.
+3. 정상 캡처 + 다양성 OK + 정확한 캘 → 진단: `good`.
+4. 정상 캡처 + 다양성 OK인데 σ_rot가 1° 부근 정체 → 진단: `fk_floor_reached` → BA로 가야 함.
+5. 같은 데이터로 식 수정 전/후 σ_rot 비교 — 수정 후 값이 통상 RMS 의미와 일치하는지.
+
+---
+
+#### 향후 작업 (이번엔 안 함)
+
+- **데이터 품질 척도** (`reproj_err_px`, `joint_drift_deg`, `board_tilt_deg`) — 진단 트리의 "모터 흔들림" 케이스 분리에 필요. 식 수정 + 진단 트리만으로 정확도가 부족할 때만 추가.
+- **Bundle Adjustment** — 식 수정 + 진단 트리 끝낸 다음 워크플로우로 σ_rot < 0.5° 끝까지 못 깨면 그때 진입. 자세 설계는 § 정확도 향상 로드맵의 "다음 작업 2" 참조.
 
 ### 문서
 
 - **CLAUDE.md 전체 재정비** — 코드와 안 맞는 부분 점검 + 갱신. 구조 재배치는 1차 완료(2026-05-14)했으나, 본문 내용이 현재 코드와 실제로 일치하는지 항목별 검증 필요. 특히 토픽/서비스 키, 노드 책임, 캘리브 서비스 시그니처, 호스트 config 항목.
 - cluade.md 부분에서 하드웨어, 운영 등등 바뀌지 않는것들이나 지금 당장 필요하지 않는것들은 docs 에 md 로 분리하느것에 대해 논의하기
+
+### TODO
+
+- BA 결과는 어느정도 되었음 (TSDF 도전해도 될만한 수준)
+- 캘과정에서 BA 후 overflow (scroll) 안되는 문제 있음
+- 캘 과정에서 각 pose 가 메모리에만 저장되어 있어서 코드 수정후 재캘 어려움
+- 코드 여기저기 남발 main 에서 offset load 등 정리하기

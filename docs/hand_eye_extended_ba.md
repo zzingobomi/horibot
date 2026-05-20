@@ -899,6 +899,139 @@ PC에서 git add + commit + push
 
 ---
 
+## 15. 더 정밀하게 — 0.5° / 5mm 도달 경로
+
+확장 BA가 모델 변수로 풀 수 있는 만큼 다 풀었는데도 1.3°/9mm 가 남았다 →
+**모델 *밖*의 노이즈가 floor를 결정한다.** 그 노이즈 출처를 줄이면 σ도 같이 떨어짐.
+
+### 15a. floor 노이즈 출처 분석
+
+| 노이즈 출처 | 현재 영향 | 개선 시 효과 |
+|---|---|---|
+| D405 color **intrinsic** (factory seed) | PnP에 0.1~0.3° 회전 노이즈 | σ_rot 0.2~0.4° ↓ |
+| **체커보드 인쇄/평탄도** | corner 위치 ±0.5mm | σ_rot 0.2~0.3° ↓, σ_t 1~2mm ↓ |
+| **PnP corner detection** 정밀도 | refine 안 하면 ~0.1° | σ_rot 0.1~0.2° ↓ |
+| **자세 다양성** (J1/J4/J5 std) | 부족 시 ill-conditioned | σ_rot 0.1~0.3° ↓ |
+| **모션 블러** | 캡처 전 0.5s 대기로 무시 가능 | — |
+
+각 출처가 *독립적으로 누적*되니까 여러 개 잡으면 곱하기로 효과 — 셋만
+잡아도 σ_rot 1.3° → 0.5° 가능.
+
+### 15b. 1순위 — 체커보드 정확도 (ROI 최대)
+
+지금 일반 종이 인쇄면 격자 ±0.5~1mm 오차가 그대로 PnP에 반영. corner
+검출이 sub-pixel 정확해도 *진짜 좌표가 틀린* 거라 BA로 못 푼다.
+
+대안:
+- **레이저 컷 아크릴/금속판** + 정밀 인쇄 부착 (또는 plotter 인쇄 후
+  유리/아크릴 마운트로 평탄도 확보)
+- 격자 크기 **25~30mm 정사각형** (더 크면 PnP 안정성 ↑, 9×6 정도)
+- D405 작업 거리 **30~40cm 고정** — 너무 가까우면 시야 부분만 차지, 너무
+  멀면 corner 해상도 부족
+
+이 하나로 σ_rot 0.3° / σ_t 2mm 빠질 가능성. **하드웨어 투자 필요** (3D프린트 또는 외주).
+
+### 15c. 2순위 — D405 intrinsic 재캘리브
+
+[intrinsic.npz](../robot/calibration/intrinsic.npz)는 factory seed로 채워졌다
+(`rms_error=0.0` — factory 값을 그대로 적은 거라 0. 진짜 재캘 잔차가 아님).
+
+D405는 factory 캘이 일반적으로 정확하지만, 0.1~0.3° 수준의 미세 노이즈는 남음.
+체커보드로 재캘하면 그걸 잡을 수 있다.
+
+코드는 이미 다 있음 — [backend/modules/calibration/intrinsic.py](../backend/modules/calibration/intrinsic.py):
+
+```python
+# cv2.findChessboardCornersSB (sector-based)
+#   조명/블러에 강하고 sub-pixel 정확도까지 내장.
+# cv2.calibrateCamera(obj_points, img_points, image_size, ...)
+#   K, dist 추정 + per-image rms_error 반환
+```
+
+Frontend의 Intrinsic 탭에서:
+1. 다양한 각도/거리/회전으로 **15~20장** 캡처 (체커보드가 화면 다른 위치를 골고루)
+2. COMPUTE → `rms_error < 0.3px`면 좋은 결과
+3. COMMIT → `intrinsic.npz` 갱신
+
+새 intrinsic 적용된 후 Hand-Eye 캘 다시 돌리면 σ_rot 0.2~0.3° 추가 감소.
+
+### 15d. 3순위 — PnP refineLM (코드 10줄)
+
+현재 [pose_estimator.py:24](../backend/modules/calibration/pose_estimator.py)
+는 `cv2.solvePnP`만 사용:
+
+```python
+ok, rvec, tvec = cv2.solvePnP(obj_points, img_points, K, dist)
+```
+
+이건 *초기 해*만. 이 위에 `cv2.solvePnPRefineLM` 한 줄 추가하면 Levenberg-
+Marquardt로 재투영 오차 추가 최소화:
+
+```python
+ok, rvec, tvec = cv2.solvePnP(obj_points, img_points, K, dist)
+if ok:
+    # refinement: 재투영 잔차를 LM으로 한 번 더 최소화
+    rvec, tvec = cv2.solvePnPRefineLM(
+        obj_points, img_points, K, dist, rvec, tvec
+    )
+```
+
+**비용 0, 효과 0.1~0.2° 회전 + 0.5~1mm 위치 개선** 가능. 가장 ROI 좋은
+코드 변경.
+
+### 15e. 4순위 — 자세 다양성 점검
+
+확장 BA가 잘 풀려면 J1/J4/J5(회전 추정 주요 축) 자세가 *고르게 흩어져* 있어야 함.
+한 축이 좁은 범위에 몰려 있으면 BA가 그 방향 정보를 못 받아 ill-conditioned.
+
+기존 진단 코드 — [coach.py](../backend/modules/calibration/coach.py)의
+`axis_distributions`가 각 축 std와 추천 추가 캡처 영역을 알려줌:
+
+```python
+# COMPUTE 응답의 coach.axis_distributions
+# 각 항목: {motor_id, std_deg, min_deg, max_deg, is_low_diversity, suggested_deg, ...}
+```
+
+`is_low_diversity=true`인 축 있으면 그쪽 자세 5~10개 추가 캡처 후 재캘.
+[thresholds.py](../backend/modules/calibration/thresholds.py)의
+`JOINT_DIVERSITY_THRESHOLD_DEG=(25, 15, 15, 25, 30)` 미만이 low.
+
+### 15f. 5순위 이하 — 장기/하드웨어
+
+| 액션 | 효과 | 비용 |
+|---|---|---|
+| 모터 horn 정밀 재조립 (각도 게이지) | J2/J3 큰 joint_offset 제거 | 분해 필요 |
+| 링크 부품 실측 → URDF 직접 갱신 | link_trans/rot이 0에 가까워짐, 모델 더 깨끗 | 캘리퍼스 + URDF 수정 |
+| 더 큰 / 정밀한 체커보드 (50mm) | PnP 안정성 한 단계 ↑ | 새 보드 제작 |
+| 멀티 자세 누적 ICP refinement | 캘 결과 추가 검증 | 별도 알고리즘 |
+
+### 15g. 현실적 권장 경로
+
+| 순서 | 액션 | 누적 σ_rot / σ_t | 비용 |
+|---|---|---|---|
+| 0 | 확장 BA 적용 (현재) | 1.30° / 9.3mm | 완료 |
+| 1 | + PnP refineLM (코드 10줄) | ~1.1° / ~8mm | 30분 |
+| 2 | + intrinsic 재캘리 (UI에서) | ~0.8° / ~7mm | 1시간 |
+| 3 | + 정밀 체커보드 (아크릴 마운트) | **~0.5° / ~5mm** | 3D프린트 / 외주 |
+| 4 | + 자세 다양성 보강 | ~0.4° / ~4mm | 추가 캡처 30분 |
+
+**1+2+3 조합이면 산업 정밀도 도달.** 4는 보너스.
+
+각 단계 적용 후 확장 BA 다시 돌려서 σ 측정 → 진짜로 떨어졌는지 검증.
+한 단계씩 확인하면서 가는 게 안전 (어디서 효과 가장 큰지 데이터로).
+
+### 15h. 한계 — 모터 zero point 측정의 어려움
+
+위 액션 다 해도 σ_rot < 0.3° 가려면 *모터 zero point의 물리적 정확도*가 필요.
+Dynamixel raw 2048이 URDF의 0°와 정확히 일치한다는 보장이 없는데, 이건 외부
+정밀 측정기 (각도 게이지, encoder 등)로만 검증 가능. DIY 환경에선 BA가
+joint_offset으로 보정하는 게 한계.
+
+산업 로봇이 0.1°까지 가는 건 *외부 정밀 측정 장비를 캘 단계에 사용*하기 때문.
+DIY 5축에선 0.5° 정도가 *현실적 한계*. 그 이상은 비용 곡선이 가파르게 올라감.
+
+---
+
 ## 부록 — 진단 스크립트 모음
 
 [docs/](.) 폴더 — production code 아니고 *왜 그렇게 했는지의 증거*:

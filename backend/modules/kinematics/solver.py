@@ -139,6 +139,14 @@ class PybulletSolver:
 
             return angles
 
+    def joint_limits(self, n: int | None = None) -> list[tuple[float, float]]:
+        """URDF 조인트 limit (lower, upper) — rad. n 지정 시 처음 n개만 (arm).
+
+        next_pose_planner / coach가 모터 limit 안에서 추천 각도 계산할 때 사용.
+        """
+        pairs = list(zip(self._lower_limits, self._upper_limits))
+        return pairs[:n] if n is not None else pairs
+
     def fk_to_matrix(self, joint_angles: list[float]) -> tuple[RotMatrix3x3, Position3]:
         position, quaternion = self.fk(joint_angles)
         m = p.getMatrixFromQuaternion(quaternion, physicsClientId=self._client)

@@ -14,20 +14,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-import numpy as np
-
 from . import thresholds as T
+from .joint_distribution import AxisDistribution, analyze as analyze_dist
 
 logger = logging.getLogger(__name__)
-
-# 5DOF 아암 (ID 1~5) 이름 — 한국어
-JOINT_NAMES_KO: list[str] = [
-    "base yaw (J1)",
-    "shoulder (J2)",
-    "elbow (J3)",
-    "wrist pitch (J4)",
-    "wrist roll (J5)",
-]
 
 
 @dataclass
@@ -40,11 +30,18 @@ class CoachMessage:
 class CoachReport:
     verdict: str  # "good" | "needs_work" | "bad"
     messages: list[CoachMessage] = field(default_factory=list)
+    # axis별 분포 (UI에서 추가 시각화/히스토그램에 사용)
+    axis_distributions: list[AxisDistribution] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        from .joint_distribution import to_dict as dist_to_dict
+
         return {
             "verdict": self.verdict,
             "messages": [{"level": m.level, "text": m.text} for m in self.messages],
+            "axis_distributions": [
+                dist_to_dict(d) for d in self.axis_distributions
+            ],
         }
 
 
@@ -58,6 +55,8 @@ def diagnose(
     method_compare: list[dict],
     excluded_pose_ids: list[int],
     excluded_cap_hit: bool,
+    arm_motor_ids: list[int],
+    joint_limits_rad: list[tuple[float, float]],
 ) -> CoachReport:
     """캘 결과 진단 → coach 메시지 생성.
 
@@ -105,21 +104,16 @@ def diagnose(
             )
         )
 
-    # 4. 조인트 다양성 — verdict가 good이 아닐 때만 안내
-    if joint_angles_per_pose and all(len(j) >= 5 for j in joint_angles_per_pose):
-        joints = np.array([j[:5] for j in joint_angles_per_pose])  # (N, 5)
-        std_deg = np.degrees(joints.std(axis=0))
-        for s, thr, name in zip(
-            std_deg, T.JOINT_DIVERSITY_THRESHOLD_DEG, JOINT_NAMES_KO
-        ):
-            if s < thr:
-                msgs.append(
-                    CoachMessage(
-                        "warn",
-                        f"{name} 다양성 부족 (std={s:.1f}° < {thr:.0f}°) — "
-                        f"이 축을 더 회전시켜 캡처하세요.",
-                    )
-                )
+    # 4. 조인트 다양성 — std뿐 아니라 "어느 절대 각도에서 캡처해야 하는지" 안내.
+    # joint_distribution이 모터 limit 안에서 빈 구간 보고 추천 각도까지 계산.
+    axis_dists = analyze_dist(
+        joint_angles_per_pose=joint_angles_per_pose,
+        arm_motor_ids=arm_motor_ids,
+        joint_limits_rad=joint_limits_rad,
+    )
+    for dist in axis_dists:
+        if dist.is_low_diversity and dist.suggested_deg is not None:
+            msgs.append(CoachMessage("warn", dist.suggestion_text))
 
     # 5. method self-consistency (입력 노이즈 진단)
     park = next((c for c in method_compare if c.get("method") == "PARK"), None)
@@ -165,4 +159,8 @@ def diagnose(
             ),
         )
 
-    return CoachReport(verdict=verdict, messages=msgs)
+    return CoachReport(
+        verdict=verdict,
+        messages=msgs,
+        axis_distributions=axis_dists,
+    )

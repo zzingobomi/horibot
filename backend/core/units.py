@@ -32,15 +32,8 @@ def rad_to_raw(
     reverse: bool = False,
     min_raw: int = 0,
     max_raw: int = RAW_MAX,
-    offset_rad: float = 0.0,
 ) -> int:
-    """URDF rad → motor raw. offset_rad는 raw_to_rad 가산의 역연산.
-
-    BA가 추정한 motor zero offset이 raw_to_rad(읽기)에 가산되므로, motor 명령
-    출력(쓰기) 시에도 차감해야 시스템이 일관됨. 캡처/시각화/명령 모두 같은
-    URDF 좌표계로 정렬.
-    """
-    radian = radian - offset_rad
+    """URDF rad → motor raw. offset 처리는 JointCoordinates.urdf_to_motor가 담당."""
     if reverse:
         radian = -radian
     raw = int(radian / (2.0 * math.pi) * RAW_MAX + RAW_CENTER)

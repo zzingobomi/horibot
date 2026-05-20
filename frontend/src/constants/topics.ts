@@ -12,7 +12,6 @@ export const Topic = {
 
   // Calibration
   CALIB_HANDEYE_PREVIEW: "omx/calibration/state/handeye_preview",
-  CALIB_STATE_JOINT_OFFSETS: "omx/calibration/state/joint_offsets",
 
   // System
   SYSTEM_HEARTBEAT: "omx/system/heartbeat",

@@ -6,13 +6,16 @@ import type {
   CalibThresholds,
   ComputeData,
   HandEyePreview,
+  NextPoseRecommendation,
   PoseMeta,
 } from "./types";
 import { HandEyePoseList } from "./HandEyePoseList";
 import { CheckerboardOverlay } from "./CheckerboardOverlay";
 import { ComputePreview } from "./HandEyeResults";
+import { NextPoseCard } from "./NextPoseCard";
 import { ServiceKey, Topic } from "@/constants/topics";
 import { bridge } from "@/api/bridge";
+import { useCalibrationResults } from "@/hooks/useCalibrationResults";
 
 const PREVIEW_STALE_MS = 1500;
 
@@ -27,10 +30,25 @@ export function HandEyeTab() {
   const [computeStale, setComputeStale] = useState(false);
   const [thresholds, setThresholds] = useState<CalibThresholds | null>(null);
 
+  // 다음 자세 후보 리스트 — [계산] 응답에서만 갱신. 캡처해도 흔들지 않음 (의도된 페이스).
+  // null = 아직 한 번도 계산 안 됨, [] = 후보 0개, [..] = N개.
+  const [recommendations, setRecommendations] = useState<
+    NextPoseRecommendation[] | null
+  >(null);
+  // 사용자가 [이동]을 누른 행 — "내가 이 후보로 가보려고 시도함"의 단순 기록.
+  // 캡처 성공 여부나 실제 보드 가시성과는 무관. 새 [계산]마다 리셋.
+  const [visited, setVisited] = useState<Set<number>>(new Set());
+  // 가장 최근 [이동] 누른 행 — 리스트에서 "내가 지금 보고 있는 후보"의 시각 컨텍스트.
+  // attribution 아님 (캡처가 이 행에서 됐다는 추론 X) — 그냥 선택 강조.
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+
   // utils
   const [loading, setLoading] = useState(false);
   const [computing, setComputing] = useState(false);
   const [status, setStatus] = useState("");
+
+  // COMMIT 직후 호출해 calibration_results를 fresh로 fetch + jointOffsets store 갱신.
+  const { refetch: refetchCalibrationResults } = useCalibrationResults();
 
   // checkerboard preview
   useEffect(() => {
@@ -99,8 +117,11 @@ export function HandEyeTab() {
     setLoading(false);
     if (res.success) {
       const data = res.data as { pose_count: number; detected: boolean };
-      setStatus(`✅ 포즈 기록됨 (${data.pose_count}개)`);
+      setStatus(`✅ 포즈 기록됨 (${data.pose_count}개) — [계산]을 눌러 진척 확인`);
       setComputeStale(true);
+      // 추천 리스트는 [계산] 응답에서만 갱신. 캡처는 리스트/마크 모두 안 건드림.
+      // "어느 후보에서 캡처됐는지"는 추론하지 않음 — 사용자가 자유 이동 후 캡처
+      // 했을 수도 있으므로 거짓 attribution 위험. 캡처 상황은 pose list로 확인.
       await refreshPoses();
     } else {
       setStatus(`❌ ${res.message}`);
@@ -113,9 +134,12 @@ export function HandEyeTab() {
     const res = await bridge.callService(ServiceKey.CALIB_HANDEYE_RESET, {});
     setLoading(false);
     if (res.success) {
-      setStatus("리셋됨");
+      setStatus("리셋됨 — 자세 잡고 [캡처] → [계산]부터 시작");
       setCompute(null);
       setComputeStale(false);
+      setRecommendations(null);
+      setVisited(new Set());
+      setActiveIndex(null);
       await refreshPoses();
     }
   };
@@ -131,9 +155,15 @@ export function HandEyeTab() {
     setLoading(false);
     setComputing(false);
     if (res.success) {
-      setCompute(res.data as unknown as ComputeData);
+      const data = res.data as ComputeData;
+      setCompute(data);
       setComputeStale(false);
-      setStatus("compute 완료. 결과 확인 후 COMMIT 하세요.");
+      // 새 [계산]마다 추천 리스트 + visited/active 모두 초기화. 사용자가 명시적으로
+      // [계산] 누른 시점에만 갱신 = 페이스를 사용자가 잡음 (자동 갱신 X).
+      setRecommendations(data.recommendations ?? []);
+      setVisited(new Set());
+      setActiveIndex(null);
+      setStatus("계산 완료. 후보 [이동]→[캡처] 반복, 만족하면 COMMIT.");
     } else {
       setStatus(`❌ ${res.message}`);
       setCompute(null);
@@ -145,7 +175,23 @@ export function HandEyeTab() {
     const res = await bridge.callService(ServiceKey.CALIB_HANDEYE_COMMIT, {});
     setLoading(false);
     setStatus(res.success ? `✅ ${res.message}` : `❌ ${res.message}`);
+    if (res.success) {
+      // joint_offsets / hand_eye / intrinsic 재fetch → store에 푸시 → URDF 즉시 동기.
+      await refetchCalibrationResults();
+    }
   };
+
+  // NextPoseCard에서 [이동] 성공 시 호출. 이 행을 visited에 추가하고 active로 표시.
+  // 캡처 attribution은 하지 않음 — 사용자가 [이동] 후 수동으로 다른 곳에서 캡처할 수
+  // 있으므로 거짓 양성 위험. 캡처 결과는 pose list로만 확인.
+  const handleMoved = useCallback((index: number) => {
+    setActiveIndex(index);
+    setVisited((prev) => {
+      const next = new Set(prev);
+      next.add(index);
+      return next;
+    });
+  }, []);
 
   return (
     <div className="flex h-full gap-4 min-h-0">
@@ -162,8 +208,15 @@ export function HandEyeTab() {
         />
       </div>
 
-      {/* 가운데 컬럼: Capture + Commit */}
+      {/* 가운데 컬럼: 추천 리스트 + Capture + Commit */}
       <div className="w-72 shrink-0 flex flex-col gap-3 min-h-0">
+        <NextPoseCard
+          recommendations={recommendations}
+          visited={visited}
+          activeIndex={activeIndex}
+          onMoved={handleMoved}
+          disabled={loading}
+        />
         <div className="rounded-lg border bg-card p-4 flex flex-col gap-3 flex-1 min-h-0">
           <h2 className="text-sm font-semibold">Hand-Eye — Capture</h2>
           <p className="text-xs text-muted-foreground">

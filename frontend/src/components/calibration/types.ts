@@ -56,6 +56,8 @@ export type CoachMessage = {
 export type CoachReport = {
   verdict: "good" | "needs_work" | "bad";
   messages: CoachMessage[];
+  // 백엔드는 axis_distributions(각 축의 분포 메타)도 같이 보내지만 현재 UI는
+  // coach 메시지 텍스트만 소비. 시각화/히스토그램 도입 시 타입 추가.
 };
 
 /**
@@ -90,6 +92,27 @@ export type ComputeData = {
   coach: CoachReport;
   joint_offset_estimated: boolean;
   joint_offset_delta: JointOffsetDelta[];
+  // [계산] 응답에 묶이는 다음 자세 후보 리스트. 사용자가 [이동]→카메라 확인→
+  // 보이면 [캡처] 흐름으로 소비. 다음 [계산] 전까지 갱신 X.
+  recommendations: NextPoseRecommendation[];
+};
+
+/**
+ * 다음 자세 후보 한 개. 모든 모터(arm 5개)에 대한 목표 각도 + 압축 라벨/이유.
+ *
+ * 프론트 표시 흐름:
+ *   - 리스트 행 헤드라인: label (예: "J4 위쪽 +20°")
+ *   - 행 펼침: reason (긴 설명) + joints 5개 풀 값
+ *   - [이동] 클릭: motion/move_j 페이로드로 joints 그대로 전송
+ *
+ * `diagnostics`는 백엔드 내부 진단용 — 현재 UI 미사용.
+ */
+export type NextPoseRecommendation = {
+  joints: { id: number; degree: number }[];
+  reason: string;
+  label: string;
+  primary_axis: number; // 0..4
+  source: "high_residual" | "distribution";
 };
 
 /**

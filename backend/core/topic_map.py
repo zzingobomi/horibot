@@ -17,9 +17,6 @@ class Topic:
 
     # ─── Calibration ─────────────────────────────────────────
     CALIB_HANDEYE_PREVIEW = "omx/calibration/state/handeye_preview"
-    # joint_offsets.npz의 현재 상태 — 시작 시 + COMMIT 직후 발행 (latest-wins).
-    # 프론트엔드는 raw motor position에 이 offset을 더해 URDF에 적용.
-    CALIB_STATE_JOINT_OFFSETS = "omx/calibration/state/joint_offsets"
 
     # ─── Task ────────────────────────────────────────────────
     TASK_STATE = "omx/task/state"

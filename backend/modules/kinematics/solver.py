@@ -1,8 +1,14 @@
+import logging
 import threading
 from pathlib import Path
 from typing import TypeAlias
 import numpy as np
 import pybullet as p
+
+from core.link_coordinates import LinkCoordinates
+from core.urdf_patcher import write_patched_urdf
+
+logger = logging.getLogger(__name__)
 
 # ─── 타입 별칭 ─────────────────────────────────────────────────
 Position3: TypeAlias = tuple[float, float, float]  # [x, y, z] 미터
@@ -33,11 +39,18 @@ class PybulletSolver:
         self._initialized = True
         self._sim_lock = threading.Lock()
 
+        # link_offsets.npz가 있으면 patched URDF 생성 (없으면 mesh 절대경로화만).
+        # patched URDF는 robot/urdf/omx_f/.patched/omx_f.urdf — gitignored.
+        link_offsets = LinkCoordinates().snapshot()
+        urdf_to_load = write_patched_urdf(URDF_PATH, link_offsets)
+        if not link_offsets.is_empty():
+            logger.info(f"patched URDF 로드: {urdf_to_load}")
+
         self._client = p.connect(p.DIRECT)
         p.setGravity(0, 0, -9.81, physicsClientId=self._client)
 
         self._robot = p.loadURDF(
-            str(URDF_PATH),
+            str(urdf_to_load),
             useFixedBase=True,
             physicsClientId=self._client,
         )

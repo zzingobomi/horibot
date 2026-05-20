@@ -4,6 +4,8 @@ import type {
   CoachReport,
   ComputeData,
   JointOffsetDelta,
+  LinkRotDelta,
+  LinkTransDelta,
   PerPoseResidual,
 } from "./types";
 
@@ -252,6 +254,13 @@ export function ComputePreview({
         data.joint_offset_delta.length > 0 && (
           <JointOffsetTable rows={data.joint_offset_delta} />
         )}
+
+      {data.link_offset_estimated && data.link_trans_delta.length > 0 && (
+        <LinkTransTable rows={data.link_trans_delta} />
+      )}
+      {data.link_offset_estimated && data.link_rot_delta.length > 0 && (
+        <LinkRotTable rows={data.link_rot_delta} />
+      )}
     </div>
   );
 }
@@ -287,6 +296,82 @@ function JointOffsetTable({ rows }: { rows: JointOffsetDelta[] }) {
               </tr>
             );
           })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** link translation (확장 BA). |값| > 20mm면 gauge freedom 의심 — 노랑. */
+function linkTransColor(mm: number): string {
+  const mag = Math.abs(mm);
+  if (mag < 5) return "text-muted-foreground";
+  if (mag < 20) return "text-foreground";
+  return "text-amber-500";
+}
+
+function fmtSigned(v: number, frac: number): string {
+  return (v >= 0 ? "+" : "") + v.toFixed(frac);
+}
+
+function LinkTransTable({ rows }: { rows: LinkTransDelta[] }) {
+  return (
+    <div>
+      <p className="text-[10px] text-muted-foreground font-mono mb-1">
+        link translation delta (mm) — joint origin xyz 보정, COMMIT 시 누적
+      </p>
+      <table className="w-full text-[11px] font-mono">
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.motor_id}>
+              <td className="py-0.5 text-muted-foreground">J{r.motor_id}</td>
+              <td className={`py-0.5 text-right ${linkTransColor(r.x_mm)}`}>
+                x {fmtSigned(r.x_mm, 2)}
+              </td>
+              <td className={`py-0.5 text-right ${linkTransColor(r.y_mm)}`}>
+                y {fmtSigned(r.y_mm, 2)}
+              </td>
+              <td className={`py-0.5 text-right ${linkTransColor(r.z_mm)}`}>
+                z {fmtSigned(r.z_mm, 2)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** link rotation (확장 BA). |값| > 2°면 small-angle 가정 한계 — 노랑. */
+function linkRotColor(deg: number): string {
+  const mag = Math.abs(deg);
+  if (mag < 0.5) return "text-muted-foreground";
+  if (mag < 2.0) return "text-foreground";
+  return "text-amber-500";
+}
+
+function LinkRotTable({ rows }: { rows: LinkRotDelta[] }) {
+  return (
+    <div>
+      <p className="text-[10px] text-muted-foreground font-mono mb-1">
+        link rotation delta (deg) — joint origin rpy 보정 (small-angle)
+      </p>
+      <table className="w-full text-[11px] font-mono">
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.motor_id}>
+              <td className="py-0.5 text-muted-foreground">J{r.motor_id}</td>
+              <td className={`py-0.5 text-right ${linkRotColor(r.rx_deg)}`}>
+                rx {fmtSigned(r.rx_deg, 3)}
+              </td>
+              <td className={`py-0.5 text-right ${linkRotColor(r.ry_deg)}`}>
+                ry {fmtSigned(r.ry_deg, 3)}
+              </td>
+              <td className={`py-0.5 text-right ${linkRotColor(r.rz_deg)}`}>
+                rz {fmtSigned(r.rz_deg, 3)}
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>

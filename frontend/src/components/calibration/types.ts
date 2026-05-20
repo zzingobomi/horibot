@@ -71,6 +71,35 @@ export type JointOffsetDelta = {
 };
 
 /**
+ * 한 joint origin의 translation 보정. URDF `<joint><origin xyz/>`에 더할 dx,dy,dz.
+ * 확장 BA(41 DOF)에서만 채워짐. mm/m 둘 다 제공해 UI 표시 / 추후 계산에 편리.
+ * COMMIT 시 link_offsets.npz에 cumulative 합산 — PybulletSolver는 다음 부팅 시 적용.
+ */
+export type LinkTransDelta = {
+  motor_id: number;
+  x_mm: number;
+  y_mm: number;
+  z_mm: number;
+  x_m: number;
+  y_m: number;
+  z_m: number;
+};
+
+/**
+ * 한 joint origin의 rotation 보정. URDF `<joint><origin rpy/>`에 적용할 rotation
+ * vector (small-angle 가정으로 ZYX 오일러 ≈ rotvec). 확장 BA에서만 채워짐.
+ */
+export type LinkRotDelta = {
+  motor_id: number;
+  rx_deg: number;
+  ry_deg: number;
+  rz_deg: number;
+  rx_rad: number;
+  ry_rad: number;
+  rz_rad: number;
+};
+
+/**
  * `CALIB_HANDEYE_COMPUTE` 응답.
  *
  * 파이프라인: cv2.calibrateHandEye(TSAI) seed → scipy Huber-BA → 진단.
@@ -92,6 +121,10 @@ export type ComputeData = {
   coach: CoachReport;
   joint_offset_estimated: boolean;
   joint_offset_delta: JointOffsetDelta[];
+  // 확장 BA(default)에서만 채워짐. standard fallback이면 estimated=false + 빈 배열.
+  link_offset_estimated: boolean;
+  link_trans_delta: LinkTransDelta[];
+  link_rot_delta: LinkRotDelta[];
   // [계산] 응답에 묶이는 다음 자세 후보 리스트. 사용자가 [이동]→카메라 확인→
   // 보이면 [캡처] 흐름으로 소비. 다음 [계산] 전까지 갱신 X.
   recommendations: NextPoseRecommendation[];

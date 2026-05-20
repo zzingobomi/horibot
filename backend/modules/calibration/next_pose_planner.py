@@ -36,9 +36,13 @@ from . import joint_distribution as jd
 logger = logging.getLogger(__name__)
 
 # 잔차 큰 포즈를 base로 추천 자세를 만들 때 J1/J4/J5 중 어느 축을 변주할지
-# 우선순위 (hand-eye 회전 추정 영향 큰 순). 0-indexed: 4=J5, 3=J4, 0=J1.
-# J5(wrist roll)이 광축 회전이라 체커보드 시야 잃을 확률 가장 낮음 → 첫 시도.
-_AXIS_PRIORITY = [4, 3, 0]
+# 우선순위 (hand-eye 회전 추정 영향 큰 순). 0-indexed: 3=J4, 0=J1, 4=J5.
+# cv2.calibrateHandEye는 카메라 광축에 수직한 축(J4 pitch, J1 yaw) 회전이
+# 회전 추정에 가장 많은 정보를 줌. J5(wrist roll)은 광축 회전이라 정보 기여가
+# 작아 fallback. (이전 [4,3,0]은 시야 안전 휴리스틱이었지만, J5 가동범위가
+# ±150° 이상이라 우선순위 1위 + _VARIANTS_PER_BASE=2 조합이 한 base에서 J5
+# 위/아래로 슬롯을 다 먹어 J4/J1이 영원히 추천 안 나오는 버그가 있었음.)
+_AXIS_PRIORITY = [3, 0, 4]
 
 # 잔차 큰 포즈 근처에서 한 축을 얼마나 변주할지 (deg). 너무 작으면 BA가 새 정보
 # 못 받음. 너무 크면 체커보드 시야 벗어남.
@@ -51,8 +55,11 @@ _HIGH_RESIDUAL_THRESHOLD_DEG: float = 0.5
 # 후보 리스트 최대 길이. 너무 많으면 사용자 피로, 너무 적으면 다 가도 안 보일 수 있음.
 MAX_RECOMMENDATIONS: int = 6
 
-# 한 잔차-큰-포즈에서 뽑을 변주 개수. 한 base만 우려먹지 않게 캡.
-_VARIANTS_PER_BASE: int = 2
+# 한 잔차-큰-포즈에서 뽑을 변주 개수. 1 = 한 base에서 한 축 한 방향만 →
+# 다음 high-residual base로 넘어가 다른 축/시작점에서 변주가 나오도록 강제.
+# (이전 2는 가동범위 넓은 축이 한 base 안에서 위/아래 두 슬롯을 다 먹어
+# _AXIS_PRIORITY의 다음 축까지 못 닿는 문제 원인이었음.)
+_VARIANTS_PER_BASE: int = 1
 
 # 중복 판정 임계 (rad). 두 후보의 모든 축 차이가 이 이내면 같은 자세로 봄.
 _DEDUPE_TOLERANCE_RAD: float = radians(5.0)
@@ -158,8 +165,22 @@ def _from_high_residual_many(
         pose_id = res.get("id", "?")
         produced_for_base = 0
 
-        for axis_idx in _AXIS_PRIORITY:
+        # 이미 추천된 축은 뒤로 — base 간 축 다양성 강제. 같은 카운트 내에서는
+        # _AXIS_PRIORITY 순 유지. (이전엔 모든 base가 우선순위 1위 축으로만 가서
+        # 한 축이 추천 리스트를 도배하는 문제가 있었음.)
+        axis_counts = {a: 0 for a in _AXIS_PRIORITY}
+        for rec in out:
+            if rec.primary_axis in axis_counts:
+                axis_counts[rec.primary_axis] += 1
+        axis_order = sorted(
+            _AXIS_PRIORITY,
+            key=lambda a: (axis_counts[a], _AXIS_PRIORITY.index(a)),
+        )
+
+        for axis_idx in axis_order:
             if produced_for_base >= _VARIANTS_PER_BASE:
+                break
+            if len(out) >= remaining:
                 break
             if axis_idx >= n_axes:
                 continue
@@ -169,56 +190,55 @@ def _from_high_residual_many(
             up_room = hi - cur
             down_room = cur - lo
 
-            # 더 여유 있는 쪽부터 시도. 양쪽 다 가능하면 둘 다 추가 시도(같은 base에서).
-            directions: list[tuple[str, float]] = []
-            if up_room >= delta:
-                directions.append(("위쪽", cur + delta))
-            if down_room >= delta:
-                directions.append(("아래쪽", cur - delta))
+            # 한 축에서 한 방향만 — 더 여유 있는 쪽 선택. 둘 다 부족하면 다음 축.
+            if up_room >= delta and up_room >= down_room:
+                dir_name, new_val = "위쪽", cur + delta
+            elif down_room >= delta:
+                dir_name, new_val = "아래쪽", cur - delta
+            elif up_room >= delta:
+                dir_name, new_val = "위쪽", cur + delta
+            else:
+                continue
 
-            for dir_name, new_val in directions:
-                if produced_for_base >= _VARIANTS_PER_BASE:
-                    break
-                if len(out) >= remaining:
-                    break
-                target = list(base_angles_rad)
-                target[axis_idx] = new_val
-                # 다른 축들 안전 클램프
-                for i in range(n_axes):
-                    lo_i, hi_i = joint_limits_rad[i]
-                    target[i] = max(lo_i, min(hi_i, target[i]))
+            target = list(base_angles_rad)
+            target[axis_idx] = new_val
+            # 다른 축들 안전 클램프
+            for i in range(n_axes):
+                lo_i, hi_i = joint_limits_rad[i]
+                target[i] = max(lo_i, min(hi_i, target[i]))
 
-                if _is_duplicate(target, out):
-                    continue
+            if _is_duplicate(target, out):
+                continue
 
-                label = (
-                    f"J{axis_idx + 1} {dir_name} "
-                    f"{_AXIS_PERTURBATION_DEG:+.0f}°"
+            signed_deg = (
+                _AXIS_PERTURBATION_DEG if dir_name == "위쪽"
+                else -_AXIS_PERTURBATION_DEG
+            )
+            label = f"J{axis_idx + 1} {dir_name} {signed_deg:+.0f}°"
+            reason = (
+                f"포즈 #{pose_id} 잔차 큼 (Δrot={drot:.2f}°) — "
+                f"그 영역 J{axis_idx + 1} {dir_name} "
+                f"{_AXIS_PERTURBATION_DEG:.0f}° 변주."
+            )
+            out.append(
+                NextPoseRecommendation(
+                    joints=[
+                        {"id": int(mid), "degree": float(degrees(ang))}
+                        for mid, ang in zip(arm_motor_ids, target)
+                    ],
+                    reason=reason,
+                    label=label,
+                    primary_axis=axis_idx,
+                    source="high_residual",
+                    diagnostics={
+                        "mode": "high_residual",
+                        "base_pose_id": pose_id,
+                        "base_residual_rot_deg": drot,
+                        "direction": dir_name,
+                    },
                 )
-                reason = (
-                    f"포즈 #{pose_id} 잔차 큼 (Δrot={drot:.2f}°) — "
-                    f"그 영역 J{axis_idx + 1} {dir_name} "
-                    f"{_AXIS_PERTURBATION_DEG:.0f}° 변주."
-                )
-                out.append(
-                    NextPoseRecommendation(
-                        joints=[
-                            {"id": int(mid), "degree": float(degrees(ang))}
-                            for mid, ang in zip(arm_motor_ids, target)
-                        ],
-                        reason=reason,
-                        label=label,
-                        primary_axis=axis_idx,
-                        source="high_residual",
-                        diagnostics={
-                            "mode": "high_residual",
-                            "base_pose_id": pose_id,
-                            "base_residual_rot_deg": drot,
-                            "direction": dir_name,
-                        },
-                    )
-                )
-                produced_for_base += 1
+            )
+            produced_for_base += 1
 
     return out
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from core.base_node import BaseNode
 from core.joint_coordinates import JointCoordinates
+from core.link_coordinates import LinkCoordinates
 from core.topic_map import Service, Topic
 from core.frame_cache import FrameCache
 from core.joint_state_cache import JointStateCache
@@ -17,6 +18,7 @@ from modules.calibration.intrinsic import CHECKERBOARD, IntrinsicCalibration
 from modules.calibration.hand_eye import HandEyeCalibration, Pose
 from modules.calibration import next_pose_planner
 from modules.calibration import thresholds as calib_thresholds
+from modules.calibration.link_offsets import LinkOffsets
 from modules.calibration.pose_estimator import PoseEstimator
 from modules.kinematics.solver import PybulletSolver
 
@@ -258,10 +260,18 @@ class CalibrationNode(BaseNode):
     def _srv_handeye_compute(self, req: dict) -> dict:
         arm_motor_ids = [cfg.id for cfg in self._arm_cfgs]
         joint_limits = self.solver.joint_limits(len(arm_motor_ids))
+        # mode: "extended" (기본, 41 DOF) / "standard" (11 DOF, fallback).
+        # extended는 link_trans/link_rot까지 풀어 DIY 5축의 systematic URDF
+        # 미스매치를 흡수 — σ_t floor 16→9mm, σ_rot floor 1.5→1.3°. hold-out
+        # validation(ratio 1.06×/1.01×)으로 generalize 확인됨. standard는 회귀
+        # 진단용으로 남겨둠 — mode="standard"로 호출 시에만 사용.
+        mode = str(req.get("mode", "extended")).lower()
+        use_extended_ba = mode != "standard"
         diag = self.hand_eye.compute_with_diagnostics(
             fk_fn=self.solver.fk_to_matrix,
             arm_motor_cfgs=self._arm_cfgs,
             joint_limits_rad=joint_limits,
+            use_extended_ba=use_extended_ba,
         )
         if diag is None:
             return {
@@ -310,9 +320,52 @@ class CalibrationNode(BaseNode):
             offset_msg = f" + joint_offsets 갱신 (cumulative, deg={applied_deg})"
             logger.info("joint_offsets 즉시 적용: %s", applied_deg)
 
+        # 3) link_offsets.npz — 확장 BA가 추정한 link origin 보정 cumulative 합산.
+        # PybulletSolver는 URDF를 부팅 시 1회 로드라 메모리 자동 갱신 X
+        # → 적용은 다음 부팅 (patched URDF 자동 재생성). 사용자가 백엔드 재시작 필요.
+        link_msg = ""
+        link_applied_meta: list[dict] = []
+        restart_required = False
+        if self._last_compute.get("link_offset_estimated"):
+            trans_list = self._last_compute.get("link_trans_delta", [])
+            rot_list = self._last_compute.get("link_rot_delta", [])
+            delta = LinkOffsets(
+                trans={
+                    int(e["motor_id"]): np.array(
+                        [e["x_m"], e["y_m"], e["z_m"]], dtype=np.float64
+                    )
+                    for e in trans_list
+                },
+                rot={
+                    int(e["motor_id"]): np.array(
+                        [e["rx_rad"], e["ry_rad"], e["rz_rad"]], dtype=np.float64
+                    )
+                    for e in rot_list
+                },
+            )
+            link_applied = LinkCoordinates().commit_offsets(
+                delta, method=self.hand_eye.result.method,
+            )
+            n_joints = len(link_applied.trans)
+            link_msg = (
+                f" + link_offsets 갱신 (n={n_joints}, 백엔드 재시작 후 FK/IK 적용)"
+            )
+            link_applied_meta = [
+                {
+                    "motor_id": int(jid),
+                    "trans_m": link_applied.get_trans(jid).tolist(),
+                    "rot_rad": link_applied.get_rot(jid).tolist(),
+                }
+                for jid in sorted(link_applied.trans.keys())
+            ]
+            restart_required = True
+            logger.info(
+                "link_offsets 디스크 적용 (재시작 필요): n=%d", n_joints
+            )
+
         return {
             "success": True,
-            "message": f"저장 완료: {hand_eye_path}{offset_msg}",
+            "message": f"저장 완료: {hand_eye_path}{offset_msg}{link_msg}",
             "data": {
                 "path": str(hand_eye_path),
                 "method": self.hand_eye.result.method,
@@ -323,6 +376,11 @@ class CalibrationNode(BaseNode):
                     {"motor_id": int(mid), "offset_rad": float(off)}
                     for mid, off in sorted(applied.items())
                 ],
+                "link_offsets_applied": self._last_compute.get(
+                    "link_offset_estimated", False
+                ),
+                "link_offsets": link_applied_meta,
+                "restart_required": restart_required,
             },
         }
 

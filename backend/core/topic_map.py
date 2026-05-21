@@ -58,9 +58,9 @@ class Service:
     CALIB_HANDEYE_RESET = "omx/calib/srv/handeye/reset"
     CALIB_HANDEYE_COMPUTE = "omx/calib/srv/handeye/compute"
     CALIB_HANDEYE_COMMIT = "omx/calib/srv/handeye/commit"
-    CALIB_HANDEYE_REMOVE_POSE = "omx/calib/srv/handeye/remove_pose"
     CALIB_HANDEYE_LIST_POSES = "omx/calib/srv/handeye/list_poses"
     CALIB_HANDEYE_PREVIEW_ENABLE = "omx/calib/srv/handeye/preview_enable"
+    CALIB_HANDEYE_THRESHOLDS = "omx/calib/srv/handeye/thresholds"
     CALIB_CAPTURE = "omx/calib/srv/capture"
 
     # ─── System ──────────────────────────────────────────────

@@ -1,15 +1,6 @@
-import { Trash2 } from "lucide-react";
 import type { PoseMeta } from "./types";
 
-export function HandEyePoseList({
-  poses,
-  onRemove,
-  disabled,
-}: {
-  poses: PoseMeta[];
-  onRemove: (id: number) => void;
-  disabled: boolean;
-}) {
+export function HandEyePoseList({ poses }: { poses: PoseMeta[] }) {
   if (poses.length === 0) {
     return (
       <p className="text-xs text-muted-foreground italic">
@@ -30,18 +21,10 @@ export function HandEyePoseList({
           return (
             <li
               key={p.id}
-              className="flex items-center justify-between gap-2 px-2 py-1 rounded text-xs font-mono hover:bg-muted/60"
+              className="flex items-center gap-2 px-2 py-1 rounded text-xs font-mono hover:bg-muted/60"
             >
-              <span className="text-muted-foreground">#{p.id}</span>
+              <span className="text-muted-foreground w-8">#{p.id}</span>
               <span className="flex-1 text-[11px]">{time}</span>
-              <button
-                onClick={() => onRemove(p.id)}
-                disabled={disabled}
-                title="삭제"
-                className="text-muted-foreground hover:text-destructive disabled:opacity-40"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
             </li>
           );
         })}

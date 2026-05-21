@@ -44,3 +44,8 @@ desktop.ini
 # ─── Weights ───────────────────────────────────────────────────
 *.pt
 *.pth
+
+# ─── Runtime-patched URDF ──────────────────────────────────────
+# robot/urdf/<robot>/.patched/ 에 link_offsets.npz를 적용한 URDF 캐시.
+# 각 머신이 부팅 시 자체 생성 — 푸시/공유 대상 아님.
+robot/urdf/**/.patched/

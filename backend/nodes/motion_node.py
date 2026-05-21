@@ -5,9 +5,9 @@ from ruckig import Ruckig, InputParameter, OutputParameter, Result
 
 from core.base_node import BaseNode
 from core.topic_map import Service, Topic
+from core.joint_coordinates import JointCoordinates
 from core.joint_state_cache import JointStateCache
 from core.common import GRIPPER_ID
-from core.units import rad_to_raw
 from modules.dynamixel.motor_config import MotorConfig, load_motor_config
 from modules.kinematics.motion_modes import MotionModes
 from modules.kinematics.trajectory_runner import TrajectoryRunner
@@ -128,14 +128,15 @@ class MotionNode(BaseNode):
     # ─── Internal ────────────────────────────────────────────
 
     def _publish_cmd(self, angles_rad: list[float]) -> None:
+        coords = JointCoordinates()
         self.publish(Topic.MOTOR_CMD_JOINT, {
             "timestamp": time.time(),
             "joints": [
                 {
                     "id":       cfg.id,
-                    "position": rad_to_raw(
+                    "position": coords.urdf_to_motor(
                         angle,
-                        reverse=cfg.reverse,
+                        cfg,
                         min_raw=cfg.limit_min,
                         max_raw=cfg.limit_max,
                     ),

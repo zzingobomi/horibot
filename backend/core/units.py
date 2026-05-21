@@ -33,6 +33,7 @@ def rad_to_raw(
     min_raw: int = 0,
     max_raw: int = RAW_MAX,
 ) -> int:
+    """URDF rad → motor raw. offset 처리는 JointCoordinates.urdf_to_motor가 담당."""
     if reverse:
         radian = -radian
     raw = int(radian / (2.0 * math.pi) * RAW_MAX + RAW_CENTER)

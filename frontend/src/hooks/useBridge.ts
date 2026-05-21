@@ -104,6 +104,8 @@ export function useBridge() {
     // PointCloud 상태 + 바이너리 스트림 구독
     const unsubPointCloud = usePointCloudStore.getState()._attach();
 
+    // joint_offsets는 useCalibrationResults가 HTTP fetch로 처리 (토픽 폐기).
+
     return () => {
       unsubJoint();
       unsubHeartbeat();

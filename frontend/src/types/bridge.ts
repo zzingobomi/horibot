@@ -34,6 +34,7 @@ export interface WsService {
   key: string;
   request_id: string;
   data: Record<string, unknown>;
+  timeout?: number; // 초 단위. 미지정 시 백엔드 기본값(5초)
 }
 
 export type WsOutgoing = WsSubscribe | WsUnsubscribe | WsPublish | WsService;

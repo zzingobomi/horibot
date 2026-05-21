@@ -4,13 +4,19 @@ cv2.calibrateHandEye 결과를 seed로 받아, joint zero offset과 hand-eye 변
 동시에 최적화. 비용함수는 T_base←board의 분산 (체커보드가 안 움직였으니까
 모든 포즈에서 같은 값이 되어야 함).
 
-두 가지 BA가 제공됨:
+세 가지 BA가 제공됨:
   - `bundle_adjust_hand_eye(...)` — 기존 11자유도 (joint_offset 5 + R/t).
     PyBullet FK 사용 (URDF 고정). DIY 5축에서 σ_rot floor ~1.5° / σ_t ~17mm.
   - `bundle_adjust_hand_eye_extended(...)` — 확장 41자유도 (위 + link_trans 15
     + link_rot 15). URDF의 link 미스매치도 같이 풀어 floor 깸 (~1.3°/9mm 검증).
     PyBullet 우회, numpy fk_chain 사용 (link_offset이 매 iter 변수라 PyBullet
     의 정적 URDF로는 표현 불가능).
+  - `bundle_adjust_hand_eye_physical_sag(...)` — 위 + 자세 의존 중력 처짐 sag 모델
+    2변수 (k_J2, k_J3) = 43자유도. lumped mass + 모멘트 암 기반 토크 → sag = k * τ.
+    자세 의존 오차 (link offset이 잘못 흡수하던 부분)를 분리해 σ_rot 0.65°/σ_t 7.9mm
+    달성 ([docs/diag_gravity_sag_physical.py](docs/diag_gravity_sag_physical.py)).
+    PyBullet calculateInverseDynamics는 URDF mass의 D405 누락으로 lumped보다 σ 손해 →
+    채택 X ([docs/diag_gravity_sag_pybullet.py](docs/diag_gravity_sag_pybullet.py)).
 
 T_b(보드의 base-frame 포즈)는 명시 변수가 아니라 매 iteration에서 모든 포즈의
 T_base←board 평균으로 계산. 이렇게 하면 X와 T_b 사이 gauge freedom이 사라져
@@ -305,10 +311,14 @@ def bundle_adjust_hand_eye_extended(
 
     def unpack(x: np.ndarray):
         i = 0
-        offset = x[i : i + n_off]; i += n_off
-        link_t = x[i : i + n_lt].reshape(J, 3); i += n_lt
-        link_r = x[i : i + n_lr].reshape(J, 3); i += n_lr
-        rod = x[i : i + 3]; i += 3
+        offset = x[i : i + n_off]
+        i += n_off
+        link_t = x[i : i + n_lt].reshape(J, 3)
+        i += n_lt
+        link_r = x[i : i + n_lr].reshape(J, 3)
+        i += n_lr
+        rod = x[i : i + 3]
+        i += 3
         t_x = x[i : i + 3]
         return offset, link_t, link_r, rod, t_x
 
@@ -389,6 +399,220 @@ def bundle_adjust_hand_eye_extended(
         joint_offset_rad=offset_opt.copy(),
         link_trans_m=link_t_opt.copy(),
         link_rot_rad=link_r_opt.copy(),
+        cost=float(result.cost),
+        n_iter=int(result.nfev),
+        success=bool(result.success),
+        message=str(result.message),
+        residual_rot_deg=np.degrees(rot_norms),
+        residual_t_mm=t_norms * 1000.0,
+    )
+
+
+# ─── 물리 sag BA — extended + 자세 의존 중력 처짐 ────────────────────────
+
+
+@dataclass
+class BundleAdjustPhysicalSagResult:
+    """확장 BA + 물리 sag 모델 결과.
+
+    BundleAdjustExtendedResult + sag_k_rad_per_m (2,) + max_sag_deg (2,).
+    sag는 J2, J3에만 적용 (DIY 5축에서 중력 부하 가장 큰 두 joint).
+    """
+    R_cam2gripper: np.ndarray  # 3x3
+    t_cam2gripper: np.ndarray  # (3,) meters
+    T_board_base: np.ndarray  # 4x4
+    joint_offset_rad: np.ndarray  # (J,)
+    link_trans_m: np.ndarray  # (J, 3) m
+    link_rot_rad: np.ndarray  # (J, 3) rad rotvec
+    sag_k_rad_per_m: np.ndarray  # (2,) — k_J2, k_J3. sag = k * τ
+    max_sag_deg: np.ndarray  # (2,) — 캡처 자세들의 최대 sag (디버깅/UI 표시용)
+    cost: float
+    n_iter: int
+    success: bool
+    message: str
+    residual_rot_deg: np.ndarray  # (N,)
+    residual_t_mm: np.ndarray  # (N,)
+
+
+# [docs/diag_gravity_sag_physical.py]의 reg sweep으로 검증된 default.
+# k_reg 0~0.1 sweet spot, 0.5↑부터 link_offset으로 흡수되어 σ 손해.
+# 기본 0.0 = reg 없음 (변수 작아서 폭주 안 함, k_J2≈0.27, k_J3≈0.14 nominal).
+DEFAULT_SAG_K_REG: float = 0.0
+
+
+def bundle_adjust_hand_eye_physical_sag(
+    *,
+    joint_angles_per_pose: list[list[float]],
+    R_target2cam: list[np.ndarray],
+    t_target2cam: list[np.ndarray],
+    X_init: tuple[np.ndarray, np.ndarray],
+    joint_offset_reg: float = DEFAULT_JOINT_OFFSET_REG,
+    link_trans_reg: float = DEFAULT_LINK_TRANS_REG,
+    link_rot_reg: float = DEFAULT_LINK_ROT_REG,
+    sag_k_reg: float = DEFAULT_SAG_K_REG,
+    max_nfev: int = 5000,
+) -> BundleAdjustPhysicalSagResult:
+    """확장 BA + 물리 sag (43 DOF).
+
+    `bundle_adjust_hand_eye_extended`와 동일 구조 + sag_k_rad_per_m 2개 추가.
+    sag는 J2/J3에만 적용 (`apply_gravity_sag` 참고).
+
+    변수 layout:
+      [0:5]    joint_offset (rad)
+      [5:20]   link_translation (5×3, m)
+      [20:35]  link_rotation (5×3, rad rotvec)
+      [35:37]  sag_k (J2, J3) (rad / (m·g_unit))
+      [37:40]  rod (cam2gripper)
+      [40:43]  t (cam2gripper, m)
+
+    Args/Returns: extended와 동일하되 result에 sag_k_rad_per_m + max_sag_deg 추가.
+
+    σ_rot 0.65° / σ_t 7.9mm 달성 (32 포즈 검증). lumped mass 모델이므로 k가
+    (effective stiffness × effective mass) 비율을 통째로 흡수 → URDF mass 부정확성
+    (D405 카메라 무게 누락 등)에 robust.
+    """
+    from modules.kinematics.fk_chain import (
+        N_JOINTS,
+        apply_gravity_sag,
+        fk_chain,
+        fk_chain_with_axes,
+        gravity_torque_lumped,
+    )
+
+    N = len(joint_angles_per_pose)
+    assert N == len(R_target2cam) == len(t_target2cam), "포즈 리스트 길이 불일치"
+    if N < 3:
+        raise ValueError(f"BA 최소 3 포즈 필요 (받은 {N}개)")
+
+    J = N_JOINTS
+    assert all(len(a) == J for a in joint_angles_per_pose), (
+        f"포즈마다 joint angle 수가 {J}이어야 함"
+    )
+
+    angles_arr = np.array(joint_angles_per_pose, dtype=np.float64)
+    R_tc_list = [np.asarray(R, dtype=np.float64) for R in R_target2cam]
+    t_tc_list = [np.asarray(t, dtype=np.float64).reshape(3) for t in t_target2cam]
+    T_tc_list = [make_T(R, t) for R, t in zip(R_tc_list, t_tc_list)]
+
+    rod_seed, _ = cv2.Rodrigues(np.asarray(X_init[0], dtype=np.float64))
+    t_seed = np.asarray(X_init[1], dtype=np.float64).reshape(3)
+
+    n_off = J
+    n_lt = 3 * J
+    n_lr = 3 * J
+    n_k = 2
+
+    def unpack(x: np.ndarray):
+        i = 0
+        offset = x[i : i + n_off]
+        i += n_off
+        link_t = x[i : i + n_lt].reshape(J, 3)
+        i += n_lt
+        link_r = x[i : i + n_lr].reshape(J, 3)
+        i += n_lr
+        sag_k = x[i : i + n_k]
+        i += n_k
+        rod = x[i : i + 3]
+        i += 3
+        t_x = x[i : i + 3]
+        return offset, link_t, link_r, sag_k, rod, t_x
+
+    def compute_T_target_in_base(x: np.ndarray) -> list[np.ndarray]:
+        offset, link_t, link_r, sag_k, rod, t_x = unpack(x)
+        R_x = cv2.Rodrigues(rod)[0]
+        T_x = make_T(R_x, t_x)
+        out: list[np.ndarray] = []
+        for i in range(N):
+            a_corr = apply_gravity_sag(
+                angles_arr[i] + offset, sag_k, link_t, link_r
+            )
+            R_gb, t_gb = fk_chain(a_corr, link_t, link_r)
+            T_gb = make_T(R_gb, t_gb)
+            out.append(T_gb @ T_x @ T_tc_list[i])
+        return out
+
+    def residual(x: np.ndarray) -> np.ndarray:
+        offset, link_t, link_r, sag_k, _, _ = unpack(x)
+        T_list = compute_T_target_in_base(x)
+        positions = np.array([T[:3, 3] for T in T_list])
+        mean_pos = positions.mean(axis=0)
+        mean_R = _mean_rotation([T[:3, :3] for T in T_list])
+        n_reg = n_off + n_lt + n_lr + n_k
+        res = np.empty(6 * N + n_reg, dtype=np.float64)
+        for i, T in enumerate(T_list):
+            R_dev = T[:3, :3] @ mean_R.T
+            rod_dev, _ = cv2.Rodrigues(R_dev)
+            res[6 * i : 6 * i + 3] = rod_dev.flatten()
+            res[6 * i + 3 : 6 * (i + 1)] = T[:3, 3] - mean_pos
+        k = 6 * N
+        res[k : k + n_off] = joint_offset_reg * offset
+        k += n_off
+        res[k : k + n_lt] = link_trans_reg * link_t.flatten()
+        k += n_lt
+        res[k : k + n_lr] = link_rot_reg * link_r.flatten()
+        k += n_lr
+        res[k : k + n_k] = sag_k_reg * sag_k
+        return res
+
+    x0 = np.concatenate(
+        [
+            np.zeros(n_off),
+            np.zeros(n_lt),
+            np.zeros(n_lr),
+            np.zeros(n_k),
+            rod_seed.flatten(),
+            t_seed,
+        ]
+    )
+
+    result = least_squares(
+        residual,
+        x0,
+        method="lm",
+        max_nfev=max_nfev,
+        xtol=1e-11,
+        ftol=1e-11,
+    )
+
+    offset_opt, link_t_opt, link_r_opt, sag_k_opt, rod_opt, t_opt = unpack(result.x)
+    R_opt, _ = cv2.Rodrigues(rod_opt)
+
+    T_list_final = compute_T_target_in_base(result.x)
+    positions = np.array([T[:3, 3] for T in T_list_final])
+    mean_pos = positions.mean(axis=0)
+    mean_R = _mean_rotation([T[:3, :3] for T in T_list_final])
+    T_b_final = make_T(mean_R, mean_pos)
+
+    rot_norms = np.empty(N, dtype=np.float64)
+    t_norms = np.empty(N, dtype=np.float64)
+    for i, T in enumerate(T_list_final):
+        R_dev = T[:3, :3] @ mean_R.T
+        rod_dev, _ = cv2.Rodrigues(R_dev)
+        rot_norms[i] = float(np.linalg.norm(rod_dev))
+        t_norms[i] = float(np.linalg.norm(T[:3, 3] - mean_pos))
+
+    # 캡처 자세들의 최대 sag (deg) — UI/디버깅 표시용
+    max_sag = np.zeros(2, dtype=np.float64)
+    for i in range(N):
+        _, ee_pos, jo, ja = fk_chain_with_axes(
+            angles_arr[i] + offset_opt, link_t_opt, link_r_opt
+        )
+        tau2 = gravity_torque_lumped(ee_pos, jo[1], ja[1])
+        tau3 = gravity_torque_lumped(ee_pos, jo[2], ja[2])
+        s2 = abs(np.degrees(sag_k_opt[0] * tau2))
+        s3 = abs(np.degrees(sag_k_opt[1] * tau3))
+        max_sag[0] = max(max_sag[0], s2)
+        max_sag[1] = max(max_sag[1], s3)
+
+    return BundleAdjustPhysicalSagResult(
+        R_cam2gripper=R_opt.copy(),
+        t_cam2gripper=t_opt.reshape(3).copy(),
+        T_board_base=T_b_final,
+        joint_offset_rad=offset_opt.copy(),
+        link_trans_m=link_t_opt.copy(),
+        link_rot_rad=link_r_opt.copy(),
+        sag_k_rad_per_m=sag_k_opt.copy(),
+        max_sag_deg=max_sag,
         cost=float(result.cost),
         n_iter=int(result.nfev),
         success=bool(result.success),

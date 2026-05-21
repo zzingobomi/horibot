@@ -100,6 +100,23 @@ export type LinkRotDelta = {
 };
 
 /**
+ * 자세 의존 중력 처짐 sag stiffness — 물리 sag BA(43 DOF)에서만 채워짐.
+ *
+ * `sag_J = k * τ_J`   where τ_J = (ee_pos - joint_origin) × g · axis  (m 단위)
+ * lumped mass 가정이라 k는 (1/stiffness × effective_mass) 비율을 흡수.
+ * `max_sag_deg`는 캡처 자세들 중 최대 sag (디버깅/UI 표시용).
+ *
+ * 현재 J2, J3에만 적용 (DIY 5축에서 중력 부하 가장 큰 두 joint).
+ * COMMIT 시 sag_offsets.npz에 cumulative 합산 — PC 메모리 즉시 갱신
+ * (PybulletSolver 재시작 X), 다른 머신은 git pull + 재시작.
+ */
+export type SagOffsetDelta = {
+  motor_id: number;
+  k_rad_per_m: number;
+  max_sag_deg: number;
+};
+
+/**
  * `CALIB_HANDEYE_COMPUTE` 응답.
  *
  * 파이프라인: cv2.calibrateHandEye(TSAI) seed → scipy Huber-BA → 진단.
@@ -125,6 +142,9 @@ export type ComputeData = {
   link_offset_estimated: boolean;
   link_trans_delta: LinkTransDelta[];
   link_rot_delta: LinkRotDelta[];
+  // 물리 sag BA(default, mode="physical_sag")에서만 채워짐. extended로 fallback하면 빈 배열.
+  sag_offset_estimated: boolean;
+  sag_offset_delta: SagOffsetDelta[];
   // [계산] 응답에 묶이는 다음 자세 후보 리스트. 사용자가 [이동]→카메라 확인→
   // 보이면 [캡처] 흐름으로 소비. 다음 [계산] 전까지 갱신 X.
   recommendations: NextPoseRecommendation[];

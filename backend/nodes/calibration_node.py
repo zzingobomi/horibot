@@ -8,6 +8,8 @@ from pathlib import Path
 from core.base_node import BaseNode
 from core.joint_coordinates import JointCoordinates
 from core.link_coordinates import LinkCoordinates
+from core.sag_coordinates import SagCoordinates
+from modules.calibration.sag_offsets import SagOffsets
 from core.topic_map import Service, Topic
 from core.frame_cache import FrameCache
 from core.joint_state_cache import JointStateCache
@@ -260,18 +262,22 @@ class CalibrationNode(BaseNode):
     def _srv_handeye_compute(self, req: dict) -> dict:
         arm_motor_ids = [cfg.id for cfg in self._arm_cfgs]
         joint_limits = self.solver.joint_limits(len(arm_motor_ids))
-        # mode: "extended" (기본, 41 DOF) / "standard" (11 DOF, fallback).
-        # extended는 link_trans/link_rot까지 풀어 DIY 5축의 systematic URDF
-        # 미스매치를 흡수 — σ_t floor 16→9mm, σ_rot floor 1.5→1.3°. hold-out
-        # validation(ratio 1.06×/1.01×)으로 generalize 확인됨. standard는 회귀
-        # 진단용으로 남겨둠 — mode="standard"로 호출 시에만 사용.
-        mode = str(req.get("mode", "extended")).lower()
-        use_extended_ba = mode != "standard"
+        # mode 옵션:
+        #   "physical_sag" (기본, 43 DOF) — extended + 자세 의존 sag (k_J2, k_J3).
+        #       σ_rot ~0.65°/σ_t ~7.9mm 달성 ([docs/diag_gravity_sag_physical.py]).
+        #       lumped mass 가정이라 URDF의 D405 카메라 mass 누락에도 robust.
+        #   "extended" (41 DOF) — link_trans/link_rot 풀고 sag X. σ_rot ~1.3°/σ_t ~9mm.
+        #       사용자가 sag 모델 회귀 진단 필요할 때.
+        #   "standard" (11 DOF) — joint_offset만. 더 옛 회귀.
+        mode = str(req.get("mode", "physical_sag")).lower()
+        use_physical_sag = mode == "physical_sag"
+        use_extended_ba = mode in ("physical_sag", "extended")
         diag = self.hand_eye.compute_with_diagnostics(
             fk_fn=self.solver.fk_to_matrix,
             arm_motor_cfgs=self._arm_cfgs,
             joint_limits_rad=joint_limits,
             use_extended_ba=use_extended_ba,
+            use_physical_sag=use_physical_sag,
         )
         if diag is None:
             return {
@@ -363,9 +369,42 @@ class CalibrationNode(BaseNode):
                 "link_offsets 디스크 적용 (재시작 필요): n=%d", n_joints
             )
 
+        # 4) sag_offsets.npz — 물리 sag BA가 추정한 k_J2, k_J3 cumulative 합산.
+        # PybulletSolver의 sag 캐시는 매 FK/IK 호출마다 메모리에서 읽으므로 PC는
+        # 즉시 반영 (solver._reload_sag_cache 호출). 다른 머신은 git pull + 재시작.
+        sag_msg = ""
+        sag_applied_meta: list[dict] = []
+        if self._last_compute.get("sag_offset_estimated"):
+            sag_delta_list = self._last_compute.get("sag_offset_delta", [])
+            delta = SagOffsets(
+                k_rad_per_m={
+                    int(e["motor_id"]): float(e["k_rad_per_m"])
+                    for e in sag_delta_list
+                },
+            )
+            sag_applied = SagCoordinates().commit_offsets(
+                delta, method=self.hand_eye.result.method,
+            )
+            # PC 메모리의 PybulletSolver 캐시도 즉시 갱신 (재시작 X)
+            self.solver._reload_sag_cache()
+            sag_applied_meta = [
+                {
+                    "motor_id": int(jid),
+                    "k_rad_per_m": float(sag_applied.get_k(jid)),
+                }
+                for jid in sorted(sag_applied.k_rad_per_m.keys())
+            ]
+            n_sag = len(sag_applied.k_rad_per_m)
+            sag_msg = f" + sag_offsets 갱신 (n={n_sag}, 즉시 적용)"
+            logger.info(
+                "sag_offsets 즉시 적용: %s",
+                {m["motor_id"]: round(m["k_rad_per_m"], 5)
+                 for m in sag_applied_meta},
+            )
+
         return {
             "success": True,
-            "message": f"저장 완료: {hand_eye_path}{offset_msg}{link_msg}",
+            "message": f"저장 완료: {hand_eye_path}{offset_msg}{link_msg}{sag_msg}",
             "data": {
                 "path": str(hand_eye_path),
                 "method": self.hand_eye.result.method,
@@ -380,6 +419,10 @@ class CalibrationNode(BaseNode):
                     "link_offset_estimated", False
                 ),
                 "link_offsets": link_applied_meta,
+                "sag_offsets_applied": self._last_compute.get(
+                    "sag_offset_estimated", False
+                ),
+                "sag_offsets": sag_applied_meta,
                 "restart_required": restart_required,
             },
         }

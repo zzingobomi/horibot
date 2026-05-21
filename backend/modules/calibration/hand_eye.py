@@ -13,13 +13,24 @@ from modules.dynamixel.motor_config import MotorConfig
 from . import thresholds as T
 from .bundle_adjust import (
     BundleAdjustExtendedResult,
+    BundleAdjustPhysicalSagResult,
     BundleAdjustResult,
     FkFn,
     bundle_adjust_hand_eye,
     bundle_adjust_hand_eye_extended,
+    bundle_adjust_hand_eye_physical_sag,
 )
 from .coach import diagnose
 from .se3 import make_T
+
+# sag 모델은 J2, J3에만 적용 (motor id 2, 3). bundle_adjust의 sag_k_rad_per_m
+# (2,) 배열의 순서와 일치. solver.py의 _SAG_JOINT_IDS와 같은 정의.
+_SAG_MOTOR_IDS: list[int] = [2, 3]
+
+# 결과 dispatch 시 사용. Union 매번 풀어쓰는 것 방지.
+_BaResultT = (
+    BundleAdjustResult | BundleAdjustExtendedResult | BundleAdjustPhysicalSagResult
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,17 +140,22 @@ class HandEyeCalibration:
         joint_limits_rad: list[tuple[float, float]],
         estimate_joint_offsets: bool = True,
         use_extended_ba: bool = False,
+        use_physical_sag: bool = False,
     ) -> dict | None:
         """파이프라인: 매 COMPUTE 시점 *현재 offset*으로 포즈 재해석 →
         cv2 multi-seed BA → outlier 자동 제거 → 깨끗한 set 재BA → 진단.
 
         Args:
             estimate_joint_offsets: 기존 BA(11자유도)에서 joint_offset도 풀지.
-                use_extended_ba=True면 무시 (확장 BA는 항상 joint_offset 추정).
+                use_extended_ba/use_physical_sag=True면 무시 (각각 항상 joint_offset 추정).
             use_extended_ba: True면 확장 BA(41자유도) 사용.
                 joint_offset + link_trans + link_rot + R/t 동시 추정.
                 fk_fn 대신 modules.kinematics.fk_chain의 numpy 체인을 내부 호출
                 (PybulletSolver는 URDF 고정이라 link_offset 변수화 불가능).
+            use_physical_sag: True면 확장 BA + 자세 의존 sag (43자유도) 사용.
+                위 + sag_k_J2, sag_k_J3 동시 추정. lumped mass + 모멘트 암 기반.
+                σ_rot ~0.65° / σ_t ~7.9mm 달성 가능 (vs extended_ba 1.30°/9.3mm).
+                use_extended_ba와 동시 True면 use_physical_sag가 우선.
 
         반복 캘 작동 보장:
             포즈는 raw로 저장되어 *영속*. 매번 _resolve_pose_arrays가 *현재*
@@ -178,8 +194,16 @@ class HandEyeCalibration:
 
         # ── 2. 1차 BA (multiseed) — outlier 식별용 ────────────────
         # cv2 seed는 _multiseed_ba_lists 내부에서 TSAI/PARK/DANIILIDIS로 직접 생성.
-        ba_first: BundleAdjustResult | BundleAdjustExtendedResult | None
-        if use_extended_ba:
+        ba_first: _BaResultT | None
+        if use_physical_sag:
+            ba_first, ba_first_seed = self._multiseed_ba_physical_sag_lists(
+                ja_list=ja_list,
+                R_gb_list=R_gb_list,
+                t_gb_list=t_gb_list,
+                R_tc_list=R_tc_list,
+                t_tc_list=t_tc_list,
+            )
+        elif use_extended_ba:
             ba_first, ba_first_seed = self._multiseed_ba_extended_lists(
                 ja_list=ja_list,
                 R_gb_list=R_gb_list,
@@ -211,13 +235,21 @@ class HandEyeCalibration:
         # ── 4. 깨끗한 set으로 재BA (outlier가 있을 때만) ──────────
         excl_set = set(excluded_ids)
         clean_idx = [i for i, pid in enumerate(pose_ids) if pid not in excl_set]
-        ba_final: BundleAdjustResult | BundleAdjustExtendedResult | None
+        ba_final: _BaResultT | None
         if (
             excluded_ids
             and len(clean_idx) >= T.MIN_POSES_FOR_COMPUTE
             and ba_first is not None
         ):
-            if use_extended_ba:
+            if use_physical_sag:
+                ba_final, ba_final_seed = self._multiseed_ba_physical_sag_lists(
+                    ja_list=[ja_list[i] for i in clean_idx],
+                    R_gb_list=[R_gb_list[i] for i in clean_idx],
+                    t_gb_list=[t_gb_list[i] for i in clean_idx],
+                    R_tc_list=[R_tc_list[i] for i in clean_idx],
+                    t_tc_list=[t_tc_list[i] for i in clean_idx],
+                )
+            elif use_extended_ba:
                 ba_final, ba_final_seed = self._multiseed_ba_extended_lists(
                     ja_list=[ja_list[i] for i in clean_idx],
                     R_gb_list=[R_gb_list[i] for i in clean_idx],
@@ -244,11 +276,16 @@ class HandEyeCalibration:
         link_trans_delta = np.zeros((5, 3), dtype=np.float64)
         link_rot_delta = np.zeros((5, 3), dtype=np.float64)
         link_offsets_estimated = False
+        sag_k_rad_per_m = np.zeros(len(_SAG_MOTOR_IDS), dtype=np.float64)
+        max_sag_deg = np.zeros(len(_SAG_MOTOR_IDS), dtype=np.float64)
+        sag_offsets_estimated = False
 
         if ba_final is not None and ba_final.success:
             final_R = ba_final.R_cam2gripper
             final_t = ba_final.t_cam2gripper.reshape(3, 1)
-            if isinstance(ba_final, BundleAdjustExtendedResult):
+            if isinstance(ba_final, BundleAdjustPhysicalSagResult):
+                method_name = f"BA(+offset+link+sag, seed={ba_final_seed})"
+            elif isinstance(ba_final, BundleAdjustExtendedResult):
                 method_name = f"BA(+offset+link, seed={ba_final_seed})"
             elif ba_final.n_joint_vars > 0:
                 method_name = f"BA(+offset, seed={ba_final_seed})"
@@ -280,7 +317,16 @@ class HandEyeCalibration:
 
             ba_converged = True
             ba_message = ba_final.message
-            if isinstance(ba_final, BundleAdjustExtendedResult):
+            if isinstance(ba_final, BundleAdjustPhysicalSagResult):
+                joint_offset_rad = ba_final.joint_offset_rad.copy()
+                joint_offsets_estimated = True
+                link_trans_delta = ba_final.link_trans_m.copy()
+                link_rot_delta = ba_final.link_rot_rad.copy()
+                link_offsets_estimated = True
+                sag_k_rad_per_m = ba_final.sag_k_rad_per_m.copy()
+                max_sag_deg = ba_final.max_sag_deg.copy()
+                sag_offsets_estimated = True
+            elif isinstance(ba_final, BundleAdjustExtendedResult):
                 joint_offset_rad = ba_final.joint_offset_rad.copy()
                 joint_offsets_estimated = True
                 link_trans_delta = ba_final.link_trans_m.copy()
@@ -351,6 +397,15 @@ class HandEyeCalibration:
             }
             for i in range(n_link)
         ]
+        # 물리 sag BA에서만 채워짐. extended/basic BA면 모두 0.
+        sag_offset_list = [
+            {
+                "motor_id": int(mid),
+                "k_rad_per_m": float(sag_k_rad_per_m[i]),
+                "max_sag_deg": float(max_sag_deg[i]),
+            }
+            for i, mid in enumerate(_SAG_MOTOR_IDS)
+        ]
 
         # ── 6. coach 진단 ────────────────────────────────────────
         coach_report = diagnose(
@@ -394,6 +449,8 @@ class HandEyeCalibration:
             "link_offset_estimated": link_offsets_estimated,
             "link_trans_delta": link_trans_list,
             "link_rot_delta": link_rot_list,
+            "sag_offset_estimated": sag_offsets_estimated,
+            "sag_offset_delta": sag_offset_list,
             # planner가 다음 추천 산출에 사용 (잔차 기반 MVP)
             "joint_angles_per_pose": ja_list,
         }
@@ -442,6 +499,28 @@ class HandEyeCalibration:
             )
         except Exception as e:
             logger.exception("확장 BA 실패: %s", e)
+            return None
+
+    @staticmethod
+    def _run_ba_physical_sag_lists(
+        *,
+        ja_list: list[list[float]],
+        R_tc_list: list[np.ndarray],
+        t_tc_list: list[np.ndarray],
+        seed: HandEyeResult,
+    ) -> BundleAdjustPhysicalSagResult | None:
+        """물리 sag BA 한 번 실행 (extended + sag_k 동시 추정)."""
+        try:
+            return bundle_adjust_hand_eye_physical_sag(
+                joint_angles_per_pose=[list(a) for a in ja_list],
+                R_target2cam=R_tc_list,
+                t_target2cam=[
+                    np.asarray(t, dtype=np.float64).reshape(3) for t in t_tc_list
+                ],
+                X_init=(seed.R_cam2gripper, seed.t_cam2gripper),
+            )
+        except Exception as e:
+            logger.exception("물리 sag BA 실패: %s", e)
             return None
 
     def _multiseed_ba_lists(
@@ -525,6 +604,48 @@ class HandEyeCalibration:
         if best_ba is not None:
             logger.info(
                 "확장 BA seed 선택: %s (cost=%.4f)",
+                best_seed_name,
+                best_ba.cost,
+            )
+        return best_ba, best_seed_name
+
+    def _multiseed_ba_physical_sag_lists(
+        self,
+        *,
+        ja_list: list[list[float]],
+        R_gb_list: list[np.ndarray],
+        t_gb_list: list[np.ndarray],
+        R_tc_list: list[np.ndarray],
+        t_tc_list: list[np.ndarray],
+    ) -> tuple[BundleAdjustPhysicalSagResult | None, str | None]:
+        """물리 sag BA — TSAI/PARK/DANIILIDIS 3 seed로 실행 후 cost 최소 채택."""
+        best_ba: BundleAdjustPhysicalSagResult | None = None
+        best_seed_name: str | None = None
+        for method in _COMPARE_METHODS:
+            try:
+                R, t = cv2.calibrateHandEye(
+                    R_gb_list, t_gb_list, R_tc_list, t_tc_list, method=method
+                )
+            except cv2.error:
+                continue
+            method_name = _METHOD_NAMES.get(method, "UNKNOWN")
+            seed = HandEyeResult(
+                R_cam2gripper=R, t_cam2gripper=t, method=method_name
+            )
+            ba = self._run_ba_physical_sag_lists(
+                ja_list=ja_list,
+                R_tc_list=R_tc_list,
+                t_tc_list=t_tc_list,
+                seed=seed,
+            )
+            if ba is None or not ba.success:
+                continue
+            if best_ba is None or ba.cost < best_ba.cost:
+                best_ba = ba
+                best_seed_name = method_name
+        if best_ba is not None:
+            logger.info(
+                "물리 sag BA seed 선택: %s (cost=%.4f)",
                 best_seed_name,
                 best_ba.cost,
             )

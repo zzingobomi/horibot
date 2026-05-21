@@ -6,9 +6,19 @@ import numpy as np
 import pybullet as p
 
 from core.link_coordinates import LinkCoordinates
+from core.sag_coordinates import SagCoordinates
 from core.urdf_patcher import write_patched_urdf
+from modules.kinematics.fk_chain import (
+    actual_to_commanded,
+    apply_gravity_sag,
+)
 
 logger = logging.getLogger(__name__)
+
+# sag 모델은 J2, J3에만 적용 (motor id 2, 3). [docs/diag_gravity_sag_physical.py]
+# 에서 J1/J4/J5의 sag는 측정 noise 수준이라 모델 단순성 위해 제외 결정.
+_SAG_JOINT_IDS: list[int] = [2, 3]
+_ARM_DOF: int = 5
 
 # ─── 타입 별칭 ─────────────────────────────────────────────────
 Position3: TypeAlias = tuple[float, float, float]  # [x, y, z] 미터
@@ -45,6 +55,19 @@ class PybulletSolver:
         urdf_to_load = write_patched_urdf(URDF_PATH, link_offsets)
         if not link_offsets.is_empty():
             logger.info(f"patched URDF 로드: {urdf_to_load}")
+
+        # numpy fk_chain의 apply_gravity_sag에 전달할 link_offset (PyBullet의 patched URDF
+        # 와 동일 값). 두 경로가 같은 ee 위치 → 같은 토크 계산 → 일관된 sag.
+        self._link_trans_array = np.array(
+            [link_offsets.get_trans(i + 1) for i in range(_ARM_DOF)], dtype=np.float64
+        )
+        self._link_rot_array = np.array(
+            [link_offsets.get_rot(i + 1) for i in range(_ARM_DOF)], dtype=np.float64
+        )
+
+        # sag stiffness (rad/(m·g_unit)) — J2, J3만. SagCoordinates 비어있으면 0.
+        # 0이면 sag 적용 없음 (legacy 동작과 동일).
+        self._reload_sag_cache()
 
         self._client = p.connect(p.DIRECT)
         p.setGravity(0, 0, -9.81, physicsClientId=self._client)
@@ -98,11 +121,51 @@ class PybulletSolver:
         )
         return tuple(state[4]), tuple(state[5])
 
+    def _reload_sag_cache(self) -> None:
+        """SagCoordinates에서 k 배열 다시 로드. COMMIT 후 호출하면 재시작 없이 반영."""
+        sag = SagCoordinates().snapshot()
+        self._sag_k_array = sag.as_array_for_joints(_SAG_JOINT_IDS)
+        self._sag_enabled = bool(
+            self._sag_k_array.size > 0
+            and float(np.max(np.abs(self._sag_k_array))) > 1e-12
+        )
+        if self._sag_enabled:
+            ks = ", ".join(
+                f"J{jid}={k:+.5f}"
+                for jid, k in zip(_SAG_JOINT_IDS, self._sag_k_array)
+            )
+            logger.info(f"PybulletSolver sag 적용: {ks}")
+
+    def _commanded_to_actual(self, joint_angles: list[float]) -> list[float]:
+        """모터 encoder reading(commanded) → 실제 link end의 URDF angle (actual)."""
+        if not self._sag_enabled or len(joint_angles) < _ARM_DOF:
+            return list(joint_angles)
+        arm = np.asarray(joint_angles[:_ARM_DOF], dtype=np.float64)
+        actual = apply_gravity_sag(
+            arm, self._sag_k_array, self._link_trans_array, self._link_rot_array
+        )
+        return list(actual) + list(joint_angles[_ARM_DOF:])
+
+    def _actual_to_commanded(self, joint_angles: list[float]) -> list[float]:
+        """IK 결과(actual, URDF static FK target) → 모터 명령 commanded. 1차 근사."""
+        if not self._sag_enabled or len(joint_angles) < _ARM_DOF:
+            return list(joint_angles)
+        arm = np.asarray(joint_angles[:_ARM_DOF], dtype=np.float64)
+        commanded = actual_to_commanded(
+            arm, self._sag_k_array, self._link_trans_array, self._link_rot_array
+        )
+        return list(commanded) + list(joint_angles[_ARM_DOF:])
+
     # ─── Public API ────────────────────────────────────────────
 
     def fk(self, joint_angles: list[float]) -> tuple[Position3, Quaternion]:
+        """encoder reading(commanded) → 실제 ee 자세 (sag 반영).
+
+        Sag 비활성(SagCoordinates 비어있음)이면 기존 동작과 동일.
+        """
+        actual = self._commanded_to_actual(joint_angles)
         with self._sim_lock:
-            self._set_joint_positions(joint_angles)
+            self._set_joint_positions(actual)
             return self._get_ee_state()
 
     def ik(
@@ -111,16 +174,32 @@ class PybulletSolver:
         target_quaternion: Quaternion | None,
         current_joint_angles: list[float] | None = None,
     ) -> list[float] | None:
+        """target ee pose → motor 명령 (commanded, sag 역보정 적용).
+
+        흐름:
+          1. current(commanded)를 actual로 변환 → PyBullet IK의 seed
+          2. PyBullet IK로 actual_result 계산 (URDF static fk가 target에 도달하는 angle)
+          3. 수렴 검증 (actual_result로)
+          4. actual_to_commanded로 motor 명령 변환해 return
+
+        Sag 비활성이면 변환은 no-op (기존 동작과 동일).
+        """
+        # current_joint_angles는 encoder reading(commanded). IK seed로 쓸 때 actual 변환.
+        current_actual = (
+            self._commanded_to_actual(current_joint_angles)
+            if current_joint_angles
+            else None
+        )
+
         with self._sim_lock:
             n = len(self._joint_indices)
 
-            # restPoses: current_joint_angles 기준으로 가장 가까운 해 선호
+            # restPoses: actual 기준으로 가장 가까운 해 선호
             # 없으면 0으로 초기화 (홈 포지션 근처에서만 시작할 때는 무방)
-            rest = list(current_joint_angles) if current_joint_angles else [
-                0.0] * n
+            rest = list(current_actual) if current_actual else [0.0] * n
 
-            if current_joint_angles:
-                self._set_joint_positions(current_joint_angles)
+            if current_actual:
+                self._set_joint_positions(current_actual)
 
             kwargs: dict = dict(
                 bodyUniqueId=self._robot,
@@ -138,10 +217,10 @@ class PybulletSolver:
                 kwargs["targetOrientation"] = target_quaternion
 
             result = p.calculateInverseKinematics(**kwargs)
-            angles = list(result[:n])
+            actual_angles = list(result[:n])
 
-            # 수렴 검증
-            self._set_joint_positions(angles)
+            # 수렴 검증 — PyBullet의 fk가 target에 도달하는지 (actual angle 기준)
+            self._set_joint_positions(actual_angles)
             actual_pos, _ = self._get_ee_state()
             error = float(
                 np.linalg.norm(np.array(actual_pos) -
@@ -150,7 +229,9 @@ class PybulletSolver:
             if error > IK_POS_ERROR_LIMIT:
                 return None
 
-            return angles
+        # sag 역보정 → motor 명령으로 변환. IK는 sim_lock 안에서 끝났고
+        # _actual_to_commanded는 numpy fk_chain만 호출하므로 lock 밖에서 OK.
+        return self._actual_to_commanded(actual_angles)
 
     def joint_limits(self, n: int | None = None) -> list[tuple[float, float]]:
         """URDF 조인트 limit (lower, upper) — rad. n 지정 시 처음 n개만 (arm).

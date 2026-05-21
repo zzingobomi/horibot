@@ -7,6 +7,7 @@ import type {
   LinkRotDelta,
   LinkTransDelta,
   PerPoseResidual,
+  SagOffsetDelta,
 } from "./types";
 
 function makeSigmaRotColor(thr: CalibThresholds) {
@@ -261,6 +262,9 @@ export function ComputePreview({
       {data.link_offset_estimated && data.link_rot_delta.length > 0 && (
         <LinkRotTable rows={data.link_rot_delta} />
       )}
+      {data.sag_offset_estimated && data.sag_offset_delta.length > 0 && (
+        <SagTable rows={data.sag_offset_delta} />
+      )}
     </div>
   );
 }
@@ -369,6 +373,40 @@ function LinkRotTable({ rows }: { rows: LinkRotDelta[] }) {
               </td>
               <td className={`py-0.5 text-right ${linkRotColor(r.rz_deg)}`}>
                 rz {fmtSigned(r.rz_deg, 3)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** sag 최대 각 색깔 — |값| > 5°면 비현실적 처짐 의심 — 노랑.
+ * XL430 11V + DIY 5축에서 J2/J3 sag ~2-4° 정도가 정상 범위. */
+function sagMaxColor(deg: number): string {
+  const mag = Math.abs(deg);
+  if (mag < 1.0) return "text-muted-foreground";
+  if (mag < 5.0) return "text-foreground";
+  return "text-amber-500";
+}
+
+function SagTable({ rows }: { rows: SagOffsetDelta[] }) {
+  return (
+    <div>
+      <p className="text-[10px] text-muted-foreground font-mono mb-1">
+        sag stiffness — 자세 의존 중력 처짐 보정 (J2, J3). COMMIT 시 누적, 즉시 적용
+      </p>
+      <table className="w-full text-[11px] font-mono">
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.motor_id}>
+              <td className="py-0.5 text-muted-foreground">J{r.motor_id}</td>
+              <td className="py-0.5 text-right text-foreground">
+                k {fmtSigned(r.k_rad_per_m, 5)}
+              </td>
+              <td className={`py-0.5 text-right ${sagMaxColor(r.max_sag_deg)}`}>
+                max sag {fmtSigned(r.max_sag_deg, 2)}°
               </td>
             </tr>
           ))}

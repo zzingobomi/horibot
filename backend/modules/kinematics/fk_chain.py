@@ -116,3 +116,139 @@ def fk_chain(
     T_ee[:3, 3] = EE_ORIGIN
     Tee = T @ T_ee
     return Tee[:3, :3].copy(), Tee[:3, 3].copy()
+
+
+def fk_chain_with_axes(
+    joint_angles: np.ndarray,
+    link_trans: np.ndarray | None = None,
+    link_rot: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """fk_chain + 각 joint origin/axis (base frame). 중력 토크 계산에 사용.
+
+    joint i의 origin은 *그 joint의 회전 적용 전* base 좌표 (회전축 위치).
+    axis는 base에서 본 단위 회전축 방향.
+
+    Returns:
+        (R_ee, t_ee, joint_origins_base, joint_axes_base)
+        joint_origins_base: shape (5, 3) m
+        joint_axes_base: shape (5, 3) unit vectors
+    """
+    if link_trans is None:
+        link_trans = np.zeros((N_JOINTS, 3), dtype=np.float64)
+    if link_rot is None:
+        link_rot = np.zeros((N_JOINTS, 3), dtype=np.float64)
+
+    angles = np.asarray(joint_angles, dtype=np.float64)
+    T = np.eye(4)
+    joint_origins_base = np.zeros((N_JOINTS, 3), dtype=np.float64)
+    joint_axes_base = np.zeros((N_JOINTS, 3), dtype=np.float64)
+    for i in range(N_JOINTS):
+        T_o = np.eye(4)
+        T_o[:3, :3] = rotvec_to_R(link_rot[i])
+        T_o[:3, 3] = JOINT_ORIGINS[i] + link_trans[i]
+        T = T @ T_o
+        # 이 시점에서 T는 joint i frame in base (회전 적용 전)
+        joint_origins_base[i] = T[:3, 3]
+        joint_axes_base[i] = T[:3, :3] @ JOINT_AXES[i]
+        T_r = np.eye(4)
+        T_r[:3, :3] = axis_angle_to_R(JOINT_AXES[i], float(angles[i]))
+        T = T @ T_r
+
+    T_ee = np.eye(4)
+    T_ee[:3, 3] = EE_ORIGIN
+    Tee = T @ T_ee
+    return (
+        Tee[:3, :3].copy(),
+        Tee[:3, 3].copy(),
+        joint_origins_base,
+        joint_axes_base,
+    )
+
+
+# 중력 방향 — base frame의 -z. SI 단위 g·m로 normalize (k가 rad/(m·g_unit) 단위 흡수).
+_GRAVITY_DIR = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+
+
+def gravity_torque_lumped(
+    ee_pos_base: np.ndarray,
+    joint_origin_base: np.ndarray,
+    joint_axis_base: np.ndarray,
+) -> float:
+    """ee에 lumped mass 가정. joint 회전축에 작용하는 중력 토크 (sign + magnitude).
+
+    τ = (r × g_dir) · axis   where r = ee - joint_origin   (모멘트 암 벡터)
+
+    Units: r은 m, g_dir/axis는 unit → τ는 m. k(=1/effective_stiffness) 곱하면 rad.
+
+    URDF의 distributed mass 대신 lumped 가정을 쓰는 이유:
+        - URDF mass가 D405 카메라 교체 무게를 반영 못 함 (44g vs D405 42g)
+        - PyBullet calculateInverseDynamics보다 σ에서 우월 (0.65° vs 0.77°)
+        - k가 effective (stiffness × mass) 비율을 통째로 흡수해 mass 부정확성에 robust
+        - 자세한 검증: [docs/diag_gravity_sag_pybullet.py](docs/diag_gravity_sag_pybullet.py)
+    """
+    r = np.asarray(ee_pos_base) - np.asarray(joint_origin_base)
+    return float(np.dot(np.cross(r, _GRAVITY_DIR), np.asarray(joint_axis_base)))
+
+
+def apply_gravity_sag(
+    joint_angles: np.ndarray,
+    k_stiff: np.ndarray,
+    link_trans: np.ndarray | None = None,
+    link_rot: np.ndarray | None = None,
+) -> np.ndarray:
+    """commanded joint angles → sag 적용된 actual angles.
+
+    모델: actual = commanded + sag_offset(commanded)
+        sag_offset_J = k_J * τ_J   where τ_J = gravity_torque_lumped(ee, joint_J)
+
+    현재 모델은 J2, J3에만 sag (DIY 5축에서 중력 부하 가장 큰 두 joint).
+    J1/J4/J5의 sag는 측정 noise 수준이라 모델 단순성 위해 제외 ([diag_gravity_sag_physical.py] 확인).
+
+    Args:
+        joint_angles: shape (5,) — commanded angles (rad).
+        k_stiff: shape (2,) — k_J2, k_J3 (rad/(m·g_unit)). 빈 배열 또는 [0,0]이면 no-op.
+        link_trans/link_rot: fk_chain_with_axes로 전달.
+
+    Returns:
+        shape (5,) — sag 적용 angles. J2/J3 외엔 그대로.
+    """
+    k = np.asarray(k_stiff, dtype=np.float64)
+    if k.size == 0 or float(np.max(np.abs(k))) < 1e-12:
+        return np.asarray(joint_angles, dtype=np.float64).copy()
+    _, ee_pos, joint_origins, joint_axes = fk_chain_with_axes(
+        joint_angles, link_trans, link_rot
+    )
+    tau_J2 = gravity_torque_lumped(ee_pos, joint_origins[1], joint_axes[1])
+    tau_J3 = gravity_torque_lumped(ee_pos, joint_origins[2], joint_axes[2])
+    out = np.asarray(joint_angles, dtype=np.float64).copy()
+    out[1] += k[0] * tau_J2
+    out[2] += k[1] * tau_J3
+    return out
+
+
+def actual_to_commanded(
+    actual_angles: np.ndarray,
+    k_stiff: np.ndarray,
+    link_trans: np.ndarray | None = None,
+    link_rot: np.ndarray | None = None,
+) -> np.ndarray:
+    """`apply_gravity_sag`의 역방향 (IK용). 1차 근사.
+
+    모델: actual = commanded + sag_offset(commanded)
+    Implicit: commanded = actual - sag_offset(commanded)
+    1st-order: commanded ≈ actual - sag_offset(actual)
+              (sag_offset varies slowly, commanded ≈ actual이라 OK)
+
+    sag ~2° 수준에서 1차 근사 오차는 < 0.05° (Taylor 잔차). fixed-point 1 iter면
+    완전 수렴하지만 perf vs 정확도 트레이드오프상 1차로 충분.
+
+    Args:
+        actual_angles: PyBullet IK 결과 (URDF의 static fk가 target에 도달하는 angle).
+        k_stiff, link_trans, link_rot: apply_gravity_sag와 동일.
+
+    Returns:
+        commanded angles — 모터에 이 값 명령하면 sag 후 actual에 도달, 즉 target_ee 달성.
+    """
+    a = np.asarray(actual_angles, dtype=np.float64)
+    sag_at_actual = apply_gravity_sag(a, k_stiff, link_trans, link_rot) - a
+    return a - sag_at_actual

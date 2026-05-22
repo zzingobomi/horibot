@@ -78,3 +78,12 @@ class Service:
 
     # ─── PointCloud ───────────────────────────────────────────
     POINTCLOUD_CONFIGURE = "omx/pointcloud/srv/configure"
+    # capture
+    POINTCLOUD_NEW_SESSION = "omx/pointcloud/srv/new_session"
+    POINTCLOUD_CAPTURE = "omx/pointcloud/srv/capture"
+    POINTCLOUD_LIST_SESSIONS = "omx/pointcloud/srv/list_sessions"
+    POINTCLOUD_LIST_SCANS = "omx/pointcloud/srv/list_scans"
+    POINTCLOUD_DELETE_SCAN = "omx/pointcloud/srv/delete_scan"
+    # TSDF
+    POINTCLOUD_BUILD_MESH = "omx/pointcloud/srv/build_mesh"
+    POINTCLOUD_LIST_MESHES = "omx/pointcloud/srv/list_meshes"

@@ -7,6 +7,7 @@ import { RobotModel } from "./RobotModel";
 import { AxisFrame } from "./AxisFrame";
 import { CameraFrustum } from "./CameraFrustum";
 import { LivePointCloudLayer } from "./PointCloudLayer";
+import { MeshLayer } from "./MeshLayer";
 
 export interface SceneOptions {
   showRobot: boolean;
@@ -154,6 +155,11 @@ function SceneContent({
       )}
 
       <LivePointCloudLayer cameraMatrix={cameraMatrix} />
+
+      {/* TSDF mesh — base 프레임 PLY. RobotModel과 동일하게 z-up→y-up 회전 적용 */}
+      <group rotation={[-Math.PI / 2, 0, 0]}>
+        <MeshLayer />
+      </group>
 
       <OrbitControls
         makeDefault

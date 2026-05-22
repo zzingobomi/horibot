@@ -264,7 +264,7 @@ class CalibrationNode(BaseNode):
         joint_limits = self.solver.joint_limits(len(arm_motor_ids))
         # mode 옵션:
         #   "physical_sag" (기본, 43 DOF) — extended + 자세 의존 sag (k_J2, k_J3).
-        #       σ_rot ~0.65°/σ_t ~7.9mm 달성 ([docs/diag_gravity_sag_physical.py]).
+        #       σ_rot ~0.65°/σ_t ~7.9mm 달성 (lumped mass + 모멘트 암 sag 모델로 검증).
         #       lumped mass 가정이라 URDF의 D405 카메라 mass 누락에도 robust.
         #   "extended" (41 DOF) — link_trans/link_rot 풀고 sag X. σ_rot ~1.3°/σ_t ~9mm.
         #       사용자가 sag 모델 회귀 진단 필요할 때.

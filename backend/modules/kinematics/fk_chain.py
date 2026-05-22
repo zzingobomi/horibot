@@ -5,10 +5,8 @@ Hand-Eye BA는 link origin offset을 *변수*로 풀어야 하므로 매 LM iter
 다른 link_offset으로 FK를 호출해야 함 — PyBullet 우회 필요.
 
 이 모듈의 사용처:
-    (a) [diag_handeye_extended.py](backend/diag_handeye_extended.py) 같은
-        진단/검증 스크립트
-    (b) `bundle_adjust.py`의 확장 BA — link offset 자유도와 함께 FK 평가
-    (c) PybulletSolver / urdf_patcher가 같은 URDF 상수를 공유 (single source)
+    (a) `bundle_adjust.py`의 확장 BA — link offset 자유도와 함께 FK 평가
+    (b) PybulletSolver / urdf_patcher가 같은 URDF 상수를 공유 (single source)
 
 URDF 변경 시 sync 필요:
     URDF의 모든 <joint><origin rpy/> 가 "0 0 0" 가정.  rpy 비0 joint가 추가되면
@@ -184,7 +182,6 @@ def gravity_torque_lumped(
         - URDF mass가 D405 카메라 교체 무게를 반영 못 함 (44g vs D405 42g)
         - PyBullet calculateInverseDynamics보다 σ에서 우월 (0.65° vs 0.77°)
         - k가 effective (stiffness × mass) 비율을 통째로 흡수해 mass 부정확성에 robust
-        - 자세한 검증: [docs/diag_gravity_sag_pybullet.py](docs/diag_gravity_sag_pybullet.py)
     """
     r = np.asarray(ee_pos_base) - np.asarray(joint_origin_base)
     return float(np.dot(np.cross(r, _GRAVITY_DIR), np.asarray(joint_axis_base)))
@@ -202,7 +199,7 @@ def apply_gravity_sag(
         sag_offset_J = k_J * τ_J   where τ_J = gravity_torque_lumped(ee, joint_J)
 
     현재 모델은 J2, J3에만 sag (DIY 5축에서 중력 부하 가장 큰 두 joint).
-    J1/J4/J5의 sag는 측정 noise 수준이라 모델 단순성 위해 제외 ([diag_gravity_sag_physical.py] 확인).
+    J1/J4/J5의 sag는 측정 noise 수준이라 모델 단순성 위해 제외.
 
     Args:
         joint_angles: shape (5,) — commanded angles (rad).

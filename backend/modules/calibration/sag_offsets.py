@@ -5,8 +5,7 @@ Hand-Eye BA가 추정한 *자세 의존 중력 처짐* 보정 k (rad/(m·g_unit)
 (`apply_gravity_sag` 참고).
 
 현재 모델은 J2, J3에만 sag (DIY 5축에서 중력 부하 가장 큰 두 joint).
-J1/J4/J5의 sag는 측정 noise 수준이라 모델 단순성 위해 제외 (검증:
-[docs/diag_gravity_sag_physical.py](docs/diag_gravity_sag_physical.py)).
+J1/J4/J5의 sag는 측정 noise 수준이라 모델 단순성 위해 제외 (lumped 물리 sag 모델 검증 결과).
 
 저장 포맷 (npz):
     joint_ids: int 배열 (보통 [2, 3] — 모터 id)

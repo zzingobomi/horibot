@@ -15,8 +15,8 @@ from modules.kinematics.fk_chain import (
 
 logger = logging.getLogger(__name__)
 
-# sag 모델은 J2, J3에만 적용 (motor id 2, 3). [docs/diag_gravity_sag_physical.py]
-# 에서 J1/J4/J5의 sag는 측정 noise 수준이라 모델 단순성 위해 제외 결정.
+# sag 모델은 J2, J3에만 적용 (motor id 2, 3). J1/J4/J5의 sag는 측정 noise
+# 수준이라 모델 단순성 위해 제외.
 _SAG_JOINT_IDS: list[int] = [2, 3]
 _ARM_DOF: int = 5
 

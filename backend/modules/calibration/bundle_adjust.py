@@ -14,9 +14,9 @@ cv2.calibrateHandEye 결과를 seed로 받아, joint zero offset과 hand-eye 변
   - `bundle_adjust_hand_eye_physical_sag(...)` — 위 + 자세 의존 중력 처짐 sag 모델
     2변수 (k_J2, k_J3) = 43자유도. lumped mass + 모멘트 암 기반 토크 → sag = k * τ.
     자세 의존 오차 (link offset이 잘못 흡수하던 부분)를 분리해 σ_rot 0.65°/σ_t 7.9mm
-    달성 ([docs/diag_gravity_sag_physical.py](docs/diag_gravity_sag_physical.py)).
+    달성 (lumped mass 물리 sag 모델 검증).
     PyBullet calculateInverseDynamics는 URDF mass의 D405 누락으로 lumped보다 σ 손해 →
-    채택 X ([docs/diag_gravity_sag_pybullet.py](docs/diag_gravity_sag_pybullet.py)).
+    채택 X (PyBullet inverseDynamics와 비교 후 lumped 우월 확인).
 
 T_b(보드의 base-frame 포즈)는 명시 변수가 아니라 매 iteration에서 모든 포즈의
 T_base←board 평균으로 계산. 이렇게 하면 X와 T_b 사이 gauge freedom이 사라져
@@ -244,7 +244,7 @@ class BundleAdjustExtendedResult:
     residual_t_mm: np.ndarray  # (N,)
 
 
-# v3 final 결과(diag_handeye_extended.py)에서 검증된 reg 값. 캘 데이터 32포즈
+# extended BA reg sweep으로 검증된 값. 캘 데이터 32포즈
 # 기준 σ_rot 1.30°/σ_t 9.3mm 달성, hold-out validation으로 generalize 확인.
 # 더 강하게 (예 link_trans_reg=5) → link offset이 0 가까이 눌려 BA가 J2/J3 offset
 # 으로 흡수, gauge freedom 제거 효과 작아짐.
@@ -275,7 +275,7 @@ def bundle_adjust_hand_eye_extended(
             (= raw_to_rad + 현재 joint_offsets 적용 후).
         R/t_target2cam: PnP로 얻은 체커보드 포즈.
         X_init: cv2.calibrateHandEye seed.
-        *_reg: regularization weights. 기본값은 diag_handeye_extended로 검증됨.
+        *_reg: regularization weights. 기본값은 reg sweep으로 검증됨.
             link_trans_reg=1.0 → ~15mm 부근 자유, link_rot_reg=1.0 → ~2° 부근 자유.
         max_nfev: LM iteration 상한.
 
@@ -434,7 +434,7 @@ class BundleAdjustPhysicalSagResult:
     residual_t_mm: np.ndarray  # (N,)
 
 
-# [docs/diag_gravity_sag_physical.py]의 reg sweep으로 검증된 default.
+# reg sweep으로 검증된 default.
 # k_reg 0~0.1 sweet spot, 0.5↑부터 link_offset으로 흡수되어 σ 손해.
 # 기본 0.0 = reg 없음 (변수 작아서 폭주 안 함, k_J2≈0.27, k_J3≈0.14 nominal).
 DEFAULT_SAG_K_REG: float = 0.0

@@ -2,9 +2,9 @@ import { Camera, Loader2, RefreshCw } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
 import { useCalibrationResults } from "@/hooks/useCalibrationResults";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import { PanelShell } from "../ui/PanelShell";
-import { Section } from "../ui/Section";
-import { MatrixTable } from "../ui//MatrixTable";
+import { PanelShell } from "@/components/canvas/ui/PanelShell";
+import { Section } from "@/components/canvas/ui/Section";
+import { MatrixTable } from "@/components/canvas/ui/MatrixTable";
 
 export function CalibrationPanel(props: IDockviewPanelProps<object>) {
   const { results, loading, error, refetch } = useCalibrationResults();

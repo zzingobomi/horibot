@@ -97,8 +97,20 @@ class BaseNode:
         try:
             replies = self.session.get(key, payload=payload, timeout=timeout)
             for reply in replies:
-                return json.loads(reply.ok.payload.to_bytes())
-            # 응답 없음 (빈 iterator)
+                # reply.ok 가 None이면 Zenoh 측에서 err reply를 보낸 것
+                if reply.ok is not None:
+                    return json.loads(reply.ok.payload.to_bytes())
+                err = reply.err
+                msg = (
+                    err.payload.to_string()
+                    if err is not None and err.payload is not None
+                    else "서비스 err reply"
+                )
+                logger.warning(
+                    f"[{self.node_name}] service err reply: {key} — {msg}"
+                )
+                return {"success": False, "message": msg, "data": {}}
+            # 응답 없음 (빈 iterator) — queryable이 등록 안 됐거나 타임아웃
             logger.warning(f"[{self.node_name}] service 응답 없음: {key}")
             return {"success": False, "message": "응답 없음", "data": {}}
         except Exception as e:

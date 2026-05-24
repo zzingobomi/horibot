@@ -8,6 +8,7 @@ import {
   Settings,
   Box,
   Home,
+  Moon,
   Power,
   Hand,
   PanelLeftClose,
@@ -23,14 +24,14 @@ const navItems = [
   { to: "/calibration", label: "Calibration", icon: Camera },
   { to: "/workspace", label: "Workspace3D", icon: Box },
   { to: "/pick-and-place", label: "Pick & Place", icon: Hand },
-  { to: "/ai", label: "AI", icon: Bot },
+  { to: "/self-play", label: "Self-play", icon: Bot },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
 const COLLAPSED_KEY = "omx.sidebar.collapsed";
 
 export function Sidebar() {
-  const { goHome, torqueEnabled, enableTorque } = useJointControl();
+  const { goHome, goRest, torqueEnabled, enableTorque } = useJointControl();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(COLLAPSED_KEY) === "1";
@@ -114,6 +115,17 @@ export function Sidebar() {
         >
           <Home className="h-4 w-4" />
           {!collapsed && "Go Home"}
+        </button>
+        <button
+          onClick={goRest}
+          title={collapsed ? "Go Rest" : undefined}
+          className={cn(
+            "w-full flex items-center rounded-md py-2 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            collapsed ? "justify-center px-2" : "gap-3 px-3",
+          )}
+        >
+          <Moon className="h-4 w-4" />
+          {!collapsed && "Go Rest"}
         </button>
         <button
           onClick={() => enableTorque(!torqueEnabled)}

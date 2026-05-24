@@ -15,6 +15,7 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 - [calibration_apply_flow.md](docs/calibration_apply_flow.md) — 4종 캘 산출물의 적용 메커니즘
 - [hand_eye_extended_ba.md](docs/hand_eye_extended_ba.md) — 확장 BA + 물리 sag 모델 (σ_rot 0.65°/σ_t 7.94mm 도달기)
 - [tsdf_pipeline.md](docs/tsdf_pipeline.md) — multi-way ICP + TSDF mesh 빌드 결정사항
+- [self_play_pick.md](docs/self_play_pick.md) — self-play pick 루프 설계 (active, WIP)
 - [roadmap.md](docs/roadmap.md) — 진행 중/예정 작업
 
 ## 자주 쓰는 명령어

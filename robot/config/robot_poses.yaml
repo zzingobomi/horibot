@@ -1,0 +1,51 @@
+# Named robot poses (joint angles in degrees).
+# OMX_F 5-DOF arm (joint id 1..5). gripper(id 6)는 미포함.
+# 새 자세는 키 추가만 하면 됨 — backend/frontend 로더는 이름으로 lookup.
+
+# Ready / standby — task 시작 자세
+home:
+  - { id: 1, degree: 0 } # J1 base rotation
+  - { id: 2, degree: -60 } # J2 shoulder
+  - { id: 3, degree: 25 } # J3 elbow
+  - { id: 4, degree: 80 } # J4 wrist1
+  - { id: 5, degree: 0 } # J5 wrist2
+
+# Rest / park — 토크 풀어도 안전한 자세 (그리퍼 책상에 살짝 닿거나 팔 접힌 상태)
+rest:
+  - { id: 1, degree: 0 }
+  - { id: 2, degree: -90 }
+  - { id: 3, degree: 90 }
+  - { id: 4, degree: 80 }
+  - { id: 5, degree: 0 }
+
+# ─── Search poses (self-play detect 실패 시 lexical 정렬 순으로 순회) ─────
+# 첫 detect 시도는 home(또는 직전 자세) 에서 3회 retry → 그래도 실패면 아래 자세
+# 순회. backend/core/robot_poses.py 의 `list_pose_names("search_")` 가 자동 수집.
+#
+# 아래 값은 placeholder — J1 (베이스 회전) 으로 좌/중/우 책상 시야 커버하는
+# 초기안. 실제 책상 / 큐브 위치 보면서 micro tune. 자세가 책상에 부딪히지 않는지
+# 직접 검증 후 사용.
+
+# 우측 시야 — J1 +30°
+search_1:
+  - { id: 1, degree: 30 }
+  - { id: 2, degree: -60 }
+  - { id: 3, degree: 25 }
+  - { id: 4, degree: 80 }
+  - { id: 5, degree: 0 }
+
+# 가운데 시야 — J1 0°
+search_2:
+  - { id: 1, degree: 0 }
+  - { id: 2, degree: -60 }
+  - { id: 3, degree: 25 }
+  - { id: 4, degree: 80 }
+  - { id: 5, degree: 0 }
+
+  # 좌측 시야 — J1 -30°
+search_3:
+  - { id: 1, degree: -30 }
+  - { id: 2, degree: -60 }
+  - { id: 3, degree: 25 }
+  - { id: 4, degree: 80 }
+  - { id: 5, degree: 0 }

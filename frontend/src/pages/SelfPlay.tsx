@@ -14,9 +14,9 @@ import {
   saveLayout,
 } from "@/lib/workspaceLayout";
 
-const LAYOUT_KEY = "pickandplace";
+const LAYOUT_KEY = "selfplay";
 
-export function PickAndPlace() {
+export function SelfPlay() {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   type PanelSpec = {
@@ -29,7 +29,7 @@ export function PickAndPlace() {
 
   const PANELS: PanelSpec[] = useMemo(
     () => [
-      { id: "prompt", component: "prompt", title: "Prompt", width: 280, height: 240 },
+      { id: "self-play", component: "selfPlay", title: "Self-play", width: 300, height: 580 },
       { id: "task-progress", component: "taskProgress", title: "Task Progress", width: 280, height: 200 },
       { id: "camera-feed", component: "cameraFeed", title: "Camera Feed", width: 320, height: 240 },
       { id: "robot-state", component: "robotState", title: "Robot State", width: 260, height: 270 },

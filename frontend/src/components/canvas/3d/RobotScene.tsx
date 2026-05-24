@@ -8,6 +8,8 @@ import { AxisFrame } from "./AxisFrame";
 import { CameraFrustum } from "./CameraFrustum";
 import { LivePointCloudLayer } from "./PointCloudLayer";
 import { MeshLayer } from "./MeshLayer";
+import { DetectionLayer } from "./DetectionLayer";
+import { SelfPlayLayer } from "./SelfPlayLayer";
 
 export interface SceneOptions {
   showRobot: boolean;
@@ -159,6 +161,10 @@ function SceneContent({
       {/* TSDF mesh — base 프레임 PLY. RobotModel과 동일하게 z-up→y-up 회전 적용 */}
       <group rotation={[-Math.PI / 2, 0, 0]}>
         <MeshLayer />
+        {/* Grounded detection 타겟 (base 프레임). store null이면 자동 미렌더. */}
+        <DetectionLayer />
+        {/* Self-play attempt 마커 (target / spike). store 비면 자동 미렌더 → 다른 페이지 무영향. */}
+        <SelfPlayLayer />
       </group>
 
       <OrbitControls

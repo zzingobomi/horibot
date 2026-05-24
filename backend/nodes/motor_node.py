@@ -96,6 +96,7 @@ class MotorNode(BaseNode):
     def _publish_state(self) -> None:
         try:
             positions = self.driver.get_present_positions()
+            loads = self.driver.get_present_loads()
             joints = []
             for cfg in self.motor_cfgs:
                 raw = positions.get(cfg.id)
@@ -110,6 +111,7 @@ class MotorNode(BaseNode):
                         "degree": raw_to_deg(raw),
                         "velocity": 0.0,
                         "torque": 0.0,
+                        "load": loads.get(cfg.id, 0),
                     }
                 )
             self.publish(
@@ -218,6 +220,9 @@ class MotorNode(BaseNode):
         data = req.get("data", {})
         action = data.get("action", "open")
         current = int(data.get("current", GRIPPER_CURRENT_DEFAULT))
+        # 객체별 셋업 (self-play 의 paper_cup vs cube 등) 에서 raw position
+        # override 가능. None 이면 default (open=2600 / close=1800).
+        position_override = data.get("position")
 
         if action not in ("open", "close"):
             return {
@@ -226,7 +231,10 @@ class MotorNode(BaseNode):
                 "data": {},
             }
 
-        raw = GRIPPER_OPEN_RAW if action == "open" else GRIPPER_CLOSE_RAW
+        if position_override is not None:
+            raw = int(position_override)
+        else:
+            raw = GRIPPER_OPEN_RAW if action == "open" else GRIPPER_CLOSE_RAW
 
         self.driver.set_goal_current(GRIPPER_ID, current)
         self.driver.set_goal_position(GRIPPER_ID, raw)

@@ -148,7 +148,7 @@ class TaskRunner:
             )
 
             try:
-                ok = self._executor.execute(step, context)
+                ok = self._executor.execute(step, context, self._stop_event)
             except Exception as exc:
                 self._update_state(
                     status=TaskStatus.FAILED,

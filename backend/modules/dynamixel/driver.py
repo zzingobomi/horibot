@@ -59,6 +59,7 @@ class DynamixelDriver:
         self._sync_write_profile_vel: GroupSyncWrite | None = None
         self._sync_write_profile_acc: GroupSyncWrite | None = None
         self._sync_read_present:      GroupSyncRead | None = None
+        self._sync_read_load:         GroupSyncRead | None = None
         self._lock = threading.Lock()
 
     # ─── 연결 ────────────────────────────────────────────────
@@ -90,6 +91,13 @@ class DynamixelDriver:
         )
         for mid in self.motor_ids:
             self._sync_read_present.addParam(mid)
+
+        self._sync_read_load = GroupSyncRead(
+            self.port_handler, self.packet_handler,
+            ADDR_PRESENT_LOAD, LEN_PRESENT_LOAD,
+        )
+        for mid in self.motor_ids:
+            self._sync_read_load.addParam(mid)
 
         logger.info(f"Dynamixel 연결 성공: {self.port}")
         return True
@@ -163,6 +171,34 @@ class DynamixelDriver:
                 self.port_handler, motor_id, ADDR_PRESENT_LOAD
             )
         return val if result == COMM_SUCCESS else 0
+
+    def get_present_loads(self) -> dict[int, int]:
+        """모든 모터의 Present_Load 한 번에 group sync read.
+
+        XL430 = ‰ (-1000~+1000, 토크 비율), XL330 = mA. 같은 레지스터(126)라
+        한 번에 읽음. self-play contact spike 감지 등에서 baseline 대비 차이로 사용.
+        반환: {motor_id: signed_load}.
+        """
+        assert self._sync_read_load is not None
+        with self._lock:
+            result = self._sync_read_load.txRxPacket()
+        if result != COMM_SUCCESS:
+            logger.warning(
+                f"SyncRead(load) 실패: {self.packet_handler.getTxRxResult(result)}")
+            return {}
+        loads: dict[int, int] = {}
+        for mid in self.motor_ids:
+            if self._sync_read_load.isAvailable(
+                mid, ADDR_PRESENT_LOAD, LEN_PRESENT_LOAD
+            ):
+                raw = self._sync_read_load.getData(
+                    mid, ADDR_PRESENT_LOAD, LEN_PRESENT_LOAD
+                )
+                # 2byte signed 변환
+                if raw >= 32768:
+                    raw -= 65536
+                loads[mid] = raw
+        return loads
 
     # ─── Gripper ────────────────────────────────────────────
 

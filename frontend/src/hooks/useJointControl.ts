@@ -3,7 +3,7 @@ import { useCallback } from "react";
 import { bridge } from "@/api/bridge";
 import { Topic, ServiceKey } from "@/constants/topics";
 import { useMotion } from "@/hooks/useMotion";
-import { ARM_JOINTS } from "@/lib/robot/config";
+import { loadPose } from "@/lib/robot/robotPoses";
 
 export function useJointControl() {
   const torqueEnabled = useRobotStore((s) => s.torqueEnabled);
@@ -37,13 +37,21 @@ export function useJointControl() {
   );
 
   const goHome = useCallback(async () => {
-    const joints = ARM_JOINTS.map((j) => ({
-      id: j.id,
-      degree: 0,
-    }));
-
+    const joints = await loadPose("home");
     await motion.moveJ({ joints });
   }, [motion]);
 
-  return { torqueEnabled, sendJointCmd, sendAllJoints, enableTorque, goHome };
+  const goRest = useCallback(async () => {
+    const joints = await loadPose("rest");
+    await motion.moveJ({ joints });
+  }, [motion]);
+
+  return {
+    torqueEnabled,
+    sendJointCmd,
+    sendAllJoints,
+    enableTorque,
+    goHome,
+    goRest,
+  };
 }

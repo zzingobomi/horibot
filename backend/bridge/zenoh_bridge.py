@@ -142,7 +142,9 @@ _ALWAYS_SUBSCRIBE = [
     Topic.MOTION_STATE_TRAJ,
     Topic.TASK_STATE,
     Topic.DETECTOR_STATE,
+    Topic.PERCEPTION_GROUNDED_STATE,
     Topic.POINTCLOUD_STATE,
+    Topic.SELF_PLAY_STATE,
 ]
 
 _zenoh_subs: list[zenoh.Subscriber] = []

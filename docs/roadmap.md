@@ -2,7 +2,60 @@
 
 진행 중/예정 작업 기록용. 이미 구현 완료된 항목은 git log + 관련 docs/ 문서로 가니까 여기는 **미래 작업**만.
 
-> 현재 active 작업: TSDF apply 검증 (브랜치 `feat/tsdf-apply`). MeshLayer + scan capture + build_mesh 서비스가 들어와 있고, 라이브로 적용한 결과 평가 단계.
+> 현재 active 작업: [self_play_pick.md](self_play_pick.md) — self-play pick 루프 설계 진행 중 (WIP).
+>
+> 피벗 메모: TCP 절대 정확도 측정 방향(옛 AccuracyTest 패널)은 폐기. pick 실패의 root metric 은 "TCP 절대 정확도"가 아니라 "pick 성공률"이고, 정밀 캘리브레이션/peg/물리 모델은 DIY 환경(사용자 개입 최소화 제약)에서 ROI 낮음. self-play 로그 누적 → residual 보정 → (필요 시) bandit/RL 순서로 진화.
+
+---
+
+## Grounded Detection — 다음 세션 우선
+
+> Phase 2 frontend shell + backend wiring + Grounding DINO Swin-B (lazy preload + cu130) 까지 완성. 실측에서 정확도 문제 1건과 정리 잔재 몇 개.
+
+### 1. (최우선) Mesh raycast 로 detection 3D 좌표 보정
+
+**증상**: 카메라 피드 상 bbox 는 차키 위에 정확히 떨어지고 confidence 56%인데, base frame 환산 결과가 `(0.153, -0.085, -0.020)` — Z 가 작업대(z=0) 평면 아래 20mm. 3D 씬에서도 분홍 sphere 마커가 그리드 밑으로 떨어짐.
+
+**원인 후보** (누적):
+- bbox 영역 depth median 이 작업대 가장자리 픽셀까지 포함해 노이즈
+- 카메라 ↔ 작업대 비스듬한 각도에서 depth 오차가 ray 따라 증폭 → base Z 음수 방향
+- hand_eye σ_t 7.94mm 잔류
+- (별도) TCP Z 도 -0.0052m 로 살짝 음수 — base frame z=0 정의 자체가 작업대 표면이 아닐 가능성
+
+**해법**: bbox 중심 픽셀 ray ↔ 빌드된 TSDF mesh 교점 (Open3D `RaycastingScene`). depth median + unproject 대신 mesh 가 ground truth. design.md 의 "Stage 0 = depth-only" 가정이 깨졌으므로 Stage 1 보조 수단을 1차로 끌어옴.
+
+**결정 필요**:
+- mesh 선택: 자동 latest (`mesh_<session>.ply` 중 mtime 최신) vs 사용자 명시 (UI 드롭다운)
+- mesh 없을 때 fallback: 지금 depth median 유지 vs 명시적 fail
+- mesh 좌표계: TSDF 빌드 결과는 이미 base 프레임이므로 ray 도 base 프레임으로 변환 후 raycast
+- bbox 중심 1픽셀 ray vs bbox 영역 N픽셀 ray voting (mesh 가 작은 결손/노이즈 있을 때)
+
+**코드 위치**: [backend/nodes/detector_node.py](../backend/nodes/detector_node.py) `_handle_grounded_detect`. 새 모듈 `modules/perception/mesh_raycast.py` 추출 권장 (DetectorNode 가 mesh 관리 책임 안 지게).
+
+**검증**: 차키 마커가 mesh 표면(작업대 + 차키 본체) 위에 박히는지. 그 다음 task `pick_named_object` 흘려서 그리퍼가 실제로 차키를 잡는지.
+
+### 2. 잔재 lint 정리 (병행 가능)
+
+phase 2 작업 중 만난 사전 dirty 상태 — phase 2 무관이라 그대로 두고 옴.
+
+- [backend/nodes/motion_node.py](../backend/nodes/motion_node.py) 미사용 import 5개 (numpy, ruckig 심볼 4개) — ruff F401, `--fix` 한 번이면 끝
+- [backend/modules/task/step_executor.py](../backend/modules/task/step_executor.py) `_move_tcp` Optional/object narrowing 3건 — pyright reportArgumentType. `step.position` None 가드 + `context.get()` cast 추가 필요
+
+### 3. 안전/UX 보강 (mesh raycast 후 자연스러움)
+
+- **confidence threshold 가드** — 현재 box_threshold=0.3 미달 시 fail, 통과 후엔 score 그대로. task 실행 전 e.g. score < 0.5 면 stop 옵션
+- **워크스페이스 경계 검증** — base x/y/z 가 작업 영역 밖이면 fail (mesh raycast 도입 시 ray 가 mesh 안 닿으면 None → 이걸로 자연스럽게 처리)
+- **PromptPanel 마커 reset** — task 끝나도 분홍 sphere 잔존. 새 prompt 입력 또는 명시 clear 버튼
+- **bridge timeout 검토** — cu130 GPU 잡혔으니 ~1-3초로 떨어질 것. 현재 60초인데 너무 길면 UX (실패 응답이 늦게 옴) — preload 끝난 뒤엔 5~10초 정도로 줄여도 무방
+
+### 4. (보류) Stage 1 — 시야 각도 / Multi-view
+
+- 차키가 위에서 거의 막대기로 보이는 케이스. Grounding DINO confidence 떨어지면 카메라를 다른 각도로 이동해 재시도. design.md Stage 1 (A) Multi-view 캡처.
+- 또는 mesh 의 canonical view 렌더링 (design.md Stage 1 (B)).
+
+### 5. (보류) 한국어 prompt
+
+현재 영어만. 번역 layer 추가하면 됨 — 우선순위 낮음.
 
 ---
 

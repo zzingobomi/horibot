@@ -54,3 +54,9 @@ robot/urdf/**/.patched/
 # 대용량 + 머신별 캡처. 캘 결과(robot/calibration/)와는 다름.
 robot/scans/
 robot/models/
+
+# ─── Self-play logs / learning state ───────────────────────────
+# attempt jsonl + bin_offsets.json (closed-loop 학습 누적). 머신별 + 누적
+# 데이터라 푸시/공유 대상 아님. cwd 어디서 실행해도 같은 path 로 가게 코드
+# 가 module 위치 기준 절대 path 사용.
+robot/logs/

@@ -8,7 +8,7 @@ import { Section } from "@/components/canvas/ui/Section";
 import { useTask } from "@/hooks/useTask";
 import { useDetectorStore } from "@/store/detectorStore";
 
-const DEFAULT_PROMPT = "black car key";
+const DEFAULT_PROMPT = "white cube";
 
 export function PromptPanel(props: IDockviewPanelProps<object>) {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
@@ -35,7 +35,7 @@ export function PromptPanel(props: IDockviewPanelProps<object>) {
       const res = await bridge.callService(
         ServiceKey.PERCEPTION_GROUNDED_DETECT,
         { prompt: trimmed },
-        { timeoutMs: 60000 },
+        { timeoutMs: 60000 }
       );
       // 성공 시: backend 가 토픽 broadcast → useBridge 가 store update. 여기선 X.
       // 실패 시: 토픽 broadcast 안 옴 → 이전 결과 명시적 클리어.
@@ -58,7 +58,7 @@ export function PromptPanel(props: IDockviewPanelProps<object>) {
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="e.g. black car key on the table"
+          placeholder="e.g. white cube on the table"
           rows={3}
           disabled={isActive}
           className="w-full bg-zinc-900/80 border border-zinc-700/60 rounded px-2 py-1.5 text-[11px] font-mono text-zinc-100 placeholder:text-zinc-600 resize-none focus:outline-none focus:border-zinc-500 disabled:opacity-50"

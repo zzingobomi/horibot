@@ -209,15 +209,17 @@ class PybulletSolver:
             # restPoses + 초기 자세 결정.
             # target_quaternion 박혔으면 (top-down 의도) 수직 자세 reference 를
             # seed 로 → PyBullet IK 가 현재 사선 자세 가까운 해 선호 못 하게.
-            #   J1 = atan2(y, x), J2/J3 = ±30°, J4 = -90° (down), J5 = 0
+            #   J1 = atan2(y, x), J2/J3 = ±30°, J4 = +90° (down), J5 = 0
+            # 부호: URDF axis convention 측정으로 결정. 처음 J2+J3+J4=-90 가설
+            # → dot=-0.915 (정반대) → 부호 뒤집어서 J2+J3+J4=+90 으로.
             # 일반 (orient None) 케이스는 기존대로 현재 자세 seed.
             if target_quaternion is not None and n >= 5:
                 yaw = math.atan2(target_position[1], target_position[0])
                 seed = [
                     yaw,
-                    -math.radians(30),
                     math.radians(30),
-                    -math.radians(90),
+                    -math.radians(30),
+                    math.radians(90),
                     0.0,
                 ] + [0.0] * (n - 5)
             elif current_actual:

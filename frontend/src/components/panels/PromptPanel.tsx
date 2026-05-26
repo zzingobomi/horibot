@@ -10,14 +10,6 @@ import { useDetectorStore } from "@/store/detectorStore";
 
 const DEFAULT_PROMPT = "black car key";
 
-/**
- * 자연어 prompt + Run/Stop 컨트롤.
- *
- *  - Run: pick_named_object task 실행 (prompt 인자).
- *  - Detect: omx/perception/grounded_detect 단독 호출 → backend 가
- *    `PERCEPTION_GROUNDED_STATE` 토픽으로 자동 broadcast → useBridge 가
- *    detectorStore.groundedResult 갱신. 여기선 service 호출만, 결과 처리 X.
- */
 export function PromptPanel(props: IDockviewPanelProps<object>) {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [detecting, setDetecting] = useState(false);
@@ -32,7 +24,7 @@ export function PromptPanel(props: IDockviewPanelProps<object>) {
     if (!trimmed) return;
     // 새 task 시작 — 이전 detect 결과 클리어 (시작 시점에 깨끗한 상태로).
     setGroundedResult(null);
-    await run({ task: "pick_named_object", prompt: trimmed });
+    await run({ task: "pick_and_place", prompt: trimmed });
   }, [prompt, run, setGroundedResult]);
 
   const handleDetect = useCallback(async () => {
@@ -40,7 +32,6 @@ export function PromptPanel(props: IDockviewPanelProps<object>) {
     if (!trimmed) return;
     setDetecting(true);
     try {
-      // CPU 추론 + 첫 호출 시 모델 로드(~수십초) 포함. 넉넉히.
       const res = await bridge.callService(
         ServiceKey.PERCEPTION_GROUNDED_DETECT,
         { prompt: trimmed },

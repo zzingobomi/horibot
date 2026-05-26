@@ -1,11 +1,13 @@
 import { create } from "zustand";
 
+// YOLO 결과
 export interface Detection {
   class: string;
   bbox: [number, number, number, number]; // [x1, y1, x2, y2]
   conf: number;
 }
 
+// Grounding DINO 결과
 export interface GroundedResult {
   prompt: string;
   position: [number, number, number]; // base frame (m)

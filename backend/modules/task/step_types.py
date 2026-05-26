@@ -32,13 +32,44 @@ class DetectStep:
 
 @dataclass
 class GroundedDetectStep:
-    """자연어 prompt → Grounding DINO → base frame position을 context에 저장."""
+    """자연어 prompt → Grounding DINO → base frame position을 context에 저장.
+
+    context에 저장되는 값:
+      - output_key: position (객체 윗면 base xyz) [list[float] 3개]
+      - output_key + "_meta": {"base_z": float, "height": float}
+        후속 GraspPolicyStep이 height 기반으로 grasp_z를 계산할 때 사용.
+    """
 
     prompt: str = ""
     output_key: str = "detected_position"
     label: str = ""
     type: Literal["grounded_detect"] = field(
         default="grounded_detect", init=False, repr=False
+    )
+
+
+@dataclass
+class GraspPolicyStep:
+    """객체 height 기반 grasp z 결정 정책.
+
+    얇은 객체(height < thin_threshold): 윗면 살짝 아래 (top_inset) → 위에서 누름
+    두꺼운 객체: 책상 + height * tall_ratio → 옆면 중간 grasp
+
+    입력:
+      - input_key: GroundedDetectStep의 output_key (position 들어있어야 함)
+      - input_key + "_meta": {"base_z", "height"}
+    출력:
+      - output_key: [x, y, grasp_z] (MoveTCPStep의 position_key로 그대로 사용)
+    """
+
+    input_key: str = "detected_position"
+    output_key: str = "grasp_xyz"
+    thin_threshold: float = 0.040  # 4cm
+    top_inset: float = 0.005       # 윗면 5mm 아래
+    tall_ratio: float = 0.5        # 두꺼울 때 height의 절반
+    label: str = ""
+    type: Literal["grasp_policy"] = field(
+        default="grasp_policy", init=False, repr=False
     )
 
 
@@ -82,6 +113,7 @@ Step = Union[
     GripperStep,
     DetectStep,
     GroundedDetectStep,
+    GraspPolicyStep,
     WaitStep,
     HomeStep,
     SelfPlayStep,

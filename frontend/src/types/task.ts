@@ -28,7 +28,7 @@ export interface GripperSetupPayload {
 
 export interface RunTaskRequest {
   task: string;
-  // pick_and_place / pick_named_object 공용. task별 필요 필드만 채움.
+  // pick_and_place / self_play_pick 공용. task별 필요 필드만 채움.
   place_position?: Vec3;
   prompt?: string;
   // self_play_pick 전용.

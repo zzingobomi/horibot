@@ -12,7 +12,6 @@ from modules.task.step_executor import StepExecutor
 from modules.task.step_types import Task
 from modules.task.task_runner import TaskRunner
 from modules.task.tasks.pick_and_place import create_pick_and_place_task
-from modules.task.tasks.pick_named_object import create_pick_named_object_task
 from modules.task.tasks.self_play_pick import create_self_play_pick_task
 from modules.kinematics.solver import Position3
 
@@ -22,16 +21,11 @@ DEFAULT_PLACE_POSITION = [0.15, 0.0, 0.05]
 
 
 def _factory_pick_and_place(data: dict) -> Task:
-    place = data.get("place_position", DEFAULT_PLACE_POSITION)
-    return create_pick_and_place_task(place_position=Position3(place))
-
-
-def _factory_pick_named_object(data: dict) -> Task:
     prompt = str(data.get("prompt", "")).strip()
     if not prompt:
         raise ValueError("prompt 필요")
     place = data.get("place_position", DEFAULT_PLACE_POSITION)
-    return create_pick_named_object_task(
+    return create_pick_and_place_task(
         prompt=prompt,
         place_position=Position3(place),
     )
@@ -63,7 +57,6 @@ def _factory_self_play_pick(data: dict) -> Task:
 
 TASK_REGISTRY: dict[str, Callable[[dict], Task]] = {
     "pick_and_place": _factory_pick_and_place,
-    "pick_named_object": _factory_pick_named_object,
     "self_play_pick": _factory_self_play_pick,
 }
 

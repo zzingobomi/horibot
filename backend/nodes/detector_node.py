@@ -20,9 +20,7 @@ logger = logging.getLogger(__name__)
 
 DETECTION_INTERVAL = 0.2  # 5fps (초)
 
-# Grounded detect 호출 시: 최신 depth frame이 이 시간 안에 들어와 있으면 stream
-# 이 살아있다고 간주하고 enable 안 함. PointCloudNode가 이미 켜둔 경우 disable
-# 충돌을 피하기 위함.
+# GroundedDetector 호출 시점의 depth frame 신선도 기준 (초)
 DEPTH_FRESH_THRESHOLD = 1.0  # s
 # enable 후 새 frame 기다리는 최대 시간
 DEPTH_WAIT_TIMEOUT = 5.0  # s
@@ -219,8 +217,6 @@ class DetectorNode(BaseNode):
         assert self._calib.hand_eye is not None
 
         # ── depth stream 확보 (on-demand) ────────────────
-        # 이미 신선한 frame이 들어오고 있으면 enable skip → PointCloudNode 등
-        # 다른 소비자와 충돌 회피. disable은 호출 안 함 (다른 소비자 보존).
         need_enable = True
         with self._depth_lock:
             f = self._latest_depth_frame
@@ -369,7 +365,7 @@ class DetectorNode(BaseNode):
         }
 
         # 호출자 무관하게 카메라 feed / 3D 마커에 자동 표시되도록 토픽 broadcast.
-        # (self-play / pick_named_object 등 backend 호출도 시각화됨)
+        # (self-play / pick_and_place GroundedDetectStep 등 backend 호출도 시각화됨)
         try:
             self.publish(Topic.PERCEPTION_GROUNDED_STATE, result_payload)
         except Exception as exc:

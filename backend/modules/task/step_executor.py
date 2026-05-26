@@ -10,6 +10,7 @@ from core.topic_map import Service, Topic
 from modules.calibration.loader import CalibrationData
 from .step_types import (
     DetectStep,
+    GraspPolicyStep,
     GripperStep,
     GroundedDetectStep,
     HomeStep,
@@ -75,6 +76,8 @@ class StepExecutor:
                 return self._detect(step, context)
             case "grounded_detect":
                 return self._grounded_detect(step, context)
+            case "grasp_policy":
+                return self._grasp_policy(step, context)
             case "wait":
                 return self._wait(step)
             case "home":
@@ -174,6 +177,46 @@ class StepExecutor:
             *position,
         )
         context.set(step.output_key, position)
+        # GraspPolicyStep이 height/base_z를 쓰도록 meta를 별도 키로 저장.
+        # detect 결과에 base_z/height가 비어있어도 안전한 default (0.0/0.0).
+        context.set(
+            f"{step.output_key}_meta",
+            {
+                "base_z": float(data.get("base_z", 0.0)),
+                "height": float(data.get("height", 0.0)),
+            },
+        )
+        return True
+
+    def _grasp_policy(self, step: GraspPolicyStep, context: TaskContext) -> bool:
+        pos = context.get(step.input_key)
+        if not isinstance(pos, (list, tuple)) or len(pos) < 3:
+            logger.error(
+                "GraspPolicy: context['%s']가 없거나 잘못된 형식 "
+                "(GroundedDetect가 먼저 실행돼야 함)",
+                step.input_key,
+            )
+            return False
+
+        meta_raw = context.get(f"{step.input_key}_meta")
+        meta: dict = meta_raw if isinstance(meta_raw, dict) else {}
+        base_z = float(meta.get("base_z", 0.0))
+        height = float(meta.get("height", 0.0))
+
+        x, y, top_z = float(pos[0]), float(pos[1]), float(pos[2])
+
+        if height < step.thin_threshold:
+            grasp_z = top_z - step.top_inset
+            policy = "thin"
+        else:
+            grasp_z = base_z + height * step.tall_ratio
+            policy = "tall"
+
+        logger.info(
+            "GraspPolicy[%s] height=%.3f → grasp_z=%.3f  [%s]",
+            policy, height, grasp_z, step.label,
+        )
+        context.set(step.output_key, [x, y, grasp_z])
         return True
 
     def _wait(self, step: WaitStep) -> bool:

@@ -206,16 +206,15 @@ class PybulletSolver:
         with self._sim_lock:
             n = len(self._joint_indices)
 
-            # restPoses + 초기 자세 결정.
-            # target_quaternion 박혔으면 (top-down 의도) 수직 자세 reference 를
-            # seed 로 → PyBullet IK 가 현재 사선 자세 가까운 해 선호 못 하게.
-            #   J1 = atan2(y, x), J2/J3 = ±30°, J4 = +90° (down), J5 = 0
-            # 부호: URDF axis convention 측정으로 결정. 처음 J2+J3+J4=-90 가설
-            # → dot=-0.915 (정반대) → 부호 뒤집어서 J2+J3+J4=+90 으로.
-            # 일반 (orient None) 케이스는 기존대로 현재 자세 seed.
+            # 초기 자세 (IK iteration 시작점) = 현재 자세 → trajectory continuity.
+            # restPoses (nullspace optimum) = target 에 따라 결정:
+            #   - target_quaternion 박혔으면 수직 자세 reference
+            #     (J1=atan2(y,x), J2/J3=±30°, J4=+90°, J5=0; J2+J3+J4=+90 down)
+            #   - 일반 케이스는 현재 자세 (기존 동작)
+            # setJointPositions 와 restPoses 를 분리해야 trajectory 가 급변 안 함.
             if target_quaternion is not None and n >= 5:
                 yaw = math.atan2(target_position[1], target_position[0])
-                seed = [
+                rest = [
                     yaw,
                     math.radians(30),
                     -math.radians(30),
@@ -223,12 +222,14 @@ class PybulletSolver:
                     0.0,
                 ] + [0.0] * (n - 5)
             elif current_actual:
-                seed = list(current_actual)
+                rest = list(current_actual)
             else:
-                seed = [0.0] * n
-            rest = seed
+                rest = [0.0] * n
 
-            self._set_joint_positions(seed)
+            if current_actual:
+                self._set_joint_positions(current_actual)
+            else:
+                self._set_joint_positions([0.0] * n)
 
             # NOTE: targetOrientation 은 박지 않음 — 5DOF arm 에서 6DOF orient
             # 박으면 hard constraint 로 작동해 수렴 실패. position only 로 풀고

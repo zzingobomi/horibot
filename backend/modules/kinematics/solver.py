@@ -1,4 +1,5 @@
 import logging
+import math
 import threading
 from pathlib import Path
 from typing import TypeAlias
@@ -205,12 +206,27 @@ class PybulletSolver:
         with self._sim_lock:
             n = len(self._joint_indices)
 
-            # restPoses: actual 기준으로 가장 가까운 해 선호
-            # 없으면 0으로 초기화 (홈 포지션 근처에서만 시작할 때는 무방)
-            rest = list(current_actual) if current_actual else [0.0] * n
+            # restPoses + 초기 자세 결정.
+            # target_quaternion 박혔으면 (top-down 의도) 수직 자세 reference 를
+            # seed 로 → PyBullet IK 가 현재 사선 자세 가까운 해 선호 못 하게.
+            #   J1 = atan2(y, x), J2/J3 = ±30°, J4 = -90° (down), J5 = 0
+            # 일반 (orient None) 케이스는 기존대로 현재 자세 seed.
+            if target_quaternion is not None and n >= 5:
+                yaw = math.atan2(target_position[1], target_position[0])
+                seed = [
+                    yaw,
+                    -math.radians(30),
+                    math.radians(30),
+                    -math.radians(90),
+                    0.0,
+                ] + [0.0] * (n - 5)
+            elif current_actual:
+                seed = list(current_actual)
+            else:
+                seed = [0.0] * n
+            rest = seed
 
-            if current_actual:
-                self._set_joint_positions(current_actual)
+            self._set_joint_positions(seed)
 
             # NOTE: targetOrientation 은 박지 않음 — 5DOF arm 에서 6DOF orient
             # 박으면 hard constraint 로 작동해 수렴 실패. position only 로 풀고

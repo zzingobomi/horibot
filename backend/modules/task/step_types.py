@@ -10,9 +10,6 @@ class MoveTCPStep:
     position: Position3 | None = None
     position_key: str | None = None
     offset: Position3 = (0.0, 0.0, 0.0)
-    # True 면 EE 가 책상 향하는 수직 자세로 이동. yaw 는 target xy 에서 자동 계산
-    # (J1 = atan2(y, x)) → 큐브 방향 자동 정렬. 5DOF 라 IK 실패하면 step fail.
-    top_down: bool = False
     label: str = ""
     type: Literal["move_tcp"] = field(
         default="move_tcp", init=False, repr=False)

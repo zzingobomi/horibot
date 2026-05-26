@@ -54,13 +54,11 @@ def create_pick_and_place_task(
             MoveTCPStep(
                 position_key="grasp_xyz",
                 offset=(0.0, 0.0, PRE_GRASP_DZ),
-                top_down=True,
                 label="pre_grasp",
             ),
             MoveTCPStep(
                 position_key="grasp_xyz",
                 offset=(0.0, 0.0, 0.0),
-                top_down=True,
                 label="grasp",
             ),
             GripperStep(action="close", verify_grasp=True, label="close_gripper"),
@@ -68,13 +66,11 @@ def create_pick_and_place_task(
             MoveTCPStep(
                 position_key="grasp_xyz",
                 offset=(0.0, 0.0, LIFT_DZ),
-                top_down=True,
                 label="lift",
             ),
             VerifyGraspStep(label="verify_after_lift"),
             MoveTCPStep(
                 position=place_position,
-                top_down=True,
                 label="move_to_place",
             ),
             VerifyGraspStep(label="verify_before_release"),

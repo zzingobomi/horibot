@@ -58,13 +58,9 @@ class MoveLCommand(MotionCommand):
         return None
 
     def execute(self, req, angles, tcp_pos, runner) -> None:
-        data = req["data"]
         start = np.array(tcp_pos, dtype=float)
-        end = np.array(data["position"], dtype=float)
-        # orientation 이 있으면 자세 강제, 없으면 5DOF 답게 자유.
-        orientation = data.get("orientation")
-        target_quat = list(orientation) if orientation is not None else None
-        runner.run_cartesian(LinearPath(start, end), angles, target_quat)
+        end = np.array(req["data"]["position"], dtype=float)
+        runner.run_cartesian(LinearPath(start, end), angles)
 
 
 class MoveCCommand(MotionCommand):

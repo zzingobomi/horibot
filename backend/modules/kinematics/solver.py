@@ -1,5 +1,4 @@
 import logging
-import math
 import threading
 from pathlib import Path
 from typing import TypeAlias
@@ -32,10 +31,6 @@ URDF_PATH = Path(__file__).parents[3] / \
 IK_MAX_ITER = 100
 IK_TOLERANCE = 1e-4
 IK_POS_ERROR_LIMIT = 0.01
-# 5DOF arm 에 fully orientation hard constraint 박으면 자주 fail. 대신 position
-# only 로 풀고 결과 자세를 soft check — EE x 축(그리퍼 손가락 방향) 이 target
-# 방향과 dot product 이 이 값 이상이면 채택. 1.0 완전 일치 / 0.9 ≈ 25° 어긋남.
-IK_ORIENT_DOT_THRESHOLD = 0.9
 
 
 class PybulletSolver:
@@ -196,44 +191,16 @@ class PybulletSolver:
             else None
         )
 
-        # target_quaternion 받으면 EE x 축(손가락 방향) reference 추출.
-        # hard constraint 로 안 박고 soft check 로만 사용 (5DOF 한계 회피).
-        target_x_axis: np.ndarray | None = None
-        if target_quaternion is not None:
-            m_t = p.getMatrixFromQuaternion(target_quaternion)
-            target_x_axis = np.array([m_t[0], m_t[3], m_t[6]])
-
         with self._sim_lock:
             n = len(self._joint_indices)
 
-            # 초기 자세 (IK iteration 시작점) = 현재 자세 → trajectory continuity.
-            # restPoses (nullspace optimum) = target 에 따라 결정:
-            #   - target_quaternion 박혔으면 수직 자세 reference
-            #     (J1=atan2(y,x), J2/J3=±30°, J4=+90°, J5=0; J2+J3+J4=+90 down)
-            #   - 일반 케이스는 현재 자세 (기존 동작)
-            # setJointPositions 와 restPoses 를 분리해야 trajectory 가 급변 안 함.
-            if target_quaternion is not None and n >= 5:
-                yaw = math.atan2(target_position[1], target_position[0])
-                rest = [
-                    yaw,
-                    math.radians(30),
-                    -math.radians(30),
-                    math.radians(90),
-                    0.0,
-                ] + [0.0] * (n - 5)
-            elif current_actual:
-                rest = list(current_actual)
-            else:
-                rest = [0.0] * n
+            # restPoses: actual 기준으로 가장 가까운 해 선호
+            # 없으면 0으로 초기화 (홈 포지션 근처에서만 시작할 때는 무방)
+            rest = list(current_actual) if current_actual else [0.0] * n
 
             if current_actual:
                 self._set_joint_positions(current_actual)
-            else:
-                self._set_joint_positions([0.0] * n)
 
-            # NOTE: targetOrientation 은 박지 않음 — 5DOF arm 에서 6DOF orient
-            # 박으면 hard constraint 로 작동해 수렴 실패. position only 로 풀고
-            # 결과를 아래에서 soft 검증.
             kwargs: dict = dict(
                 bodyUniqueId=self._robot,
                 endEffectorLinkIndex=self._ee_index,
@@ -246,31 +213,21 @@ class PybulletSolver:
                 residualThreshold=IK_TOLERANCE,
                 physicsClientId=self._client,
             )
+            if target_quaternion is not None:
+                kwargs["targetOrientation"] = target_quaternion
 
             result = p.calculateInverseKinematics(**kwargs)
             actual_angles = list(result[:n])
 
             # 수렴 검증 — PyBullet의 fk가 target에 도달하는지 (actual angle 기준)
             self._set_joint_positions(actual_angles)
-            actual_pos, actual_quat = self._get_ee_state()
+            actual_pos, _ = self._get_ee_state()
             error = float(
                 np.linalg.norm(np.array(actual_pos) -
                                np.array(target_position))
             )
             if error > IK_POS_ERROR_LIMIT:
                 return None
-
-            # 자세 soft 검증 — target_x_axis 와 actual EE x 축 dot product.
-            if target_x_axis is not None:
-                m_a = p.getMatrixFromQuaternion(actual_quat)
-                actual_x_axis = np.array([m_a[0], m_a[3], m_a[6]])
-                dot = float(np.dot(target_x_axis, actual_x_axis))
-                if dot < IK_ORIENT_DOT_THRESHOLD:
-                    logger.info(
-                        "IK 자세 검증 실패: dot=%.3f (요구 ≥%.2f)",
-                        dot, IK_ORIENT_DOT_THRESHOLD,
-                    )
-                    return None
 
         # sag 역보정 → motor 명령으로 변환. IK는 sim_lock 안에서 끝났고
         # _actual_to_commanded는 numpy fk_chain만 호출하므로 lock 밖에서 OK.

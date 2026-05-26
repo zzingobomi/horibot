@@ -26,12 +26,10 @@ class MotionModes:
         self,
         target_position: Position3,
         current_joint_angles: list[float],
-        target_quaternion: Quaternion | None = None,
     ) -> list[float] | None:
         """
         TCP를 target_position으로 이동하는 관절 각도 반환.
-        target_quaternion=None 이면 5-DOF 답게 자세 자유 (기존 동작).
-        값이 있으면 PyBullet IK 가 그 자세 충족하는 해 찾음.
+        5-DOF arm이라 orientation 제약 없이 position only IK.
         반환: 관절 각도 (라디안), IK 실패 시 None.
         """
-        return self._solver.ik(target_position, target_quaternion, current_joint_angles)
+        return self._solver.ik(target_position, None, current_joint_angles)

@@ -1,10 +1,7 @@
 import logging
-import math
 import threading
 import time
 from typing import TYPE_CHECKING
-
-from scipy.spatial.transform import Rotation as R
 
 from core.common import GRIPPER_ID, GRIPPER_SETTLE
 from core.robot_poses import load_pose
@@ -110,26 +107,13 @@ class StepExecutor:
         else:
             position = [b + o for b, o in zip(step.position, step.offset)]
 
-        payload: dict = {"position": position}
-        ori_log = ""
-        if step.top_down:
-            # 책상 향하는 수직 자세. yaw 는 target 의 atan2(y, x) — base 가 큐브
-            # 방향으로 돌고, EE x 축(그리퍼 손가락 방향, URDF 의 gripper_joint
-            # origin 으로 확인) 이 -world_z 향함. pitch=+π/2 가 EE x → world -z.
-            yaw = math.atan2(position[1], position[0])
-            quat = R.from_euler(
-                "ZYX", [yaw, math.pi / 2, 0]
-            ).as_quat().tolist()  # [x, y, z, w]
-            payload["orientation"] = quat
-            ori_log = f"  yaw={math.degrees(yaw):.1f}° (top-down)"
-
-        logger.info(
-            "MoveL → %.3f, %.3f, %.3f%s  [%s]",
-            *position, ori_log, step.label,
-        )
+        logger.info("MoveL → %.3f, %.3f, %.3f  [%s]", *position, step.label)
 
         self._traj_event.clear()
-        res = self._node.call_service(Service.MOTION_MOVE_L, payload)
+        res = self._node.call_service(
+            Service.MOTION_MOVE_L,
+            {"position": position},
+        )
         if not res.get("success"):
             logger.error("MoveL 서비스 실패: %s", res.get("message"))
             return False

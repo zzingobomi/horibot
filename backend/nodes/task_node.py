@@ -1,4 +1,5 @@
 import logging
+import threading
 from typing import Callable
 
 from core.base_node import BaseNode
@@ -8,26 +9,25 @@ from core.common import GRIPPER_ID
 from core.gripper_setup import GripperSetup
 from modules.dynamixel.motor_config import MotorConfig, load_motor_config
 from modules.calibration.loader import load_calibration
+from modules.llm import prompt_parser
+from modules.llm.prompt_parser import parse_pick_place
 from modules.task.step_executor import StepExecutor
 from modules.task.step_types import Task
 from modules.task.task_runner import TaskRunner
 from modules.task.tasks.pick_and_place import create_pick_and_place_task
 from modules.task.tasks.self_play_pick import create_self_play_pick_task
-from modules.kinematics.solver import Position3
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PLACE_POSITION = [0.15, 0.0, 0.05]
-
 
 def _factory_pick_and_place(data: dict) -> Task:
-    prompt = str(data.get("prompt", "")).strip()
+    prompt = str(data.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("prompt 필요")
-    place = data.get("place_position", DEFAULT_PLACE_POSITION)
+    pick_object, place_object = parse_pick_place(prompt)
     return create_pick_and_place_task(
-        prompt=prompt,
-        place_position=Position3(place),
+        pick_object=pick_object,
+        place_object=place_object,
     )
 
 
@@ -101,7 +101,24 @@ class TaskNode(BaseNode):
         self.create_service(Service.TASK_STATUS, self._handle_status)
 
         super().start()
+
+        # LLM prompt parser 백그라운드 preload — 첫 task 호출의 체감 지연 제거.
+        # 로드 중 parse_pick_place 호출되면 내부 lock 이 기다림.
+        # [detector_node 의 Grounding DINO preload](backend/nodes/detector_node.py)
+        # 와 같은 패턴.
+        threading.Thread(
+            target=self._preload_prompt_parser,
+            daemon=True,
+            name="prompt-parser-preload",
+        ).start()
+
         logger.info("TaskNode 시작")
+
+    def _preload_prompt_parser(self) -> None:
+        try:
+            prompt_parser.preload()
+        except Exception:
+            logger.exception("LLM prompt parser preload 실패")
 
     # ── Service handlers ──────────────────────────────────────
 

@@ -4,7 +4,7 @@ import time
 from typing import TYPE_CHECKING
 
 from core.common import GRIPPER_ID, GRIPPER_SETTLE
-from core.robot_poses import load_pose
+from core.robot_poses import list_pose_names, load_pose
 from core.types import TrajStatus
 from core.topic_map import Service, Topic
 from modules.calibration.loader import CalibrationData
@@ -15,6 +15,8 @@ from .step_types import (
     GroundedDetectStep,
     HomeStep,
     MoveTCPStep,
+    PlacePolicyStep,
+    SearchAndDetectStep,
     SelfPlayStep,
     Step,
     TaskContext,
@@ -81,8 +83,12 @@ class StepExecutor:
                 return self._detect(step, context)
             case "grounded_detect":
                 return self._grounded_detect(step, context)
+            case "search_and_detect":
+                return self._search_and_detect(step, context)
             case "grasp_policy":
                 return self._grasp_policy(step, context)
+            case "place_policy":
+                return self._place_policy(step, context)
             case "verify_grasp":
                 return self._verify_grasp(step)
             case "wait":
@@ -208,6 +214,101 @@ class StepExecutor:
                 "height": float(data.get("height", 0.0)),
             },
         )
+        return True
+
+    def _search_and_detect(
+        self, step: SearchAndDetectStep, context: TaskContext
+    ) -> bool:
+        prompt = step.prompt.strip()
+        if not prompt:
+            logger.error("SearchAndDetectStep: prompt 비어있음")
+            return False
+
+        search_poses = list_pose_names("search_")
+        if not search_poses:
+            logger.error(
+                "SearchAndDetect: search pose 없음 "
+                "(robot_poses.yaml 의 search_* 등록 필요)"
+            )
+            return False
+
+        SEARCH_SETTLE = 0.5
+
+        for pose_name in search_poses:
+            logger.info("Search pose '%s' 로 이동  [%s]", pose_name, step.label)
+            try:
+                joints = load_pose(pose_name)
+            except KeyError as exc:
+                logger.warning("자세 로드 실패: %s", exc)
+                continue
+
+            self._traj_event.clear()
+            res = self._node.call_service(
+                Service.MOTION_MOVE_J,
+                {"joints": joints},
+            )
+            if not res.get("success"):
+                logger.warning("MoveJ 실패: %s", res.get("message"))
+                continue
+            if not self._wait_for_traj():
+                logger.warning("Search pose '%s' 도달 실패", pose_name)
+                continue
+
+            time.sleep(SEARCH_SETTLE)
+
+            logger.info("[%s] '%s' detect 시도", pose_name, prompt)
+            res = self._node.call_service(
+                Service.PERCEPTION_GROUNDED_DETECT,
+                {"prompt": prompt},
+                timeout=60.0,
+            )
+            if not res.get("success"):
+                logger.info(
+                    "'%s' detect 실패 (%s): %s",
+                    prompt, pose_name, res.get("message"),
+                )
+                continue
+
+            data = res.get("data", {})
+            position = data.get("position")
+            if position is None:
+                continue
+
+            logger.info(
+                "'%s' detect 성공 [%s]: conf=%.2f base=(%.3f, %.3f, %.3f)",
+                prompt, pose_name, data.get("confidence", 0.0), *position,
+            )
+            context.set(step.output_key, position)
+            context.set(
+                f"{step.output_key}_meta",
+                {
+                    "base_z": float(data.get("base_z", 0.0)),
+                    "height": float(data.get("height", 0.0)),
+                },
+            )
+            return True
+
+        logger.error(
+            "SearchAndDetect: '%s' 모든 search pose 에서 fail", prompt
+        )
+        return False
+
+    def _place_policy(self, step: PlacePolicyStep, context: TaskContext) -> bool:
+        pos = context.get(step.input_key)
+        if not isinstance(pos, (list, tuple)) or len(pos) < 3:
+            logger.error(
+                "PlacePolicy: context['%s']가 없거나 잘못된 형식 "
+                "(SearchAndDetect 가 먼저 실행돼야 함)",
+                step.input_key,
+            )
+            return False
+        x, y, top_z = float(pos[0]), float(pos[1]), float(pos[2])
+        place_z = top_z + step.drop_clearance
+        logger.info(
+            "PlacePolicy: top_z=%.3f → place_z=%.3f (clearance=%.3f)  [%s]",
+            top_z, place_z, step.drop_clearance, step.label,
+        )
+        context.set(step.output_key, [x, y, place_z])
         return True
 
     def _grasp_policy(self, step: GraspPolicyStep, context: TaskContext) -> bool:

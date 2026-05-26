@@ -51,6 +51,50 @@ class GroundedDetectStep:
 
 
 @dataclass
+class SearchAndDetectStep:
+    """search pose 들 순회하며 grounded_detect 시도 — 첫 성공 시 break.
+
+    robot_poses.yaml 의 search_* 자세 (lexical 정렬) 를 차례로 방문하면서 객체
+    탐색. workspace 가 한 view 에 다 안 들어와도 안정적으로 객체 위치 확보.
+
+    context 저장:
+      - output_key: position (객체 윗면 base xyz)
+      - output_key + "_meta": {"base_z", "height"}
+    모든 pose 에서 fail → step fail (task 중단).
+    """
+
+    prompt: str = ""
+    output_key: str = "detected_position"
+    label: str = ""
+    type: Literal["search_and_detect"] = field(
+        default="search_and_detect", init=False, repr=False
+    )
+
+
+@dataclass
+class PlacePolicyStep:
+    """place 객체 detect 결과 → release 위치 계산.
+
+    캐비넷/박스 같은 객체 위에 큐브를 *공중에서 떨구지 않고* 살짝 내려놓도록
+    place 객체 윗면 z + drop_clearance 만큼 위에서 release.
+
+    입력:
+      - input_key: SearchAndDetectStep / GroundedDetectStep 의 output_key
+        (position = 객체 윗면 base xyz)
+    출력:
+      - output_key: [x, y, z + drop_clearance]
+    """
+
+    input_key: str = "place_detected"
+    output_key: str = "place_xyz"
+    drop_clearance: float = 0.010  # 윗면 위 1cm
+    label: str = ""
+    type: Literal["place_policy"] = field(
+        default="place_policy", init=False, repr=False
+    )
+
+
+@dataclass
 class GraspPolicyStep:
     """객체 height 기반 grasp z 결정 정책 — 항상 옆면 그립.
 
@@ -126,7 +170,9 @@ Step = Union[
     GripperStep,
     DetectStep,
     GroundedDetectStep,
+    SearchAndDetectStep,
     GraspPolicyStep,
+    PlacePolicyStep,
     VerifyGraspStep,
     WaitStep,
     HomeStep,

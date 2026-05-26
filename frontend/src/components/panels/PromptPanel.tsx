@@ -8,7 +8,7 @@ import { Section } from "@/components/canvas/ui/Section";
 import { useTask } from "@/hooks/useTask";
 import { useDetectorStore } from "@/store/detectorStore";
 
-const DEFAULT_PROMPT = "white cube";
+const DEFAULT_PROMPT = "흰 큐브 들어서 파란 박스에 놔";
 
 export function PromptPanel(props: IDockviewPanelProps<object>) {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
@@ -54,11 +54,11 @@ export function PromptPanel(props: IDockviewPanelProps<object>) {
       panelId={props.api.id}
       api={props.api}
     >
-      <Section label="Object Description">
+      <Section label="Natural language command">
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="e.g. white cube on the table"
+          placeholder="예: 흰 큐브 들어서 파란 박스에 놔 / pick white cube and place on blue box"
           rows={3}
           disabled={isActive}
           className="w-full bg-zinc-900/80 border border-zinc-700/60 rounded px-2 py-1.5 text-[11px] font-mono text-zinc-100 placeholder:text-zinc-600 resize-none focus:outline-none focus:border-zinc-500 disabled:opacity-50"
@@ -70,7 +70,7 @@ export function PromptPanel(props: IDockviewPanelProps<object>) {
           <button
             onClick={handleDetect}
             disabled={isActive || detecting || !prompt.trim()}
-            title="Detection 만 단독 호출 (debug)"
+            title="prompt 그대로 grounded detect (debug, LLM parse 없음)"
             className="flex-1 h-8 rounded bg-sky-700/80 hover:bg-sky-600 disabled:opacity-30 disabled:cursor-not-allowed text-white text-[10px] font-mono uppercase tracking-wider transition-colors"
           >
             {detecting ? "..." : "Detect"}

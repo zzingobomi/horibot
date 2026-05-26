@@ -2,9 +2,33 @@
 
 진행 중/예정 작업 기록용. 이미 구현 완료된 항목은 git log + 관련 docs/ 문서로 가니까 여기는 **미래 작업**만.
 
-> 현재 active 작업: [self_play_pick.md](self_play_pick.md) — self-play pick 루프 설계 진행 중 (WIP).
+> 현재 active 작업: pick_and_place 의 LLM prompt parsing + search pose 순회 + place 객체 detect 흐름 ([pick_and_place_walkthrough.md](pick_and_place_walkthrough.md)). 큐브 잡힘은 일부 동작하지만 z 추정 오차 (FK ~20mm 낮음, 큐브 상단 모서리 잡힘) + UI/UX 정리 + 3D 그리퍼 시각화 미완.
 >
-> 피벗 메모: TCP 절대 정확도 측정 방향(옛 AccuracyTest 패널)은 폐기. pick 실패의 root metric 은 "TCP 절대 정확도"가 아니라 "pick 성공률"이고, 정밀 캘리브레이션/peg/물리 모델은 DIY 환경(사용자 개입 최소화 제약)에서 ROI 낮음. self-play 로그 누적 → residual 보정 → (필요 시) bandit/RL 순서로 진화.
+> 피벗 메모: 옛 self-play 방향 폐기 ([self_play_pick.md](self_play_pick.md) 코드는 legacy 로 잔존). pick 실패 root metric 은 "TCP 절대 정확도" 아니라 "pick 성공률"이고, 정밀 캘리브레이션/peg/물리 모델은 DIY 환경에서 ROI 낮다는 결론은 그대로. 본 방향은 deterministic IK + verify 검증 + 자세 정확도 직접 강화 (e.g. base_z 보정 / link_offset 캘 보강).
+
+---
+
+## UI / UX — 다음 세션 우선
+
+> 세션 끝물에 누적된 거 정리. 현재 동작은 되지만 사용자가 답답하다고 명시.
+
+### 1. PromptPanel UX 정리
+
+- **단일 자연어 prompt 입력 + LLM parse** 흐름이 박혔지만 (Qwen2.5-1.5B-Instruct), Detect 버튼이 prompt 를 *그대로* GroundingDINO 에 박아서 자연어 문장이면 매칭 실패 → 카메라 피드 반응 없음. Detect 도 LLM parse 거치게 (또는 backend 에 `NL_DETECT` 서비스 추가).
+- task 끝나도 분홍 marker 잔존 — clear / reset 동선.
+- prompt 입력 placeholder/예시 정리 ("흰 큐브 들어서 파란 박스에 놔" 같은 자연어 예시 명시).
+- LLM 첫 로드 (~30초) 동안 사용자 피드백 — 지금은 그냥 멈춤. Loading toast / panel.
+
+### 2. 3D 그리퍼 열림/닫힘 시각화
+
+- [Workspace3D](../frontend/src/pages/Workspace3D.tsx) 의 URDF 모델이 J1~J5 만 모터 상태로 동기화, **gripper(ID 6) 는 안 움직임**. `MOTOR_STATE_JOINT` 에 ID 6 position 들어오니까 그걸 받아서 URDF 의 `gripper_joint_1` (그리고 mimic 으로 `gripper_joint_2`) 에 적용.
+- 위치 변환: raw → rad → URDF angle. gripper joint limit 확인 ([robot/urdf/omx_f/omx_f.urdf](../robot/urdf/omx_f/omx_f.urdf) `gripper_joint_1` revolute).
+- self-play / pick_and_place 실행 중 close/open 이 3D 에 즉시 반영되는 게 사용자 디버깅에 도움.
+
+### 3. (보류) 기타
+
+- TaskStatus 패널의 step 진행 표시 — 현재 step/total step 만. 어디서 fail 났는지 hover 로 step label 시인성.
+- self-play 패널 — legacy 라 숨김 처리.
 
 ---
 

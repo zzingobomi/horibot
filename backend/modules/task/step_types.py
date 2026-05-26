@@ -10,6 +10,9 @@ class MoveTCPStep:
     position: Position3 | None = None
     position_key: str | None = None
     offset: Position3 = (0.0, 0.0, 0.0)
+    # True 면 EE 가 책상 향하는 수직 자세로 이동. yaw 는 target xy 에서 자동 계산
+    # (J1 = atan2(y, x)) → 큐브 방향 자동 정렬. 5DOF 라 IK 실패하면 step fail.
+    top_down: bool = False
     label: str = ""
     type: Literal["move_tcp"] = field(
         default="move_tcp", init=False, repr=False)
@@ -19,6 +22,8 @@ class MoveTCPStep:
 class GripperStep:
     action: Literal["open", "close"] = "open"
     current: int = 200   # mA, 파지력 조정용
+    # close 직후 Present_Position 으로 잡힘 검증. 빈손이면 step fail → task fail.
+    verify_grasp: bool = False
     label: str = ""
     type: Literal["gripper"] = field(default="gripper", init=False, repr=False)
 
@@ -50,10 +55,9 @@ class GroundedDetectStep:
 
 @dataclass
 class GraspPolicyStep:
-    """객체 height 기반 grasp z 결정 정책.
+    """객체 height 기반 grasp z 결정 정책 — 항상 옆면 그립.
 
-    얇은 객체(height < thin_threshold): 윗면 살짝 아래 (top_inset) → 위에서 누름
-    두꺼운 객체: 책상 + height * tall_ratio → 옆면 중간 grasp
+    grasp_z = base_z + height * grasp_ratio (책상 + height 의 일정 비율).
 
     입력:
       - input_key: GroundedDetectStep의 output_key (position 들어있어야 함)
@@ -64,12 +68,24 @@ class GraspPolicyStep:
 
     input_key: str = "detected_position"
     output_key: str = "grasp_xyz"
-    thin_threshold: float = 0.040  # 4cm
-    top_inset: float = 0.005       # 윗면 5mm 아래
-    tall_ratio: float = 0.5        # 두꺼울 때 height의 절반
+    grasp_ratio: float = 0.5       # height의 절반 (옆면 중간)
     label: str = ""
     type: Literal["grasp_policy"] = field(
         default="grasp_policy", init=False, repr=False
+    )
+
+
+@dataclass
+class VerifyGraspStep:
+    """현재 그리퍼 Present_Position 으로 잡힘 상태 확인.
+
+    GripperStep(verify_grasp=True) 는 close *직후* 만 검증 → 이후 lift/place 중
+    떨어진 경우 못 잡음. 이 step 을 lift/place 사이에 끼워서 중간 검증.
+    """
+
+    label: str = ""
+    type: Literal["verify_grasp"] = field(
+        default="verify_grasp", init=False, repr=False
     )
 
 
@@ -114,6 +130,7 @@ Step = Union[
     DetectStep,
     GroundedDetectStep,
     GraspPolicyStep,
+    VerifyGraspStep,
     WaitStep,
     HomeStep,
     SelfPlayStep,

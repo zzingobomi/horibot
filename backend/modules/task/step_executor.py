@@ -1,9 +1,12 @@
 import logging
+import math
 import threading
 import time
 from typing import TYPE_CHECKING
 
-from core.common import GRIPPER_SETTLE
+from scipy.spatial.transform import Rotation as R
+
+from core.common import GRIPPER_ID, GRIPPER_SETTLE
 from core.robot_poses import load_pose
 from core.types import TrajStatus
 from core.topic_map import Service, Topic
@@ -18,6 +21,7 @@ from .step_types import (
     SelfPlayStep,
     Step,
     TaskContext,
+    VerifyGraspStep,
     WaitStep,
 )
 
@@ -32,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 
 TRAJ_WAIT_TIMEOUT = 30.0
+
+# close 후 gripper Present_Position 이 이 값 미만이면 빈손으로 판정.
+# self-play 의 GRIPPER_HELD_THRESHOLD 와 같은 의미 (1800 까지 끝까지 닫혔으면 빈손).
+GRIPPER_HELD_THRESHOLD = 1900
 
 
 class StepExecutor:
@@ -78,6 +86,8 @@ class StepExecutor:
                 return self._grounded_detect(step, context)
             case "grasp_policy":
                 return self._grasp_policy(step, context)
+            case "verify_grasp":
+                return self._verify_grasp(step)
             case "wait":
                 return self._wait(step)
             case "home":
@@ -100,13 +110,25 @@ class StepExecutor:
         else:
             position = [b + o for b, o in zip(step.position, step.offset)]
 
-        logger.info("MoveL → %.3f, %.3f, %.3f  [%s]", *position, step.label)
+        payload: dict = {"position": position}
+        ori_log = ""
+        if step.top_down:
+            # 책상 향하는 수직 자세. yaw 는 target 의 atan2(y, x) — base 가 큐브
+            # 방향으로 돌고, EE z 축이 -world_z (책상) 향함.
+            yaw = math.atan2(position[1], position[0])
+            quat = R.from_euler(
+                "ZYX", [yaw, -math.pi / 2, 0]
+            ).as_quat().tolist()  # [x, y, z, w]
+            payload["orientation"] = quat
+            ori_log = f"  yaw={math.degrees(yaw):.1f}° (top-down)"
+
+        logger.info(
+            "MoveL → %.3f, %.3f, %.3f%s  [%s]",
+            *position, ori_log, step.label,
+        )
 
         self._traj_event.clear()
-        res = self._node.call_service(
-            Service.MOTION_MOVE_L,
-            {"position": position},
-        )
+        res = self._node.call_service(Service.MOTION_MOVE_L, payload)
         if not res.get("success"):
             logger.error("MoveL 서비스 실패: %s", res.get("message"))
             return False
@@ -115,7 +137,8 @@ class StepExecutor:
 
     def _gripper(self, step: GripperStep) -> bool:
         logger.info(
-            "Gripper %s  current=%d  [%s]", step.action, step.current, step.label
+            "Gripper %s  current=%d  verify=%s  [%s]",
+            step.action, step.current, step.verify_grasp, step.label,
         )
 
         res = self._node.call_service(
@@ -127,6 +150,20 @@ class StepExecutor:
             return False
 
         time.sleep(GRIPPER_SETTLE)
+
+        if step.action == "close" and step.verify_grasp:
+            pos = self._joint_cache.get_raw(GRIPPER_ID)
+            if pos is None:
+                logger.error("Gripper verify: Present_Position 없음")
+                return False
+            if pos < GRIPPER_HELD_THRESHOLD:
+                logger.error(
+                    "Gripper verify 실패: 빈손 (Present_Position=%d < %d)",
+                    pos, GRIPPER_HELD_THRESHOLD,
+                )
+                return False
+            logger.info("Gripper verify OK: Present_Position=%d", pos)
+
         return True
 
     def _detect(self, step: DetectStep, context: TaskContext) -> bool:
@@ -203,20 +240,31 @@ class StepExecutor:
         base_z = float(meta.get("base_z", 0.0))
         height = float(meta.get("height", 0.0))
 
-        x, y, top_z = float(pos[0]), float(pos[1]), float(pos[2])
+        x, y, _top_z = float(pos[0]), float(pos[1]), float(pos[2])
 
-        if height < step.thin_threshold:
-            grasp_z = top_z - step.top_inset
-            policy = "thin"
-        else:
-            grasp_z = base_z + height * step.tall_ratio
-            policy = "tall"
+        grasp_z = base_z + height * step.grasp_ratio
 
         logger.info(
-            "GraspPolicy[%s] height=%.3f → grasp_z=%.3f  [%s]",
-            policy, height, grasp_z, step.label,
+            "GraspPolicy base_z=%.3f height=%.3f → grasp_z=%.3f  [%s]",
+            base_z, height, grasp_z, step.label,
         )
         context.set(step.output_key, [x, y, grasp_z])
+        return True
+
+    def _verify_grasp(self, step: VerifyGraspStep) -> bool:
+        pos = self._joint_cache.get_raw(GRIPPER_ID)
+        if pos is None:
+            logger.error("VerifyGrasp: Present_Position 없음  [%s]", step.label)
+            return False
+        if pos < GRIPPER_HELD_THRESHOLD:
+            logger.error(
+                "VerifyGrasp 실패: 떨어짐 (Present_Position=%d < %d)  [%s]",
+                pos, GRIPPER_HELD_THRESHOLD, step.label,
+            )
+            return False
+        logger.info(
+            "VerifyGrasp OK: Present_Position=%d  [%s]", pos, step.label
+        )
         return True
 
     def _wait(self, step: WaitStep) -> bool:

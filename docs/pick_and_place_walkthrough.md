@@ -216,7 +216,7 @@ return Task(
         GraspPolicyStep(input_key="object_pos", output_key="grasp_xyz", label=...),
         MoveTCPStep(position_key="grasp_xyz", offset=(0,0,PRE_GRASP_DZ), label="pre_grasp"),
         MoveTCPStep(position_key="grasp_xyz", offset=(0,0,0), label="grasp"),
-        GripperStep(action="close", label="close_gripper"),
+        GripperStep(action="close", verify_grasp=True, label="close_gripper"),
         WaitStep(duration_sec=0.5, label="grip_settle"),
         MoveTCPStep(position_key="grasp_xyz", offset=(0,0,LIFT_DZ), label="lift"),
         MoveTCPStep(position=place_position, label="move_to_place"),
@@ -340,15 +340,23 @@ def _on_traj_state(self, data):
 
 본격 챕터들 전에 짧게.
 
-**GripperStep** ([step_executor.py:115-128](backend/modules/task/step_executor.py#L115-L128)):
+**GripperStep** ([step_executor.py](backend/modules/task/step_executor.py)):
 
 ```python
 res = self._node.call_service(Service.MOTOR_GRIPPER,
                               {"action": step.action, "current": step.current})
 time.sleep(GRIPPER_SETTLE)
+
+# verify_grasp=True 면 close 직후 Present_Position 확인
+if step.action == "close" and step.verify_grasp:
+    pos = self._joint_cache.get_raw(GRIPPER_ID)
+    if pos < GRIPPER_HELD_THRESHOLD:   # 1900
+        return False                   # 빈손 → step fail → task fail
 ```
 
 `MOTOR_GRIPPER` 서비스가 motor_node에서 ID 6번 그리퍼 모터를 *current control mode*로 토크 명령. `current` (mA)이 *파지력*.
+
+**잡힘 검증 (`verify_grasp`)**: Current-based Position mode 라 close 명령에 큐브가 막히면 그 자리에서 멈추고, 빈손이면 `GRIPPER_CLOSE_RAW`(1800) 까지 끝까지 닫힘. 그래서 close 직후 `Present_Position` 이 `GRIPPER_HELD_THRESHOLD`(1900) 미만이면 빈손으로 판정 → step fail → task fail. 이게 없으면 빈손이어도 step service call 은 success 라서 task 가 그대로 place 까지 가서 "성공" 으로 끝남.
 
 **그리퍼 부드러운 동작**: 이전엔 `set_goal_position`만 호출해서 *Dynamixel 기본값 = 0 = 최대 속도*로 휙 움직였음. [motor_node.py:74-87](backend/nodes/motor_node.py#L74-L87)의 `_apply_gripper_smooth_profile()`이 시작 시 한 번 `profile_velocity = 80`, `profile_acceleration = 30`을 설정 → 이후 모든 goal_position 명령에 *사다리꼴 ramp* 적용:
 
@@ -512,28 +520,25 @@ position과 별도로 `_meta` suffix 키에 base_z/height 저장. 다음 챕터 
 
 ## 7. GraspPolicyStep — height 보고 grasp z 결정
 
-이 챕터는 **수학 없음, 5줄짜리 정책**. 그러나 디자인적으로 중요 — *detect 결과를 어떻게 동적으로 변환*해서 후속 MoveTCP에 넘기느냐.
+이 챕터는 **수학 없음, 1줄짜리 정책**. 그러나 디자인적으로 중요 — *detect 결과를 어떻게 동적으로 변환*해서 후속 MoveTCP에 넘기느냐.
 
 ### 7.1 왜 정책이 필요한가
 
-GroundedDetect의 출력 `position`은 *객체 윗면* base xyz. 그러면 grasp는 어디서? 두 시나리오:
+GroundedDetect의 출력 `position`은 *객체 윗면* base xyz. 그러면 grasp는 어디서? 옆면 중간:
 
 ```
-얇은 객체 (height < 4cm)            두꺼운 객체 (height >= 4cm)
-   ┌──┐                              ┌──────┐
-   │  │ ← 윗면 (top_z)               │      │
-═══└──┘═══                            │ ←──── grasp 여기 (옆면 중간)
-                                      │      │
-얇으니 옆면 못 잡음 →                 │      │
-*위에서 살짝* 누름 (top_z - 5mm)   ═══└──────┘═══
-                                       ↑ base_z
+        ┌──────┐
+        │      │
+        │ ←──── grasp 여기 (옆면 중간 = base_z + height * 0.5)
+        │      │
+        │      │
+     ═══└──────┘═══
+           ↑ base_z
 ```
 
-정책:
-- 얇음 → `grasp_z = top_z - 5mm` (윗면 살짝 박음)
-- 두꺼움 → `grasp_z = base_z + height * 0.5` (옆면 중간)
+정책 한 줄: `grasp_z = base_z + height * 0.5`.
 
-self-play `SelfPlayRunner` ([runner.py:54-57](backend/modules/task/self_play/runner.py#L54-L57))에서 동일 정책. 이번에 *step DSL로* 표현할 수 있게 추출.
+> *이전엔 `height < 4cm` 면 "얇음" 으로 분류해서 윗면 누르기(top_z - 5mm) 로 갔는데, 20mm 큐브가 thin 분기로 빠져 손가락이 큐브 위 공중에서 close 되는 문제가 있었음. 그리퍼 손가락 두께상 위에서 누르기는 카드/시트가 아닌 한 거의 안 됨 → thin 분기 폐기.*
 
 ### 7.2 GraspPolicyStep dataclass
 
@@ -544,18 +549,16 @@ self-play `SelfPlayRunner` ([runner.py:54-57](backend/modules/task/self_play/run
 class GraspPolicyStep:
     input_key: str = "detected_position"
     output_key: str = "grasp_xyz"
-    thin_threshold: float = 0.040  # 4cm
-    top_inset: float = 0.005       # 윗면 5mm 아래
-    tall_ratio: float = 0.5
+    grasp_ratio: float = 0.5       # height의 절반 (옆면 중간)
     label: str = ""
     type: Literal["grasp_policy"] = field(default="grasp_policy", ...)
 ```
 
-정책 파라미터를 *task별로 override*할 수 있게 dataclass field로 노출. 큰 객체용으로 `tall_ratio=0.3`(아래쪽 잡기), 작은 객체용으로 `top_inset=0.002` 같은 변주가 자연스러움.
+`grasp_ratio` 만 노출. 객체별로 *위쪽 잡기* 하고 싶으면 `grasp_ratio=0.7`, *아래쪽 잡기* 면 `0.3` 같은 변주.
 
-### 7.3 _grasp_policy 핸들러 — 5줄 정책
+### 7.3 _grasp_policy 핸들러
 
-[step_executor.py:189-217](backend/modules/task/step_executor.py#L189-L217):
+[step_executor.py](backend/modules/task/step_executor.py):
 
 ```python
 def _grasp_policy(self, step: GraspPolicyStep, context: TaskContext) -> bool:
@@ -567,20 +570,15 @@ def _grasp_policy(self, step: GraspPolicyStep, context: TaskContext) -> bool:
     base_z = float(meta.get("base_z", 0.0))
     height = float(meta.get("height", 0.0))
 
-    x, y, top_z = float(pos[0]), float(pos[1]), float(pos[2])
+    x, y, _top_z = float(pos[0]), float(pos[1]), float(pos[2])
 
-    # ─── 정책 본체 ────
-    if height < step.thin_threshold:
-        grasp_z = top_z - step.top_inset            # 얇음: 윗면 살짝 박음
-    else:
-        grasp_z = base_z + height * step.tall_ratio # 두꺼움: 옆면 중간
-    # ─────────────────
+    grasp_z = base_z + height * step.grasp_ratio   # 옆면 그립
 
     context.set(step.output_key, [x, y, grasp_z])
     return True
 ```
 
-`context.get(input_key)`로 GroundedDetect가 저장한 *위치*를, `context.get(input_key + "_meta")`로 *meta 정보(base_z/height)*를 꺼냄. 정책 5줄 실행. 결과 [x, y, grasp_z]를 *output_key*로 저장 → 후속 MoveTCPStep이 `position_key="grasp_xyz"`로 받음.
+`context.get(input_key)`로 GroundedDetect가 저장한 *위치*를, `context.get(input_key + "_meta")`로 *meta 정보(base_z/height)*를 꺼냄. 정책 1줄 실행. 결과 [x, y, grasp_z]를 *output_key*로 저장 → 후속 MoveTCPStep이 `position_key="grasp_xyz"`로 받음.
 
 ### 7.4 task 안에서의 흐름
 

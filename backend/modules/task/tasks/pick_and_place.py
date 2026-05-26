@@ -1,12 +1,15 @@
-"""Pick-and-place — Grounding DINO + height 기반 grasp 정책.
+"""Pick-and-place — Grounding DINO + 옆면 그립 정책.
 
 흐름:
   1. detect (GroundedDetect): prompt → 객체 윗면 base xyz + height
-  2. grasp_policy: height 보고 grasp_z 결정 (얇음: 윗면 누름 / 두꺼움: 옆면 중간)
-  3. pre_grasp → grasp → close → lift → place → release → home
+  2. grasp_policy: 항상 옆면 중간 (base_z + height * 0.5)
+  3. pre_grasp → grasp → close(+verify) → lift → place → release → home
 
 grasp_xyz는 (x, y, grasp_z) 형태로 context에 들어가므로, 후속 MoveTCPStep은
 position_key="grasp_xyz" + offset=(0, 0, dz) 형태로 깊이만 변주하면 됨.
+
+close step 은 verify_grasp=True — Present_Position 으로 빈손 검증, 빈손이면
+task 실패로 끊김 (그 상태로 place 까지 가서 success 라고 뜨는 거 방지).
 """
 
 from modules.kinematics.solver import Position3
@@ -17,6 +20,7 @@ from modules.task.step_types import (
     HomeStep,
     MoveTCPStep,
     Task,
+    VerifyGraspStep,
     WaitStep,
 )
 
@@ -50,24 +54,30 @@ def create_pick_and_place_task(
             MoveTCPStep(
                 position_key="grasp_xyz",
                 offset=(0.0, 0.0, PRE_GRASP_DZ),
+                top_down=True,
                 label="pre_grasp",
             ),
             MoveTCPStep(
                 position_key="grasp_xyz",
                 offset=(0.0, 0.0, 0.0),
+                top_down=True,
                 label="grasp",
             ),
-            GripperStep(action="close", label="close_gripper"),
+            GripperStep(action="close", verify_grasp=True, label="close_gripper"),
             WaitStep(duration_sec=0.5, label="grip_settle"),
             MoveTCPStep(
                 position_key="grasp_xyz",
                 offset=(0.0, 0.0, LIFT_DZ),
+                top_down=True,
                 label="lift",
             ),
+            VerifyGraspStep(label="verify_after_lift"),
             MoveTCPStep(
                 position=place_position,
+                top_down=True,
                 label="move_to_place",
             ),
+            VerifyGraspStep(label="verify_before_release"),
             GripperStep(action="open", label="release"),
             WaitStep(duration_sec=0.3, label="release_settle"),
             HomeStep(label="return_home"),

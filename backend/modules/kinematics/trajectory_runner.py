@@ -36,7 +36,10 @@ _MOVEP_MIN_DIST = 1e-4   # 너무 가까운 waypoint 제거
 PublishCmdFn = Callable[[list[float]], None]
 PublishStateFn = Callable[[str, float], None]
 SetProfileFn = Callable[[int, int], bool]
-MoveTcpFn = Callable[[list[float], list[float]], list[float] | None]
+MoveTcpFn = Callable[
+    [list[float], list[float], list[float] | None],
+    list[float] | None,
+]
 
 # ═══════════════════════════════════════════════════════════════
 # Path 추상화 (Cartesian)
@@ -166,10 +169,15 @@ class TrajectoryRunner:
         self._thread = None
         self._stop_ev.clear()
 
-    def run_cartesian(self, path: CartesianPath, start_angles: list[float]) -> None:
+    def run_cartesian(
+        self,
+        path: CartesianPath,
+        start_angles: list[float],
+        target_quaternion: list[float] | None = None,
+    ) -> None:
         self._launch(
             target=self._cartesian_loop,
-            args=(path, list(start_angles)),
+            args=(path, list(start_angles), target_quaternion),
             name=f"{path.label.lower()}-traj",
         )
 
@@ -188,7 +196,12 @@ class TrajectoryRunner:
             target=target, args=args, name=name, daemon=True)
         self._thread.start()
 
-    def _cartesian_loop(self, path: CartesianPath, start_angles: list[float]) -> None:
+    def _cartesian_loop(
+        self,
+        path: CartesianPath,
+        start_angles: list[float],
+        target_quaternion: list[float] | None = None,
+    ) -> None:
         label = path.label
         ok = self._set_profile(0, 0)
         if not ok:
@@ -218,7 +231,7 @@ class TrajectoryRunner:
         def _ik_step(s: float) -> bool:
             nonlocal current_angles
             wp = path.position_at(s)
-            result = self._move_tcp(wp, current_angles)
+            result = self._move_tcp(wp, current_angles, target_quaternion)
             if result is None:
                 logger.warning(f"{label} IK 실패 | s={s*100:.1f}cm")
                 return False

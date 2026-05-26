@@ -32,6 +32,12 @@ _J_MAX_JERK = [10.0, 10.0, 10.0, 20.0, 20.0]
 
 _MOVEP_MIN_DIST = 1e-4   # 너무 가까운 waypoint 제거
 
+# Cartesian IK 출력 EMA — null-space 미세 노이즈 댐핑 (5DOF position-only IK가
+# 매 스텝 미세하게 다른 해를 뽑아 손목이 떨리는 문제). alpha 작을수록 부드러움 ↑
+# / lag ↑. 종점은 settle 램프로 raw IK 해에 정확히 수렴시켜 정확도 보존.
+_CART_EMA_ALPHA = 0.2
+_CART_SETTLE_STEPS = 5
+
 # ── 콜백 타입 ──────────────────────────────────────────────────
 PublishCmdFn = Callable[[list[float]], None]
 PublishStateFn = Callable[[str, float], None]
@@ -207,7 +213,10 @@ class TrajectoryRunner:
         inp.max_acceleration = [_C_MAX_ACC]
         inp.max_jerk = [_C_MAX_JERK]
 
-        current_angles = start_angles
+        q_filt = list(start_angles)
+        last_raw: list[float] = list(start_angles)
+        alpha = _CART_EMA_ALPHA
+
         first_result = otg.update(inp, out)
         est_duration = out.trajectory.duration
         t_start = time.time()
@@ -216,15 +225,33 @@ class TrajectoryRunner:
             f"{label}: dist={path.total_length*100:.1f}cm | 예상 {est_duration:.1f}s")
 
         def _ik_step(s: float) -> bool:
-            nonlocal current_angles
+            nonlocal q_filt, last_raw
             wp = path.position_at(s)
-            result = self._move_tcp(wp, current_angles)
-            if result is None:
+            raw = self._move_tcp(wp, q_filt)
+            if raw is None:
                 logger.warning(f"{label} IK 실패 | s={s*100:.1f}cm")
                 return False
-            current_angles = result
-            self._publish_cmd(result)
+            last_raw = raw
+            q_filt = [(1.0 - alpha) * qf + alpha * qr
+                      for qf, qr in zip(q_filt, raw)]
+            self._publish_cmd(q_filt)
             return True
+
+        def _settle_to_raw() -> None:
+            # EMA lag 제거: q_filt → last_raw로 선형 램프 후 raw 종점 publish.
+            nonlocal q_filt
+            steps = _CART_SETTLE_STEPS
+            for k in range(1, steps + 1):
+                if self._stop_ev.is_set():
+                    return
+                ratio = k / steps
+                q_blend = [
+                    (1.0 - ratio) * qf + ratio * qr
+                    for qf, qr in zip(q_filt, last_raw)
+                ]
+                self._publish_cmd(q_blend)
+                time.sleep(TRAJ_DT)
+            q_filt = list(last_raw)
 
         try:
             if not _ik_step(out.new_position[0]):
@@ -237,6 +264,7 @@ class TrajectoryRunner:
             self._publish_state(TrajStatus.RUNNING, progress)
 
             if first_result == Result.Finished:
+                _settle_to_raw()
                 self._publish_state(TrajStatus.DONE, 1.0)
                 return
 
@@ -262,6 +290,7 @@ class TrajectoryRunner:
                 self._publish_state(TrajStatus.RUNNING, progress)
 
                 if result == Result.Finished:
+                    _settle_to_raw()
                     self._publish_state(TrajStatus.DONE, 1.0)
                     logger.info(f"{label} 완료 ({elapsed*1000:.0f}ms)")
                     return

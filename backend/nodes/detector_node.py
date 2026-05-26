@@ -289,25 +289,6 @@ class DetectorNode(BaseNode):
         top_raw = float(np.percentile(valid, 25))
         Z_cam = top_raw * depth_frame.depth_scale  # m, 객체 윗면
 
-        # 책상 z 추정 — bbox 외곽 ring (확장 영역 - bbox 내부) 의 percentile 75
-        # bbox 가까이서 멀리 보이는 depth = 책상 표면.
-        PAD = 30
-        ex1 = max(0, ix1 - PAD)
-        ey1 = max(0, iy1 - PAD)
-        ex2 = min(w, ix2 + PAD)
-        ey2 = min(h, iy2 + PAD)
-        ext_roi = depth_frame.depth_z16[ey1:ey2, ex1:ex2].copy()
-        # bbox 내부 mask out (객체 픽셀 제거)
-        ext_roi[(iy1 - ey1):(iy2 - ey1), (ix1 - ex1):(ix2 - ex1)] = 0
-        ext_valid = ext_roi[ext_roi > 0]
-        if ext_valid.size > 0:
-            base_raw = float(np.percentile(ext_valid, 75))
-            # 카메라 z 차이 = 객체 height (카메라가 거의 위에서 본다는 가정)
-            height_cam = (base_raw - top_raw) * depth_frame.depth_scale
-            height = max(0.0, float(height_cam))
-        else:
-            height = 0.0  # ring 픽셀 없으면 추정 불가
-
         # ── unproject (bbox 중심) ───────────────────────
         u = (x1 + x2) / 2.0
         v = (y1 + y2) / 2.0
@@ -339,15 +320,54 @@ class DetectorNode(BaseNode):
         obj_in_ee = R_ce @ obj_in_cam + t_ce
         obj_in_base = R_be @ obj_in_ee + t_be
 
+        # ── 책상 base_z + height 추정 ────────────────────
+        # bbox 외곽 ring 의 모든 valid 픽셀을 base 프레임으로 unproject 후 z 통계.
+        # camera 광축 방향 depth 차이가 아닌 base.z 평면을 직접 추정 → 카메라가
+        # 책상에 수직이 아니거나 객체가 화면 가장자리에 있어도 편향되지 않음.
+        # PAD 는 bbox 크기 비례 — 멀어 bbox 가 작아져도 ring 이 객체 가까운 책상
+        # 영역을 잡게 함 (고정 PAD=30 이면 멀리서 책상 영역이 더 멀어져 height 과대 추정).
+        bbox_w = ix2 - ix1
+        bbox_h = iy2 - iy1
+        pad = max(15, min(80, int(min(bbox_w, bbox_h) * 0.5)))
+
+        ex1 = max(0, ix1 - pad)
+        ey1 = max(0, iy1 - pad)
+        ex2 = min(w, ix2 + pad)
+        ey2 = min(h, iy2 + pad)
+        ext_roi = depth_frame.depth_z16[ey1:ey2, ex1:ex2].copy()
+        # bbox 내부 mask out (객체 픽셀 제거)
+        ext_roi[(iy1 - ey1):(iy2 - ey1), (ix1 - ex1):(ix2 - ex1)] = 0
+
+        vs_local, us_local = np.nonzero(ext_roi)
+        if us_local.size > 0:
+            us_global = us_local.astype(np.float64) + ex1
+            vs_global = vs_local.astype(np.float64) + ey1
+            raws = ext_roi[vs_local, us_local].astype(np.float64)
+            Z_cam_ring = raws * depth_frame.depth_scale
+            X_cam_ring = (us_global - depth_frame.cx) / depth_frame.fx * Z_cam_ring
+            Y_cam_ring = (vs_global - depth_frame.cy) / depth_frame.fy * Z_cam_ring
+            pts_cam_ring = np.stack(
+                [X_cam_ring, Y_cam_ring, Z_cam_ring], axis=1
+            )  # Nx3
+            pts_ee_ring = pts_cam_ring @ R_ce.T + t_ce
+            pts_base_ring = pts_ee_ring @ R_be.T + t_be
+
+            # ring 에 객체 가장자리가 섞이면 base z 가 위쪽으로 튐.
+            # percentile 25 = 진짜 책상 픽셀 쪽에 편향 (lower z = floor).
+            floor_z = float(np.percentile(pts_base_ring[:, 2], 25))
+            height = max(0.0, float(obj_in_base[2]) - floor_z)
+        else:
+            floor_z = float(obj_in_base[2])
+            height = 0.0
+
+        base_z = floor_z
+
         logger.info(
             "grounded_detect '%s' score=%.3f bbox=(%.0f,%.0f,%.0f,%.0f) "
-            "Z_cam=%.3fm base=(%.3f, %.3f, %.3f)",
-            prompt, score, x1, y1, x2, y2, Z_cam, *obj_in_base,
+            "Z_cam=%.3fm base=(%.3f, %.3f, %.3f) floor_z=%.3f h=%.3f pad=%d",
+            prompt, score, x1, y1, x2, y2, Z_cam,
+            *obj_in_base, floor_z, height, pad,
         )
-
-        # 책상 z = 객체 윗면 z - height (객체가 책상 위에 놓여있다는 가정).
-        # 사용자 self-play 의 grasp z 정책 (얇은/큰 객체 분기) 입력.
-        base_z = float(obj_in_base[2]) - height
 
         result_payload = {
             "prompt": prompt,

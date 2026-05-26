@@ -72,10 +72,10 @@ motors:
       min: 0
       max: 4095
     reverse: false
-    pid:
+    pid: # wrist roll, D405 cantilevered 부하 댐핑 위해 D 추가
       p: 800
       i: 0
-      d: 0
+      d: 300
 
   - id: 6
     name: "gripper_joint_1"

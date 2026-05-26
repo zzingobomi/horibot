@@ -1,20 +1,23 @@
 """Grounding DINO 기반 open-vocabulary detection 래퍼.
 
-transformers / torch 의존. 첫 detect() 호출 시 모델 lazy 로드 → DetectorNode
-시작 시점엔 import 비용 0. pi-motor / pi-camera 머신에선 이 모듈 자체를
-import 안 함 (CLAUDE.md lazy import 패턴).
+transformers / torch 는 module-top import — 두 preload 스레드 (detector +
+prompt_parser) 가 동시에 `from transformers import X` 를 lazy 로 부르면
+transformers 의 `_LazyModule.__getattr__` race 로 "cannot import name" 발생.
+모듈 import 는 메인 스레드 직렬 실행이므로 여기서 미리 resolve. 모델 자체의
+무거운 weight 로드는 여전히 `_ensure_loaded` 시점에 lazy.
+
+pi-motor / pi-camera 머신에선 이 모듈 자체를 import 안 함 (CLAUDE.md
+lazy import 패턴) → 그쪽에 transformers 가 없어도 무관.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING
 
 import numpy as np
-
-if TYPE_CHECKING:
-    import torch  # noqa: F401
+import torch
+from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +64,6 @@ class GroundedDetector:
         with self._load_lock:
             if self._model is not None:
                 return
-
-            import torch
-            from transformers import (
-                AutoModelForZeroShotObjectDetection,
-                AutoProcessor,
-            )
 
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
             logger.info(

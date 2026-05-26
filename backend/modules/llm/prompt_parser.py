@@ -21,6 +21,14 @@ import logging
 import re
 import threading
 
+# transformers / torch 는 module-top import — detector_node 의 GroundedDetector
+# preload 스레드와 동시에 lazy `from transformers import X` 가 돌면
+# `_LazyModule.__getattr__` race 로 "cannot import name" 발생.
+# 모듈 import 는 메인 스레드 직렬 실행이므로 여기서 미리 resolve.
+# weight 로드 (수 GB) 는 여전히 `_ensure_loaded` 시점에 lazy.
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
 logger = logging.getLogger(__name__)
 
 # Qwen2.5-1.5B-Instruct — 한국어/영어 다국어, instruction-tuned, 작음(~3GB).
@@ -55,12 +63,6 @@ def _ensure_loaded() -> bool:
     with _lock:
         if _model is not None:
             return True
-        try:
-            import torch
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-        except ImportError as exc:
-            logger.warning("transformers/torch 없음 (uv sync 필요): %s", exc)
-            return False
         try:
             _device = "cuda" if torch.cuda.is_available() else "cpu"
             logger.info(

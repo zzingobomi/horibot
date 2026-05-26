@@ -11,9 +11,9 @@ export function RobotSceneContainer() {
   const joints = useRobotStore((s) => s.joints);
   const jointOffsetsRad = useRobotStore((s) => s.jointOffsetsRad);
   const jointAngles = useMemo<number[]>(() => {
-    if (!joints?.length) return [0, 0, 0, 0, 0];
+    if (!joints?.length) return [0, 0, 0, 0, 0, 0];
     return joints
-      .filter((j) => j.id >= 1 && j.id <= 5)
+      .filter((j) => j.id >= 1 && j.id <= 6)
       .sort((a, b) => a.id - b.id)
       .map((j) => {
         // 백엔드 JointStateCache와 동일한 보정: raw_to_rad + joint_offset.

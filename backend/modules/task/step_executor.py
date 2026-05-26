@@ -40,6 +40,12 @@ TRAJ_WAIT_TIMEOUT = 30.0
 # self-play 의 GRIPPER_HELD_THRESHOLD 와 같은 의미 (1800 까지 끝까지 닫혔으면 빈손).
 GRIPPER_HELD_THRESHOLD = 1900
 
+# 단발 샘플링은 큐브 모서리 임시 catch 를 빈손과 못 구분 (pos=1950 에서 stall →
+# threshold 통과 → 직후 cube 슬립). 0.3s 추가 settle 후 재측정해서 position 이
+# 안정적인지 확인. SLIP_DELTA 만큼 감소 = 아직 close 중 = 실제로는 빈손.
+GRIPPER_HELD_RECHECK_DELAY = 0.3
+GRIPPER_HELD_SLIP_DELTA = 30
+
 
 class StepExecutor:
     def __init__(
@@ -143,18 +149,50 @@ class StepExecutor:
         time.sleep(GRIPPER_SETTLE)
 
         if step.action == "close" and step.verify_grasp:
-            pos = self._joint_cache.get_raw(GRIPPER_ID)
-            if pos is None:
-                logger.error("Gripper verify: Present_Position 없음")
-                return False
-            if pos < GRIPPER_HELD_THRESHOLD:
-                logger.error(
-                    "Gripper verify 실패: 빈손 (Present_Position=%d < %d)",
-                    pos, GRIPPER_HELD_THRESHOLD,
-                )
-                return False
-            logger.info("Gripper verify OK: Present_Position=%d", pos)
+            return self._verify_gripper_held(step.label or "close_gripper")
 
+        return True
+
+    def _verify_gripper_held(self, label: str) -> bool:
+        """Gripper Present_Position 으로 잡힘 검증.
+
+        모서리 임시 catch → slip 케이스를 잡기 위해 GRIPPER_HELD_RECHECK_DELAY
+        간격으로 두 번 측정. 두 번째 측정이 threshold 미만 이거나 첫 측정 대비
+        SLIP_DELTA 이상 감소했으면 jaw 가 아직 닫히는 중 = 실제로는 빈손.
+        """
+        pos1 = self._joint_cache.get_raw(GRIPPER_ID)
+        if pos1 is None:
+            logger.error("Gripper verify: Present_Position 없음  [%s]", label)
+            return False
+        if pos1 < GRIPPER_HELD_THRESHOLD:
+            logger.error(
+                "Gripper verify 실패: 빈손 (pos=%d < %d)  [%s]",
+                pos1, GRIPPER_HELD_THRESHOLD, label,
+            )
+            return False
+
+        time.sleep(GRIPPER_HELD_RECHECK_DELAY)
+        pos2 = self._joint_cache.get_raw(GRIPPER_ID)
+        if pos2 is None:
+            logger.error(
+                "Gripper verify (recheck): Present_Position 없음  [%s]", label
+            )
+            return False
+        if pos2 < GRIPPER_HELD_THRESHOLD:
+            logger.error(
+                "Gripper verify 실패: 재측정 시 빈손 (pos %d → %d < %d)  [%s]",
+                pos1, pos2, GRIPPER_HELD_THRESHOLD, label,
+            )
+            return False
+        if pos1 - pos2 > GRIPPER_HELD_SLIP_DELTA:
+            logger.error(
+                "Gripper verify 실패: slip 중 (pos %d → %d, Δ=%d > %d)  [%s]",
+                pos1, pos2, pos1 - pos2, GRIPPER_HELD_SLIP_DELTA, label,
+            )
+            return False
+        logger.info(
+            "Gripper verify OK: pos %d → %d  [%s]", pos1, pos2, label
+        )
         return True
 
     def _detect(self, step: DetectStep, context: TaskContext) -> bool:
@@ -338,20 +376,7 @@ class StepExecutor:
         return True
 
     def _verify_grasp(self, step: VerifyGraspStep) -> bool:
-        pos = self._joint_cache.get_raw(GRIPPER_ID)
-        if pos is None:
-            logger.error("VerifyGrasp: Present_Position 없음  [%s]", step.label)
-            return False
-        if pos < GRIPPER_HELD_THRESHOLD:
-            logger.error(
-                "VerifyGrasp 실패: 떨어짐 (Present_Position=%d < %d)  [%s]",
-                pos, GRIPPER_HELD_THRESHOLD, step.label,
-            )
-            return False
-        logger.info(
-            "VerifyGrasp OK: Present_Position=%d  [%s]", pos, step.label
-        )
-        return True
+        return self._verify_gripper_held(step.label or "verify_grasp")
 
     def _wait(self, step: WaitStep) -> bool:
         logger.info("Wait %.2fs  [%s]", step.duration_sec, step.label)

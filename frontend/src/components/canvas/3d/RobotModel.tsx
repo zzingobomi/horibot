@@ -3,7 +3,7 @@ import * as THREE from "three";
 import URDFLoader from "urdf-loader";
 import type { URDFRobot } from "urdf-loader";
 import { BASE_URL } from "@/constants";
-import { TCP_LINK_NAME, ARM_JOINTS } from "@/lib/robot/config";
+import { TCP_LINK_NAME, JOINT_CONFIGS } from "@/lib/robot/config";
 
 interface URDFRobotProps {
   jointAngles: number[];
@@ -82,7 +82,7 @@ export function RobotModel({
     const robot = robotRef.current;
     if (!robot) return;
 
-    ARM_JOINTS.forEach((joint, i) => {
+    JOINT_CONFIGS.forEach((joint, i) => {
       const angle = jointAngles[i];
       if (angle !== undefined && robot.joints?.[joint.name]) {
         robot.setJointValue(joint.name, angle);

@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 TRAJ_DT = 1.0 / 50   # 50 Hz
 
 # ── Cartesian 경로 제약 ────────────────────────────────────────
+# 저속(<0.08 m/s)에서 J3 P=1500이 static friction을 강하게 밀어내며 stick-slip
+# chatter 유발 → 원복. 0.10이 idle/run 균형점.
 _C_MAX_VEL = 0.10    # m/s
 _C_MAX_ACC = 0.25    # m/s²
 _C_MAX_JERK = 1.00    # m/s³
@@ -35,8 +37,11 @@ _MOVEP_MIN_DIST = 1e-4   # 너무 가까운 waypoint 제거
 # Cartesian IK 출력 EMA — null-space 미세 노이즈 댐핑 (5DOF position-only IK가
 # 매 스텝 미세하게 다른 해를 뽑아 손목이 떨리는 문제). alpha 작을수록 부드러움 ↑
 # / lag ↑. 종점은 settle 램프로 raw IK 해에 정확히 수렴시켜 정확도 보존.
-_CART_EMA_ALPHA = 0.2
+_CART_EMA_ALPHA = 0.1
 _CART_SETTLE_STEPS = 5
+# 모터 PID가 last_raw에 물리적으로 수렴할 dwell. 이게 없으면 DONE 직후 다음 step이
+# 실측 encoder(= 아직 수렴 중인 위치)에서 출발해서 모터 momentum과 충돌 → 떨림.
+_CART_HOLD_STEPS = 25
 
 # ── 콜백 타입 ──────────────────────────────────────────────────
 PublishCmdFn = Callable[[list[float]], None]
@@ -238,7 +243,9 @@ class TrajectoryRunner:
             return True
 
         def _settle_to_raw() -> None:
-            # EMA lag 제거: q_filt → last_raw로 선형 램프 후 raw 종점 publish.
+            # 1) EMA lag 제거: q_filt → last_raw로 선형 램프.
+            # 2) last_raw에서 dwell — 모터 PID 실제 수렴 보장 (다음 step이
+            #    실측 encoder 읽을 때 momentum 충돌 방지).
             nonlocal q_filt
             steps = _CART_SETTLE_STEPS
             for k in range(1, steps + 1):
@@ -252,6 +259,11 @@ class TrajectoryRunner:
                 self._publish_cmd(q_blend)
                 time.sleep(TRAJ_DT)
             q_filt = list(last_raw)
+            for _ in range(_CART_HOLD_STEPS):
+                if self._stop_ev.is_set():
+                    return
+                self._publish_cmd(list(last_raw))
+                time.sleep(TRAJ_DT)
 
         try:
             if not _ik_step(out.new_position[0]):

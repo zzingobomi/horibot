@@ -322,7 +322,7 @@ function LinkTransTable({ rows }: { rows: LinkTransDelta[] }) {
   return (
     <div>
       <p className="text-[10px] text-muted-foreground font-mono mb-1">
-        link translation (mm) — joint origin xyz 절대 보정값, COMMIT 시 overwrite
+        link translation delta (mm) — joint origin xyz 보정, COMMIT 시 누적
       </p>
       <table className="w-full text-[11px] font-mono">
         <tbody>
@@ -358,7 +358,7 @@ function LinkRotTable({ rows }: { rows: LinkRotDelta[] }) {
   return (
     <div>
       <p className="text-[10px] text-muted-foreground font-mono mb-1">
-        link rotation (deg) — joint origin rpy 절대 보정값, COMMIT 시 overwrite (small-angle)
+        link rotation delta (deg) — joint origin rpy 보정 (small-angle)
       </p>
       <table className="w-full text-[11px] font-mono">
         <tbody>
@@ -395,7 +395,7 @@ function SagTable({ rows }: { rows: SagOffsetDelta[] }) {
   return (
     <div>
       <p className="text-[10px] text-muted-foreground font-mono mb-1">
-        sag stiffness — 자세 의존 중력 처짐 절대값 (J2, J3). COMMIT 시 overwrite, 즉시 적용
+        sag stiffness — 자세 의존 중력 처짐 보정 (J2, J3). COMMIT 시 누적, 즉시 적용
       </p>
       <table className="w-full text-[11px] font-mono">
         <tbody>

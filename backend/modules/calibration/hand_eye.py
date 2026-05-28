@@ -159,23 +159,9 @@ class HandEyeCalibration:
 
         반복 캘 작동 보장:
             포즈는 raw로 저장되어 *영속*. 매번 _resolve_pose_arrays가 *현재*
-            JointCoordinates offset으로 URDF rad를 새로 생성. fk_fn (solver.fk_to_matrix)
-            은 cv2.calibrateHandEye의 seed 산출에만 사용 (R_gripper2base) — BA 내부
-            FK는 fk_chain (original URDF + 변수 link_t/link_r/sag_k) 사용.
-
-            출력값 semantics (commit 시 적용 방식 결정):
-              - joint_offset_rad     : **delta** — ja에 disk값 이미 가산됨 → cumulative
-              - link_trans_m / rot   : **absolute total** (original URDF 기준) → overwrite
-              - sag_k_rad_per_m      : **absolute total** → overwrite
-              - R/t_cam2gripper      : absolute → overwrite
-
-            라운드가 거듭되면:
-              - joint_offset_delta는 점점 0으로 (cumulative 누적이 수렴)
-              - link_t/sag_k는 absolute 값 자체가 안정값으로 수렴 (각 라운드마다 다시 채택)
-              - σ가 system floor에 수렴
-
-            (참조: docs/accuracy_squeeze_plan.md §1.6 — 과거 link/sag도 cumulative였으나
-             absolute 출력값을 누적해 손상되던 버그를 2026-05-28 overwrite로 fix.)
+            JointCoordinates offset으로 URDF rad + FK를 새로 생성. 즉 라운드가
+            거듭되면 모든 옛 포즈가 *지금까지의 최선 baseline* 위에서 재해석되어
+            BA의 추정 잔여 delta가 점점 작아지고 σ 수렴.
 
         Outlier 판단 + 가드는 기존과 동일 (thresholds.py).
 

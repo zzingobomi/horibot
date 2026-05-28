@@ -12,12 +12,7 @@ J1/J4/J5의 sag는 측정 noise 수준이라 모델 단순성 위해 제외 (lum
     sag_k_rad_per_m: (N,) float64 — joint별 stiffness 역수 (rad/(m·g_unit))
     method: 캘 방법 문자열
 
-commit semantics: **overwrite** (link_offsets와 같은 이유).
-    BA의 sag_k 출력은 *absolute total* 값이라 cumulative 가산 금지.
-    SagCoordinates.commit_offsets 가 save 직접 호출 (merge_delta 안 거침).
-    merge_delta 유틸은 분석/실험 용도로 남겨둠.
-    이력: 과거 cumulative였으나 누적 손상 → 2026-05-28 overwrite로 변경.
-    참조: docs/accuracy_squeeze_plan.md §1.6.
+joint_offsets/link_offsets와 같은 cumulative delta 패턴 — merge_delta로 합산 후 save.
 """
 
 from __future__ import annotations

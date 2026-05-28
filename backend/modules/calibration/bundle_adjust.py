@@ -280,12 +280,9 @@ def bundle_adjust_hand_eye_extended(
         max_nfev: LM iteration 상한.
 
     Returns:
-        BundleAdjustExtendedResult — link_trans/link_rot는 *original URDF 기준
-        absolute total* 값 (delta 아님 — x0 = zeros 에서 출발해 fk_chain이
-        original URDF + link_t를 사용하므로). 디스크 link_offsets.npz에 적용 시
-        cumulative 가산 금지 — **overwrite**로 덮어써야 함
-        (LinkCoordinates.commit_offsets가 2026-05-28 overwrite로 fix됨,
-        참조: docs/accuracy_squeeze_plan.md §1.6).
+        BundleAdjustExtendedResult — link_trans/link_rot는 *URDF 원본 + delta*에서
+        delta. 디스크 link_offsets.npz가 비어있으면(첫 라운드) 그대로 적용,
+        있으면 cumulative하게 합산해 저장(LinkCoordinates.commit_offsets가 처리).
     """
     from modules.kinematics.fk_chain import N_JOINTS, fk_chain
 

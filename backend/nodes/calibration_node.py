@@ -326,22 +326,16 @@ class CalibrationNode(BaseNode):
             offset_msg = f" + joint_offsets 갱신 (cumulative, deg={applied_deg})"
             logger.info("joint_offsets 즉시 적용: %s", applied_deg)
 
-        # 3) link_offsets.npz — 확장 BA가 추정한 link origin 보정을 *overwrite*.
-        # BA의 link_t는 original URDF 기준 absolute total 값 (delta 아님). 따라서
-        # disk를 cumulative 가산이 아니라 그대로 덮어씀.
-        # (이력: 과거 cumulative 가산이었음 → BA가 absolute 출력하는데 매 commit마다
-        #  누적 손상 발생. 2026-05-28 발견, overwrite로 fix. docs/accuracy_squeeze_plan.md §1.6).
+        # 3) link_offsets.npz — 확장 BA가 추정한 link origin 보정 cumulative 합산.
         # PybulletSolver는 URDF를 부팅 시 1회 로드라 메모리 자동 갱신 X
         # → 적용은 다음 부팅 (patched URDF 자동 재생성). 사용자가 백엔드 재시작 필요.
-        # diag dict의 키는 "link_trans_delta"/"link_rot_delta"로 남아있지만 실제로는
-        # absolute 값. 프론트엔드 호환 위해 키명은 유지 (TODO: 향후 *_absolute로 rename).
         link_msg = ""
         link_applied_meta: list[dict] = []
         restart_required = False
         if self._last_compute.get("link_offset_estimated"):
             trans_list = self._last_compute.get("link_trans_delta", [])
             rot_list = self._last_compute.get("link_rot_delta", [])
-            new_link = LinkOffsets(
+            delta = LinkOffsets(
                 trans={
                     int(e["motor_id"]): np.array(
                         [e["x_m"], e["y_m"], e["z_m"]], dtype=np.float64
@@ -356,11 +350,11 @@ class CalibrationNode(BaseNode):
                 },
             )
             link_applied = LinkCoordinates().commit_offsets(
-                new_link, method=self.hand_eye.result.method,
+                delta, method=self.hand_eye.result.method,
             )
             n_joints = len(link_applied.trans)
             link_msg = (
-                f" + link_offsets 갱신 (overwrite, n={n_joints}, 백엔드 재시작 후 FK/IK 적용)"
+                f" + link_offsets 갱신 (n={n_joints}, 백엔드 재시작 후 FK/IK 적용)"
             )
             link_applied_meta = [
                 {
@@ -372,25 +366,24 @@ class CalibrationNode(BaseNode):
             ]
             restart_required = True
             logger.info(
-                "link_offsets 디스크 적용 (overwrite, 재시작 필요): n=%d", n_joints
+                "link_offsets 디스크 적용 (재시작 필요): n=%d", n_joints
             )
 
-        # 4) sag_offsets.npz — 물리 sag BA가 추정한 k_J2, k_J3 *overwrite*.
-        # link_offsets와 같은 이유로 absolute total 값을 그대로 덮어씀 (cumulative 금지).
+        # 4) sag_offsets.npz — 물리 sag BA가 추정한 k_J2, k_J3 cumulative 합산.
         # PybulletSolver의 sag 캐시는 매 FK/IK 호출마다 메모리에서 읽으므로 PC는
         # 즉시 반영 (solver._reload_sag_cache 호출). 다른 머신은 git pull + 재시작.
         sag_msg = ""
         sag_applied_meta: list[dict] = []
         if self._last_compute.get("sag_offset_estimated"):
             sag_delta_list = self._last_compute.get("sag_offset_delta", [])
-            new_sag = SagOffsets(
+            delta = SagOffsets(
                 k_rad_per_m={
                     int(e["motor_id"]): float(e["k_rad_per_m"])
                     for e in sag_delta_list
                 },
             )
             sag_applied = SagCoordinates().commit_offsets(
-                new_sag, method=self.hand_eye.result.method,
+                delta, method=self.hand_eye.result.method,
             )
             # PC 메모리의 PybulletSolver 캐시도 즉시 갱신 (재시작 X)
             self.solver._reload_sag_cache()
@@ -402,7 +395,7 @@ class CalibrationNode(BaseNode):
                 for jid in sorted(sag_applied.k_rad_per_m.keys())
             ]
             n_sag = len(sag_applied.k_rad_per_m)
-            sag_msg = f" + sag_offsets 갱신 (overwrite, n={n_sag}, 즉시 적용)"
+            sag_msg = f" + sag_offsets 갱신 (n={n_sag}, 즉시 적용)"
             logger.info(
                 "sag_offsets 즉시 적용: %s",
                 {m["motor_id"]: round(m["k_rad_per_m"], 5)

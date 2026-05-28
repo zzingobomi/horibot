@@ -1,21 +1,26 @@
 import { useCallback } from "react";
 import { bridge } from "@/api/bridge";
 import { useTaskStore } from "@/store/taskStore";
-import type { RunTaskRequest, TaskState } from "@/types/task";
+import type { RunTaskRequest, TaskState, TaskTree } from "@/types/task";
 import { ServiceKey } from "@/constants/topics";
 
 interface UseTaskReturn {
   taskState: TaskState;
+  taskTree: TaskTree;
   loading: boolean;
   run: (req: RunTaskRequest) => Promise<boolean>;
   stop: () => Promise<void>;
   pause: () => Promise<boolean>;
   resume: () => Promise<boolean>;
+  step: () => Promise<boolean>;
+  runTo: (stepId: string) => Promise<boolean>;
+  toggleBreakpoint: (stepId: string) => Promise<boolean>;
   syncStatus: () => Promise<void>;
 }
 
 export function useTask(): UseTaskReturn {
-  const { taskState, loading, setTaskState, setLoading } = useTaskStore();
+  const { taskState, taskTree, loading, setTaskState, setLoading } =
+    useTaskStore();
 
   const run = useCallback(
     async (req: RunTaskRequest): Promise<boolean> => {
@@ -48,6 +53,28 @@ export function useTask(): UseTaskReturn {
     return res.success;
   }, []);
 
+  const step = useCallback(async (): Promise<boolean> => {
+    const res = await bridge.callService(ServiceKey.TASK_STEP, {});
+    return res.success;
+  }, []);
+
+  const runTo = useCallback(async (stepId: string): Promise<boolean> => {
+    const res = await bridge.callService(ServiceKey.TASK_RUN_TO, {
+      step_id: stepId,
+    });
+    return res.success;
+  }, []);
+
+  const toggleBreakpoint = useCallback(
+    async (stepId: string): Promise<boolean> => {
+      const res = await bridge.callService(ServiceKey.TASK_TOGGLE_BREAKPOINT, {
+        step_id: stepId,
+      });
+      return res.success;
+    },
+    [],
+  );
+
   const syncStatus = useCallback(async () => {
     const res = await bridge.callService(ServiceKey.TASK_STATUS, {});
     if (res.success && res.data) {
@@ -55,5 +82,17 @@ export function useTask(): UseTaskReturn {
     }
   }, [setTaskState]);
 
-  return { taskState, loading, run, stop, pause, resume, syncStatus };
+  return {
+    taskState,
+    taskTree,
+    loading,
+    run,
+    stop,
+    pause,
+    resume,
+    step,
+    runTo,
+    toggleBreakpoint,
+    syncStatus,
+  };
 }

@@ -11,6 +11,7 @@ class MoveTCPStep:
     position_key: str | None = None
     offset: Position3 = (0.0, 0.0, 0.0)
     label: str = ""
+    id: str = ""
     type: Literal["move_tcp"] = field(
         default="move_tcp", init=False, repr=False)
 
@@ -22,6 +23,7 @@ class GripperStep:
     # close 직후 Present_Position 으로 잡힘 검증. 빈손이면 step fail → task fail.
     verify_grasp: bool = False
     label: str = ""
+    id: str = ""
     type: Literal["gripper"] = field(default="gripper", init=False, repr=False)
 
 
@@ -29,6 +31,7 @@ class GripperStep:
 class DetectStep:
     output_key: str = "detected_position"
     label: str = ""
+    id: str = ""
     type: Literal["detect"] = field(default="detect", init=False, repr=False)
 
 
@@ -45,6 +48,7 @@ class GroundedDetectStep:
     prompt: str = ""
     output_key: str = "detected_position"
     label: str = ""
+    id: str = ""
     type: Literal["grounded_detect"] = field(
         default="grounded_detect", init=False, repr=False
     )
@@ -66,6 +70,7 @@ class SearchAndDetectStep:
     prompt: str = ""
     output_key: str = "detected_position"
     label: str = ""
+    id: str = ""
     type: Literal["search_and_detect"] = field(
         default="search_and_detect", init=False, repr=False
     )
@@ -89,6 +94,7 @@ class PlacePolicyStep:
     output_key: str = "place_xyz"
     drop_clearance: float = 0.010  # 윗면 위 1cm
     label: str = ""
+    id: str = ""
     type: Literal["place_policy"] = field(
         default="place_policy", init=False, repr=False
     )
@@ -111,6 +117,7 @@ class GraspPolicyStep:
     output_key: str = "grasp_xyz"
     grasp_ratio: float = 0.5       # height의 절반 (옆면 중간)
     label: str = ""
+    id: str = ""
     type: Literal["grasp_policy"] = field(
         default="grasp_policy", init=False, repr=False
     )
@@ -125,6 +132,7 @@ class VerifyGraspStep:
     """
 
     label: str = ""
+    id: str = ""
     type: Literal["verify_grasp"] = field(
         default="verify_grasp", init=False, repr=False
     )
@@ -134,12 +142,14 @@ class VerifyGraspStep:
 class WaitStep:
     duration_sec: float = 0.5
     label: str = ""
+    id: str = ""
     type: Literal["wait"] = field(default="wait", init=False, repr=False)
 
 
 @dataclass
 class HomeStep:
     label: str = "go_home"
+    id: str = ""
     type: Literal["home"] = field(default="home", init=False, repr=False)
 
 
@@ -160,6 +170,7 @@ class SelfPlayStep:
     log_dir: str = "robot/logs/self_play"
     gripper_setup: GripperSetup | None = None  # 객체별 override (None = default)
     label: str = "self_play"
+    id: str = ""
     type: Literal["self_play"] = field(
         default="self_play", init=False, repr=False
     )
@@ -185,6 +196,39 @@ class Task:
     name: str
     steps: list[Step]
     description: str = ""
+
+    def __post_init__(self) -> None:
+        # 각 step 에 자동으로 id 부여 — 이미 id 가 있는 step 은 보존.
+        # 미래 트리 구조 (ForEach/If 의 children) 에선 재귀적으로 path 기반 id
+        # (예: "step-3.0", "step-3.1") 으로 확장.
+        for i, step in enumerate(self.steps):
+            if not getattr(step, "id", ""):
+                step.id = f"step-{i}"
+
+
+def step_to_dict(step: Step) -> dict:
+    """Step → JSON 호환 dict. frontend tree publish 용.
+
+    dataclasses.asdict 는 GripperSetup 같은 nested dataclass 도 재귀 처리하지만
+    파싱 결과로는 type literal 도 그대로 들어옴 (직렬화 가능). 추후 children
+    필드가 생기면 여기서 재귀 처리.
+    """
+    from dataclasses import asdict
+
+    return asdict(step)
+
+
+def task_tree(task: Task) -> dict:
+    """Task → frontend 가 받는 tree payload.
+
+    현재 픽앤플레이스는 평면 list — 모든 step 이 leaf. 미래 ForEach/If 가
+    들어오면 children 필드로 중첩 표현.
+    """
+    return {
+        "task_name": task.name,
+        "description": task.description,
+        "steps": [step_to_dict(s) for s in task.steps],
+    }
 
 
 @dataclass

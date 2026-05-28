@@ -19,6 +19,7 @@ export const Topic = {
 
   // Task
   TASK_STATE: "omx/task/state",
+  TASK_TREE: "omx/task/tree",
 
   // Self-play
   SELF_PLAY_STATE: "omx/self_play/state",
@@ -72,6 +73,10 @@ export const ServiceKey = {
   TASK_PAUSE: "omx/task/srv/pause",
   TASK_RESUME: "omx/task/srv/resume",
   TASK_STATUS: "omx/task/srv/status",
+  TASK_STEP: "omx/task/srv/step",
+  TASK_RUN_TO: "omx/task/srv/run_to",
+  TASK_TOGGLE_BREAKPOINT: "omx/task/srv/toggle_breakpoint",
+  TASK_PREVIEW: "omx/task/srv/preview",
 
   // Perception (Grounding DINO 기반 open-vocabulary detection)
   PERCEPTION_GROUNDED_DETECT: "omx/perception/srv/grounded_detect",

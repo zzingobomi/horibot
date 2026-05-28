@@ -9,7 +9,7 @@ import { useCameraStore } from "@/store/cameraStore";
 import { useMotionStore } from "@/store/motionStore";
 import type { TrajectoryState } from "@/types/motion";
 import { useTaskStore } from "@/store/taskStore";
-import type { TaskState } from "@/types/task";
+import type { TaskState, TaskTree } from "@/types/task";
 import { useDetectorStore, type Detection } from "@/store/detectorStore";
 import { usePointCloudStore } from "@/store/pointCloudStore";
 import { useSelfPlayStore } from "@/store/selfPlayStore";
@@ -25,6 +25,7 @@ export function useBridge() {
   const setStatus = useCameraStore((s) => s.setStatus);
   const setTrajectoryState = useMotionStore((s) => s.setTrajectoryState);
   const setTaskState = useTaskStore((s) => s.setTaskState);
+  const setTaskTree = useTaskStore((s) => s.setTaskTree);
   const setLoading = useTaskStore((s) => s.setLoading);
   const setDetections = useDetectorStore((s) => s.setDetections);
   const setGroundedResult = useDetectorStore((s) => s.setGroundedResult);
@@ -97,6 +98,12 @@ export function useBridge() {
       if (state.status !== "idle") setLoading(false);
     });
 
+    // Task tree 구독 — task 시작 시 1회 publish, latest-wins 큐로 늦게 붙은
+    // 클라이언트도 마지막 tree 받음.
+    const unsubTaskTree = bridge.subscribe(Topic.TASK_TREE, (data) => {
+      setTaskTree(data as unknown as TaskTree);
+    });
+
     // Detector 상태 구독
     const unsubDetector = bridge.subscribe(Topic.DETECTOR_STATE, (data) => {
       const { detections, timestamp } = data as {
@@ -151,6 +158,7 @@ export function useBridge() {
       unsubCameraStatus();
       unsubTraj();
       unsubTask();
+      unsubTaskTree();
       unsubDetector();
       unsubGrounded();
       unsubSelfPlay();
@@ -167,6 +175,7 @@ export function useBridge() {
     setTorque,
     setTrajectoryState,
     setTaskState,
+    setTaskTree,
     setLoading,
     setDetections,
     setGroundedResult,

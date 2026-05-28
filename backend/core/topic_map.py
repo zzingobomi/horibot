@@ -20,6 +20,9 @@ class Topic:
 
     # ─── Task ────────────────────────────────────────────────
     TASK_STATE = "omx/task/state"
+    # Task 시작 시 1회 publish — 전체 step 트리 (frontend 가 받아서 시각화).
+    # latest-wins 큐로 늦게 붙은 클라이언트도 마지막 tree 를 받음.
+    TASK_TREE = "omx/task/tree"
 
     # ─── Self-play ───────────────────────────────────────────
     SELF_PLAY_STATE = "omx/self_play/state"
@@ -79,8 +82,15 @@ class Service:
     TASK_RUN = "omx/task/srv/run"
     TASK_STOP = "omx/task/srv/stop"
     TASK_PAUSE = "omx/task/srv/pause"
-    TASK_RESUME = "omx/task/srv/resume"
+    TASK_RESUME = "omx/task/srv/resume"  # AUTO 모드로 재개 (다음 breakpoint 까지)
     TASK_STATUS = "omx/task/srv/status"
+    # 디버거 컨트롤 — PAUSED 상태에서만 의미 있음.
+    TASK_STEP = "omx/task/srv/step"               # 1 step 만 실행 후 다시 PAUSE
+    TASK_RUN_TO = "omx/task/srv/run_to"           # {step_id} 직전까지 진행
+    TASK_TOGGLE_BREAKPOINT = "omx/task/srv/toggle_breakpoint"  # {step_id} 토글
+    # 실행 없이 task tree 만 빌드 — Run 전에 breakpoint 박을 수 있도록 사전 표시.
+    # 응답으로 직접 tree 반환 + TASK_TREE 토픽으로도 발행 (다른 클라이언트 동기화).
+    TASK_PREVIEW = "omx/task/srv/preview"
 
     # ─── Detector ─────────────────────────────────────────────
     DETECT_SERVICE = "omx/detector/srv/detect"

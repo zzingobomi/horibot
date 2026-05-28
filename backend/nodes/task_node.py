@@ -12,7 +12,7 @@ from modules.calibration.loader import load_calibration
 from modules.llm import prompt_parser
 from modules.llm.prompt_parser import parse_pick_place
 from modules.task.step_executor import StepExecutor
-from modules.task.step_types import Task
+from modules.task.step_types import Task, task_tree
 from modules.task.task_runner import TaskRunner
 from modules.task.tasks.pick_and_place import create_pick_and_place_task
 from modules.task.tasks.self_play_pick import create_self_play_pick_task
@@ -99,6 +99,12 @@ class TaskNode(BaseNode):
         self.create_service(Service.TASK_PAUSE, self._handle_pause)
         self.create_service(Service.TASK_RESUME, self._handle_resume)
         self.create_service(Service.TASK_STATUS, self._handle_status)
+        self.create_service(Service.TASK_STEP, self._handle_step)
+        self.create_service(Service.TASK_RUN_TO, self._handle_run_to)
+        self.create_service(
+            Service.TASK_TOGGLE_BREAKPOINT, self._handle_toggle_breakpoint
+        )
+        self.create_service(Service.TASK_PREVIEW, self._handle_preview)
 
         super().start()
 
@@ -146,6 +152,14 @@ class TaskNode(BaseNode):
                 "data": {},
             }
 
+        # tree 를 먼저 publish — frontend 가 첫 state 변경 (RUNNING) 받기 전에
+        # 트리 구조를 알고 있어야 step_id 매칭 가능. Zenoh put 은 sync 이므로
+        # 순서 보장.
+        try:
+            self.publish(Topic.TASK_TREE, task_tree(task))
+        except Exception as exc:
+            logger.warning("TASK_TREE 발행 실패: %s", exc)
+
         if not self._runner.run(task):
             return {"success": False, "message": "Task 시작 실패", "data": {}}
 
@@ -174,6 +188,76 @@ class TaskNode(BaseNode):
 
     def _handle_status(self, _req: dict) -> dict:
         return {"success": True, "message": "ok", "data": self._runner.state.to_dict()}
+
+    def _handle_step(self, _req: dict) -> dict:
+        ok = self._runner.step_once()
+        return {
+            "success": ok,
+            "message": "ok" if ok else "PAUSED 상태 아님",
+            "data": {},
+        }
+
+    def _handle_run_to(self, req: dict) -> dict:
+        data = req.get("data", {})
+        step_id = str(data.get("step_id") or "").strip()
+        if not step_id:
+            return {"success": False, "message": "step_id 필요", "data": {}}
+        ok = self._runner.run_to(step_id)
+        return {
+            "success": ok,
+            "message": "ok" if ok else "PAUSED 상태 아님",
+            "data": {},
+        }
+
+    def _handle_toggle_breakpoint(self, req: dict) -> dict:
+        data = req.get("data", {})
+        step_id = str(data.get("step_id") or "").strip()
+        if not step_id:
+            return {"success": False, "message": "step_id 필요", "data": {}}
+        self._runner.toggle_breakpoint(step_id)
+        return {"success": True, "message": "ok", "data": {}}
+
+    def _handle_preview(self, req: dict) -> dict:
+        """task factory 만 실행해서 tree 만 빌드 (실행 X). Run 전 사전 표시용.
+
+        응답으로 tree 반환 + TASK_TREE 토픽으로도 broadcast — 다른 클라이언트
+        / 같은 클라이언트의 다른 패널도 동기화.
+
+        실행 중인 task 가 있으면 preview 가 그 트리를 덮어쓰지 않도록 거절.
+        """
+        if self._runner.is_running():
+            return {
+                "success": False,
+                "message": "실행 중 — 현재 task 종료 후 preview",
+                "data": {},
+            }
+
+        data = req.get("data", {})
+        task_name = data.get("task", "pick_and_place")
+        factory = TASK_REGISTRY.get(task_name)
+        if factory is None:
+            return {
+                "success": False,
+                "message": f"알 수 없는 task: {task_name}",
+                "data": {},
+            }
+
+        try:
+            task = factory(data)
+        except (KeyError, ValueError, TypeError) as e:
+            return {
+                "success": False,
+                "message": f"task 인자 오류: {e}",
+                "data": {},
+            }
+
+        tree = task_tree(task)
+        try:
+            self.publish(Topic.TASK_TREE, tree)
+        except Exception as exc:
+            logger.warning("TASK_TREE preview 발행 실패: %s", exc)
+
+        return {"success": True, "message": "ok", "data": tree}
 
     # ── Publishers ────────────────────────────────
 

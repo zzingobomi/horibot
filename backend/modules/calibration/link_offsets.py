@@ -10,7 +10,12 @@ Hand-Eye BA가 추정한 link origin 보정(translation 3 + rotation 3 per joint
                                     (Rodrigues axis-angle, radian)
     method: 캘 방법 문자열
 
-joint_offsets.py와 같은 cumulative delta 패턴 — merge_delta로 합산 후 save.
+commit semantics: **overwrite** (joint_offsets와 다름).
+    BA의 link_t 출력은 original URDF 기준 *absolute total* 값이라 cumulative 가산
+    금지. LinkCoordinates.commit_offsets 가 save 직접 호출 (merge_delta 안 거침).
+    merge_delta 유틸은 다른 용도(예: 수동 delta 가산 분석) 위해 남겨둠.
+    이력: 과거 cumulative였으나 누적 손상 발견 → 2026-05-28 overwrite로 변경.
+    참조: docs/accuracy_squeeze_plan.md §1.6.
 """
 
 from __future__ import annotations

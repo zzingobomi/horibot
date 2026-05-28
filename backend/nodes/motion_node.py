@@ -114,6 +114,7 @@ class MotionNode(BaseNode):
 
             # user → URDF 변환 (in-place 수정 피하려고 dict copy)
             data = dict(req.get("data", {}) or {})
+            user_pos_before = data.get("position")
             for key in ("position", "via", "end"):
                 if key in data and data[key] is not None:
                     data[key] = (np.asarray(data[key], dtype=float) - tool_base).tolist()
@@ -123,6 +124,11 @@ class MotionNode(BaseNode):
                     for wp in data["waypoints"]
                 ]
             req_urdf = {**req, "data": data}
+            logger.info(
+                "[tool_offset] %s tool_base=%s  user→urdf: %s → %s",
+                cmd.label, np.round(tool_base, 4).tolist(),
+                user_pos_before, data.get("position"),
+            )
 
             try:
                 cmd.execute(req_urdf, angles, tcp_pos_urdf, self._runner)

@@ -7,7 +7,7 @@ from core.base_node import BaseNode
 from core.topic_map import Service, Topic
 from core.joint_coordinates import JointCoordinates
 from core.joint_state_cache import JointStateCache
-from core.link_coordinates import LinkCoordinates
+from core.tool_coordinates import ToolCoordinates
 from core.common import GRIPPER_ID
 from modules.dynamixel.motor_config import MotorConfig, load_motor_config
 from modules.kinematics.motion_modes import MotionModes
@@ -23,18 +23,19 @@ from modules.kinematics.motion_commands import (
 
 logger = logging.getLogger(__name__)
 
-# Tool offset 의미 — LinkCoordinates ID=6 행을 *URDF patch 가 아닌 tool_offset 으로*
-# 재해석 (urdf_patcher 는 ID=6 무시, patched URDF 에 안 적용). EE frame 기준 (link5
-# +x 방향 등) 의 (실제 그리퍼 끝점 - URDF EE) 벡터. 의미:
+# Tool offset — ToolCoordinates 싱글톤에서 로드 (별도 산출물 tool_offset.npz).
+# EE frame 기준 (link5 +x 방향) 의 (실제 그리퍼 끝점 - URDF EE) 벡터. 의미:
 #   실제 끝점 = URDF EE + R_be @ tool_offset_ee
-# 외부 (detect, task) 가 보는 좌표는 *진짜 끝점* (user frame), motion service handler
-# 가 진입/응답 시점에 URDF frame ↔ user frame 변환. solver / 캘 / BA 는 URDF frame
-# 그대로 (캘 reference frame 안정성 유지).
+# 외부 (detect, task) 가 받는 좌표는 obj 의 진짜 base 좌표 (frame 무관), motion
+# service handler 가 cartesian 명령 진입 시점에만 단방향 변환 (target_urdf =
+# target_user - tool_base). solver / 캘 / BA 는 URDF frame 그대로 (캘 reference
+# frame 안정성 유지).
 #
-# 이력: 2026-05-28 EE patch (urdf_patcher 가 end_effector_joint origin 직접 수정) 시도
-# 실패. detect 와 IK 양쪽 patched URDF 위에 도는 self-consistency 로 cancel out 됨.
-# 그 fix 가 이 tool_offset 변환 (한쪽만 적용 → cancel 회피).
-TOOL_OFFSET_LINK_ID = 6
+# 이력:
+# - 2026-05-28 EE patch (urdf_patcher 가 end_effector_joint origin 직접 수정) 시도
+#   실패. detect 와 IK 양쪽 patched URDF 위에 도는 self-consistency 로 cancel out.
+# - 임시로 LinkCoordinates ID=6 행을 tool_offset 으로 재해석 → 의미 충돌.
+# - 별도 산출물 tool_offset.npz 신설로 정리 (이 commit).
 
 
 class MotionNode(BaseNode):
@@ -82,9 +83,9 @@ class MotionNode(BaseNode):
     def _tool_offset_base(self, angles: list[float]) -> np.ndarray:
         """현재 자세의 R_be 로 tool_offset_ee 를 base frame 으로 변환.
 
-        반환: (3,) base frame 벡터. LinkCoordinates ID=6 비어있으면 [0,0,0].
+        반환: (3,) base frame 벡터. tool_offset.npz 비어있으면 [0,0,0].
         """
-        tool_ee = LinkCoordinates().get_trans(TOOL_OFFSET_LINK_ID)
+        tool_ee = ToolCoordinates().trans_m()
         if not np.any(tool_ee):
             return np.zeros(3, dtype=np.float64)
         R_be, _ = PybulletSolver().fk_to_matrix(angles)

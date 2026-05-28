@@ -85,10 +85,8 @@ def fk_chain(
 
     Args:
         joint_angles: shape (5,) — joint 1~5 각도 (rad, URDF 기준).
-        link_trans: shape (5,3) or (6,3) or None — joint i origin xyz에 더할 dx,dy,dz (m).
-            shape (6,3)이면 index 5 = end_effector_joint 의 origin patch.
-        link_rot: shape (5,3) or (6,3) or None — joint i origin frame에 적용할 rotvec (rad).
-            shape (6,3)이면 index 5 = end_effector_joint 의 rpy patch.
+        link_trans: shape (5,3) or None — joint i origin xyz에 더할 dx,dy,dz (m).
+        link_rot: shape (5,3) or None — joint i origin frame에 적용할 rotvec (rad).
 
     Returns:
         (R, t) — end_effector_link의 world frame 자세. R is 3x3, t is (3,).
@@ -111,12 +109,10 @@ def fk_chain(
         T_r[:3, :3] = axis_angle_to_R(JOINT_AXES[i], float(angles[i]))
         T = T @ T_r
 
-    # fixed end_effector_joint — link_trans/rot shape (6,3) 이면 index 5 가 EE patch.
-    ee_t = link_trans[N_JOINTS] if link_trans.shape[0] > N_JOINTS else np.zeros(3)
-    ee_r = link_rot[N_JOINTS] if link_rot.shape[0] > N_JOINTS else np.zeros(3)
+    # fixed end_effector_joint — URDF EE 는 캘 reference frame 으로 고정 (patch X).
+    # 실제 그리퍼 끝점과의 차이는 별도 ToolCoordinates 가 motion_node 에서만 적용.
     T_ee = np.eye(4)
-    T_ee[:3, :3] = rotvec_to_R(ee_r)
-    T_ee[:3, 3] = EE_ORIGIN + ee_t
+    T_ee[:3, 3] = EE_ORIGIN
     Tee = T @ T_ee
     return Tee[:3, :3].copy(), Tee[:3, 3].copy()
 
@@ -157,12 +153,9 @@ def fk_chain_with_axes(
         T_r[:3, :3] = axis_angle_to_R(JOINT_AXES[i], float(angles[i]))
         T = T @ T_r
 
-    # fixed end_effector_joint — link_trans/rot shape (6,3) 이면 index 5 가 EE patch.
-    ee_t = link_trans[N_JOINTS] if link_trans.shape[0] > N_JOINTS else np.zeros(3)
-    ee_r = link_rot[N_JOINTS] if link_rot.shape[0] > N_JOINTS else np.zeros(3)
+    # fixed end_effector_joint — URDF EE 는 캘 reference frame 으로 고정 (patch X).
     T_ee = np.eye(4)
-    T_ee[:3, :3] = rotvec_to_R(ee_r)
-    T_ee[:3, 3] = EE_ORIGIN + ee_t
+    T_ee[:3, 3] = EE_ORIGIN
     Tee = T @ T_ee
     return (
         Tee[:3, :3].copy(),

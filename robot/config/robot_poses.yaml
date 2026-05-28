@@ -26,7 +26,7 @@ rest:
 # 초기안. 실제 책상 / 큐브 위치 보면서 micro tune. 자세가 책상에 부딪히지 않는지
 # 직접 검증 후 사용.
 
-# 우측 시야 — J1 +30°
+# 좌측 시야 — J1 +30°
 search_1:
   - { id: 1, degree: 30 }
   - { id: 2, degree: -60 }
@@ -42,7 +42,7 @@ search_2:
   - { id: 4, degree: 80 }
   - { id: 5, degree: 0 }
 
-  # 좌측 시야 — J1 -30°
+  # 우측 시야 — J1 -30°
 search_3:
   - { id: 1, degree: -30 }
   - { id: 2, degree: -60 }

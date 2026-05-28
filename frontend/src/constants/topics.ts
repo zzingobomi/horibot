@@ -20,8 +20,14 @@ export const Topic = {
   // Task
   TASK_STATE: "omx/task/state",
 
+  // Self-play
+  SELF_PLAY_STATE: "omx/self_play/state",
+
   // Detector
   DETECTOR_STATE: "omx/detector/state",
+
+  // Perception (Grounding DINO grounded_detect 결과 broadcast)
+  PERCEPTION_GROUNDED_STATE: "omx/perception/state/grounded",
 
   // PointCloud
   POINTCLOUD_STREAM: "omx/pointcloud/stream",
@@ -66,6 +72,9 @@ export const ServiceKey = {
   TASK_PAUSE: "omx/task/srv/pause",
   TASK_RESUME: "omx/task/srv/resume",
   TASK_STATUS: "omx/task/srv/status",
+
+  // Perception (Grounding DINO 기반 open-vocabulary detection)
+  PERCEPTION_GROUNDED_DETECT: "omx/perception/srv/grounded_detect",
 
   // PointCloud
   POINTCLOUD_CONFIGURE: "omx/pointcloud/srv/configure",

@@ -1,15 +1,11 @@
 import { useCallback, useMemo, useRef } from "react";
-import * as THREE from "three";
 import { DockviewReact, type DockviewReadyEvent } from "dockview";
 import { RotateCcw } from "lucide-react";
-import { RobotScene } from "@/components/workspace3d/3d/RobotScene";
-import { useCalibrationResults } from "@/hooks/useCalibrationResults";
-import { useRobotStore } from "@/store/robotStore";
-import { useSceneStore } from "@/store/sceneStore";
+import { RobotSceneContainer } from "@/components/canvas/RobotSceneContainer";
 import {
   PANEL_COMPONENTS,
   type PanelComponentKey,
-} from "@/components/workspace3d/dockview/panelComponents";
+} from "@/components/canvas/dockview/panelComponents";
 import {
   PANEL_HEADER_HEIGHT,
   loadCollapsed,
@@ -18,46 +14,9 @@ import {
   saveLayout,
 } from "@/lib/workspaceLayout";
 
+const LAYOUT_KEY = "workspace3d";
+
 export function Workspace3D() {
-  const { results } = useCalibrationResults();
-
-  const joints = useRobotStore((s) => s.joints);
-  const jointOffsetsRad = useRobotStore((s) => s.jointOffsetsRad);
-  const jointAngles = useMemo<number[]>(() => {
-    if (!joints?.length) return [0, 0, 0, 0, 0];
-    return joints
-      .filter((j) => j.id >= 1 && j.id <= 5)
-      .sort((a, b) => a.id - b.id)
-      .map((j) => {
-        // 백엔드 JointStateCache와 동일한 보정: raw_to_rad + joint_offset.
-        // 캘 안 한 환경에서는 offset이 0이라 기존 동작 그대로.
-        const baseRad =
-          j.degree !== undefined
-            ? (j.degree * Math.PI) / 180
-            : j.position !== undefined
-            ? ((j.position - 2048) / 4095) * 2 * Math.PI
-            : 0;
-        return baseRad + (jointOffsetsRad[j.id] ?? 0);
-      });
-  }, [joints, jointOffsetsRad]);
-
-  const options = useSceneStore((s) => s.options);
-  const linkVisibility = useSceneStore((s) => s.linkVisibility);
-  const setLinkNames = useSceneStore((s) => s.setLinkNames);
-  const setTcpPos = useSceneStore((s) => s.setTcpPos);
-
-  const handleTCPMatrix = useCallback(
-    (m: THREE.Matrix4 | null) => {
-      if (!m) {
-        setTcpPos(null);
-        return;
-      }
-      const v = new THREE.Vector3().setFromMatrixPosition(m);
-      setTcpPos([v.x, v.y, v.z]);
-    },
-    [setTcpPos]
-  );
-
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   type PanelSpec = {
@@ -120,7 +79,7 @@ export function Workspace3D() {
   const onReady = useCallback(
     (event: DockviewReadyEvent) => {
       // 1) 저장된 layout 있으면 그걸로 복원, 없으면 default
-      const saved = loadLayout();
+      const saved = loadLayout(LAYOUT_KEY);
       if (saved) {
         try {
           event.api.fromJSON(saved as Parameters<typeof event.api.fromJSON>[0]);
@@ -137,7 +96,7 @@ export function Workspace3D() {
       event.api.onDidLayoutChange(() => {
         if (timer) clearTimeout(timer);
         timer = setTimeout(() => {
-          saveLayout(event.api.toJSON());
+          saveLayout(LAYOUT_KEY, event.api.toJSON());
         }, 300);
       });
     },
@@ -145,7 +104,7 @@ export function Workspace3D() {
   );
 
   const handleReset = useCallback(() => {
-    resetWorkspaceLayout();
+    resetWorkspaceLayout(LAYOUT_KEY);
     window.location.reload();
   }, []);
 
@@ -156,14 +115,7 @@ export function Workspace3D() {
       style={{ fontFamily: "'JetBrains Mono', 'Fira Code', monospace" }}
     >
       <div className="absolute inset-0 z-0">
-        <RobotScene
-          jointAngles={jointAngles}
-          calibration={results}
-          options={options}
-          linkVisibility={linkVisibility}
-          onLinksLoaded={setLinkNames}
-          onTCPMatrix={handleTCPMatrix}
-        />
+        <RobotSceneContainer />
       </div>
 
       <div className="absolute inset-0 z-10 workspace-dockview pointer-events-none">

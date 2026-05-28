@@ -41,6 +41,15 @@ pc = [
     "open3d>=0.18.0",
     "pygame>=2.6.1",
     "zstandard>=0.22.0",
+    # Grounding DINO Swin-B (open-vocabulary detection).
+    # v5 는 AutoModelForZeroShotObjectDetection 제거 → 4.x 로 핀.
+    "transformers>=4.45.0,<5",
+    "pillow>=10.0.0",
+    # CUDA 13 빌드 — host nvidia driver(13.2)와 매치. cu130 index 에서 받음
+    # (tool.uv.sources 참고). transitive 의존성으로 끌려오면 source 매핑이
+    # 안 먹어 CPU wheel 로 떨어지므로 명시적 pin.
+    "torch==2.11.0",
+    "torchvision==0.26.0",
 ]
 
 all = [
@@ -51,6 +60,18 @@ all = [
 
 [tool.uv]
 default-groups = ["dev", "all"]
+
+# PyTorch CUDA wheel — PyPI default 가 CPU 빌드를 주는 걸 피하려고 명시적 index.
+# Pi 머신(pi-motor/pi-camera 그룹)은 torch 의존이 없어 이 source 영향 없음.
+# cu130: CUDA 13 빌드. host 의 nvidia driver(13.2) 와 매치. RTX 3060 OK.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130" }]
+torchvision = [{ index = "pytorch-cu130" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
 [tool.ruff]
 line-length = 88

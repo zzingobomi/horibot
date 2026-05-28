@@ -30,6 +30,7 @@ class JointStateCache:
             return
         self._initialized = True
         self._raw: dict[int, int] = {}
+        self._loads: dict[int, int] = {}
         self._cache_lock = threading.Lock()
         self._subscribed = False
 
@@ -44,6 +45,8 @@ class JointStateCache:
         with self._cache_lock:
             for j in joints:
                 self._raw[j["id"]] = j["position"]
+                if "load" in j:
+                    self._loads[j["id"]] = j["load"]
 
     def get_joint_angles_rad(self, arm_cfgs: list[MotorConfig]) -> list[float] | None:
         """캘리브레이션된 조인트각 반환. JointCoordinates로 offset 자동 보정."""
@@ -96,4 +99,23 @@ class JointStateCache:
                 if raw is None:
                     return None
                 result[cfg.id] = int(raw)
+            return result
+
+    def get_present_loads(
+        self, arm_cfgs: list[MotorConfig]
+    ) -> dict[int, int] | None:
+        """arm 모터 raw Present_Load 묶음. self-play contact spike 감지용.
+
+        XL430 = ‰ (-1000~+1000), XL330 = mA — raw 그대로 (해석은 호출 측 책임).
+        반환: {motor_id: signed_load}, 데이터 없으면 None.
+        """
+        with self._cache_lock:
+            if not self._loads:
+                return None
+            result: dict[int, int] = {}
+            for cfg in arm_cfgs:
+                load = self._loads.get(cfg.id)
+                if load is None:
+                    return None
+                result[cfg.id] = int(load)
             return result

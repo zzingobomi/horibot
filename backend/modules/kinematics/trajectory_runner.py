@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 TRAJ_DT = 1.0 / 50   # 50 Hz
 
 # ── Cartesian 경로 제약 ────────────────────────────────────────
+# 저속(<0.08 m/s)에서 J3 P=1500이 static friction을 강하게 밀어내며 stick-slip
+# chatter 유발 → 원복. 0.10이 idle/run 균형점.
 _C_MAX_VEL = 0.10    # m/s
 _C_MAX_ACC = 0.25    # m/s²
 _C_MAX_JERK = 1.00    # m/s³
@@ -31,6 +33,15 @@ _J_MAX_ACC = [3.0, 3.0, 3.0, 5.0, 5.0]
 _J_MAX_JERK = [10.0, 10.0, 10.0, 20.0, 20.0]
 
 _MOVEP_MIN_DIST = 1e-4   # 너무 가까운 waypoint 제거
+
+# Cartesian IK 출력 EMA — null-space 미세 노이즈 댐핑 (5DOF position-only IK가
+# 매 스텝 미세하게 다른 해를 뽑아 손목이 떨리는 문제). alpha 작을수록 부드러움 ↑
+# / lag ↑. 종점은 settle 램프로 raw IK 해에 정확히 수렴시켜 정확도 보존.
+_CART_EMA_ALPHA = 0.1
+_CART_SETTLE_STEPS = 5
+# 모터 PID가 last_raw에 물리적으로 수렴할 dwell. 이게 없으면 DONE 직후 다음 step이
+# 실측 encoder(= 아직 수렴 중인 위치)에서 출발해서 모터 momentum과 충돌 → 떨림.
+_CART_HOLD_STEPS = 25
 
 # ── 콜백 타입 ──────────────────────────────────────────────────
 PublishCmdFn = Callable[[list[float]], None]
@@ -207,7 +218,10 @@ class TrajectoryRunner:
         inp.max_acceleration = [_C_MAX_ACC]
         inp.max_jerk = [_C_MAX_JERK]
 
-        current_angles = start_angles
+        q_filt = list(start_angles)
+        last_raw: list[float] = list(start_angles)
+        alpha = _CART_EMA_ALPHA
+
         first_result = otg.update(inp, out)
         est_duration = out.trajectory.duration
         t_start = time.time()
@@ -216,15 +230,40 @@ class TrajectoryRunner:
             f"{label}: dist={path.total_length*100:.1f}cm | 예상 {est_duration:.1f}s")
 
         def _ik_step(s: float) -> bool:
-            nonlocal current_angles
+            nonlocal q_filt, last_raw
             wp = path.position_at(s)
-            result = self._move_tcp(wp, current_angles)
-            if result is None:
+            raw = self._move_tcp(wp, q_filt)
+            if raw is None:
                 logger.warning(f"{label} IK 실패 | s={s*100:.1f}cm")
                 return False
-            current_angles = result
-            self._publish_cmd(result)
+            last_raw = raw
+            q_filt = [(1.0 - alpha) * qf + alpha * qr
+                      for qf, qr in zip(q_filt, raw)]
+            self._publish_cmd(q_filt)
             return True
+
+        def _settle_to_raw() -> None:
+            # 1) EMA lag 제거: q_filt → last_raw로 선형 램프.
+            # 2) last_raw에서 dwell — 모터 PID 실제 수렴 보장 (다음 step이
+            #    실측 encoder 읽을 때 momentum 충돌 방지).
+            nonlocal q_filt
+            steps = _CART_SETTLE_STEPS
+            for k in range(1, steps + 1):
+                if self._stop_ev.is_set():
+                    return
+                ratio = k / steps
+                q_blend = [
+                    (1.0 - ratio) * qf + ratio * qr
+                    for qf, qr in zip(q_filt, last_raw)
+                ]
+                self._publish_cmd(q_blend)
+                time.sleep(TRAJ_DT)
+            q_filt = list(last_raw)
+            for _ in range(_CART_HOLD_STEPS):
+                if self._stop_ev.is_set():
+                    return
+                self._publish_cmd(list(last_raw))
+                time.sleep(TRAJ_DT)
 
         try:
             if not _ik_step(out.new_position[0]):
@@ -237,6 +276,7 @@ class TrajectoryRunner:
             self._publish_state(TrajStatus.RUNNING, progress)
 
             if first_result == Result.Finished:
+                _settle_to_raw()
                 self._publish_state(TrajStatus.DONE, 1.0)
                 return
 
@@ -262,6 +302,7 @@ class TrajectoryRunner:
                 self._publish_state(TrajStatus.RUNNING, progress)
 
                 if result == Result.Finished:
+                    _settle_to_raw()
                     self._publish_state(TrajStatus.DONE, 1.0)
                     logger.info(f"{label} 완료 ({elapsed*1000:.0f}ms)")
                     return

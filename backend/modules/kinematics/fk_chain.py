@@ -109,7 +109,8 @@ def fk_chain(
         T_r[:3, :3] = axis_angle_to_R(JOINT_AXES[i], float(angles[i]))
         T = T @ T_r
 
-    # fixed end_effector_joint
+    # fixed end_effector_joint — URDF EE 는 캘 reference frame 으로 고정 (patch X).
+    # 실제 그리퍼 끝점과의 차이는 별도 ToolCoordinates 가 motion_node 에서만 적용.
     T_ee = np.eye(4)
     T_ee[:3, 3] = EE_ORIGIN
     Tee = T @ T_ee
@@ -152,6 +153,7 @@ def fk_chain_with_axes(
         T_r[:3, :3] = axis_angle_to_R(JOINT_AXES[i], float(angles[i]))
         T = T @ T_r
 
+    # fixed end_effector_joint — URDF EE 는 캘 reference frame 으로 고정 (patch X).
     T_ee = np.eye(4)
     T_ee[:3, 3] = EE_ORIGIN
     Tee = T @ T_ee

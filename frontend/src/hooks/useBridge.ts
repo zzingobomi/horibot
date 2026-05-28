@@ -12,6 +12,8 @@ import { useTaskStore } from "@/store/taskStore";
 import type { TaskState } from "@/types/task";
 import { useDetectorStore, type Detection } from "@/store/detectorStore";
 import { usePointCloudStore } from "@/store/pointCloudStore";
+import { useSelfPlayStore } from "@/store/selfPlayStore";
+import type { SelfPlayState } from "@/types/self_play";
 
 export function useBridge() {
   const setBridgeConnected = useSystemStore((s) => s.setBridgeConnected);
@@ -25,6 +27,9 @@ export function useBridge() {
   const setTaskState = useTaskStore((s) => s.setTaskState);
   const setLoading = useTaskStore((s) => s.setLoading);
   const setDetections = useDetectorStore((s) => s.setDetections);
+  const setGroundedResult = useDetectorStore((s) => s.setGroundedResult);
+  const setSelfPlayState = useSelfPlayStore((s) => s.setState);
+  const setSelfPlayLoading = useSelfPlayStore((s) => s.setLoading);
 
   useEffect(() => {
     // Bridge 연결
@@ -101,6 +106,39 @@ export function useBridge() {
       setDetections(detections ?? [], timestamp ?? 0);
     });
 
+    // Grounded detection 결과 broadcast 구독 (호출자 무관, 일관 시각화)
+    const unsubGrounded = bridge.subscribe(
+      Topic.PERCEPTION_GROUNDED_STATE,
+      (data) => {
+        const r = data as {
+          prompt?: string;
+          position?: [number, number, number];
+          bbox2d?: { x1: number; y1: number; x2: number; y2: number };
+          confidence?: number;
+          timestamp?: number;
+        };
+        if (r.prompt && r.position && r.bbox2d && r.confidence != null) {
+          setGroundedResult({
+            prompt: r.prompt,
+            position: r.position,
+            bbox2d: r.bbox2d,
+            confidence: r.confidence,
+            timestamp: r.timestamp ?? Date.now(),
+          });
+        }
+      },
+    );
+
+    // Self-play 상태 구독
+    const unsubSelfPlay = bridge.subscribe(Topic.SELF_PLAY_STATE, (data) => {
+      const state = data as unknown as SelfPlayState;
+      setSelfPlayState(state);
+      // 진행 중 stage 이면 loading false (이미 시작됨)
+      if (state.current_stage !== "idle" && state.current_stage !== "done") {
+        setSelfPlayLoading(false);
+      }
+    });
+
     // PointCloud 상태 + 바이너리 스트림 구독
     const unsubPointCloud = usePointCloudStore.getState()._attach();
 
@@ -114,6 +152,8 @@ export function useBridge() {
       unsubTraj();
       unsubTask();
       unsubDetector();
+      unsubGrounded();
+      unsubSelfPlay();
       unsubPointCloud();
       bridge.disconnect();
     };
@@ -129,5 +169,8 @@ export function useBridge() {
     setTaskState,
     setLoading,
     setDetections,
+    setGroundedResult,
+    setSelfPlayState,
+    setSelfPlayLoading,
   ]);
 }

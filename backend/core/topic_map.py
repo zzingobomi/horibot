@@ -21,8 +21,17 @@ class Topic:
     # ─── Task ────────────────────────────────────────────────
     TASK_STATE = "omx/task/state"
 
+    # ─── Self-play ───────────────────────────────────────────
+    SELF_PLAY_STATE = "omx/self_play/state"
+
     # ─── Detector ─────────────────────────────────────────────
     DETECTOR_STATE = "omx/detector/state"
+
+    # ─── Perception (Grounding DINO grounded_detect 결과 broadcast) ──
+    # 서비스 응답과 별개로, 호출 시마다 결과를 토픽으로도 발행 →
+    # frontend 카메라 feed/3D 마커가 호출자(PromptPanel, self-play, task) 와
+    # 무관하게 일관 시각화.
+    PERCEPTION_GROUNDED_STATE = "omx/perception/state/grounded"
 
     # ─── PointCloud ───────────────────────────────────────────
     POINTCLOUD_STREAM = "omx/pointcloud/stream"
@@ -75,6 +84,10 @@ class Service:
 
     # ─── Detector ─────────────────────────────────────────────
     DETECT_SERVICE = "omx/detector/srv/detect"
+
+    # ─── Perception (Grounding DINO 기반 open-vocabulary detection) ──
+    # 실제 구현은 별도 세션. 일단 키만 선점.
+    PERCEPTION_GROUNDED_DETECT = "omx/perception/srv/grounded_detect"
 
     # ─── PointCloud ───────────────────────────────────────────
     POINTCLOUD_CONFIGURE = "omx/pointcloud/srv/configure"

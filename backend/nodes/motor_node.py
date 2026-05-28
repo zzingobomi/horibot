@@ -18,6 +18,13 @@ GRIPPER_OPEN_RAW = 2600
 GRIPPER_CLOSE_RAW = 1800  # current 제한이 있으므로 여유있게
 GRIPPER_CURRENT_DEFAULT = 200  # mA, 기본 파지력
 
+# Gripper 부드러운 동작 — start() 시 한 번 설정해서 영구 적용.
+# Dynamixel default = 0 (= 최대 속도로 즉시 = "휙"). >0이면 trapezoidal ramp.
+# profile_velocity 단위: 0.229 rpm (XL 시리즈) → 80 ≈ 18 rpm = full stroke ~1.5s
+# profile_acceleration 단위: 214.577 rpm/s²
+GRIPPER_PROFILE_VELOCITY = 80
+GRIPPER_PROFILE_ACCELERATION = 30
+
 
 class MotorNode(BaseNode):
     def __init__(self):
@@ -48,6 +55,7 @@ class MotorNode(BaseNode):
         if self.connected:
             self._apply_position_pid()
             self.driver.torque_enable_all()
+            self._apply_gripper_smooth_profile()
             self.torque_enabled = True
             self.log("info", f"모터 노드 시작 ({self.port})")
         else:
@@ -67,6 +75,22 @@ class MotorNode(BaseNode):
         super().stop()
         if self.connected:
             self.driver.disconnect()
+
+    def _apply_gripper_smooth_profile(self) -> None:
+        try:
+            self.driver.set_profile_velocity(
+                GRIPPER_ID, GRIPPER_PROFILE_VELOCITY
+            )
+            self.driver.set_profile_acceleration(
+                GRIPPER_ID, GRIPPER_PROFILE_ACCELERATION
+            )
+            logger.info(
+                "그리퍼 부드러운 profile 적용: vel=%d acc=%d",
+                GRIPPER_PROFILE_VELOCITY,
+                GRIPPER_PROFILE_ACCELERATION,
+            )
+        except Exception as e:
+            logger.warning(f"그리퍼 profile 설정 실패: {e}")
 
     def _apply_position_pid(self) -> None:
         for cfg in self.motor_cfgs:
@@ -96,6 +120,7 @@ class MotorNode(BaseNode):
     def _publish_state(self) -> None:
         try:
             positions = self.driver.get_present_positions()
+            loads = self.driver.get_present_loads()
             joints = []
             for cfg in self.motor_cfgs:
                 raw = positions.get(cfg.id)
@@ -110,6 +135,7 @@ class MotorNode(BaseNode):
                         "degree": raw_to_deg(raw),
                         "velocity": 0.0,
                         "torque": 0.0,
+                        "load": loads.get(cfg.id, 0),
                     }
                 )
             self.publish(
@@ -162,6 +188,10 @@ class MotorNode(BaseNode):
             else:
                 for mid in self.driver.motor_ids:
                     self.driver.reboot(mid)
+            # reboot은 그리퍼 profile_velocity/acceleration도 리셋(=0).
+            # 부드러운 동작 default 복원.
+            if motor_id is None or motor_id == GRIPPER_ID:
+                self._apply_gripper_smooth_profile()
             return {"success": True, "message": "ok", "data": {}}
         except Exception as e:
             return {"success": False, "message": str(e), "data": {}}
@@ -218,6 +248,9 @@ class MotorNode(BaseNode):
         data = req.get("data", {})
         action = data.get("action", "open")
         current = int(data.get("current", GRIPPER_CURRENT_DEFAULT))
+        # 객체별 셋업 (self-play 의 paper_cup vs cube 등) 에서 raw position
+        # override 가능. None 이면 default (open=2600 / close=1800).
+        position_override = data.get("position")
 
         if action not in ("open", "close"):
             return {
@@ -226,7 +259,10 @@ class MotorNode(BaseNode):
                 "data": {},
             }
 
-        raw = GRIPPER_OPEN_RAW if action == "open" else GRIPPER_CLOSE_RAW
+        if position_override is not None:
+            raw = int(position_override)
+        else:
+            raw = GRIPPER_OPEN_RAW if action == "open" else GRIPPER_CLOSE_RAW
 
         self.driver.set_goal_current(GRIPPER_ID, current)
         self.driver.set_goal_position(GRIPPER_ID, raw)

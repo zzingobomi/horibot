@@ -40,7 +40,7 @@ export const JOINT_CONFIGS: readonly JointConfig[] = [
   },
   {
     id: 6,
-    name: "gripper",
+    name: "gripper_joint_1",
     label: "Gripper",
     type: "gripper",
   },

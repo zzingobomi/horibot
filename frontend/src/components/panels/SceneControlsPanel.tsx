@@ -2,9 +2,9 @@ import { useState } from "react";
 import { Eye, EyeOff, ChevronDown, ChevronRight } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
 import { useSceneStore, type SceneOptions } from "@/store/sceneStore";
-import { PanelShell } from "../ui/PanelShell";
-import { Section } from "../ui/Section";
-import { ToggleRow } from "../ui/ToggleRow";
+import { PanelShell } from "@/components/canvas/ui/PanelShell";
+import { Section } from "@/components/canvas/ui/Section";
+import { ToggleRow } from "@/components/canvas/ui/ToggleRow";
 
 const VISIBILITY_ITEMS: {
   key: keyof SceneOptions;

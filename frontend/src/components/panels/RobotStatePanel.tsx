@@ -3,8 +3,8 @@ import { Activity } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
 import { useRobotStore } from "@/store/robotStore";
 import { useSceneStore } from "@/store/sceneStore";
-import { PanelShell } from "../ui/PanelShell";
-import { Section } from "../ui/Section";
+import { PanelShell } from "@/components/canvas/ui/PanelShell";
+import { Section } from "@/components/canvas/ui/Section";
 
 export function RobotStatePanel(props: IDockviewPanelProps<object>) {
   const joints = useRobotStore((s) => s.joints);

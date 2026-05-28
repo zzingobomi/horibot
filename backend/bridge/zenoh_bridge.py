@@ -142,7 +142,9 @@ _ALWAYS_SUBSCRIBE = [
     Topic.MOTION_STATE_TRAJ,
     Topic.TASK_STATE,
     Topic.DETECTOR_STATE,
+    Topic.PERCEPTION_GROUNDED_STATE,
     Topic.POINTCLOUD_STATE,
+    Topic.SELF_PLAY_STATE,
 ]
 
 _zenoh_subs: list[zenoh.Subscriber] = []
@@ -263,7 +265,16 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
             replies = session.get(key, payload=req_payload, timeout=timeout)
             res = None
             for reply in replies:
-                res = json.loads(reply.ok.payload.to_bytes())
+                if reply.ok is not None:
+                    res = json.loads(reply.ok.payload.to_bytes())
+                else:
+                    err = reply.err
+                    err_msg = (
+                        err.payload.to_string()
+                        if err is not None and err.payload is not None
+                        else "서비스 err reply"
+                    )
+                    res = {"success": False, "message": err_msg, "data": {}}
                 break
 
             await ws.send_text(

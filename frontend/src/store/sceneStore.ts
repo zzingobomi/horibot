@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { SceneOptions } from "@/components/workspace3d/3d/RobotScene";
+import type { SceneOptions } from "@/components/canvas/3d/RobotScene";
 import type { Vec3 } from "@/types/motion";
 
 export type { SceneOptions };

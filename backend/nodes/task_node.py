@@ -1,20 +1,63 @@
 import logging
+import threading
+from typing import Callable
 
 from core.base_node import BaseNode
 from core.topic_map import Service, Topic
 from core.joint_state_cache import JointStateCache
 from core.common import GRIPPER_ID
+from core.gripper_setup import GripperSetup
 from modules.dynamixel.motor_config import MotorConfig, load_motor_config
 from modules.calibration.loader import load_calibration
+from modules.llm import prompt_parser
+from modules.llm.prompt_parser import parse_pick_place
 from modules.task.step_executor import StepExecutor
+from modules.task.step_types import Task
 from modules.task.task_runner import TaskRunner
 from modules.task.tasks.pick_and_place import create_pick_and_place_task
-from modules.kinematics.solver import Position3
+from modules.task.tasks.self_play_pick import create_self_play_pick_task
 
 logger = logging.getLogger(__name__)
 
-TASK_REGISTRY = {
-    "pick_and_place": create_pick_and_place_task,
+
+def _factory_pick_and_place(data: dict) -> Task:
+    prompt = str(data.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("prompt 필요")
+    pick_object, place_object = parse_pick_place(prompt)
+    return create_pick_and_place_task(
+        pick_object=pick_object,
+        place_object=place_object,
+    )
+
+
+def _factory_self_play_pick(data: dict) -> Task:
+    prompt = str(data.get("prompt", "")).strip()
+    if not prompt:
+        raise ValueError("prompt 필요")
+    max_attempts = int(data.get("max_attempts", 100))
+    if max_attempts <= 0:
+        raise ValueError(f"max_attempts > 0 필요: {max_attempts}")
+    log_dir = data.get("log_dir")  # None → factory default (root robot/logs/)
+
+    # frontend 객체 type preset → nested dict {close_current, ...} → GripperSetup
+    gs_raw = data.get("gripper_setup")
+    gripper_setup = (
+        GripperSetup(**{k: v for k, v in gs_raw.items() if v is not None})
+        if isinstance(gs_raw, dict) else None
+    )
+
+    return create_self_play_pick_task(
+        prompt=prompt,
+        max_attempts=max_attempts,
+        log_dir=log_dir,
+        gripper_setup=gripper_setup,
+    )
+
+
+TASK_REGISTRY: dict[str, Callable[[dict], Task]] = {
+    "pick_and_place": _factory_pick_and_place,
+    "self_play_pick": _factory_self_play_pick,
 }
 
 
@@ -58,15 +101,30 @@ class TaskNode(BaseNode):
         self.create_service(Service.TASK_STATUS, self._handle_status)
 
         super().start()
+
+        # LLM prompt parser 백그라운드 preload — 첫 task 호출의 체감 지연 제거.
+        # 로드 중 parse_pick_place 호출되면 내부 lock 이 기다림.
+        # [detector_node 의 Grounding DINO preload](backend/nodes/detector_node.py)
+        # 와 같은 패턴.
+        threading.Thread(
+            target=self._preload_prompt_parser,
+            daemon=True,
+            name="prompt-parser-preload",
+        ).start()
+
         logger.info("TaskNode 시작")
+
+    def _preload_prompt_parser(self) -> None:
+        try:
+            prompt_parser.preload()
+        except Exception:
+            logger.exception("LLM prompt parser preload 실패")
 
     # ── Service handlers ──────────────────────────────────────
 
     def _handle_run(self, req: dict) -> dict:
         data = req.get("data", {})
         task_name = data.get("task", "pick_and_place")
-        place_pos_raw = data.get("place_position", [0.15, 0.0, 0.05])
-        place_pos: Position3 = Position3(place_pos_raw)
 
         factory = TASK_REGISTRY.get(task_name)
         if factory is None:
@@ -79,11 +137,19 @@ class TaskNode(BaseNode):
         if self._runner.is_running():
             return {"success": False, "message": "이미 실행 중인 Task 있음", "data": {}}
 
-        task = factory(place_pos)
+        try:
+            task = factory(data)
+        except (KeyError, ValueError, TypeError) as e:
+            return {
+                "success": False,
+                "message": f"task 인자 오류: {e}",
+                "data": {},
+            }
+
         if not self._runner.run(task):
             return {"success": False, "message": "Task 시작 실패", "data": {}}
 
-        logger.info("Task 시작: %s  place=%s", task_name, place_pos)
+        logger.info("Task 시작: %s", task_name)
         return {"success": True, "message": "ok", "data": {}}
 
     def _handle_stop(self, _req: dict) -> dict:

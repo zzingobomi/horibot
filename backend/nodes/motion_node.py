@@ -173,19 +173,27 @@ class MotionNode(BaseNode):
     # ─── Services ─────────────────────────────────────────────
 
     def _srv_get_tcp(self, req: dict) -> dict:
-        """URDF EE pose + tool_offset → user frame (진짜 그리퍼 끝점) 반환.
+        """URDF EE pose 그대로 반환 (변환 X).
 
-        detect 가 이 응답으로 obj_in_base 계산하므로 detect 결과도 user frame.
+        detect 의 hand_eye 캘은 URDF EE 기준으로 풀려 있어 obj_in_base 계산 시
+        t_be 가 *URDF EE 의 base 위치* 여야 obj 의 진짜 base 좌표 산출:
+            obj_in_base = R_be @ obj_in_ee_urdf + t_be_urdf  = obj 의 진짜 base 좌표
+
+        만약 t_be 를 user frame (URDF EE + tool_base) 으로 응답하면 detect 는
+        (진짜 좌표 + tool_base) 라는 *잘못된* obj_in_base 도출 → 명령 시점에 motion
+        핸들러가 -tool_base 빼봐야 cancel out 되어 효과 0 (실측 확인: 22:42).
+
+        Tool offset 적용은 *motion 핸들러 단방향* — 명령 좌표 (실제 끝점이 가야 할
+        진짜 base 좌표) 를 URDF target (= 명령 - tool_base) 으로 변환해 IK 호출.
+        실제 끝점 = URDF EE + tool_base = 명령 위치 ✓
         """
         angles = self._cache.get_joint_angles_rad(self._arm_cfgs)
         if angles is None:
             return {"success": False, "message": "관절 상태 수신 전", "data": {}}
         try:
             pose = self._motion.get_tcp_pose(angles)
-            tool_base = self._tool_offset_base(angles)
-            pos_user = (np.asarray(pose.position) + tool_base).tolist()
             return {"success": True, "message": "ok",
-                    "data": {"position": pos_user, "quaternion": pose.quaternion}}
+                    "data": {"position": pose.position, "quaternion": pose.quaternion}}
         except Exception as e:
             return {"success": False, "message": str(e), "data": {}}
 

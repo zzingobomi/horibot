@@ -14,44 +14,38 @@
 ## Palletizing — 다양한 크기 직육면체 쌓기 (★ 유력)
 
 - **한 줄**: 사이즈 가변 직육면체 5-10개 + **고정 위치 팔레트**. 매 cycle 마다 카메라로 (a) 다음에 집을 박스 + (b) 어떤 orientation 으로 + (c) 팔레트 어디에 둘지를 동적으로 결정해서 쌓음.
-- **왜**: 산업용 팔레타이저 흉내. 단일 픽앤플레이스의 N회 반복이 아니라 **이전 placement 가 다음 placement 의 가능 공간을 바꾸는** closed-loop 상태 추론이 핵심. 큐브 (변 다 같음) 대신 **직육면체 (가로/세로/높이 가변)** 로 가면 orientation 결정이 정책에 추가돼서 진짜 팔레타이저 사고에 가까워짐. 지금까지 만든 자산(detection / TSDF / GraspPolicy / TaskRunner) 거의 다 한 task 에 끌어와서 통합 데모로도 좋음.
+- **왜**: 산업용 팔레타이저 흉내. 단일 픽앤플레이스의 N회 반복이 아니라 **이전 placement 가 다음 placement 의 가능 공간을 바꾸는** closed-loop 상태 추론이 핵심. 큐브 대신 **직육면체 (가로/세로/높이 가변)** 로 가면 orientation 결정이 정책에 추가돼서 진짜 팔레타이저 사고에 가까워짐. 지금까지 만든 자산 (detection / TSDF / GraspPolicy / TaskRunner) 거의 다 한 task 에 끌어와서 통합 데모로도 좋음.
+
+- **학습 전략 — 두 트랙 병행 (이 섹션의 핵심 framing)**:
+  - **Track A (휴리스틱)**: 빠르게 baseline 띄움. 어디서 깨지는지 정량 측정 (cycle fail rate, IK fail, stability fail, packing efficiency).
+  - **Track B (정석)**: 산업/학계 정식 stack. A 의 실패 patterns 를 정석 기법이 어떻게 잡는지 + 얼마나 gain 나는지 정량 비교.
+  - **이유**: 정석 트랙만 가면 진척 안 보여서 도중 포기 위험. 휴리스틱 → 실패 측정 → 정석 도입 → gain 측정 → DIY 한계 측정의 4-step 학습이 study value 의 핵심.
+  - **2-layer 평가**: sim (PyBullet, 노이즈 0) 에서 알고리즘 ranking + real (σ_t 7.94mm 노이즈) 에서 robust성 ranking. **sim/real gap 자체가 학습 output** — DIY 의 진짜 한계가 어디서 알고리즘 한계와 분리되는지 정량으로.
+
 - **박스 사이즈 spec**:
   - 모든 변 ∈ **[30, 50]mm**
-  - 각 박스에 **≥1개 변은 ≤40mm** (그리퍼 개구 호환 — 잡을 수 있는 방향 최소 1개 보장)
+  - 각 박스에 **≥1개 변은 ≤40mm** (그리퍼 개구 호환)
   - 5-10개 박스, 사이즈 mix
   - 어떤 면을 아래로 하든 contact 변이 ≥30mm → 5층 누적 ~78% 성공률 유지
-- **어떻게** — sub-problem 5개:
-  1. **박스 enumerate + 치수 측정** — `SearchAndDetect` 에 `enumerate_all=True` 옵션 추가해서 모든 박스 bbox 반환. 가로/세로/높이 다 알아야 하므로 TSDF / 포인트클라우드 한 번 스캔 후 박스별 segmentation + Open3D oriented bbox 추출.
-  2. **팔레트 상태 모델** — **height map** (격자별 현재 stack 높이). 팔레트가 **고정 위치**라 `pallet_origin_xyz` + `pallet_size` 하드코딩, height-map 좌표계 즉시 확정. cycle 마다 박스 검출만 다시.
-  3. **Selection + orientation policy** — 산업 표준 = **큰 거부터 + flat 하게 (제일 큰 면을 아래로)**. 안정성 + 공간 효율. 작은 거는 그 위에 LIFO.
-  4. **Placement policy** — 2D bin packing 단순화. 각 박스의 선택된 orientation 의 footprint 에 대해 height map 위에서 "지지면 충분 (baseline 의 N% 이상이 같은 높이 위) + reach 가능 + 수직 접근 가능" 한 가장 낮은 위치를 greedy bottom-left-fill.
-  5. **Stacking 정확도 보정** — placement 후 visual check step. 안 맞으면 미세 조정 또는 fail.
-- **Step 구조**: **`PalletizeStep` primitive 신규**. 1 step 안에 위 5개 로직 캡슐화 + cycle loop. LLM orchestrator 와 직교 — orchestrator 는 "박스들 팔레트에 쌓아" → `[PalletizeStep(max_boxes=10)]` 만 짜면 됨 (50-step 시퀀스를 LLM 이 한 번에 짜면 환각 위험 큼).
 
-- **3D 시각화 — 실시간 world model 레이어**: 박스 사이즈가 작은 집합이라 카메라로 인식한 직육면체를 [Workspace3D](../frontend/src/pages/Workspace3D.tsx) 안에 three.js `<boxGeometry>` 로 그대로 그릴 수 있음. 기존 URDF / PointCloudLayer / MeshLayer 옆에 **PalletizerLayer** 1개 추가.
+- **선결 — 회전된 박스 grasp pipeline (트랙 무관 prerequisite)**:
+  - 5DOF + J5 wrist roll 로 **운동학적으론 가능**, 소프트웨어가 4군데에서 orientation 정보 끊고 있음. 7개 wire-up:
+    1. **Detector** — segmentation mask → Open3D oriented bbox + table yaw 추출 + 180° 대칭 ambiguity 해소
+    2. **Step DSL** — `Position3` → `Pose6` (또는 quaternion 필드 추가). `GraspPolicyStep` / `GroundedDetectStep` 출력 확장
+    3. **Motion API** — [motion_modes.move_tcp](../backend/modules/kinematics/motion_modes.py) 가 quaternion 받게 (solver `ik()` 는 이미 받음 — wrapper 만 None 으로 끔)
+    4. **Grasp candidate enumerator** — (top-down × yaw / side × yaw) family enumerate + **J5 closest-arc 선택** (4-fold 대칭 중 wrist 안 도는 쪽)
+    5. **Reachability filter** — PyBullet IK + self-collision 사전 검증
+    6. **Orientation-lock Cartesian descent** — hover→grip 중 wrist 흔들림 방지. `move_l` orientation interpolation 확인 / 필요 시 `move_lockori` 추가
+    7. **Placement-aware pick yaw** — pick yaw 는 place yaw 의 함수 (J5 transit cost + manipulability). pick/place 를 한 plan 으로 묶는 구조
+  - **5DOF 한계 명확화** — 임의 6DoF 불가, 도달 가능한 건 **1-parameter family** (top-down × yaw, side × yaw):
+    - upright + table yaw: ✓ J5 로 보상
+    - 옆으로 누운 박스: 새 top 면 dim ≤40mm 일 때만 top-down, 아니면 side 접근인데 워크스페이스 가장자리 unreachable 많음
+    - 기울어짐 / 다른 박스 밑: reject 정책
+  - **이 prerequisite 없이는 두 트랙 다 yaw=0 큐브로 격하** — 알고리즘 정교화 ROI 무의미
 
-  - **토픽**: `omx/palletizer/state` (cycle 마다 publish, ~5Hz)
-    ```
-    {
-      boxes: [
-        {id, dims:[L,W,H], pose:[x,y,z,qx,qy,qz,qw],
-         state:"source"|"held"|"placed", color?}
-      ],
-      pallet: {origin:[x,y,z], size:[W,D]},
-      next_placement?: {pose, dims}   // 정책이 검토 중인 후보 (dashed wireframe)
-    }
-    ```
-  - **프론트 레이어**:
-    - 팔레트: 평면 outline
-    - `source` 박스: 작업대 위 (검출 결과 위치), 색 A
-    - `placed` 박스: 팔레트 위, 색 B, cycle 진행하며 누적
-    - `held` 박스: 현재 EE 에 부착 (TCP 행렬 곱 transform), 색 C — pick/place 도중 어디 있는지 보임
-    - `next_placement`: dashed wireframe — 정책이 왜 거기로 가는지 시각화
-  - **Identity tracking**: 5-10개 + 사이즈 mix 라 **dims similarity + 위치 근접** 으로 cycle 간 매칭하면 충분. SLAM 까진 불필요. `placed` 상태 진입 후엔 카메라 가림 무관 위치 고정.
-  - **추가 효용**: (a) 측정/정책 버그를 모션 전에 시각적 catch, (b) 데모 가치 ↑ (인식→추론→실행 한 화면).
-- **Feasibility 검토 (목표 ≥5층)** — 결론: **조건부 가능**. 큐브 ≥30mm + per-layer re-grounding 아키텍처면 데모 수준 동작 기대.
+- **Feasibility 검토 (목표 ≥5층)** — 결론: **조건부 가능**. 큐브 ≥30mm + per-layer re-grounding 이면 데모 수준 동작 기대.
 
-  큐브 사이즈 vs 5층 누적 성공률 (σ_t 7.94mm 가우시안 가정, CoM이 아래 큐브 contact polygon 안에 들어와야 정적 안정):
+  큐브 사이즈 vs 5층 누적 성공률 (σ_t 7.94mm 가우시안, CoM 이 아래 큐브 contact polygon 안에 들어와야 정적 안정):
 
   | 큐브 변 | 허용 오차 (반변) | 단일 placement 실패율 | 5층 누적 성공률 |
   |---|---|---|---|
@@ -59,33 +53,118 @@
   | 30mm | ±15mm | ~6% | ~78% (가끔 무너짐) |
   | 40mm | ±20mm | ~1.2% | ~95% (안정) |
 
-  ⇒ **20mm 는 5층 데모로 부적합. ≥30mm 필수, sweet spot 30mm** (gripper 최대 개구 ~40mm 와 호환).
+  ⇒ **20mm 는 5층 데모로 부적합. ≥30mm 필수, sweet spot 30mm**.
 
-- **누적 오차 신화 — per-layer re-grounding 이 아키텍처 단일 결정점**:
-  - **Feed-forward (재검출 X)**: 5층 후 누적 ~30mm → 거의 항상 무너짐.
-  - **매 cycle 카메라로 stack top 재검출** → 각 layer placement error 가 **독립** → 5층 후 총 오차 = σ_t (~8mm) 수준. **이게 5층 가능/불가능을 가르는 단일 아키텍처 결정**.
-  - 구현: height-map 을 매 placement 직전 카메라 capture 로 refresh. 필요시 전용 **observation pose** (stack 잘 보이는 자세) 한 번 들리고 placement.
+- **누적 오차 신화 — per-layer re-grounding 이 아키텍처 단일 결정점** (두 트랙 공통):
+  - **Feed-forward (재검출 X)**: 5층 후 누적 ~30mm → 거의 항상 무너짐
+  - **매 cycle 카메라로 stack top 재검출** → 각 layer error 독립 → 5층 후 총 오차 = σ_t (~8mm)
+  - 구현: height-map 을 매 placement 직전 capture 로 refresh. 필요시 전용 **observation pose** (stack 잘 보이는 자세)
 
-- **DIY 에서 진짜 발목 잡을 항목들**:
-  1. **Release dynamics** — 그리퍼 너무 높이서 열면 떨어지는 충격으로 stack 흔듦. 해법: Dynamixel **current spike** 로 contact 검출 후 open. XL430 OK, XL330 은 노이즈 ↑.
-  2. **5DOF 접근 각도** — top-down 은 base-arm 평면 안에서만 정확. off-axis spot 은 비스듬한 접근 → 모서리부터 닿아 회전 모멘트. 대응: **팔레트를 base 정면에 셋업** (고정 위치라 한 번만 잡으면 됨), IK reachability check 로 수직 접근 불가 spot 은 placement 후보에서 제외.
-  3. **5DOF 수직 reach** — 5층 × 40mm = 200mm + 팔레트 base + hover ≈ 300mm. OMX_F reach 380mm 안이지만 빠듯. 팔레트 고정이라 **셋업 시점 1회 reach 전수 검증** 가능 (모든 격자 × 가능 높이에 대해 IK 풀어두고 placement 후보 마스크 만들어두기).
-  4. **Gripper 개구 + orientation 선택** — OMX gripper 최대 ~40mm. spec 상 각 박스에 ≤40mm 변이 ≥1개 보장돼 있으므로 **잡을 방향만 옳게 선택**하면 항상 가능. 정책이 grip orientation 도 같이 결정해야 함.
-  5. **Stack top 가림** — eye-in-hand 라 자세에 따라 stack 부분 가려짐. observation pose 비용 감수.
+---
 
-- **권장 진행 순서**:
-  1. **Sanity check** — 동일 30mm 큐브 3층, feed-forward 만. σ_t 실측 + 무너짐 패턴 확인. 한 시간 안에 데이터.
-  2. **Per-layer re-grounding 도입** — height-map cycle refresh + observation pose. 동일 큐브 5층 도전.
-  3. **Release dynamics 튜닝** — current-spike contact detect.
-  4. **직육면체 (가변 dim) 도입** — selection (큰 거부터 + flat) + orientation 결정 + placement (greedy BLF) policy.
+### Track A — 휴리스틱 트랙 (빠른 baseline)
 
-- **리스크 / 트레이드오프** (위에서 다룬 것 외 잔여):
-  - **치수 측정 오차** — 1-2mm 틀리면 가시적 흔들림. TSDF 스캔 oriented bbox 정밀도 검증 필요.
-  - **Cycle time** — observation pose 들리는 비용 + per-layer re-detection 으로 한 cycle 10-15초 예상. 5층 데모 = 1분 정도. 받아들일 만함.
+- **sub-problem 5개**:
+  1. **박스 enumerate + 치수 측정** — `SearchAndDetect` 에 `enumerate_all=True`. TSDF / 포인트클라우드 스캔 → 박스별 segmentation → Open3D oriented bbox (yaw 포함, prerequisite 1번 활용)
+  2. **팔레트 상태 모델** — **height map** (격자별 stack 높이). `pallet_origin_xyz` + `pallet_size` 하드코딩
+  3. **Selection + orientation policy** — **큰 거부터 + flat 면 아래로** (산업 흔한 휴리스틱). 안정성 + 공간 효율
+  4. **Placement policy** — **greedy Bottom-Left-Fill** on height map. "지지면 N% + 도달 가능 + 수직 접근 가능" 한 가장 낮은 위치
+  5. **Stacking 정확도 보정** — placement 후 visual check, 안 맞으면 미세 조정 또는 fail. Per-layer re-grounding 으로 다음 cycle 에 보정
 
-- **양보 못 하는 두 제약** (요약): **(a) 모든 변 ≥30mm** **(b) per-layer visual re-grounding**.
+- **예상 실패 케이스 (이게 학습 자료)** — Track B 의 motivation 이 됨:
+  - BLF 가 5DOF unreachable spot 선택 → IK fail
+  - Greedy 가 "다음 박스 들어갈 자리 막는" placement → 후반 cycle fit 실패
+  - 안정성 평가 = 지지면 ratio 만 → CoM 분석 없어서 가끔 무너짐
+  - yaw 회전 박스의 4-fold 대칭 중 안 좋은 J5 각 선택 (prerequisite 있어도 정책이 약하면)
+  - 직육면체 face 선택 정책이 약함 — "큰 면 아래" 가 stability optimal 이 아닌 경우 잡지 못함
+  - 치수 측정 1-2mm 오차 → 가시적 흔들림 (ICP refinement 없음)
 
-- **의존성**: 포인트클라우드 / TSDF 인프라 (있음). SearchAndDetect enumerate 모드 추가. 신규 모듈 = height-map + palletizer (selection / orientation / placement policy) + PalletizeStep + observation pose 정의 + current-spike contact detect + 셋업 시점 reach 마스크 사전 계산.
+- **측정 항목** (Track A 의 실 output): cycle fail rate / IK fail rate / topple rate / packing utilization %. **이 정량 데이터 자체가 Track B 의 동기와 평가 기준**
+
+---
+
+### Track B — 정석 트랙 (proper 학습 stack)
+
+각 항목 옆 → Track A 의 어느 실패 patterns 를 잡는지 mapping.
+
+- **B.1 문제 정형화** — Online 3D BPP 의 state representation (height map / EMS / corner points / extreme points 비교) / action / reward / 제약 정식 작성. 부분관측이면 POMDP. paper exercise 지만 안 하면 다 surface
+- **B.2 Exact methods** — MILP 모델링 (Tsai/Chen 류 변수/제약), **CP-SAT (Google OR-Tools — BPP 에 의외로 강함)**, branch-and-bound. n=5/7/10 시간 폭발 시점 측정 → 복잡도 직관. → 모든 Track A 실패의 upper bound reference
+- **B.3 정식 constructive heuristics** — **Extreme Points (Crainic et al. 2008)**, DBLF, skyline algorithm, maximal-rectangles. Track A 의 BLF 보다 일반적인 후보 enumeration. → "다음 박스 자리 막힘"
+- **B.4 메타휴리스틱** — GA (box-ordering chromosome + crossover), Tabu Search neighborhood, SA, GRASP. **Bortfeldt-Gehring** 의 classic palletizing reference
+- **B.5 Search 기반** — MCTS (UCB1/PUCT exploration constant, rollout policy), beam search width tuning. **Lookahead depth 가 greedy 대비 어디서 break-even** 인지 측정. → "다음 자리 막힘", 직육면체 face 선택
+- **B.6 DRL** — **Zhou et al. AAAI 2021 PackNet** replicate (constrained action space + feasibility mask + PPO). Zhao 2022 PCT, Attend2Pack, TAP-Net. **PyBullet sim env 구축 자체가 학습 가치**. → 위 다 통합 학습
+- **B.7 안정성 정식** — CoM support polygon (정역학), **Stewart-Trinkle equilibrium** (friction cone 포함), force closure vs form closure 구분. PyBullet sim 과 정역학 cross-validate. Learned stability classifier (CNN on rendered scene) 옵션. → "지지면 ratio 만으로는 무너짐"
+- **B.8 Grasp planning 정식** — **Force closure metric (Ferrari-Canny)**, antipodal grasp computation, 6DoF grasp synthesis (AnyGrasp / Contact-GraspNet). **5DOF reachable grasp manifold 를 Jacobian rank / manipulability ellipsoid 로 derive** — 5DOF 의 어떤 grasp 가 가능한지 정식으로. → "yaw 4-fold 안 좋은 선택"
+- **B.9 Object pose 정식** — **ICP variants**: point-to-point / point-to-plane / **GICP (Generalized)** / Colored ICP / **GoICP (globally optimal)**. Oriented bbox + symmetry resolution 정식 알고리즘. 6DoF DL (FoundationPose, Megapose) 와 oriented bbox + Z-up assumption 의 trade-off 측정 — 5DOF 한정 marginal value 정량. → "치수 측정 오차"
+- **B.10 Motion planning** — Cartesian L-move with orientation lock (SLERP), **CBiRRT (Constrained Bi-RRT)** — orientation manifold constrained sampling, TrajOpt / CHOMP / STOMP optimization-based. Manipulability-aware planning. → IK fail rate, "비스듬한 접근 모서리 닿음"
+
+---
+
+- **비교 metric — 두 트랙 평가 차원**:
+  - 공간 효율 (utilization %) — B.2 exact / B.6 DRL 가장 빛남
+  - 단일 cycle stability fail rate — B.7 안정성 정식 가장 빛남
+  - 5층 누적 topple rate
+  - IK fail rate (reachability) — B.10 가장 빛남
+  - Cycle time (planning + 실행)
+  - **알고리즘 결정 시간 vs 실행 오차 break-down** — sim/real gap, **DIY 한계의 정량적 답**
+
+- **Step 구조**: **`PalletizeStep` primitive 신규**. 1 step 안에 cycle loop 캡슐화 + **트랙 선택 옵션** (`policy="heuristic"|"ep"|"mcts"|"milp"|"drl"`). LLM orchestrator 는 `[PalletizeStep(max_boxes=10, policy="heuristic")]` 만 짜면 됨.
+
+- **3D 시각화 — 실시간 world model 레이어** (두 트랙 공통): 박스 사이즈가 작은 집합이라 [Workspace3D](../frontend/src/pages/Workspace3D.tsx) 안에 three.js `<boxGeometry>` 로 그릴 수 있음. URDF / PointCloudLayer / MeshLayer 옆에 **PalletizerLayer** 추가.
+
+  - **토픽**: `omx/palletizer/state` (cycle 마다, ~5Hz)
+    ```
+    {
+      boxes: [
+        {id, dims:[L,W,H], pose:[x,y,z,qx,qy,qz,qw],
+         state:"source"|"held"|"placed", color?}
+      ],
+      pallet: {origin:[x,y,z], size:[W,D]},
+      next_placement?: {pose, dims, score?, policy?}   // 정책 후보 + 점수 (Track A vs B 비교 시각화)
+    }
+    ```
+  - **프론트 레이어**: 팔레트 outline / `source`·`placed`·`held` 박스별 색 / `next_placement` dashed wireframe + score + policy 라벨
+  - **Identity tracking**: dims similarity + 위치 근접으로 cycle 간 매칭. SLAM 불필요
+  - **추가 효용**: (a) 측정/정책 버그 모션 전 catch, (b) **두 트랙 비교 visual evidence**, (c) 데모 가치 ↑
+
+- **DIY 에서 진짜 발목 잡을 항목들** (두 트랙 공통):
+  1. **Release dynamics** — 그리퍼 너무 높이서 열면 떨어지는 충격으로 stack 흔듦. **Dynamixel current spike 로 contact 검출 후 open**. XL430 OK, XL330 노이즈 ↑
+  2. **5DOF 접근 각도** — top-down 은 base-arm 평면 안에서만 정확. **팔레트를 base 정면에 셋업** + IK reachability check (Track B.10 의 응용)
+  3. **5DOF 수직 reach** — 5층 × 40mm + 팔레트 + hover ≈ 300mm. OMX_F reach 380mm. **셋업 시점 reach mask** 사전 enumerate (격자 × 높이 × yaw bin)
+  4. **Gripper 개구 + orientation** — gripper max ~40mm. prerequisite candidate enumerator + B.8 grasp manifold 결합
+  5. **Stack top 가림** — eye-in-hand 라 observation pose 비용 감수
+
+- **권장 진행 순서** (curriculum):
+  1. **선결 prerequisite — 회전 박스 grasp pipeline** (7개 wire-up) — 둘 다 시작 전 필수
+  2. **Track A 베이스라인 + 측정 인프라** — 휴리스틱 BLF + sim/real 측정 hook (실패 patterns 분류 + 통계)
+  3. **회전 큐브 baseline** — Track A 로 30mm 큐브 3층 (feed-forward), σ_t 실측 + 무너짐 patterns 데이터
+  4. **Per-layer re-grounding** — 5층 도전 (Track A 유지)
+  5. **직육면체 도입 (Track A)** — 가변 dim + face 선택. 실패 patterns 확장 측정
+  6. **Track B 점진 도입 — 작은 것부터, 매 항목 후 Track A 와 sim/real ranking**:
+     - **B.1 정형화** (paper exercise) — 후속 다 의존
+     - **B.3 EP/DBLF** → Track A BLF 와 비교
+     - **B.7 안정성 (정역학 + PyBullet)** → "지지면 ratio" 와 비교
+     - **B.5 MCTS/beam** → greedy 와 비교
+     - **B.10 reachability-aware motion** → IK fail rate 비교
+     - **B.2 MILP / CP-SAT** — n=5/7/10 시간 측정, exact baseline 확보
+     - **B.8 Grasp 정식** — yaw 4-fold 선택 quality
+     - **B.9 ICP refinement** — 치수 정확도 gain
+     - **B.6 DRL** — 가장 후순위, prerequisite (sim env + reward + 학습) 큼
+  7. **Sim2real gap 분석** — 각 알고리즘이 σ_t 7.94mm 노이즈에 얼마나 robust 한지. **DIY 한계의 정량적 답** — 이게 study output 의 메인
+
+- **리스크 / 트레이드오프**:
+  - **치수 측정 오차** — 1-2mm → 가시 흔들림. B.9 ICP refinement 로 잡힘
+  - **Cycle time** — observation pose + re-detection + planning. Track A ~10-15초, B.2 MILP / B.5 MCTS 추가 비용 측정 필요
+  - **DRL prerequisite 비용** — sim env / reward design / 1-2일 학습. 후순위 이유
+  - **Track B 모든 항목 = 정석 implementation 자체에 학습 시간** — paper 1-2개 읽고 구현 단위. study 가 목적이라 이게 비용이 아니라 곧 output
+
+- **양보 못 하는 두 제약**: **(a) 모든 변 ≥30mm** **(b) per-layer visual re-grounding**
+
+- **의존성**:
+  - **공통**: 포인트클라우드 / TSDF 인프라 (있음). SearchAndDetect enumerate 모드. PalletizeStep. observation pose 정의. Current-spike contact detect. 셋업 reach mask 사전 계산
+  - **선결**: prerequisite 7개 wire-up (특히 step DSL 의 `Position3` → `Pose6` 가 다른 task 에도 영향 — 별도 prerequisite 섹션으로 격상 검토 가치)
+  - **Track A**: greedy BLF + height map + 측정 hook (~수백 줄)
+  - **Track B**: B.1-B.10 각각 수일~수주. PyBullet sim env (B.6, B.7 공유). OR-Tools (B.2). Open3D ICP 변종 (B.9). 모듈별 paper reference 별도 정리 가치
 
 ---
 

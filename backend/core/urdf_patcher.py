@@ -31,13 +31,18 @@ logger = logging.getLogger(__name__)
 
 
 def _default_joint_id_map() -> dict[str, int]:
-    """URDF joint name → link_offsets dict key.
+    """URDF joint name → link_offsets dict key. joint1~joint5 → 1~5 (모터 ID와 동일).
 
-    joint1~joint5 → 1~5 (모터 ID와 동일).
-    end_effector_joint → 6 (모터 ID 6 = 그리퍼와 *수치만* 같음, namespace는 별개 —
-        link_offsets 는 모터 무관, URDF joint origin 보정 키).
+    end_effector_joint 는 *URDF patch 안 함* — 그 위치는 캘리브레이션 reference frame
+    (hand_eye / IK 의 기준점) 으로 고정. URDF EE 와 실제 그리퍼 끝점 사이 갭은
+    LinkCoordinates ID=6 행을 *tool_offset* 으로 재해석해 motion_node 의 service
+    handler 에서 명령 좌표 변환에 사용 (cancel out 회피).
+
+    이력: 한때 end_effector_joint:6 으로 URDF patch 시도했으나 detect 와 IK 양쪽
+    모두 같은 patched URDF 위에 도는 self-consistency 로 cancel out 됨 → 효과 0
+    (2026-05-28 22:18 실측 확인). 그 fix 가 이 변경.
     """
-    return {f"joint{i}": i for i in range(1, 6)} | {"end_effector_joint": 6}
+    return {f"joint{i}": i for i in range(1, 6)}
 
 
 def _parse_xyz(s: str) -> np.ndarray:

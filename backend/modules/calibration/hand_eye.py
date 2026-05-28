@@ -285,11 +285,10 @@ class HandEyeCalibration:
             ba_final, ba_final_seed = ba_first, ba_first_seed
 
         # ── 5. 최종 X / 잔차 / σ 결정 ────────────────────────────
-        # link_trans/rot shape (6,3) — index 0~4 = joint1~joint5, index 5 = end_effector_joint.
         joint_offset_rad = np.zeros(len(arm_motor_ids), dtype=np.float64)
         joint_offsets_estimated = False
-        link_trans_delta = np.zeros((6, 3), dtype=np.float64)
-        link_rot_delta = np.zeros((6, 3), dtype=np.float64)
+        link_trans_delta = np.zeros((5, 3), dtype=np.float64)
+        link_rot_delta = np.zeros((5, 3), dtype=np.float64)
         link_offsets_estimated = False
         sag_k_rad_per_m = np.zeros(len(_SAG_MOTOR_IDS), dtype=np.float64)
         max_sag_deg = np.zeros(len(_SAG_MOTOR_IDS), dtype=np.float64)
@@ -387,10 +386,7 @@ class HandEyeCalibration:
             for i, mid in enumerate(arm_motor_ids[: len(joint_offset_rad)])
         ]
         # 확장 BA에서만 채워짐. 기존 BA(11 DOF)면 모두 0.
-        # index 0~4 = joint1~joint5 (arm_motor_ids 와 매핑), index 5 = end_effector_joint
-        # (link_offsets key=6 으로 저장됨. 모터 ID 6=그리퍼와는 namespace 별개).
         n_link = min(5, len(arm_motor_ids))
-        EE_LINK_ID = 6
         link_trans_list = [
             {
                 "motor_id": int(arm_motor_ids[i]),
@@ -402,16 +398,6 @@ class HandEyeCalibration:
                 "z_m": float(link_trans_delta[i, 2]),
             }
             for i in range(n_link)
-        ] + [
-            {
-                "motor_id": EE_LINK_ID,
-                "x_mm": float(link_trans_delta[5, 0] * 1000.0),
-                "y_mm": float(link_trans_delta[5, 1] * 1000.0),
-                "z_mm": float(link_trans_delta[5, 2] * 1000.0),
-                "x_m": float(link_trans_delta[5, 0]),
-                "y_m": float(link_trans_delta[5, 1]),
-                "z_m": float(link_trans_delta[5, 2]),
-            }
         ]
         link_rot_list = [
             {
@@ -424,16 +410,6 @@ class HandEyeCalibration:
                 "rz_rad": float(link_rot_delta[i, 2]),
             }
             for i in range(n_link)
-        ] + [
-            {
-                "motor_id": EE_LINK_ID,
-                "rx_deg": float(np.degrees(link_rot_delta[5, 0])),
-                "ry_deg": float(np.degrees(link_rot_delta[5, 1])),
-                "rz_deg": float(np.degrees(link_rot_delta[5, 2])),
-                "rx_rad": float(link_rot_delta[5, 0]),
-                "ry_rad": float(link_rot_delta[5, 1]),
-                "rz_rad": float(link_rot_delta[5, 2]),
-            }
         ]
         # 물리 sag BA에서만 채워짐. extended/basic BA면 모두 0.
         sag_offset_list = [

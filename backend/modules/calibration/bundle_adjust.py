@@ -229,13 +229,17 @@ def bundle_adjust_hand_eye(
 
 @dataclass
 class BundleAdjustExtendedResult:
-    """확장 BA 결과. 기존 BundleAdjustResult + link_trans/link_rot."""
+    """확장 BA 결과. 기존 BundleAdjustResult + link_trans/link_rot.
+
+    link_trans_m / link_rot_rad shape (J+1, 3) — index 0~J-1 = joint1~jointJ,
+    index J = end_effector_joint (URDF end_effector_joint origin patch).
+    """
     R_cam2gripper: np.ndarray  # 3x3
     t_cam2gripper: np.ndarray  # (3,) meters
     T_board_base: np.ndarray  # 4x4
     joint_offset_rad: np.ndarray  # (J,)
-    link_trans_m: np.ndarray  # (J, 3) — joint i origin xyz에 더할 dx,dy,dz (m)
-    link_rot_rad: np.ndarray  # (J, 3) — joint i origin frame에 적용할 rotvec
+    link_trans_m: np.ndarray  # (J+1, 3) — index J = end_effector_joint
+    link_rot_rad: np.ndarray  # (J+1, 3) — index J = end_effector_joint
     cost: float
     n_iter: int
     success: bool
@@ -307,18 +311,19 @@ def bundle_adjust_hand_eye_extended(
     rod_seed, _ = cv2.Rodrigues(np.asarray(X_init[0], dtype=np.float64))
     t_seed = np.asarray(X_init[1], dtype=np.float64).reshape(3)
 
-    # 변수 layout: [J] offset + [3*J] link_trans + [3*J] link_rot + [3] rod + [3] t
+    # 변수 layout: [J] offset + [3*(J+1)] link_trans + [3*(J+1)] link_rot + [3] rod + [3] t
+    # link_trans/rot 의 (J+1) 번째 행 = end_effector_joint origin patch
     n_off = J
-    n_lt = 3 * J
-    n_lr = 3 * J
+    n_lt = 3 * (J + 1)
+    n_lr = 3 * (J + 1)
 
     def unpack(x: np.ndarray):
         i = 0
         offset = x[i : i + n_off]
         i += n_off
-        link_t = x[i : i + n_lt].reshape(J, 3)
+        link_t = x[i : i + n_lt].reshape(J + 1, 3)
         i += n_lt
-        link_r = x[i : i + n_lr].reshape(J, 3)
+        link_r = x[i : i + n_lr].reshape(J + 1, 3)
         i += n_lr
         rod = x[i : i + 3]
         i += 3
@@ -420,13 +425,15 @@ class BundleAdjustPhysicalSagResult:
 
     BundleAdjustExtendedResult + sag_k_rad_per_m (2,) + max_sag_deg (2,).
     sag는 J2, J3에만 적용 (DIY 5축에서 중력 부하 가장 큰 두 joint).
+
+    link_trans_m / link_rot_rad shape (J+1, 3) — index J = end_effector_joint.
     """
     R_cam2gripper: np.ndarray  # 3x3
     t_cam2gripper: np.ndarray  # (3,) meters
     T_board_base: np.ndarray  # 4x4
     joint_offset_rad: np.ndarray  # (J,)
-    link_trans_m: np.ndarray  # (J, 3) m
-    link_rot_rad: np.ndarray  # (J, 3) rad rotvec
+    link_trans_m: np.ndarray  # (J+1, 3) m — index J = end_effector_joint
+    link_rot_rad: np.ndarray  # (J+1, 3) rad rotvec — index J = end_effector_joint
     sag_k_rad_per_m: np.ndarray  # (2,) — k_J2, k_J3. sag = k * τ
     max_sag_deg: np.ndarray  # (2,) — 캡처 자세들의 최대 sag (디버깅/UI 표시용)
     cost: float
@@ -500,18 +507,19 @@ def bundle_adjust_hand_eye_physical_sag(
     rod_seed, _ = cv2.Rodrigues(np.asarray(X_init[0], dtype=np.float64))
     t_seed = np.asarray(X_init[1], dtype=np.float64).reshape(3)
 
+    # link_trans/rot 의 (J+1) 번째 행 = end_effector_joint origin patch
     n_off = J
-    n_lt = 3 * J
-    n_lr = 3 * J
+    n_lt = 3 * (J + 1)
+    n_lr = 3 * (J + 1)
     n_k = 2
 
     def unpack(x: np.ndarray):
         i = 0
         offset = x[i : i + n_off]
         i += n_off
-        link_t = x[i : i + n_lt].reshape(J, 3)
+        link_t = x[i : i + n_lt].reshape(J + 1, 3)
         i += n_lt
-        link_r = x[i : i + n_lr].reshape(J, 3)
+        link_r = x[i : i + n_lr].reshape(J + 1, 3)
         i += n_lr
         sag_k = x[i : i + n_k]
         i += n_k

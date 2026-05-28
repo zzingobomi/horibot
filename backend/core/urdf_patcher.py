@@ -31,8 +31,13 @@ logger = logging.getLogger(__name__)
 
 
 def _default_joint_id_map() -> dict[str, int]:
-    """URDF joint name → motor id. OMX_F는 joint1~joint5 → motor 1~5."""
-    return {f"joint{i}": i for i in range(1, 6)}
+    """URDF joint name → link_offsets dict key.
+
+    joint1~joint5 → 1~5 (모터 ID와 동일).
+    end_effector_joint → 6 (모터 ID 6 = 그리퍼와 *수치만* 같음, namespace는 별개 —
+        link_offsets 는 모터 무관, URDF joint origin 보정 키).
+    """
+    return {f"joint{i}": i for i in range(1, 6)} | {"end_effector_joint": 6}
 
 
 def _parse_xyz(s: str) -> np.ndarray:

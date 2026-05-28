@@ -318,6 +318,12 @@ function fmtSigned(v: number, frac: number): string {
   return (v >= 0 ? "+" : "") + v.toFixed(frac);
 }
 
+/** motor_id=6 은 end_effector_joint (URDF link5 → EE 92mm) 의 origin patch.
+ *  link_offsets dict key 만 모터 ID 6 (그리퍼) 와 수치 같고, namespace 별개. */
+function linkRowLabel(motor_id: number): string {
+  return motor_id === 6 ? "EE" : `J${motor_id}`;
+}
+
 function LinkTransTable({ rows }: { rows: LinkTransDelta[] }) {
   return (
     <div>
@@ -328,7 +334,7 @@ function LinkTransTable({ rows }: { rows: LinkTransDelta[] }) {
         <tbody>
           {rows.map((r) => (
             <tr key={r.motor_id}>
-              <td className="py-0.5 text-muted-foreground">J{r.motor_id}</td>
+              <td className="py-0.5 text-muted-foreground">{linkRowLabel(r.motor_id)}</td>
               <td className={`py-0.5 text-right ${linkTransColor(r.x_mm)}`}>
                 x {fmtSigned(r.x_mm, 2)}
               </td>
@@ -364,7 +370,7 @@ function LinkRotTable({ rows }: { rows: LinkRotDelta[] }) {
         <tbody>
           {rows.map((r) => (
             <tr key={r.motor_id}>
-              <td className="py-0.5 text-muted-foreground">J{r.motor_id}</td>
+              <td className="py-0.5 text-muted-foreground">{linkRowLabel(r.motor_id)}</td>
               <td className={`py-0.5 text-right ${linkRotColor(r.rx_deg)}`}>
                 rx {fmtSigned(r.rx_deg, 3)}
               </td>

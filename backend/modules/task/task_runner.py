@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Callable
 
 from core.topic_map import Topic
 from modules.task.schema import StepResult
-from modules.task.step import Step, StepContext, Task
+from modules.task.step import Step, StepContext, Task, collect_step_ids
 
 if TYPE_CHECKING:
     from core.base_node import BaseNode
@@ -37,6 +37,17 @@ class TaskStatus(str, Enum):
     SUCCESS = "success"
     FAILED = "failed"
     STOPPED = "stopped"
+
+
+# ─── Runner internal exceptions — _run_task 의 try 절 control 용 ─────
+
+
+class _StopRequested(Exception):
+    """외부 stop() 호출 — _execute_one_step 이 raise → _run_task 가 STOPPED 로."""
+
+
+class _StepFailed(Exception):
+    """step 실행 중 일반 예외 wrap — _execute_one_step 이 raise → FAILED 로."""
 
 
 # Step 별 실행 상태 — TaskState.step_statuses 에 step_id → 이 값으로 보관.
@@ -111,6 +122,11 @@ class TaskRunner:
         )
         node.create_subscriber(Topic.MOTION_STATE_TRAJ, self._ctx.on_traj_state)
 
+        # ForEach / Try 같은 control flow step 이 자식 unroll 시 사용.
+        # 자기 _execute_one_step 을 ctx 에 주입 → ctx.run_child(child) 가 디버거
+        # 게이트 / status 갱신 / publish 를 nested step 에도 일관 적용.
+        self._ctx.set_run_child(self._execute_one_step)
+
         # 디버거 상태 — _state_lock 으로 보호
         self._mode: DebugMode = DebugMode.AUTO
         self._run_to_target: str | None = None
@@ -139,9 +155,10 @@ class TaskRunner:
         with self._state_lock:
             if self._state.status == TaskStatus.RUNNING:
                 return False
-            # 새 task — 모든 step 을 pending 으로. breakpoint set 은 보존
-            # (사용자가 task 시작 전에 미리 박아둘 수 있음).
-            self._state.step_statuses = {s.id: STEP_PENDING for s in task.steps}
+            # 새 task — 모든 step (nested 포함) 을 pending 으로 초기화.
+            # breakpoint set 은 보존 (사용자가 task 시작 전 미리 박아둘 수 있음).
+            all_ids = collect_step_ids(task.steps)
+            self._state.step_statuses = {sid: STEP_PENDING for sid in all_ids}
 
         self._stop_event.clear()
         self._pause_event.set()
@@ -233,51 +250,25 @@ class TaskRunner:
             error=None,
         )
 
-        for i, step in enumerate(task.steps):
-            if self._stop_event.is_set():
-                self._update_state(status=TaskStatus.STOPPED)
-                return
+        # _BreakLoop 가 ForEach 밖까지 올라오면 잘못된 사용 — 잡아서 FAILED.
+        from modules.task.steps import _BreakLoop
 
-            # ─── 디버거 게이트 ─────────────────────────────────
-            if self._should_pause_before(step):
-                label = step.label or step.type_name
-                self._update_state(
-                    status=TaskStatus.PAUSED,
-                    current_step=i,
-                    current_label=label,
-                    current_step_id=step.id,
-                )
-                self._pause_event.clear()
-
-            self._pause_event.wait()
-
-            if self._stop_event.is_set():
-                self._update_state(status=TaskStatus.STOPPED)
-                return
-
-            label = step.label or step.type_name
+        try:
+            for i, step in enumerate(task.steps):
+                self._update_state(current_step=i + 1)
+                self._execute_one_step(step)
+        except _StopRequested:
+            self._update_state(status=TaskStatus.STOPPED)
+            return
+        except _BreakLoop:
             self._update_state(
-                status=TaskStatus.RUNNING,
-                current_step=i + 1,
-                current_label=label,
-                current_step_id=step.id,
+                status=TaskStatus.FAILED,
+                error="BreakIf 가 ForEach 밖에서 발생 — 잘못된 사용",
             )
-            self._set_step_status(step.id, STEP_RUNNING)
-
-            try:
-                result = step.execute(self._ctx)
-            except Exception as exc:
-                self._set_step_status(step.id, STEP_FAILED)
-                self._update_state(
-                    status=TaskStatus.FAILED,
-                    error=f"[{label}] {type(exc).__name__}: {exc}",
-                )
-                logger.exception("step 실행 중 예외 [%s]", label)
-                return
-
-            self._ctx.store(step.id, result)
-            self._publish_step_result(step, result)
-            self._set_step_status(step.id, STEP_COMPLETED)
+            return
+        except _StepFailed as exc:
+            self._update_state(status=TaskStatus.FAILED, error=str(exc))
+            return
 
         self._update_state(
             status=TaskStatus.SUCCESS,
@@ -285,6 +276,69 @@ class TaskRunner:
             current_label="",
             current_step_id="",
         )
+
+    def _execute_one_step(self, step: Step) -> object:
+        """단일 step 실행 — 디버거 게이트 + status + result publish.
+
+        ForEach / Try 같은 control flow step 의 execute() 가 `ctx.run_child(child)`
+        호출 시 이 함수가 다시 들어옴 → nested step 도 동일 인프라 자동 적용.
+
+        예외 흐름:
+            - StopRequested  → 외부 `stop()` 호출. 호출 stack 위로 전파해서
+              _run_task 가 잡고 STOPPED 처리
+            - _BreakLoop     → BreakIf step 이 raise. ForEach 가 catch.
+              ForEach 밖이면 _run_task 가 _UnhandledBreak 로 변환
+            - 일반 예외      → step FAILED 표시 후 _StepFailed 로 wrap
+        """
+        from modules.task.steps import _BreakLoop  # circular import 방지 lazy
+
+        if self._stop_event.is_set():
+            raise _StopRequested()
+
+        if self._should_pause_before(step):
+            label = step.label or step.type_name
+            self._update_state(
+                status=TaskStatus.PAUSED,
+                current_label=label,
+                current_step_id=step.id,
+            )
+            self._pause_event.clear()
+        self._pause_event.wait()
+
+        if self._stop_event.is_set():
+            raise _StopRequested()
+
+        label = step.label or step.type_name
+        self._update_state(
+            status=TaskStatus.RUNNING,
+            current_label=label,
+            current_step_id=step.id,
+        )
+        self._set_step_status(step.id, STEP_RUNNING)
+
+        try:
+            result = step.execute(self._ctx)
+        except _BreakLoop:
+            # ForEach 가 잡으라고 위로. 잡히면 ForEach 의 execute 가 정상 return —
+            # 그 경우 status COMPLETED 는 ForEach 본인이 처리 (아래 finally).
+            # 여기 step 자체는 BreakIf — 그것도 정상 종료로 본다.
+            self._set_step_status(step.id, STEP_COMPLETED)
+            self._publish_step_result(step, None)
+            raise
+        except _StopRequested:
+            raise
+        except _StepFailed:
+            # 이미 _StepFailed 로 wrap 된 상태 — 그대로 위로 전파
+            raise
+        except Exception as exc:
+            self._set_step_status(step.id, STEP_FAILED)
+            logger.exception("step 실행 중 예외 [%s]", label)
+            raise _StepFailed(f"[{label}] {type(exc).__name__}: {exc}") from exc
+
+        self._ctx.store(step.id, result)
+        self._publish_step_result(step, result)
+        self._set_step_status(step.id, STEP_COMPLETED)
+        return result
 
     def _should_pause_before(self, step: Step) -> bool:
         """다음 step 실행 *직전* 에 호출 — pause 해야 하면 True.

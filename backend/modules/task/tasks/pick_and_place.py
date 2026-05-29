@@ -1,31 +1,32 @@
-"""Pick-and-place — typed Slot DSL 로 조립.
+"""Pick-and-place — typed Slot DSL + ForEach/Try/BreakIf 분해 recipe.
 
 흐름 (이전 dict-key 기반 버전과 *동등 동작*):
   1. open gripper
-  2. search_pick: search pose 들 순회하며 pick 객체 detect
+  2. search_pick: search pose 들 순회하며 pick 객체 detect (search_and_detect recipe)
   3. (place_object 있으면) search_place: place 객체 detect
   4. grasp_policy: pick 객체 옆면 중간 (base_z + height * 0.5)
   5. pre_grasp → grasp → close+verify → settle → lift → verify
   6. (place_object 있으면) place_policy → pre_place → place → verify → release → settle → retreat
-  7. home
+  7. home (recipe 함수)
 
-[ideas.md](../../../../docs/ideas.md) Step DSL 레고화 entry 의 acceptance test —
-이 task 가 새 lego 블록 조합으로 동등 동작.
+[ideas.md](../../../../docs/ideas.md) Step DSL 레고화 의 acceptance test —
+이 task 가 lego 블록 (primitive + recipe) 조합으로 동등 동작.
 
-핵심 차이점 — string key chaining 추방:
-    이전: SearchAndDetectStep(output_key="pick_pos"), GraspPolicyStep(input_key="pick_pos", ...)
-    지금: pick = SearchAndDetect(...); GraspPolicy(target=pick.out, ...)
+핵심 변경 — string-key chaining 추방 + 매크로 분해:
+    이전: SearchAndDetectStep(output_key="pick_pos") + GraspPolicyStep(input_key="pick_pos")
+    지금: pick_steps, pick_slot = search_and_detect(pick_object)
+          → grasp = GraspPolicy(target=pick_slot)
+    search_and_detect 는 recipe — 내부적으로 ForEach + Try + BreakIf + GroundedDetect 조합.
 """
 
+from modules.task.recipes import home, search_and_detect
 from modules.task.schema import Position3
 from modules.task.step import Step, Task
 from modules.task.steps import (
     Gripper,
     GraspPolicy,
-    Home,
     MoveTCP,
     PlacePolicy,
-    SearchAndDetect,
     VerifyGrasp,
     Wait,
 )
@@ -46,20 +47,21 @@ def create_pick_and_place_task(
         else f"'{pick_object}' 집기"
     )
 
-    pick = SearchAndDetect(prompt=pick_object, label=f"search_pick:{pick_object}")
-    place = (
-        SearchAndDetect(prompt=place_object, label=f"search_place:{place_object}")
-        if place_object
-        else None
+    pick_steps, pick_slot = search_and_detect(
+        pick_object, label=f"search_pick:{pick_object}"
     )
-    grasp = GraspPolicy(target=pick.out, label="grasp_policy")
+    grasp = GraspPolicy(target=pick_slot, label="grasp_policy")
 
-    steps: list[Step] = [
-        Gripper(action="open", label="open_gripper"),
-        pick,
-    ]
-    if place is not None:
-        steps.append(place)
+    steps: list[Step] = [Gripper(action="open", label="open_gripper")]
+    steps += pick_steps
+
+    if place_object:
+        place_steps, place_slot = search_and_detect(
+            place_object, label=f"search_place:{place_object}"
+        )
+        steps += place_steps
+    else:
+        place_slot = None
 
     steps += [
         grasp,
@@ -79,8 +81,8 @@ def create_pick_and_place_task(
         VerifyGrasp(label="verify_after_lift"),
     ]
 
-    if place is not None:
-        place_xyz = PlacePolicy(target=place.out, label="place_policy")
+    if place_slot is not None:
+        place_xyz = PlacePolicy(target=place_slot, label="place_policy")
         steps += [
             place_xyz,
             MoveTCP(
@@ -99,6 +101,6 @@ def create_pick_and_place_task(
             ),
         ]
 
-    steps.append(Home(label="return_home"))
+    steps.append(home())
 
     return Task(name="pick_and_place", description=desc, steps=steps)

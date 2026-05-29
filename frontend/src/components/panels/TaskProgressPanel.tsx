@@ -15,7 +15,7 @@ import {
 import type { IDockviewPanelProps } from "dockview";
 import { PanelShell } from "@/components/canvas/ui/PanelShell";
 import { useTask } from "@/hooks/useTask";
-import type { StepNode, StepStatus, TaskStatus } from "@/types/task";
+import type { StepNode, StepStatus, TaskState, TaskStatus } from "@/types/task";
 
 const STATUS_TEXT: Record<TaskStatus, string> = {
   idle: "IDLE",
@@ -165,7 +165,7 @@ export function TaskProgressPanel(props: IDockviewPanelProps<object>) {
         </div>
       </div>
 
-      {/* step 트리 */}
+      {/* step 트리 — ForEach / Try 등 nested children 도 재귀 렌더 */}
       <div className="py-1.5">
         {taskTree.steps.length === 0 ? (
           <p className="px-3 py-4 font-mono text-[10px] text-zinc-600 italic">
@@ -176,13 +176,13 @@ export function TaskProgressPanel(props: IDockviewPanelProps<object>) {
             <StepRow
               key={node.id}
               node={node}
-              status={taskState.step_statuses[node.id] ?? "pending"}
-              isBreakpoint={breakpointSet.has(node.id)}
-              isCurrent={taskState.current_step_id === node.id}
-              isExpanded={expanded.has(node.id)}
-              onToggleExpand={() => toggleExpand(node.id)}
-              onContextMenu={(e) => handleContextMenu(e, node.id)}
-              onToggleBreakpoint={() => toggleBreakpoint(node.id)}
+              depth={0}
+              taskState={taskState}
+              expanded={expanded}
+              breakpointSet={breakpointSet}
+              onToggleExpand={toggleExpand}
+              onContextMenu={handleContextMenu}
+              onToggleBreakpoint={toggleBreakpoint}
             />
           ))
         )}
@@ -270,13 +270,13 @@ function ControlBtn({
 
 interface StepRowProps {
   node: StepNode;
-  status: StepStatus;
-  isBreakpoint: boolean;
-  isCurrent: boolean;
-  isExpanded: boolean;
-  onToggleExpand: () => void;
-  onContextMenu: (e: React.MouseEvent) => void;
-  onToggleBreakpoint: () => void;
+  depth: number;
+  taskState: TaskState;
+  expanded: Set<string>;
+  breakpointSet: Set<string>;
+  onToggleExpand: (id: string) => void;
+  onContextMenu: (e: React.MouseEvent, id: string) => void;
+  onToggleBreakpoint: (id: string) => void;
 }
 
 // 디테일 표시에서 제외할 step 필드 — 행 자체에 이미 표시되거나 메타.
@@ -297,16 +297,23 @@ function formatParamValue(v: unknown): string {
 
 function StepRow({
   node,
-  status,
-  isBreakpoint,
-  isCurrent,
-  isExpanded,
+  depth,
+  taskState,
+  expanded,
+  breakpointSet,
   onToggleExpand,
   onContextMenu,
   onToggleBreakpoint,
 }: StepRowProps) {
   const [hover, setHover] = useState(false);
   const gutterRef = useRef<HTMLButtonElement>(null);
+
+  const status: StepStatus = taskState.step_statuses[node.id] ?? "pending";
+  const isCurrent = taskState.current_step_id === node.id;
+  const isBreakpoint = breakpointSet.has(node.id);
+  const isExpanded = expanded.has(node.id);
+  const children = node.children;
+  const hasChildren = Array.isArray(children) && children.length > 0;
 
   const bg = isCurrent
     ? "bg-amber-900/20"
@@ -319,12 +326,16 @@ function StepRow({
     [node],
   );
 
+  // depth 별 indent — ForEach/Try children 시각화.
+  const indentPx = depth * 14;
+
   return (
     <div>
       <div
         className={`flex items-center gap-2 px-2 py-1 cursor-pointer ${bg} transition-colors`}
-        onClick={onToggleExpand}
-        onContextMenu={onContextMenu}
+        style={{ paddingLeft: 8 + indentPx }}
+        onClick={() => onToggleExpand(node.id)}
+        onContextMenu={(e) => onContextMenu(e, node.id)}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
       >
@@ -333,7 +344,7 @@ function StepRow({
           ref={gutterRef}
           onClick={(e) => {
             e.stopPropagation();
-            onToggleBreakpoint();
+            onToggleBreakpoint(node.id);
           }}
           title={isBreakpoint ? "Remove breakpoint" : "Add breakpoint"}
           className="w-3 h-3 flex items-center justify-center shrink-0 rounded-full"
@@ -345,7 +356,7 @@ function StepRow({
           ) : null}
         </button>
 
-        {/* expand chevron — 미세하게 시각화. 클릭은 행 전체로 받음 */}
+        {/* expand chevron — 디테일 토글. children 의 펼침/접힘과 무관 (children 은 항상 보임) */}
         {isExpanded ? (
           <ChevronDown className="w-3 h-3 text-zinc-600 shrink-0" />
         ) : (
@@ -366,12 +377,20 @@ function StepRow({
           }`}
         >
           {node.label || node.type}
+          {hasChildren && (
+            <span className="ml-1.5 text-zinc-600 text-[9px]">
+              ({children!.length})
+            </span>
+          )}
         </span>
       </div>
 
       {/* 디테일 — type + params. 들여쓰기로 행 아래에. */}
       {isExpanded && (
-        <div className="px-2 pb-1.5 pl-10 bg-zinc-950/40 border-y border-zinc-800/40">
+        <div
+          className="px-2 pb-1.5 bg-zinc-950/40 border-y border-zinc-800/40"
+          style={{ paddingLeft: 40 + indentPx }}
+        >
           <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 py-1 font-mono text-[10px]">
             <span className="text-zinc-500">type</span>
             <span className="text-zinc-300">{node.type}</span>
@@ -386,6 +405,22 @@ function StepRow({
           </div>
         </div>
       )}
+
+      {/* children — ForEach / Try 의 자식 step 들. 재귀 렌더 + 한 단계 들여쓰기 */}
+      {hasChildren &&
+        children!.map((child) => (
+          <StepRow
+            key={child.id}
+            node={child}
+            depth={depth + 1}
+            taskState={taskState}
+            expanded={expanded}
+            breakpointSet={breakpointSet}
+            onToggleExpand={onToggleExpand}
+            onContextMenu={onContextMenu}
+            onToggleBreakpoint={onToggleBreakpoint}
+          />
+        ))}
     </div>
   );
 }

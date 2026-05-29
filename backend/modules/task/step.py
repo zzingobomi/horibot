@@ -21,7 +21,7 @@ import threading
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
 from core.types import TrajStatus
 from modules.task.schema import Slot
@@ -117,15 +117,65 @@ class Task:
 def step_to_dict(step: Step) -> dict:
     """Step → JSON 호환 dict. frontend tree publish 용.
 
-    - 기본 dataclass 필드는 `asdict` 로
-    - `type` 필드 추가 (= step.type_name, frontend 디스패치 키)
-    - Slot 필드는 자동으로 `{step_id: "..."}` dict — frontend 가 dataflow edge 표시 가능
+    재귀:
+    - `list[Step]` 필드 (ForEach.children 등) → 각 Step 도 step_to_dict 거침
+    - 중첩 Step 도 type 필드 부여
+    - Slot 은 frozen dataclass → asdict 로 `{step_id: "..."}` 자동
+    - 다른 dataclass (Position3, Detection) 도 asdict
     """
-    from dataclasses import asdict
+    from dataclasses import fields
 
-    d = asdict(step)
-    d["type"] = step.type_name
+    d: dict = {"id": step.id, "label": step.label, "type": step.type_name}
+    for f in fields(step):
+        if f.name in ("id", "label"):
+            continue
+        d[f.name] = _convert_value(getattr(step, f.name))
     return d
+
+
+def _convert_value(value: Any) -> Any:
+    from dataclasses import asdict, is_dataclass
+
+    if isinstance(value, Step):
+        return step_to_dict(value)
+    if isinstance(value, list):
+        return [_convert_value(v) for v in value]
+    if isinstance(value, tuple):
+        return [_convert_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _convert_value(v) for k, v in value.items()}
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
+    return value
+
+
+def collect_step_ids(steps: list[Step]) -> list[str]:
+    """task.steps 전체에서 모든 step.id 수집 (nested 포함).
+
+    TaskRunner 가 task 시작 시 step_statuses 를 pending 으로 초기화할 때 사용.
+    필드 introspection 으로 `list[Step]` / `Step` 필드 자동 traverse → ForEach
+    같은 새 control flow step 추가해도 여기 수정 불필요.
+    """
+    from dataclasses import fields
+
+    out: list[str] = []
+
+    def visit(step: Step) -> None:
+        out.append(step.id)
+        for f in fields(step):
+            value = getattr(step, f.name)
+            _visit_value(value)
+
+    def _visit_value(value: Any) -> None:
+        if isinstance(value, Step):
+            visit(value)
+        elif isinstance(value, (list, tuple)):
+            for v in value:
+                _visit_value(v)
+
+    for s in steps:
+        visit(s)
+    return out
 
 
 def task_tree(task: Task) -> dict:
@@ -174,6 +224,12 @@ class StepContext:
         self._traj_event = threading.Event()
         self._traj_status: str = TrajStatus.IDLE
 
+        # runner callback — ForEach/Try 같은 step 이 자식 unroll 시 사용.
+        # runner 가 자기 _execute_one_step 을 set_run_child 로 주입.
+        # 이 indirection 으로 ControlFlowStep 같은 별도 base 클래스 없이도
+        # 디버거 게이트 / status / publish 가 nested step 까지 일관 작동.
+        self._run_child: Callable[["Step"], Any] | None = None
+
     # ─── Slot resolve ────────────────────────────────────────
 
     def resolve(self, value_or_slot: Any) -> Any:
@@ -197,6 +253,25 @@ class StepContext:
         if value is None:
             return
         self.results[step_id] = value
+
+    # ─── Child step 위임 — control flow step 용 ─────────────────
+
+    def set_run_child(self, run_child: Callable[["Step"], Any]) -> None:
+        """runner 가 자기 _execute_one_step 을 주입."""
+        self._run_child = run_child
+
+    def run_child(self, step: "Step") -> Any:
+        """ForEach / Try 같은 control flow step 의 execute() 가 호출.
+
+        runner 의 _execute_one_step 을 거쳐 디버거 게이트 / status 갱신 /
+        step result publish 가 nested step 에도 일관 작동.
+        """
+        if self._run_child is None:
+            raise RuntimeError(
+                "StepContext.run_child: runner callback 미주입 "
+                "— TaskRunner 가 set_run_child 호출했는지 확인"
+            )
+        return self._run_child(step)
 
     # ─── Motion trajectory wait — step_executor 의 _on_traj_state 패턴 ─
 

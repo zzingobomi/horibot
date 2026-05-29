@@ -35,7 +35,7 @@
 
   | dim (mm) | 분류                 | 목표 수량 | 출력 완료 | 역할                                             |
   | -------- | -------------------- | --------- | --------- | ------------------------------------------------ |
-  | 40×40×40 | 큐브                 | 2         | 1         | gripper-safe base, identifiability anchor        |
+  | 40×40×40 | 큐브                 | 2         | 2         | gripper-safe base, identifiability anchor        |
   | 30×30×30 | 작은 큐브            | 2         | 1         | top layer 마무리                                 |
   | 50×40×30 | full rect (3-face)   | 2         | 0         | **face 선택 정책 메인 시험대**                   |
   | 40×35×30 | full rect (3-face)   | 1         | 0         | 중간 rect, 50×40×30 와 footprint 구분            |

@@ -1,12 +1,33 @@
+"""TaskRunner — Step list 를 순차 실행 + pause/resume/breakpoint/run_to 디버거.
+
+이전 [step_executor.py](step_executor.py) 의 실행 책임 흡수 — 별도 executor
+객체 없음. TaskRunner 가 StepContext 직접 보유하고, 각 step 의 polymorphic
+`execute(ctx)` 호출 → 반환값을 ctx.results 에 저장.
+
+설계 결정:
+- match/case dispatch 추방 — `step.execute(ctx)` 만 호출 (ideas.md lego test #3)
+- TaskContext.data dict 추방 — `StepContext.results: dict[step_id, Any]` 로 대체
+- step.id 영구 UUID — 옛 enumerate `step-N` 재할당 패턴 제거 (Slot.step_id 무결성)
+"""
+
 from dataclasses import dataclass, field
 from enum import Enum
+import logging
 import threading
 from typing import TYPE_CHECKING, Callable
 
-from .step_types import Task, TaskContext
+from core.topic_map import Topic
+from modules.task.schema import StepResult
+from modules.task.step import Step, StepContext, Task
 
 if TYPE_CHECKING:
-    from .step_executor import StepExecutor
+    from core.base_node import BaseNode
+    from core.joint_state_cache import JointStateCache
+    from modules.calibration.loader import CalibrationData
+    from modules.dynamixel.motor_config import MotorConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 class TaskStatus(str, Enum):
@@ -25,7 +46,7 @@ STEP_COMPLETED = "completed"
 STEP_FAILED = "failed"
 
 
-# 디버거 실행 모드 — PAUSED 해제 시 다음 동작 결정. 외부 publish 안 함 (TaskRunner 내부).
+# 디버거 실행 모드 — PAUSED 해제 시 다음 동작 결정. 외부 publish 안 함.
 class DebugMode(str, Enum):
     AUTO = "auto"        # 다음 breakpoint 또는 끝까지 진행
     STEP_ONCE = "step"   # 1 step 만 실행 후 pause
@@ -64,10 +85,12 @@ OnStateChange = Callable[[TaskState], None]
 class TaskRunner:
     def __init__(
         self,
-        executor: "StepExecutor",
+        node: "BaseNode",
+        joint_cache: "JointStateCache",
+        arm_cfgs: list["MotorConfig"],
+        calibration: "CalibrationData | None",
         on_state_change: OnStateChange | None = None,
     ) -> None:
-        self._executor = executor
         self._on_state_change = on_state_change or (lambda _: None)
 
         self._state = TaskState()
@@ -76,6 +99,17 @@ class TaskRunner:
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
         self._pause_event.set()  # 초기: 일시정지 아님
+
+        # StepContext 는 1회 생성 후 재사용. run() 마다 results clear.
+        # MOTION_STATE_TRAJ subscriber 도 같이 1회만 등록 (node.stop() 시 해제).
+        self._ctx = StepContext(
+            node=node,
+            joint_cache=joint_cache,
+            arm_cfgs=arm_cfgs,
+            calibration=calibration,
+            stop_event=self._stop_event,
+        )
+        node.create_subscriber(Topic.MOTION_STATE_TRAJ, self._ctx.on_traj_state)
 
         # 디버거 상태 — _state_lock 으로 보호
         self._mode: DebugMode = DebugMode.AUTO
@@ -105,7 +139,7 @@ class TaskRunner:
         with self._state_lock:
             if self._state.status == TaskStatus.RUNNING:
                 return False
-            # 새 task — 모든 step 을 pending 으로 초기화. breakpoint set 은 보존
+            # 새 task — 모든 step 을 pending 으로. breakpoint set 은 보존
             # (사용자가 task 시작 전에 미리 박아둘 수 있음).
             self._state.step_statuses = {s.id: STEP_PENDING for s in task.steps}
 
@@ -158,7 +192,7 @@ class TaskRunner:
         return True
 
     def run_to(self, target_step_id: str) -> bool:
-        """target step *직전*까지 진행 후 pause. VSCode 'Run to cursor' 와 동일."""
+        """target step *직전* 까지 진행 후 pause. VSCode 'Run to cursor' 와 동일."""
         with self._state_lock:
             if self._state.status != TaskStatus.PAUSED:
                 return False
@@ -169,13 +203,12 @@ class TaskRunner:
         return True
 
     def toggle_breakpoint(self, step_id: str) -> bool:
-        """breakpoint 토글 — set 에 있으면 제거, 없으면 추가. 항상 success."""
+        """breakpoint 토글 — set 에 있으면 제거, 없으면 추가."""
         with self._state_lock:
             if step_id in self._breakpoints:
                 self._breakpoints.discard(step_id)
             else:
                 self._breakpoints.add(step_id)
-        # PAUSED / IDLE 어디서든 호출 가능 → 현재 state publish 로 frontend 동기화
         self._update_state()
         return True
 
@@ -186,7 +219,9 @@ class TaskRunner:
     # ─── Internal ─────────────────────────────────────────────────
 
     def _run_task(self, task: Task) -> None:
-        context = TaskContext()
+        # 매 task 마다 results 재시작 — 이전 task 의 Slot 결과가 새 task 에
+        # 누출되지 않게.
+        self._ctx.results.clear()
 
         self._update_state(
             status=TaskStatus.RUNNING,
@@ -199,39 +234,28 @@ class TaskRunner:
         )
 
         for i, step in enumerate(task.steps):
-            # stop 체크
             if self._stop_event.is_set():
                 self._update_state(status=TaskStatus.STOPPED)
                 return
 
-            # ─── 디버거 게이트: 이 step 직전에 멈출지 결정 ──────
-            should_pause = self._should_pause_before(step)
-            if should_pause:
-                # 다음 step.id 와 label 을 PAUSED 상태에 반영 — UI 가 "지금 여기"
-                # 표시할 위치.
-                label = getattr(step, "label", "") or step.type
+            # ─── 디버거 게이트 ─────────────────────────────────
+            if self._should_pause_before(step):
+                label = step.label or step.type_name
                 self._update_state(
                     status=TaskStatus.PAUSED,
-                    current_step=i,  # 아직 실행 안 함 → 0-based "다음" 위치
+                    current_step=i,
                     current_label=label,
                     current_step_id=step.id,
                 )
                 self._pause_event.clear()
 
-            # pause 대기 (외부 pause() 호출이나 위 디버거 게이트 둘 다 처리)
             self._pause_event.wait()
 
-            # pause 해제와 동시에 stop 이 들어올 수 있으므로 재확인
             if self._stop_event.is_set():
                 self._update_state(status=TaskStatus.STOPPED)
                 return
 
-            # mode 가 RUN_TO 이고 target == 현재 step 이면 여기서 한 번 더 멈춰야 함.
-            # _should_pause_before 가 처리했어야 하는데 race 방지로 한번 더.
-            # (실제로는 _should_pause_before 가 mode 를 AUTO 로 reset 하지 않음 →
-            # 두 번 멈추는 일은 없음. 명시적 가드만.)
-
-            label = getattr(step, "label", "") or step.type
+            label = step.label or step.type_name
             self._update_state(
                 status=TaskStatus.RUNNING,
                 current_step=i + 1,
@@ -241,28 +265,19 @@ class TaskRunner:
             self._set_step_status(step.id, STEP_RUNNING)
 
             try:
-                ok = self._executor.execute(step, context, self._stop_event)
+                result = step.execute(self._ctx)
             except Exception as exc:
                 self._set_step_status(step.id, STEP_FAILED)
                 self._update_state(
                     status=TaskStatus.FAILED,
-                    error=f"[{label}] Exception: {exc}",
+                    error=f"[{label}] {type(exc).__name__}: {exc}",
                 )
+                logger.exception("step 실행 중 예외 [%s]", label)
                 return
 
-            if not ok:
-                self._set_step_status(step.id, STEP_FAILED)
-                self._update_state(
-                    status=TaskStatus.FAILED,
-                    error=f"[{label}] step 실패 ({i + 1}/{len(task.steps)})",
-                )
-                return
-
+            self._ctx.store(step.id, result)
+            self._publish_step_result(step, result)
             self._set_step_status(step.id, STEP_COMPLETED)
-
-            # STEP_ONCE 모드: 1 step 실행 후 다음 step 직전에서 멈추도록 mode 유지.
-            # _should_pause_before 가 STEP_ONCE 면 pause 처리.
-            # AUTO 면 그냥 다음으로 진행.
 
         self._update_state(
             status=TaskStatus.SUCCESS,
@@ -271,16 +286,12 @@ class TaskRunner:
             current_step_id="",
         )
 
-    def _should_pause_before(self, step) -> bool:
+    def _should_pause_before(self, step: Step) -> bool:
         """다음 step 실행 *직전* 에 호출 — pause 해야 하면 True.
 
-        규칙:
-          - mode == STEP_ONCE: 항상 멈춤. 멈춘 뒤 mode 는 그대로 두면 다음
-            resume() 호출 시 어떤 동작인지에 따라 AUTO/STEP 으로 다시 결정됨.
-            여기서는 mode reset 안 함 — step_once() 가 다시 SET 함.
-          - mode == RUN_TO 이고 step.id == target: 멈춤. mode 는 그대로.
-          - step.id 가 breakpoint set 에 있음: 멈춤.
-          - 그 외: 진행.
+        - mode == STEP_ONCE: 항상 멈춤
+        - mode == RUN_TO 이고 step.id == target: 멈춤
+        - step.id 가 breakpoint set 에 있음: 멈춤
         """
         with self._state_lock:
             mode = self._mode
@@ -294,6 +305,22 @@ class TaskRunner:
         if is_breakpoint:
             return True
         return False
+
+    def _publish_step_result(self, step: Step, value: object | None) -> None:
+        """완료된 step 의 출력을 토픽으로 publish — frontend 자동 렌더 hook.
+
+        None 출력 (MoveTCP/Gripper/...) 도 발행 — "여기까지 도달했음" 시각 마커.
+        type 문자열 = step.out 의 dataclass 클래스 이름 (Detection/Position3/...)
+        또는 출력 없으면 "None".
+        """
+        type_name = type(value).__name__ if value is not None else "None"
+        payload = StepResult(
+            step_id=step.id, type_name=type_name, value=value
+        ).to_dict()
+        try:
+            self._ctx.node.publish(Topic.TASK_STEP_RESULT, payload)
+        except Exception as exc:
+            logger.warning("step_result publish 실패 (%s): %s", step.id, exc)
 
     def _set_step_status(self, step_id: str, status: str) -> None:
         with self._state_lock:

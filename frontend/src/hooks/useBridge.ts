@@ -12,8 +12,7 @@ import { useTaskStore } from "@/store/taskStore";
 import type { TaskState, TaskTree } from "@/types/task";
 import { useDetectorStore, type Detection } from "@/store/detectorStore";
 import { usePointCloudStore } from "@/store/pointCloudStore";
-import { useSelfPlayStore } from "@/store/selfPlayStore";
-import type { SelfPlayState } from "@/types/self_play";
+import { useTaskResultStore, type StepResultPayload } from "@/store/taskResultStore";
 
 export function useBridge() {
   const setBridgeConnected = useSystemStore((s) => s.setBridgeConnected);
@@ -29,8 +28,8 @@ export function useBridge() {
   const setLoading = useTaskStore((s) => s.setLoading);
   const setDetections = useDetectorStore((s) => s.setDetections);
   const setGroundedResult = useDetectorStore((s) => s.setGroundedResult);
-  const setSelfPlayState = useSelfPlayStore((s) => s.setState);
-  const setSelfPlayLoading = useSelfPlayStore((s) => s.setLoading);
+  const setStepResult = useTaskResultStore((s) => s.setStepResult);
+  const clearStepResults = useTaskResultStore((s) => s.clearAll);
 
   useEffect(() => {
     // Bridge 연결
@@ -99,10 +98,20 @@ export function useBridge() {
     });
 
     // Task tree 구독 — task 시작 시 1회 publish, latest-wins 큐로 늦게 붙은
-    // 클라이언트도 마지막 tree 받음.
+    // 클라이언트도 마지막 tree 받음. 새 tree 면 누적된 step result 도 클리어.
     const unsubTaskTree = bridge.subscribe(Topic.TASK_TREE, (data) => {
+      clearStepResults();
       setTaskTree(data as unknown as TaskTree);
     });
+
+    // Step result 구독 — 각 step 완료 시 1회 publish. type 별로 다른 렌더러
+    // 가 dispatch (Detection→sphere, Position3→marker, ...).
+    const unsubStepResult = bridge.subscribe(
+      Topic.TASK_STEP_RESULT,
+      (data) => {
+        setStepResult(data as unknown as StepResultPayload);
+      },
+    );
 
     // Detector 상태 구독
     const unsubDetector = bridge.subscribe(Topic.DETECTOR_STATE, (data) => {
@@ -136,16 +145,6 @@ export function useBridge() {
       },
     );
 
-    // Self-play 상태 구독
-    const unsubSelfPlay = bridge.subscribe(Topic.SELF_PLAY_STATE, (data) => {
-      const state = data as unknown as SelfPlayState;
-      setSelfPlayState(state);
-      // 진행 중 stage 이면 loading false (이미 시작됨)
-      if (state.current_stage !== "idle" && state.current_stage !== "done") {
-        setSelfPlayLoading(false);
-      }
-    });
-
     // PointCloud 상태 + 바이너리 스트림 구독
     const unsubPointCloud = usePointCloudStore.getState()._attach();
 
@@ -159,9 +158,9 @@ export function useBridge() {
       unsubTraj();
       unsubTask();
       unsubTaskTree();
+      unsubStepResult();
       unsubDetector();
       unsubGrounded();
-      unsubSelfPlay();
       unsubPointCloud();
       bridge.disconnect();
     };
@@ -179,7 +178,7 @@ export function useBridge() {
     setLoading,
     setDetections,
     setGroundedResult,
-    setSelfPlayState,
-    setSelfPlayLoading,
+    setStepResult,
+    clearStepResults,
   ]);
 }

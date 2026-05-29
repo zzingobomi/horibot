@@ -5,7 +5,6 @@ import { PointCloudPanel } from "@/components/panels/PointCloudPanel";
 import { PromptPanel } from "@/components/panels/PromptPanel";
 import { TaskProgressPanel } from "@/components/panels/TaskProgressPanel";
 import { CameraFeedPanel } from "@/components/panels/CameraFeedPanel";
-import { SelfPlayPanel } from "@/components/panels/SelfPlayPanel";
 
 export const PANEL_COMPONENTS = {
   robotState: RobotStatePanel,
@@ -15,7 +14,6 @@ export const PANEL_COMPONENTS = {
   prompt: PromptPanel,
   taskProgress: TaskProgressPanel,
   cameraFeed: CameraFeedPanel,
-  selfPlay: SelfPlayPanel,
 } as const;
 
 export type PanelComponentKey = keyof typeof PANEL_COMPONENTS;

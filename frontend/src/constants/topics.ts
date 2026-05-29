@@ -20,9 +20,7 @@ export const Topic = {
   // Task
   TASK_STATE: "omx/task/state",
   TASK_TREE: "omx/task/tree",
-
-  // Self-play
-  SELF_PLAY_STATE: "omx/self_play/state",
+  TASK_STEP_RESULT: "omx/task/step_result",
 
   // Detector
   DETECTOR_STATE: "omx/detector/state",

@@ -23,9 +23,10 @@ class Topic:
     # Task 시작 시 1회 publish — 전체 step 트리 (frontend 가 받아서 시각화).
     # latest-wins 큐로 늦게 붙은 클라이언트도 마지막 tree 를 받음.
     TASK_TREE = "omx/task/tree"
-
-    # ─── Self-play ───────────────────────────────────────────
-    SELF_PLAY_STATE = "omx/self_play/state"
+    # 각 step 완료 시 1회 publish — {step_id, type, value(typed dataclass dict)}.
+    # frontend TaskResultLayer 가 type 별 (Detection / Pose6 / Position3) 자동 렌더.
+    # None 출력 (MoveTCP/Gripper/...) 도 publish — "여기까지 진행됨" 마커 역할.
+    TASK_STEP_RESULT = "omx/task/step_result"
 
     # ─── Detector ─────────────────────────────────────────────
     DETECTOR_STATE = "omx/detector/state"

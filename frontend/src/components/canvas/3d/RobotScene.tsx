@@ -9,7 +9,7 @@ import { CameraFrustum } from "./CameraFrustum";
 import { LivePointCloudLayer } from "./PointCloudLayer";
 import { MeshLayer } from "./MeshLayer";
 import { DetectionLayer } from "./DetectionLayer";
-import { SelfPlayLayer } from "./SelfPlayLayer";
+import { TaskResultLayer } from "./TaskResultLayer";
 
 export interface SceneOptions {
   showRobot: boolean;
@@ -163,8 +163,9 @@ function SceneContent({
         <MeshLayer />
         {/* Grounded detection 타겟 (base 프레임). store null이면 자동 미렌더. */}
         <DetectionLayer />
-        {/* Self-play attempt 마커 (target / spike). store 비면 자동 미렌더 → 다른 페이지 무영향. */}
-        <SelfPlayLayer />
+        {/* Task step 결과 (Detection / Position3 / ...) base 프레임 자동 렌더.
+            새 task tree 도착 시 store 클리어 → 다른 페이지/idle 무영향. */}
+        <TaskResultLayer />
       </group>
 
       <OrbitControls

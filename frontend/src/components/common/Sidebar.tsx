@@ -4,7 +4,6 @@ import {
   Gamepad2,
   Camera,
   Cpu,
-  Bot,
   Settings,
   Box,
   Home,
@@ -24,7 +23,6 @@ const navItems = [
   { to: "/calibration", label: "Calibration", icon: Camera },
   { to: "/workspace", label: "Workspace3D", icon: Box },
   { to: "/pick-and-place", label: "Pick & Place", icon: Hand },
-  { to: "/self-play", label: "Self-play", icon: Bot, deprecated: true },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -76,7 +74,7 @@ export function Sidebar() {
 
       {/* 네비게이션 */}
       <nav className="flex-1 py-4 space-y-1 px-2">
-        {navItems.map(({ to, label, icon: Icon, deprecated }) => (
+        {navItems.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
@@ -89,14 +87,11 @@ export function Sidebar() {
                 isActive
                   ? "bg-accent text-accent-foreground font-medium"
                   : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                deprecated && "opacity-60",
               )
             }
           >
             <Icon className="h-4 w-4 shrink-0" />
-            {!collapsed && (
-              <span className={cn(deprecated && "line-through")}>{label}</span>
-            )}
+            {!collapsed && <span>{label}</span>}
           </NavLink>
         ))}
       </nav>

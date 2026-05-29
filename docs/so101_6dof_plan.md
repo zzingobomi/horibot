@@ -246,13 +246,13 @@ OMX에서 검증된 확장 BA + 물리 sag 모델([docs/hand_eye_extended_ba.md]
 ## 7. 실행 순서
 
 ```
-[1] 베이스 키트 결정 (thebotstore 메일 문의 OR Amazon 38만원 OR Seeed 듀얼)
+[1] ✅ 베이스 키트 결정 (Amazon B0GRPJ2Q8F 주문 완료 — 2026-05-29)
        ↓
-[2] 부속 주문:
-      - STS3250 ×1 (**1/345 기어비, C002 variant**, shoulder용) ⚠️ 기어비 확인 필수
+[2] ✅ 부속 주문:
+      - STS3250 ×1 (WowRobo C002, 1/345) 주문 완료 — 2026-05-29
       - D405 (별도 보유분 활용 or 신규)
        ↓
-[3] 출력: wrist yaw mod 2개 부품 + Wrist_Roll_D405_Holder
+[3] ⏳ 출력: wrist yaw mod 2개 부품 + Wrist_Roll_D405_Holder
        ↓
 [4] (선택) ts_flake에게 댓글로 두 가지 문의:
     - OnShape 도큐먼트 copy 권한

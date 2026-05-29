@@ -15,7 +15,7 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 - [calibration_apply_flow.md](docs/calibration_apply_flow.md) — 4종 캘 산출물의 적용 메커니즘
 - [hand_eye_extended_ba.md](docs/hand_eye_extended_ba.md) — 확장 BA + 물리 sag 모델 (σ_rot 0.65°/σ_t 7.94mm 도달기)
 - [tsdf_pipeline.md](docs/tsdf_pipeline.md) — multi-way ICP + TSDF mesh 빌드 결정사항
-- [self_play_pick.md](docs/self_play_pick.md) — self-play pick 루프 설계 (active, WIP)
+- [step_dsl.md](docs/step_dsl.md) — typed Slot 기반 lego Step DSL (Step/Slot/StepContext/Recipe + 다이어그램 + 확장 가이드)
 - [roadmap.md](docs/roadmap.md) — 진행 중/예정 작업
 
 ## 자주 쓰는 명령어
@@ -172,9 +172,31 @@ PEP 735 `[dependency-groups]`로 역할별 분리:
 
 아암은 운동학적으로 **5DOF** (모터 ID 1–5), ID 6은 그리퍼로 `core.common.GRIPPER_ID`로 필터링. 단위 변환은 [backend/core/units.py](backend/core/units.py) — Dynamixel raw는 `0..4095`, 중심 `2048`(=0°).
 
-### Task 시스템
+### Task 시스템 — typed Slot lego DSL
 
-Task는 선언형 step 리스트 ([backend/modules/task/step_types.py](backend/modules/task/step_types.py): `MoveTCPStep`, `DetectStep`, `GripperStep`, `HomeStep`, `WaitStep`). `TASK_REGISTRY`는 [backend/nodes/task_node.py](backend/nodes/task_node.py)에. `StepExecutor`가 각 step 실행(motion/detector/motor 서비스 호출), `TaskRunner`가 상태 머신(`run/pause/resume/stop`), 진행은 `omx/task/state`로 발행. `DetectStep`은 결과를 context dict(`output_key`)에 쓰고, 이후 `MoveTCPStep`이 `position_key` + `offset`으로 소비 — [backend/modules/task/tasks/pick_and_place.py](backend/modules/task/tasks/pick_and_place.py)가 정규 예시.
+Task는 선언형 step 리스트. 각 step 은 `Step[T_out]` 상속한 dataclass + `execute(ctx)` 메서드 보유 ([backend/modules/task/step.py](backend/modules/task/step.py)). step 간 데이터 전달은 string key 가 아니라 **typed `Slot[T]`** reference — 한 step 의 출력을 다음 step 의 인자에 직접 넘김:
+
+```python
+pick_steps, pick_slot = search_and_detect("cube")   # → Slot[Detection]
+grasp = GraspPolicy(target=pick_slot)               # → grasp.out: Slot[Position3]
+MoveTCP(target=grasp.out, offset=Position3(0, 0, 0.06))
+```
+
+코드 구성 ([backend/modules/task/](backend/modules/task/)):
+
+- `schema.py` — typed value classes (`Position3`/`Pose6`/`Detection`) + `Slot[T]` (covariant frozen) + `StepResult`
+- `step.py` — `Step[T_out]` base + `StepContext` (`resolve` / `run_child` / `call_motion`) + `Task` + `task_tree` (재귀 직렬화) + `collect_step_ids`
+- `steps.py` — primitive 8개 (Wait/MoveJByName/MoveTCP/Gripper/VerifyGrasp/GroundedDetect/GraspPolicy/PlacePolicy) + control flow 3개 (ForEach/BreakIf/Try)
+- `recipes.py` — `home()` / `search_and_detect()` 같은 primitive 조합 단축형 함수
+- `task_runner.py` — `_execute_one_step` 단일 진입점 (디버거 게이트 + status + step_result publish). ForEach/Try 가 `ctx.run_child(child)` 호출 시 재진입 → nested step 도 동일 인프라
+- `tasks/pick_and_place.py` — 정규 예시 + lego acceptance test
+
+토픽:
+- `omx/task/tree` — task 시작/preview 시 전체 step tree (children 재귀) 1회
+- `omx/task/state` — RUNNING/PAUSED/SUCCESS/FAILED + step_statuses + current_step_id
+- `omx/task/step_result` — 각 step 완료 시 `{step_id, type, value}`. frontend `TaskResultLayer` 가 type 별 자동 렌더링 (Detection→sphere, Position3→marker)
+
+상세 (Step/Slot/StepContext 작동, ForEach unroll, 새 step / task 짜는 법, lego test 통과 근거) 는 [docs/step_dsl.md](docs/step_dsl.md).
 
 ### Detector → 월드 좌표 파이프라인
 
@@ -232,7 +254,9 @@ PointCloudNode (PC) — [backend/nodes/pointcloud_node.py](backend/nodes/pointcl
 
 ### Frontend stores & 3D 워크스페이스
 
-상태는 [frontend/src/store/](frontend/src/store/)의 Zustand store로 분리 (`robotStore`, `cameraStore`, `motionStore`, `taskStore`, `detectorStore`, `systemStore`, `sceneStore`, `pointCloudStore`). `Workspace3D` 페이지 ([frontend/src/pages/Workspace3D.tsx](frontend/src/pages/Workspace3D.tsx))는 `dockview` 플로팅 패널 위에 `react-three-fiber` 씬 + `urdf-loader` — 패널은 [frontend/src/components/workspace3d/dockview/panelComponents.ts](frontend/src/components/workspace3d/dockview/panelComponents.ts)에 등록. URDF에 들어가는 조인트각은 `MOTOR_STATE_JOINT`에서 `(position - 2048) / 4095 * 2π` 형태로 도출 (`units.raw_to_rad`와 일치).
+상태는 [frontend/src/store/](frontend/src/store/)의 Zustand store로 분리 (`robotStore`, `cameraStore`, `motionStore`, `taskStore`, `taskResultStore`, `detectorStore`, `systemStore`, `sceneStore`, `pointCloudStore`). `Workspace3D` 페이지 ([frontend/src/pages/Workspace3D.tsx](frontend/src/pages/Workspace3D.tsx))는 `dockview` 플로팅 패널 위에 `react-three-fiber` 씬 + `urdf-loader` — 패널은 [frontend/src/components/workspace3d/dockview/panelComponents.ts](frontend/src/components/workspace3d/dockview/panelComponents.ts)에 등록. URDF에 들어가는 조인트각은 `MOTOR_STATE_JOINT`에서 `(position - 2048) / 4095 * 2π` 형태로 도출 (`units.raw_to_rad`와 일치).
+
+Task step 결과 시각화는 `taskResultStore` 가 `TASK_STEP_RESULT` 누적 → [TaskResultLayer.tsx](frontend/src/components/canvas/3d/TaskResultLayer.tsx) 가 type 별 dispatch (Detection→sphere, Position3→marker). 새 typed value 추가 시 layer 한 줄 추가로 끝 — task 코드는 안 건드림.
 
 ## 규약
 

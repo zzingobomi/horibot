@@ -207,133 +207,43 @@
 - **양보 못 하는 두 제약**: **(a) 모든 변 ≥30mm** **(b) per-layer visual re-grounding**
 
 - **의존성**:
-  - **공통**: 포인트클라우드 / TSDF 인프라 (있음). SearchAndDetect enumerate 모드. PalletizeStep. observation pose 정의. Current-spike contact detect. 셋업 reach mask 사전 계산
-  - **선결**: prerequisite 7개 wire-up. 그중 #2 (`Position3` → `Pose6`) + Step DSL 전반 정리는 별도 entry **Step DSL 레고화** 로 격상됨 — Palletizing 본격 시작 전에 그 작업 완료 필요. 나머지 6개 wire-up (Detector / Motion API / Grasp enumerator / Reach filter / Descent / Pick yaw) 도 Step DSL 레고화 작업 안에 흡수해서 같이 처리.
+  - **공통**: 포인트클라우드 / TSDF 인프라 (있음). 객체 enumerate 모드 (recipe 화 가능). PalletizeStep. observation pose 정의. Current-spike contact detect. 셋업 reach mask 사전 계산
+  - **선결**: 회전 박스 wire-up 6개 (Detector cluster decomp / Motion API quaternion / Grasp enumerator + J5 closest-arc / Reach filter / Orientation-lock descent / Placement-aware pick yaw). `Position3` → `Pose6` typed schema + Step DSL 토대는 [step_dsl.md](step_dsl.md) 에서 완성됨. 나머지 6개 wire-up 은 Palletizing 본 작업 범위.
   - **Track A**: greedy BLF + height map + 측정 hook (~수백 줄)
   - **Track B**: B.1-B.10 각각 수일~수주. PyBullet sim env (B.6, B.7 공유). OR-Tools (B.2). Open3D ICP 변종 (B.9). 모듈별 paper reference 별도 정리 가치
-
----
-
-## Step DSL 레고화 (★ 유력, Palletizing/LLM 양쪽 prereq)
-
-- **한 줄**: 현 step 들이 너무 거대 + 데이터 자유 dict + 동적 흐름 표현 X 라 **조립이 안 됨**. 작은 primitive + typed schema + 흐름 제어 step 으로 리팩토링.
-
-- **왜**: LLM 무관하게 **Python 코드로 새 task 짤 때부터 building block 재사용 안 됨**. [pick_and_place.py](../backend/modules/task/tasks/pick_and_place.py) 의 pick 단계 (hover→descent→grip→lift) 가 매크로 안에 묻혀있어 Palletizing 의 pick 에 그대로 재사용 X. 새 task 마다 비슷한 큰 매크로 또 만드는 패턴 반복. **task-agnostic 인프라 부채**. Palletizing 의 "선결 prerequisite — 회전 박스 grasp pipeline" 7개 wire-up 중 #2 (`Position3` → `Pose6`) 가 이 부채를 정통으로 건드림 → 두 작업 묶어서 한 번에 손봄.
-
-- **근본 원인 3개**:
-
-  1. **Step 이 너무 거대** — `SearchAndDetectStep` 안에 "여러 자세 순회 + 검출 + 첫 성공 break" 한 덩어리. 그중 하나만 못 씀 (search pose 이동 + 다른 검출, 다른 break 조건 등).
-  2. **데이터가 자유 dict** — `context.data: dict` 에 키 이름 의존. step A 의 `output_key` 가 step B 의 `input_key` 와 type 맞는지 run-time 까지 모름. 새 task 짤 때 무슨 키가 어떤 형태인지 외워야 함.
-  3. **동적 흐름 표현 수단 없음** — "검출 결과 보고 다음 step 결정" 같은 분기/반복이 `list[Step]` 에 표현 X. 매크로로 우회 → #1 의 원인.
-
-- **작업 방향**:
-
-  | 문제            | 해결                                                                                                                       |
-  | --------------- | -------------------------------------------------------------------------------------------------------------------------- |
-  | 1. step 이 거대 | 작은 primitive 분해 (예: `SearchAndDetectStep` → `MoveToPoseStep` + `GroundedDetectStep`)                                  |
-  | 2. dict 자유    | typed schema (`Position3` / `Pose6` / `Detection` 클래스). step 입출력 타입 명시. plan-time 에 reference / type validation |
-  | 3. 동적 흐름 X  | `ForEachStep` / `BreakOnSuccessStep` 같은 흐름 제어 step 추가. TaskRunner 가 runtime 에 unroll                             |
-  | 매크로 보존     | 자주 쓰는 조합은 **recipe 함수** 로 유지. 내부적으로 primitive 조합 반환. 편의 + 기존 task regression                      |
-
-- **작업 범위 (~4-5주)**:
-
-  1. `Pose6` / `Detection` / `ObjectMeta` 등 typed schema 정의 + `TaskContext` 가 typed accessor 노출
-  2. 매크로 step 분해 (primitive + 흐름 제어 step). 기존 11개 step 마이그레이션
-  3. **회전 박스 wire-up 7개 (Palletizing prerequisite) 같이** — `Position3` → `Pose6` 확장과 통합. Detector segmentation + cluster decomposition / Motion API quaternion / Grasp candidate enumerator + J5 closest-arc / Reachability filter / Orientation-lock descent / Placement-aware pick yaw
-  4. 기존 task ([pick_and_place](../backend/modules/task/tasks/pick_and_place.py)) regression — 새 구조로 동등 동작
-  5. 매크로 → recipe 함수 (편의용, 내부는 primitive 조합)
-
-- **LLM 도입 시점에 추가 작업** (지금은 안 함):
-
-  - 흐름 제어 step 의 LLM 노출 + system prompt few-shot
-  - JSON schema 자동 추출 (typed schema 로부터 dataclass reflection)
-  - LLM orchestrator 섹션의 "4축" 중 **축 1 (Control flow 위치)** / **축 4 (비용 모델)** 본격 결정. 본 작업에서 **축 2 (typed schema)** / **축 3 (primitive 입도)** 는 일부 진행.
-
-- **리스크 / 트레이드오프**:
-
-  - 기존 11개 step 마이그레이션 — TaskRunner / Workspace3D 시각화 / 토픽 스키마 영향. regression suite 깔아둬야 함
-  - 흐름 제어 step (`ForEachStep`) 가 LLM 무관해도 도입 정당한가? Python 코드면 `for` 가 자연스럽지만, TaskRunner 가 step list 만 받는 구조 + UI 시각화 (`omx/task/state`) + 진행 추적 위해 step 단위 명시 필요 → 도입 정당
-
-- **의존성**:
-  - Palletizing 의 "선결 prerequisite — 회전 박스 grasp pipeline" 의 #2 (`Position3` → `Pose6`) 를 이 작업에 흡수. **Palletizing 본격 시작 전에 이 entry 가 먼저 완료** 되어야 함
-  - LLM orchestrator 섹션의 "결정 보류 — 4축" 중 축 1, 축 4 는 LLM 도입 시점에 결정. 이 작업에서는 축 2, 축 3 부분 진행
 
 ---
 
 ## LLM task orchestrator (★ 유력)
 
 - **한 줄**: 자연어 task 요청 → Local LLM 이 step list 를 JSON 으로 생성 → 기존 TaskRunner 가 실행.
-- **왜**: 지금 [pick_and_place.py](../backend/modules/task/tasks/pick_and_place.py) 같은 task 는 `(pick_object, place_object)` 2-슬롯 템플릿이라 "큐브 다 박스에" (loop), "빨간 건 X, 파란 건 Y" (분기), "책상 정리해줘" (목표 추상화), 이종 task 연결 등이 안 됨. step primitive 는 이미 [step_types.py](../backend/modules/task/step_types.py) 에 11개 있고 충분히 표현력 있는데, **조합을 사람이 코드로 짜야** 한다는 게 병목.
-- **어떻게**:
 
-  1. system prompt 에 11개 primitive 문법 + few-shot 2-3개 박기 (pick_and_place 시퀀스 그대로 정답 예시).
-  2. JSON list → Step[] 디시리얼라이저 (~30줄, `type` literal 을 dispatch key 로).
-  3. [prompt_parser.py](../backend/modules/llm/prompt_parser.py) 옆에 `task_planner.py` — 같은 모델/lock 재사용, 출력 스키마만 다름.
-  4. TaskRunner 진입점 하나 추가 — 자연어 prompt → planner → Task → 실행.
-  5. **Dry-run preview UI** — 프론트 `PromptPanel` 에 LLM 이 짠 step list 먼저 띄우고 사용자 confirm 해야 실행. 환각 1번이 충돌로 이어지는 거 막음.
+- **왜**: 지금 [pick_and_place.py](../backend/modules/task/tasks/pick_and_place.py) 같은 task 는 `(pick_object, place_object)` 2-슬롯 템플릿이라 "큐브 다 박스에" (loop), "빨간 건 X, 파란 건 Y" (분기), "책상 정리해줘" (목표 추상화), 이종 task 연결 등이 안 됨. **Step DSL lego refactor 완료** ([step_dsl.md](step_dsl.md)) 로 primitive + recipe + control flow (`ForEach`/`Try`/`BreakIf`) 다 정리돼서 LLM 이 조립할 토대 준비됨. 남은 일은 **plumbing** (LLM 출력 → Task 변환 + schema 자동 추출 + dry-run preview).
 
-- **Step primitive 입도 재검토 (선결 과제)**:
+- **어떻게** (작업 list):
 
-  - 현재 step 들 중 `SearchAndDetectStep` 은 "search pose 순회 + grounded_detect + 첫 성공 break" 를 하드코딩한 **매크로**. LLM 입장에선 호출은 쉽지만 **조합 자유도 없음** — search 하면서 detect 외 다른 행동 끼우거나, 다른 break 조건 쓰거나 못함.
-  - 동적 step 조합을 진짜로 하려면 search pose 이동 / detect / loop / break-on-success 가 **별개 primitive** 여야 함. 현재 `list[Step]` 은 flat — 분기/루프 표현 수단 자체가 없어서 매크로 step 으로 우회 중인 상태.
-  - 두 방향:
-    - **순수 primitive + control flow** (`MoveToSearchPoseStep`, `GroundedDetectStep`, `ForEachStep`, `BreakOnSuccessStep`, `IfStep`): 표현력 ↑, 새 task 패턴마다 클래스 추가 X. 단점은 LLM 이 루프 조건/탈출/context 키 일관성 잘못 짜면 무한루프나 빈 context 참조로 task 전체 깨짐 — 환각 면적 ↑.
-    - **매크로 위주 유지**: 환각 면적 작음, 검증된 시퀀스 보존. 새 패턴마다 클래스 추가 필요해서 확장성 ↓, LLM 은 그냥 매크로 dispatcher 역할.
-  - **권장: 두 층 공존**. (a) primitive (`MoveToSearchPoseStep`, `GroundedDetectStep`, `ForEachStep`, `BreakOnSuccessStep`) 를 LLM 에 노출 + (b) 검증된 composite "recipe" step (`SearchAndDetectStep`, `PalletizeStep` 등) 도 유지. LLM 은 단순/잘 알려진 task 는 recipe 호출, 새로운 조합이 필요할 땐 primitive 직접 조합. system prompt 에 "가능하면 recipe 우선, 안 맞으면 primitive 조합" 가이드.
-  - **선결 검증**: 기존 매크로 (`SearchAndDetectStep`) 가 primitive 조합 (`ForEach(search_poses) { GroundedDetect; BreakOnSuccess }`) 으로 동일하게 재현되는지 regression. 둘 다 유지하려면 의미 일치가 전제.
+  1. system prompt — primitive + recipe 카탈로그 (`step_dsl.md` 의 표 그대로 활용) + few-shot 2-3개 (pick_and_place 정답 plan)
+  2. dataclass → JSON schema 자동 reflection (~50줄). [step.py](../backend/modules/task/step.py) 의 `step_to_dict` 가 출력 schema 이미 정의 — 그 역방향 deserializer
+  3. Slot 참조 JSON 표기 결정 (`{"$ref": "step-xxx"}` 같은) + plan-time 검증 (잘못된 step_id 참조 reject)
+  4. [prompt_parser.py](../backend/modules/llm/prompt_parser.py) 옆에 `task_planner.py` — 같은 모델/lock 재사용, 출력 스키마만 다름
+  5. TaskNode 진입점 추가 — 자연어 prompt → planner → Task → 실행
+  6. **Dry-run preview UI** — [PromptPanel](../frontend/src/components/panels/PromptPanel.tsx) 에 LLM 이 짠 step list 먼저 띄우고 사용자 confirm 해야 실행. 환각 1번이 충돌로 이어지는 거 막음
 
-- **결정 보류 — primitive 깎기 전 픽스해야 할 4개 축** (다음 세션에서 토론):
+- **결정 정리** (Step DSL refactor 로 사실상 정리됨):
 
-  네 축은 직교 — 각각 독립으로 결정되지만 합쳐서 step DSL 의 전체 모양을 정함. 결정 없이 "일단 primitive 클래스 1개 짜보자" 들어가면 그게 default 가 돼서 후회. 4개 축에 결론 박힌 후 코드 시작.
-
-  **축 1. Control flow 가 어디에 사는가 — 가장 큰 fork**:
-
-  - (A) **step DSL 안** — LLM 이 `ForEachStep` / `IfStep` / `BreakOnSuccessStep` 포함된 plan 을 1회 emit, TaskRunner 가 그대로 실행. LLM 호출 1번.
-  - (B) **planner 재호출 loop — ReAct 식** — LLM 이 짧은 sequence 만 emit → 실행 → 결과 (context, observation) 보고 다음 sequence emit. step DSL 은 sequential only, 분기/루프는 "다음 emit" 으로 표현.
-  - (C) **하이브리드** — sequence + 명시적 `ReplanStep` 으로 일정 지점에서만 planner 재호출.
-  - 트레이드오프: (A) 표현력 ↑ + 1회 호출이지만 환각 면적 ↑ + "루프 어디서 잘못됐나" 디버깅 지옥. (B) 환각 회복 쉬움 + 작은 모델 OK + environment 가 변하는 task 에 강함, 단 LLM latency 누적 + planner-runner protocol 새로 정의. (C) 균형 but 체크포인트 위치 결정이 새 골치.
-  - **이걸 먼저 정해야 나머지 축 풀림**: (A) 면 `ForEach`/`If`/`Break` primitive 자체를 설계해야 함. (B) 면 control flow primitive 가 아예 불필요해지고 대신 "어떤 시점에 planner 다시 부를지" 의 runner ↔ planner 프로토콜이 핵심.
-
-  **축 2. Context 타입화 수준**:
-
-  - 현재 [TaskContext.data: dict](../backend/modules/task/step_types.py#L191-L204) — 자유분방. `MoveTCPStep.position_key` 가 가리키는 값이 실제로 `Position3` 인지 run-time 까진 모름. fragility 의 원천.
-  - 옵션:
-    - (a) **typed schema** — `Position3` / `Pose6` / `Detection` / `ObjectMeta` 등 타입 정의 + 각 step 의 입출력 키 타입 선언. plan-time 에 reference + type validation.
-    - (b) **dict 유지 + LLM 출력만 schema validate** — context 흐름은 그대로 자유.
-    - (c) **Pydantic 전구간** — 데이터 흐름 자체를 타입 객체.
-  - 트레이드오프: (a)/(c) 가 LLM 환각의 큰 부분 (없는 키 / 타입 mismatch) 을 run-time 전에 reject 가능. 비용 = 타입 정의 유지 + 새 데이터 추가 시 schema 등록 절차.
-  - 답이 어느 정도 (a) 방향으로 정해진 축이지만, **어디까지 타입 박을지 (모든 키 vs hot path 만)** 는 결정 필요.
-
-  **축 3. Primitive 입도 기준선 — "verb 1개" 의 정의**:
-
-  - 현 step 입도 제각각: `MoveTCPStep` (한 동작), `SearchAndDetectStep` (순회 + 검출 + break), `GraspPolicyStep` (policy 계산만, motion X), `PalletizeStep` (전체 cycle). 일관 기준 없이 case-by-case 로 추가돼옴.
-  - 기준 후보:
-    - (a) "한 번의 motion 또는 한 번의 perception 또는 한 번의 context write — 셋 중 하나만"
-    - (b) "외부 부수효과 (motor 명령 / 카메라 capture) 가 1회 이하"
-    - (c) "기대 실행 시간 ≤ N초"
-    - 또는 위 조합.
-  - 트레이드오프: 엄격한 기준 = primitive 수 ↑ + LLM 이 짜야 할 sequence 길이 ↑ + 환각 면적 ↑. 느슨한 기준 = 지금처럼 case-by-case 매크로화 재발 (= 이 섹션의 우려 그대로).
-  - 결정되면 기존 step (`SearchAndDetect` / `GraspPolicy` / `PlacePolicy` / `Palletize`) 의 재분류 또는 분해 가이드가 자동으로 따라옴.
-
-  **축 4. 새 primitive 추가 비용 모델**:
-
-  - primitive 1개 추가할 때 필요한 작업: (i) 클래스, (ii) executor handler, (iii) LLM system prompt schema, (iv) few-shot 예시, (v) 조합 regression — 어디까지 자동 / 어디까지 손?
-  - 비용 모델이 안 좋으면 "이번 한 번만 매크로로" 패턴이 반복돼서 결국 매크로화로 회귀. 즉 축 3 의 결정이 무력화됨.
-  - 결정 항목: schema 자동 생성 (dataclass → JSON schema reflection 가능한가?), few-shot 자동/수동, regression suite 구조.
-
-  **토론 시작점 — 현 코드 앵커**:
-
-  - [step_types.py](../backend/modules/task/step_types.py) — 현재 11개 step 정의 + `TaskContext`. 입도 비교 baseline.
-  - [step_executor.py](../backend/modules/task/step_executor.py) — step → handler dispatch. 축 3 결정 시 "어디까지 쪼개야 자연스러운지" 가 코드에서 보임.
-  - [task_runner.py](../backend/modules/task/task_runner.py) — 현재 sequential 실행만, control flow 없음. 축 1 옵션 (A) 가면 손볼 게 큼, (B) 면 planner 호출 hook 만 추가.
-  - [tasks/pick_and_place.py](../backend/modules/task/tasks/pick_and_place.py) — 현 task DSL 의 가장 정직한 사용 예. 축 2/3 의 "지금 얼마나 자유분방한지" 가 보임.
-  - [prompt_parser.py](../backend/modules/llm/prompt_parser.py) — 이미 굴러가는 LLM 인프라 (모델 lock / preload / JSON 파싱 / fallback). planner 는 이 위에 얹음.
+  | 축 | 옛 상태 | 현재 |
+  | --- | --- | --- |
+  | 1. Control flow 위치 | (A) step DSL 안 / (B) planner 재호출 / (C) hybrid 보류 | ✅ **(A) 선택** — `ForEach`/`BreakIf`/`Try` 가 step DSL 안 first-class |
+  | 2. Context 타입화 | dict 유지 / typed / Pydantic 미정 | ✅ **typed schema** — Position3/Pose6/Detection + Slot[T] |
+  | 3. Primitive 입도 | 기준 미정 | ✅ **primitive + recipe 두 층** — [step_dsl.md](step_dsl.md) §10 참조 |
+  | 4. 새 primitive 비용 모델 | schema reflection 가능한가 미정 | ⏳ **LLM 도입 시점에 결정** — dataclass `fields()` reflection 으로 자동 생성 가능 여부 본격 점검 |
 
 - **리스크 / 트레이드오프**:
-  - Qwen2.5-1.5B 는 2-슬롯 추출은 잘 하지만 15-step JSON 의 `input_key`/`output_key` 일관 체이닝 (e.g. `SearchAndDetect.output_key="pick"` ↔ `GraspPolicy.input_key="pick"`) 은 환각 잦을 가능성. 안 되면 Qwen2.5-3B / Phi-3.5-mini 로 올림 (RTX 3060 가능).
-  - 환각 방지는 `type` literal whitelist + 참조 검증 (없는 키 참조 시 reject + 재호출).
-  - **매크로 vs primitive 입도** 결정이 환각 면적 / 표현력 직접 트레이드오프 — primitive 만 가면 LLM 이 루프/탈출 잘못 짜서 무한루프, 매크로만 가면 모든 새 패턴이 코드 추가.
-- **의존성**: 이미 [prompt_parser.py](../backend/modules/llm/prompt_parser.py) 인프라 (모델 로드/lock/preload/JSON 파싱/fallback) 굴러감. 추가 작업 적음.
+  - Qwen2.5-1.5B 는 2-슬롯 추출은 잘 하지만 multi-step plan 의 Slot 참조 일관성은 환각 잦을 가능성. 안 되면 Qwen2.5-3B / Phi-3.5-mini 로 올림 (RTX 3060 가능). 다만 typed Slot 으로 plan-time 검증 → 환각 *수용 가능 한도* 낮춤.
+  - 환각 방지는 `type` literal whitelist + Slot 참조 검증 (없는 step_id 참조 시 reject + 재호출)
+  - LLM 이 recipe 우선 호출 / 새 조합엔 primitive 분해 — system prompt 가이드로 처리
+
+- **의존성**: 이미 [prompt_parser.py](../backend/modules/llm/prompt_parser.py) 인프라 (모델 로드/lock/preload/JSON 파싱/fallback) 굴러감. Step DSL 토대 완성. 추가 plumbing 약 ~400줄 수준.
 
 ---
 

@@ -21,6 +21,7 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 - [random_palletizing.md](docs/random_palletizing.md) — 사이즈 가변 직육면체 팔레타이징 design (3-track: 휴리스틱 / 정석 / iterative sim2real RL)
 - [so101_6dof_plan.md](docs/so101_6dof_plan.md) — SO-101 6DOF 두 번째 로봇 하드웨어 plan (모터 SDK 추상화 / wrist yaw mod / D405 마운트)
 - [multi_robot_architecture.md](docs/multi_robot_architecture.md) — multi-robot platform 업그레이드 design (Adapter/Strategy/DIP 패턴 layer / robot identity / 토픽 namespace 재설계 / Coordinator / 마이그레이션 phase)
+- [multi_robot_walkthrough.md](docs/multi_robot_walkthrough.md) — Phase 1 (foundation) 산출물 + 클래스/시퀀스 다이어그램 + Phase 2 남은 작업 follow-up 가이드. **코드 읽으며 학습할 때 anchor**
 - [roadmap.md](docs/roadmap.md) — 진행 중/예정 작업
 
 ## 자주 쓰는 명령어

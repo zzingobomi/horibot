@@ -8,16 +8,13 @@ robot/config/robot_poses.yaml 을 1회 읽어 메모리 캐시.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TypedDict
 
 import yaml
 
-logger = logging.getLogger(__name__)
+from core.robot_registry import RobotRegistry
 
-ROBOT_POSES_PATH = (
-    Path(__file__).parents[2] / "robot" / "config" / "robot_poses.yaml"
-)
+logger = logging.getLogger(__name__)
 
 
 class JointAngle(TypedDict):
@@ -33,11 +30,12 @@ def _load_all() -> dict[str, list[JointAngle]]:
     if _cache is not None:
         return _cache
 
-    with open(ROBOT_POSES_PATH, "r", encoding="utf-8") as f:
+    poses_path = RobotRegistry().default().robot_poses_yaml
+    with open(poses_path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     if not isinstance(raw, dict) or not raw:
-        raise ValueError(f"robot_poses.yaml: 비어있거나 dict 아님 ({ROBOT_POSES_PATH})")
+        raise ValueError(f"robot_poses.yaml: 비어있거나 dict 아님 ({poses_path})")
 
     parsed: dict[str, list[JointAngle]] = {}
     for name, joints_raw in raw.items():

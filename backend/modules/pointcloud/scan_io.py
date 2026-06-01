@@ -17,10 +17,25 @@ from typing import Sequence
 
 import numpy as np
 
-ROBOT_DIR = Path(__file__).parents[3] / "robot"
-SCANS_DIR = ROBOT_DIR / "scans"
-MODELS_DIR = ROBOT_DIR / "models"
-CALIB_DIR = ROBOT_DIR / "calibration"
+from core.robot_registry import RobotRegistry
+
+
+def _scans_dir() -> Path:
+    return RobotRegistry().default().scans_dir
+
+
+def meshes_dir() -> Path:
+    """TSDF mesh output dir (per-instance). robot_id 도입 시 인자 추가."""
+    return RobotRegistry().default().meshes_dir
+
+
+def _calib_dir() -> Path:
+    return RobotRegistry().default().calibration_dir
+
+
+def robot_root() -> Path:
+    """robot/ root path (frontend 가 fetch 할 때의 base path 계산용)."""
+    return Path(__file__).parents[3] / "robot"
 
 _SESSION_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 _SCAN_FILE_RE = re.compile(r"^scan_(\d+)\.npz$")
@@ -37,14 +52,14 @@ def make_default_session_id() -> str:
 
 
 def session_dir(sid: str) -> Path:
-    return SCANS_DIR / validate_session_id(sid)
+    return _scans_dir() / validate_session_id(sid)
 
 
 def list_session_ids() -> list[str]:
-    if not SCANS_DIR.exists():
+    if not _scans_dir().exists():
         return []
     return sorted(
-        p.name for p in SCANS_DIR.iterdir() if p.is_dir() and _SESSION_RE.match(p.name)
+        p.name for p in _scans_dir().iterdir() if p.is_dir() and _SESSION_RE.match(p.name)
     )
 
 
@@ -109,11 +124,11 @@ def list_scans(sdir: Path) -> list[Path]:
 def calib_meta_dict() -> dict:
     """robot/calibration/*.npz의 mtime 묶음. build 시점에 캘 변경 감지용."""
     paths = {
-        "joint_offsets_mtime": CALIB_DIR / "joint_offsets.npz",
-        "link_offsets_mtime": CALIB_DIR / "link_offsets.npz",
-        "sag_offsets_mtime": CALIB_DIR / "sag_offsets.npz",
-        "hand_eye_mtime": CALIB_DIR / "hand_eye.npz",
-        "intrinsic_mtime": CALIB_DIR / "intrinsic.npz",
+        "joint_offsets_mtime": _calib_dir() / "joint_offsets.npz",
+        "link_offsets_mtime": _calib_dir() / "link_offsets.npz",
+        "sag_offsets_mtime": _calib_dir() / "sag_offsets.npz",
+        "hand_eye_mtime": _calib_dir() / "hand_eye.npz",
+        "intrinsic_mtime": _calib_dir() / "intrinsic.npz",
     }
     return {k: (p.stat().st_mtime if p.exists() else 0.0) for k, p in paths.items()}
 
@@ -184,7 +199,7 @@ def scan_meta(scan_path: Path) -> dict:
     s = np.load(scan_path, allow_pickle=False)
     return {
         "id": int(s["scan_id"]) if "scan_id" in s.files else 0,
-        "path": scan_path.relative_to(ROBOT_DIR).as_posix(),
+        "path": scan_path.relative_to(robot_root()).as_posix(),
         "timestamp": float(s["timestamp"]),
         "num_frames": int(s["num_frames"]),
     }

@@ -1,11 +1,11 @@
 import logging
 import threading
-from pathlib import Path
 from typing import TypeAlias
 import numpy as np
 import pybullet as p
 
 from core.link_coordinates import LinkCoordinates
+from core.robot_registry import RobotRegistry
 from core.sag_coordinates import SagCoordinates
 from core.urdf_patcher import write_patched_urdf
 from modules.kinematics.fk_chain import (
@@ -24,10 +24,6 @@ _ARM_DOF: int = 5
 Position3: TypeAlias = tuple[float, float, float]  # [x, y, z] 미터
 Quaternion: TypeAlias = tuple[float, float, float, float]  # [x, y, z, w]
 RotMatrix3x3: TypeAlias = list[list[float]]  # 3x3 회전 행렬
-
-# ─── 상수 ──────────────────────────────────────────────────────
-URDF_PATH = Path(__file__).parents[3] / \
-    "robot" / "urdf" / "omx_f" / "omx_f.urdf"
 IK_MAX_ITER = 100
 IK_TOLERANCE = 1e-4
 IK_POS_ERROR_LIMIT = 0.01
@@ -52,7 +48,8 @@ class PybulletSolver:
         # link_offsets.npz가 있으면 patched URDF 생성 (없으면 mesh 절대경로화만).
         # patched URDF는 robot/urdf/omx_f/.patched/omx_f.urdf — gitignored.
         link_offsets = LinkCoordinates().snapshot()
-        urdf_to_load = write_patched_urdf(URDF_PATH, link_offsets)
+        urdf_path = RobotRegistry().default().urdf_path
+        urdf_to_load = write_patched_urdf(urdf_path, link_offsets)
         if not link_offsets.is_empty():
             logger.info(f"patched URDF 로드: {urdf_to_load}")
 

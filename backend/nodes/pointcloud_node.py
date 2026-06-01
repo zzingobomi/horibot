@@ -239,7 +239,7 @@ class PointCloudNode(BaseNode):
                     "session_id": sid,
                     "scan_id": scan_id,
                     "path": scan_path.relative_to(
-                        scan_io.ROBOT_DIR).as_posix(),
+                        scan_io.robot_root()).as_posix(),
                     "num_frames": len(frames),
                 },
             }
@@ -336,7 +336,7 @@ class PointCloudNode(BaseNode):
                 }
 
             scans = [scan_io.load_scan(p) for p in npz_paths]
-            out_path = scan_io.MODELS_DIR / f"mesh_{sid}.ply"
+            out_path = scan_io.meshes_dir() / f"mesh_{sid}.ply"
 
             t0 = time.time()
             result = tsdf_builder.build_mesh(
@@ -364,7 +364,7 @@ class PointCloudNode(BaseNode):
                 "data": {
                     "session_id": sid,
                     "path": out_path.relative_to(
-                        scan_io.ROBOT_DIR).as_posix(),
+                        scan_io.robot_root()).as_posix(),
                     "vertex_count": result.vertex_count,
                     "triangle_count": result.triangle_count,
                     "n_scans": result.n_scans,
@@ -379,15 +379,15 @@ class PointCloudNode(BaseNode):
             self._capture_lock.release()
 
     def _srv_list_meshes(self, _req: dict) -> dict:
-        scan_io.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        scan_io.meshes_dir().mkdir(parents=True, exist_ok=True)
         meshes = []
-        for p in sorted(scan_io.MODELS_DIR.glob("mesh_*.ply")):
+        for p in sorted(scan_io.meshes_dir().glob("mesh_*.ply")):
             try:
                 stat = p.stat()
                 sid = p.stem[len("mesh_"):]
                 meshes.append({
                     "session_id": sid,
-                    "path": p.relative_to(scan_io.ROBOT_DIR).as_posix(),
+                    "path": p.relative_to(scan_io.robot_root()).as_posix(),
                     "size": int(stat.st_size),
                     "mtime": float(stat.st_mtime),
                 })

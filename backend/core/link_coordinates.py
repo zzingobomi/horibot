@@ -23,18 +23,18 @@ from __future__ import annotations
 
 import logging
 import threading
-from pathlib import Path
 
 import numpy as np
 
+from core.robot_registry import RobotRegistry
 from modules.calibration import link_offsets as link_offsets_io
 from modules.calibration.link_offsets import LinkOffsets
 
-LINK_OFFSETS_PATH = (
-    Path(__file__).parents[2] / "robot" / "calibration" / "link_offsets.npz"
-)
-
 logger = logging.getLogger(__name__)
+
+
+def _link_offsets_path():
+    return RobotRegistry().default().calibration_dir / "link_offsets.npz"
 
 
 class LinkCoordinates:
@@ -54,7 +54,7 @@ class LinkCoordinates:
             return
         self._initialized = True
         self._cache_lock = threading.Lock()
-        self._offsets: LinkOffsets = link_offsets_io.load(LINK_OFFSETS_PATH)
+        self._offsets: LinkOffsets = link_offsets_io.load(_link_offsets_path())
         if not self._offsets.is_empty():
             n = max(len(self._offsets.trans), len(self._offsets.rot))
             logger.info(f"link_offsets 적용: {n} joints")
@@ -87,7 +87,7 @@ class LinkCoordinates:
 
         다른 머신 전파는 git pull + 재시작.
         """
-        link_offsets_io.save(LINK_OFFSETS_PATH, offsets, method=method)
+        link_offsets_io.save(_link_offsets_path(), offsets, method=method)
         with self._cache_lock:
             self._offsets = LinkOffsets(
                 trans=dict(offsets.trans),

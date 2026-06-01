@@ -1,0 +1,9 @@
+# Instance-level config — 이 물리 robot 개체의 specific 설정.
+# Type-level (motor spec, joint limit 등) 은 robot/<robot_type>/motors.yaml.
+# multi_robot_architecture.md §5.1.2 split 기준 참조.
+
+motor:
+  port:
+    windows: "COM6"
+    linux: /dev/ttyACM0
+  baudrate: 1000000

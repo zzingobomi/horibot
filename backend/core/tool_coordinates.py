@@ -18,18 +18,18 @@ from __future__ import annotations
 
 import logging
 import threading
-from pathlib import Path
 
 import numpy as np
 
+from core.robot_registry import RobotRegistry
 from modules.calibration import tool_offset as tool_offset_io
 from modules.calibration.tool_offset import ToolOffset
 
-TOOL_OFFSET_PATH = (
-    Path(__file__).parents[2] / "robot" / "calibration" / "tool_offset.npz"
-)
-
 logger = logging.getLogger(__name__)
+
+
+def _tool_offset_path():
+    return RobotRegistry().default().calibration_dir / "tool_offset.npz"
 
 
 class ToolCoordinates:
@@ -49,7 +49,7 @@ class ToolCoordinates:
             return
         self._initialized = True
         self._cache_lock = threading.Lock()
-        self._offset: ToolOffset = tool_offset_io.load(TOOL_OFFSET_PATH)
+        self._offset: ToolOffset = tool_offset_io.load(_tool_offset_path())
         if not self._offset.is_empty():
             logger.info(
                 "tool_offset 적용: trans_mm=%s",
@@ -78,7 +78,7 @@ class ToolCoordinates:
 
         URDF patch 안 함 → PybulletSolver 재시작 불필요. 단 다른 머신은 git pull + 재시작.
         """
-        tool_offset_io.save(TOOL_OFFSET_PATH, offset, method=method)
+        tool_offset_io.save(_tool_offset_path(), offset, method=method)
         with self._cache_lock:
             self._offset = ToolOffset(
                 trans_m=offset.trans_m.copy(),

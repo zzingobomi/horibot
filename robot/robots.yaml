@@ -1,0 +1,18 @@
+# Horibot robot instance registry.
+# multi_robot_architecture.md §4.3 의 single source of truth.
+# 각 entry 의 key 가 robot_id (instance identifier).
+# Paths (urdf/calibration/...) 는 RobotRegistry 가 robot_type / robot_id 로 자동 조립
+# — 매 entry 마다 적지 않음 (§4.3).
+
+robots:
+  omx_f_0:
+    type: omx_f
+    enabled: true
+    host: dev              # single machine dev. 분산: pi_motor / pi_camera / pc
+    motor_backend: dynamixel
+    iksolver: pybullet
+
+# Phase 2+ — Cooperation 영역 (so101 도착 시 활성화).
+# cooperation:
+#   pairs:
+#     - [omx_f_0, so101_6dof_0]   # robot-to-robot extrinsic 적용 pair

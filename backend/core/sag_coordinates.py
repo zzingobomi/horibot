@@ -22,16 +22,16 @@ from __future__ import annotations
 
 import logging
 import threading
-from pathlib import Path
 
+from core.robot_registry import RobotRegistry
 from modules.calibration import sag_offsets as sag_offsets_io
 from modules.calibration.sag_offsets import SagOffsets
 
-SAG_OFFSETS_PATH = (
-    Path(__file__).parents[2] / "robot" / "calibration" / "sag_offsets.npz"
-)
-
 logger = logging.getLogger(__name__)
+
+
+def _sag_offsets_path():
+    return RobotRegistry().default().calibration_dir / "sag_offsets.npz"
 
 
 class SagCoordinates:
@@ -51,7 +51,7 @@ class SagCoordinates:
             return
         self._initialized = True
         self._cache_lock = threading.Lock()
-        self._offsets: SagOffsets = sag_offsets_io.load(SAG_OFFSETS_PATH)
+        self._offsets: SagOffsets = sag_offsets_io.load(_sag_offsets_path())
         if not self._offsets.is_empty():
             ks = ", ".join(
                 f"J{jid}={k:+.4f}"
@@ -82,7 +82,7 @@ class SagCoordinates:
         시점에 메모리 캐시에서 읽으니까 다음 호출부터 자동 반영. 단 다른 머신은
         git pull + 재시작 (joint/link와 동일).
         """
-        sag_offsets_io.save(SAG_OFFSETS_PATH, offsets, method=method)
+        sag_offsets_io.save(_sag_offsets_path(), offsets, method=method)
         with self._cache_lock:
             self._offsets = SagOffsets(k_rad_per_m=dict(offsets.k_rad_per_m))
         return self.snapshot()

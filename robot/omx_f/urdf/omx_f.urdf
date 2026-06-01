@@ -30,7 +30,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_01_base.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_01_base.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -39,7 +39,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_01_base.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_01_base.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -63,7 +63,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_02_base_tilt_Revised.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_02_base_tilt_Revised.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -72,7 +72,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_02_base_tilt_Revised.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_02_base_tilt_Revised.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -96,7 +96,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_03_middle_verticle.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_03_middle_verticle.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -105,7 +105,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_03_middle_verticle.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_03_middle_verticle.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -129,7 +129,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_04_middle_horizontal.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_04_middle_horizontal.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -138,7 +138,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_04_middle_horizontal.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_04_middle_horizontal.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -162,7 +162,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_05_tip.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_05_tip.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -171,7 +171,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_05_tip.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_05_tip.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -195,7 +195,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_06_pan_Revised_d405.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_06_pan_Revised_d405.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -204,7 +204,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_06_pan_Revised_d405.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_06_pan_Revised_d405.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -228,7 +228,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_07_gripper_motorized.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_07_gripper_motorized.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -237,7 +237,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_07_gripper_motorized.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_07_gripper_motorized.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -262,7 +262,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_08_gripper_gear.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_08_gripper_gear.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>
@@ -271,7 +271,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="../../meshes/omx_f/follower_08_gripper_gear.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="meshes/follower_08_gripper_gear.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="grey">
         <color rgba="0.2 0.2 0.2 1"/>

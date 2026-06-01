@@ -3,9 +3,18 @@ import numpy as np
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.robot_registry import RobotRegistry
+
 logger = logging.getLogger(__name__)
 
-CALIB_DIR = Path(__file__).parents[3] / "robot" / "calibration"
+
+def _calib_dir() -> Path:
+    """active robot 의 calibration dir.
+
+    Phase 1 single-robot: RobotRegistry().default(). robot_id 차원 도입 시
+    `load_calibration(robot_id)` signature 변경.
+    """
+    return RobotRegistry().default().calibration_dir
 
 
 @dataclass
@@ -32,8 +41,8 @@ class CalibrationData:
 
 def load_calibration() -> CalibrationData:
     return CalibrationData(
-        intrinsic=_load_intrinsic(CALIB_DIR / "intrinsic.npz"),
-        hand_eye=_load_hand_eye(CALIB_DIR / "hand_eye.npz"),
+        intrinsic=_load_intrinsic(_calib_dir() / "intrinsic.npz"),
+        hand_eye=_load_hand_eye(_calib_dir() / "hand_eye.npz"),
     )
 
 

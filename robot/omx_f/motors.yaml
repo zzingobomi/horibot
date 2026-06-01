@@ -1,8 +1,6 @@
-port:
-  windows: "COM6"
-  linux: /dev/ttyACM0
-
-baudrate: 1000000
+# Type-level motor spec for OMX_F. 같은 type 의 모든 instance 가 공유.
+# Instance-specific (USB port, baud) 는 robot/instances/<robot_id>/instance.yaml.
+# multi_robot_architecture.md §5.1.2 split 기준 참조.
 
 # Default: XL430 P=640/I=0/D=3600, XL330 P=400/I=0/D=0.
 

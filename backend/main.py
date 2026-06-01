@@ -83,10 +83,11 @@ def main():
 
     # ─── D405 intrinsic seed (camera 노드 있을 때만) ──────────
     if "camera" in requested_nodes:
-        from modules.calibration.loader import CALIB_DIR
+        from core.robot_registry import RobotRegistry
         from modules.camera.factory_intrinsic import seed_d405_intrinsic_if_missing
 
-        seed_d405_intrinsic_if_missing(CALIB_DIR / "intrinsic.npz")
+        calib_dir = RobotRegistry().default().calibration_dir
+        seed_d405_intrinsic_if_missing(calib_dir / "intrinsic.npz")
 
     # ─── 노드 인스턴스 생성 ────────────────────────────────────
     instances: dict[str, Any] = {}

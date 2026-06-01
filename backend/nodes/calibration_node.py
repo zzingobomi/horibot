@@ -8,6 +8,7 @@ from pathlib import Path
 from core.base_node import BaseNode
 from core.joint_coordinates import JointCoordinates
 from core.link_coordinates import LinkCoordinates
+from core.robot_registry import RobotRegistry
 from core.sag_coordinates import SagCoordinates
 from modules.calibration.sag_offsets import SagOffsets
 from core.topic_map import Service, Topic
@@ -26,8 +27,13 @@ from modules.kinematics.solver import PybulletSolver
 
 logger = logging.getLogger(__name__)
 
-SAVE_DIR = Path(__file__).parents[2] / "robot" / "calibration"
-HANDEYE_POSES_PATH = SAVE_DIR / "handeye_poses.npz"
+
+def _save_dir() -> Path:
+    return RobotRegistry().default().calibration_dir
+
+
+def _handeye_poses_path() -> Path:
+    return _save_dir() / "handeye_poses.npz"
 
 PREVIEW_INTERVAL = 0.2  # 5Hz
 
@@ -48,7 +54,7 @@ class CalibrationNode(BaseNode):
         self._cache.subscribe(self)
         self._frame_cache.subscribe(self)
 
-        path = SAVE_DIR / "intrinsic.npz"
+        path = _save_dir() / "intrinsic.npz"
         loaded = self.intrinsic.load(path)
 
         if loaded:
@@ -96,7 +102,7 @@ class CalibrationNode(BaseNode):
         self._preview_thread.start()
         # joint_offsets 분산 전파는 git 추적이 담당 (모든 머신 같은 commit).
         # 프론트엔드는 mount 시 /calibration/results로 HTTP fetch.
-        loaded = self.hand_eye.load_poses(HANDEYE_POSES_PATH)
+        loaded = self.hand_eye.load_poses(_handeye_poses_path())
         if loaded > 0:
             logger.info(f"이전 Hand-Eye 포즈 {loaded}개 복원됨")
 
@@ -153,7 +159,7 @@ class CalibrationNode(BaseNode):
                 "data": {},
             }
 
-        path = SAVE_DIR / "intrinsic.npz"
+        path = _save_dir() / "intrinsic.npz"
         self.intrinsic.save(path)
 
         return {
@@ -218,7 +224,7 @@ class CalibrationNode(BaseNode):
 
         self._last_compute = None  # 새 포즈 추가 시 이전 계산 결과 무효화
         try:
-            self.hand_eye.save_poses(HANDEYE_POSES_PATH)
+            self.hand_eye.save_poses(_handeye_poses_path())
         except Exception as e:
             logger.warning("포즈 디스크 저장 실패 (메모리에는 남음): %s", e)
 
@@ -237,9 +243,9 @@ class CalibrationNode(BaseNode):
         self.hand_eye.reset()
         self._last_compute = None
         # 디스크 파일도 삭제 — "처음부터 다시" 의도와 일치.
-        if HANDEYE_POSES_PATH.exists():
+        if _handeye_poses_path().exists():
             try:
-                HANDEYE_POSES_PATH.unlink()
+                _handeye_poses_path().unlink()
             except OSError as e:
                 logger.warning("포즈 파일 삭제 실패: %s", e)
         return {
@@ -305,7 +311,7 @@ class CalibrationNode(BaseNode):
             }
 
         # 1) hand_eye.npz — 카메라↔그리퍼 외부 보정
-        hand_eye_path = SAVE_DIR / "hand_eye.npz"
+        hand_eye_path = _save_dir() / "hand_eye.npz"
         self.hand_eye.save(hand_eye_path)
 
         # 2) joint_offsets.npz — BA가 추정한 delta offset을 cumulative 합산해 디스크 저장 +

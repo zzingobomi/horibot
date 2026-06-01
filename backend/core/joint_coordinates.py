@@ -16,17 +16,22 @@ from __future__ import annotations
 
 import logging
 import threading
-from pathlib import Path
 
+from core.robot_registry import RobotRegistry
 from core.units import raw_to_rad, rad_to_raw
 from modules.calibration import joint_offsets as joint_offsets_io
 from modules.dynamixel.motor_config import MotorConfig
 
-JOINT_OFFSETS_PATH = (
-    Path(__file__).parents[2] / "robot" / "calibration" / "joint_offsets.npz"
-)
-
 logger = logging.getLogger(__name__)
+
+
+def _joint_offsets_path():
+    """현재 active robot 의 calibration dir 에서 joint_offsets.npz path 반환.
+
+    multi-robot Phase: 현재는 RobotRegistry().default() 로 single robot. robot_id
+    차원 도입 (후속 todo) 시 dict[robot_id] 로 변경.
+    """
+    return RobotRegistry().default().calibration_dir / "joint_offsets.npz"
 
 
 class JointCoordinates:
@@ -52,7 +57,7 @@ class JointCoordinates:
             return
         self._initialized = True
         self._cache_lock = threading.Lock()
-        self._offsets: dict[int, float] = joint_offsets_io.load(JOINT_OFFSETS_PATH)
+        self._offsets: dict[int, float] = joint_offsets_io.load(_joint_offsets_path())
         if self._offsets:
             logger.info(
                 "joint_offsets 적용: %s",
@@ -87,9 +92,9 @@ class JointCoordinates:
 
         다른 머신 전파는 git pull + 재시작이 담당.
         """
-        existing = joint_offsets_io.load(JOINT_OFFSETS_PATH)
+        existing = joint_offsets_io.load(_joint_offsets_path())
         merged = joint_offsets_io.merge_delta(existing, delta_by_id)
-        joint_offsets_io.save(JOINT_OFFSETS_PATH, merged, method=method)
+        joint_offsets_io.save(_joint_offsets_path(), merged, method=method)
         with self._cache_lock:
             self._offsets = dict(merged)
         return dict(merged)

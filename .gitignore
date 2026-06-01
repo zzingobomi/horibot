@@ -46,17 +46,17 @@ desktop.ini
 *.pth
 
 # ─── Runtime-patched URDF ──────────────────────────────────────
-# robot/urdf/<robot>/.patched/ 에 link_offsets.npz를 적용한 URDF 캐시.
+# robot/<robot_type>/urdf/.patched/ 에 link_offsets.npz를 적용한 URDF 캐시.
 # 각 머신이 부팅 시 자체 생성 — 푸시/공유 대상 아님.
-robot/urdf/**/.patched/
+# multi_robot_architecture.md §5.1 의 새 구조 기준 (구: robot/urdf/<robot>/.patched/).
+robot/*/urdf/**/.patched/
 
-# ─── TSDF scans / meshes ───────────────────────────────────────
-# 대용량 + 머신별 캡처. 캘 결과(robot/calibration/)와는 다름.
-robot/scans/
-robot/models/
+# ─── TSDF scans / meshes (per-instance runtime artifact) ───────
+# 대용량 + 머신별 캡처. 캘 결과 (robot/instances/<id>/calibration/) 와는 다름.
+robot/instances/*/scans/
+robot/instances/*/meshes/
 
-# ─── Self-play logs / learning state ───────────────────────────
+# ─── Self-play logs / learning state (legacy, self-play 폐기됨) ──
 # attempt jsonl + bin_offsets.json (closed-loop 학습 누적). 머신별 + 누적
-# 데이터라 푸시/공유 대상 아님. cwd 어디서 실행해도 같은 path 로 가게 코드
-# 가 module 위치 기준 절대 path 사용.
-robot/logs/
+# 데이터라 푸시/공유 대상 아님. self-play 자체는 deprecated.
+robot/instances/*/logs/

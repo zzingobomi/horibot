@@ -1,11 +1,9 @@
-"""모터 raw ↔ URDF rad 변환 단일 진입점.
+"""모터 raw ↔ URDF rad 변환 단일 진입점. robot_id 차원 도입 (multi_robot §4.5).
 
-기존: units.rad_to_raw가 offset_rad를 받고, JointStateCache가 raw_to_rad에 offset을
-가산. 두 함수가 서로 대칭이라는 책임을 묵시적으로 공유 — 새 사용처가 생기면 한 쪽만
-적용하기 쉬움. 또한 분산 모드에서 모터 Pi와 PC가 같은 offset을 갖도록 토픽으로
-publish/subscribe 인프라가 따라붙음.
+singleton 유지 — 내부 state 가 `dict[robot_id] → offsets`. 모든 enabled robot 의
+joint_offsets.npz 를 부팅 시 load. 메서드는 `robot_id` 인자 받음 (None = default).
 
-여기서 통일:
+기존:
     - 디스크의 joint_offsets.npz를 1회 load → 메모리 보관
     - motor_to_urdf / urdf_to_motor 두 함수가 유일한 진입점
     - 분산 동기화는 git이 처리 (.npz 3종이 git 추적, 같은 commit = 같은 파일)
@@ -25,20 +23,15 @@ from modules.dynamixel.motor_config import MotorConfig
 logger = logging.getLogger(__name__)
 
 
-def _joint_offsets_path():
-    """현재 active robot 의 calibration dir 에서 joint_offsets.npz path 반환.
-
-    multi-robot Phase: 현재는 RobotRegistry().default() 로 single robot. robot_id
-    차원 도입 (후속 todo) 시 dict[robot_id] 로 변경.
-    """
-    return RobotRegistry().default().calibration_dir / "joint_offsets.npz"
+def _joint_offsets_path(robot_id: str):
+    """해당 robot 의 calibration dir 에서 joint_offsets.npz path 반환."""
+    return RobotRegistry().get(robot_id).calibration_dir / "joint_offsets.npz"
 
 
 class JointCoordinates:
-    """싱글톤. 부팅 시 robot/calibration/joint_offsets.npz를 디스크에서 1회 load.
+    """싱글톤. 부팅 시 enabled robot 들의 joint_offsets.npz 를 1회 load.
 
-    분산 모드에서는 모든 머신이 같은 git commit을 바라보므로 같은 파일을 가짐.
-    Zenoh pub/sub 전파 없음 — COMMIT 후 PC 외 머신 적용은 git pull + 재시작.
+    state: `dict[robot_id] -> dict[motor_id, offset_rad]`.
     """
 
     _instance: "JointCoordinates | None" = None
@@ -57,18 +50,32 @@ class JointCoordinates:
             return
         self._initialized = True
         self._cache_lock = threading.Lock()
-        self._offsets: dict[int, float] = joint_offsets_io.load(_joint_offsets_path())
-        if self._offsets:
-            logger.info(
-                "joint_offsets 적용: %s",
-                {i: round(o, 5) for i, o in self._offsets.items()},
-            )
+        self._offsets_by_robot: dict[str, dict[int, float]] = {}
+        for cfg in RobotRegistry().enabled_robots():
+            path = cfg.calibration_dir / "joint_offsets.npz"
+            offsets = joint_offsets_io.load(path)
+            self._offsets_by_robot[cfg.robot_id] = offsets
+            if offsets:
+                logger.info(
+                    "joint_offsets[%s] 적용: %s",
+                    cfg.robot_id,
+                    {i: round(o, 5) for i, o in offsets.items()},
+                )
 
-    def motor_to_urdf(self, raw: int, cfg: MotorConfig) -> float:
+    def _resolve(self, robot_id: str | None) -> str:
+        return robot_id if robot_id is not None else RobotRegistry().default_robot_id()
+
+    def motor_to_urdf(
+        self,
+        raw: int,
+        cfg: MotorConfig,
+        robot_id: str | None = None,
+    ) -> float:
         """모터 raw → URDF rad. offset 가산 (+)."""
+        rid = self._resolve(robot_id)
         rad = raw_to_rad(raw, reverse=cfg.reverse)
         with self._cache_lock:
-            return rad + self._offsets.get(cfg.id, 0.0)
+            return rad + self._offsets_by_robot.get(rid, {}).get(cfg.id, 0.0)
 
     def urdf_to_motor(
         self,
@@ -77,29 +84,38 @@ class JointCoordinates:
         *,
         min_raw: int = 0,
         max_raw: int = 4095,
+        robot_id: str | None = None,
     ) -> int:
         """URDF rad → 모터 raw. offset 차감 (−)."""
+        rid = self._resolve(robot_id)
         with self._cache_lock:
-            corrected = rad - self._offsets.get(cfg.id, 0.0)
+            offsets = self._offsets_by_robot.get(rid, {})
+            corrected = rad - offsets.get(cfg.id, 0.0)
         return rad_to_raw(
             corrected, reverse=cfg.reverse, min_raw=min_raw, max_raw=max_raw
         )
 
     def commit_offsets(
-        self, delta_by_id: dict[int, float], method: str
+        self,
+        delta_by_id: dict[int, float],
+        method: str,
+        robot_id: str | None = None,
     ) -> dict[int, float]:
         """COMMIT 시 atomic 갱신: 디스크 save + 메모리 reload (PC 내부 한정).
 
         다른 머신 전파는 git pull + 재시작이 담당.
         """
-        existing = joint_offsets_io.load(_joint_offsets_path())
+        rid = self._resolve(robot_id)
+        path = _joint_offsets_path(rid)
+        existing = joint_offsets_io.load(path)
         merged = joint_offsets_io.merge_delta(existing, delta_by_id)
-        joint_offsets_io.save(_joint_offsets_path(), merged, method=method)
+        joint_offsets_io.save(path, merged, method=method)
         with self._cache_lock:
-            self._offsets = dict(merged)
+            self._offsets_by_robot[rid] = dict(merged)
         return dict(merged)
 
-    def snapshot(self) -> dict[int, float]:
+    def snapshot(self, robot_id: str | None = None) -> dict[int, float]:
         """현재 메모리 상태 (HTTP 응답 / 진단용)."""
+        rid = self._resolve(robot_id)
         with self._cache_lock:
-            return dict(self._offsets)
+            return dict(self._offsets_by_robot.get(rid, {}))

@@ -1,17 +1,14 @@
-"""Tool offset 의 런타임 진입점 (ToolOffset 싱글톤 캐시).
+"""Tool offset 의 런타임 진입점. robot_id 차원 도입 (multi_robot §4.5).
 
-[LinkCoordinates](backend/core/link_coordinates.py) 와 같은 싱글톤 + 디스크 캐시 패턴:
-    - 디스크의 robot/calibration/tool_offset.npz 를 부팅 시 1회 load → 메모리 보관
-    - snapshot() / commit_offset() — 디스크 save + 메모리 reload
-    - 분산 동기화는 git 처리 (.npz 는 git 추적, 같은 commit = 같은 파일)
-    - 토픽 publish 없음 — COMMIT 후 다른 머신 적용은 git pull + 재시작
+[LinkCoordinates](backend/core/link_coordinates.py) 와 같은 dict[robot_id] 패턴.
+state: `dict[robot_id] -> ToolOffset`.
 
 LinkCoordinates 와 다른 점:
     - 단일 값 (trans 3 + rot 3) — joint 별 dict 아님
     - URDF patch 안 함 — motion_node 의 cartesian service handler 가 명령/응답
-      변환에만 사용 (자세한 분리 이유는 modules/calibration/tool_offset.py 의
-      모듈 docstring 참조)
-    - 메모리 자동 갱신 (PybulletSolver 재시작 불필요) — 단 분산 머신은 git pull + 재시작
+      변환에만 사용
+    - 메모리 자동 갱신 (CorrectedIKSolver 재시작 불필요) — 단 분산 머신은
+      git pull + 재시작
 """
 
 from __future__ import annotations
@@ -28,8 +25,8 @@ from modules.calibration.tool_offset import ToolOffset
 logger = logging.getLogger(__name__)
 
 
-def _tool_offset_path():
-    return RobotRegistry().default().calibration_dir / "tool_offset.npz"
+def _tool_offset_path(robot_id: str):
+    return RobotRegistry().get(robot_id).calibration_dir / "tool_offset.npz"
 
 
 class ToolCoordinates:
@@ -49,39 +46,64 @@ class ToolCoordinates:
             return
         self._initialized = True
         self._cache_lock = threading.Lock()
-        self._offset: ToolOffset = tool_offset_io.load(_tool_offset_path())
-        if not self._offset.is_empty():
-            logger.info(
-                "tool_offset 적용: trans_mm=%s",
-                (self._offset.trans_m * 1000).round(2).tolist(),
-            )
+        self._offset_by_robot: dict[str, ToolOffset] = {}
+        for cfg in RobotRegistry().enabled_robots():
+            path = cfg.calibration_dir / "tool_offset.npz"
+            offset = tool_offset_io.load(path)
+            self._offset_by_robot[cfg.robot_id] = offset
+            if not offset.is_empty():
+                logger.info(
+                    "tool_offset[%s] 적용: trans_mm=%s",
+                    cfg.robot_id,
+                    (offset.trans_m * 1000).round(2).tolist(),
+                )
 
-    def snapshot(self) -> ToolOffset:
+    def _resolve(self, robot_id: str | None) -> str:
+        return robot_id if robot_id is not None else RobotRegistry().default_robot_id()
+
+    def _empty(self) -> ToolOffset:
+        return ToolOffset(
+            trans_m=np.zeros(3, dtype=np.float64),
+            rot_rad=np.zeros(3, dtype=np.float64),
+        )
+
+    def snapshot(self, robot_id: str | None = None) -> ToolOffset:
+        rid = self._resolve(robot_id)
         with self._cache_lock:
+            offset = self._offset_by_robot.get(rid, self._empty())
             return ToolOffset(
-                trans_m=self._offset.trans_m.copy(),
-                rot_rad=self._offset.rot_rad.copy(),
-            )
-
-    def trans_m(self) -> np.ndarray:
-        """EE frame 의 (실제 끝점 - URDF EE) translation. (3,) ndarray."""
-        with self._cache_lock:
-            return self._offset.trans_m.copy()
-
-    def rot_rad(self) -> np.ndarray:
-        """EE frame 의 (실제 끝점 - URDF EE) rotation rotvec. (3,) ndarray."""
-        with self._cache_lock:
-            return self._offset.rot_rad.copy()
-
-    def commit_offset(self, offset: ToolOffset, method: str) -> ToolOffset:
-        """COMMIT 시 atomic 갱신: 디스크 overwrite + 메모리 reload.
-
-        URDF patch 안 함 → PybulletSolver 재시작 불필요. 단 다른 머신은 git pull + 재시작.
-        """
-        tool_offset_io.save(_tool_offset_path(), offset, method=method)
-        with self._cache_lock:
-            self._offset = ToolOffset(
                 trans_m=offset.trans_m.copy(),
                 rot_rad=offset.rot_rad.copy(),
             )
-        return self.snapshot()
+
+    def trans_m(self, robot_id: str | None = None) -> np.ndarray:
+        """EE frame 의 (실제 끝점 - URDF EE) translation. (3,) ndarray."""
+        rid = self._resolve(robot_id)
+        with self._cache_lock:
+            return self._offset_by_robot.get(rid, self._empty()).trans_m.copy()
+
+    def rot_rad(self, robot_id: str | None = None) -> np.ndarray:
+        """EE frame 의 (실제 끝점 - URDF EE) rotation rotvec. (3,) ndarray."""
+        rid = self._resolve(robot_id)
+        with self._cache_lock:
+            return self._offset_by_robot.get(rid, self._empty()).rot_rad.copy()
+
+    def commit_offset(
+        self,
+        offset: ToolOffset,
+        method: str,
+        robot_id: str | None = None,
+    ) -> ToolOffset:
+        """COMMIT 시 atomic 갱신: 디스크 overwrite + 메모리 reload.
+
+        URDF patch 안 함 → CorrectedIKSolver 재시작 불필요. 단 다른 머신은
+        git pull + 재시작.
+        """
+        rid = self._resolve(robot_id)
+        tool_offset_io.save(_tool_offset_path(rid), offset, method=method)
+        with self._cache_lock:
+            self._offset_by_robot[rid] = ToolOffset(
+                trans_m=offset.trans_m.copy(),
+                rot_rad=offset.rot_rad.copy(),
+            )
+        return self.snapshot(rid)

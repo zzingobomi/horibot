@@ -171,6 +171,14 @@ class RobotRegistry:
     def list_robots(self) -> list[str]:
         return list(self._robots.keys())
 
+    def enabled_robots(self) -> list[RobotConfig]:
+        """`enabled: true` 인 robot 만 — Coordinates / Cache 가 load 대상 결정 시."""
+        return [cfg for cfg in self._robots.values() if cfg.enabled]
+
+    def default_robot_id(self) -> str:
+        """N=1 편의 — default() 의 robot_id 만 반환."""
+        return self.default().robot_id
+
     def default(self) -> RobotConfig:
         """N=1 single-robot 환경 편의 — robot 1개만 있을 때 그것 반환.
 

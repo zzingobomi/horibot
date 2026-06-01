@@ -6,8 +6,9 @@ from core.base_node import BaseNode
 from core.topic_map import Topic, Service
 from core.units import raw_to_deg
 from core.common import GRIPPER_ID
-from modules.dynamixel.driver import DynamixelDriver
 from modules.dynamixel.motor_config import load_motor_config
+from modules.motor.adapters.dynamixel_backend import DynamixelBackend
+from modules.motor.backend import MotorCommError
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class MotorNode(BaseNode):
         port_cfg, motors = load_motor_config()
         self.port = port_cfg.get()
         self.motor_cfgs = motors
-        self.driver = DynamixelDriver(self.port, motors)
+        self.driver = DynamixelBackend(self.port, motors)
         self.connected = False
         self.torque_enabled = False
 
@@ -51,16 +52,20 @@ class MotorNode(BaseNode):
     # ─── Lifecycle ───────────────────────────────────────────
 
     def start(self) -> None:
-        self.connected = self.driver.connect()
+        try:
+            self.driver.connect()
+            self.connected = True
+        except MotorCommError as e:
+            self.connected = False
+            self.torque_enabled = False
+            self.log("error", f"Motor backend 연결 실패 ({self.port}): {e}")
+
         if self.connected:
             self._apply_position_pid()
             self.driver.torque_enable_all()
             self._apply_gripper_smooth_profile()
             self.torque_enabled = True
             self.log("info", f"모터 노드 시작 ({self.port})")
-        else:
-            self.torque_enabled = False
-            self.log("error", f"Dynamixel 연결 실패 ({self.port})")
 
         super().start()
 

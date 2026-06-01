@@ -59,15 +59,17 @@ OMX_F 단독 시스템에서 **OMX_F + SO-101 6DOF dual-arm cooperative manipula
 
 **어원**: "호리" 는 사용자 아들의 태명. 개인 의미를 담은 작명.
 
-rename 작업은 Phase 1 시작 시점에 일괄 진행 — §2.4 참조.
+**상태**: ✅ **완료** (commit `1114524 chore: omx-control → horibot 프로젝트 명 갱신`). 절차 / 회고는 §2.4.
 
 ### 2.3 시스템 이름 prefix 박지 말기 (★ 중요)
 
 repo 이름이 무엇이든 **토픽 namespace 의 prefix 로 박지 않음**. ROS 관례 (ROS namespace 는 logical hierarchy 만, 시스템 이름 prefix 없음) 그대로. 시스템 이름이 namespace 에 박히면 이름 변경 시 모든 토픽이 깨짐.
 
-### 2.4 변경 절차 (마이그레이션 step)
+### 2.4 변경 절차 (마이그레이션 step) — ✅ 완료
 
 **Rename 으로 진행** — GitHub 의 정식 rename 기능 사용. 새 repo 생성 안 함.
+
+실제 실행 결과는 §2.4 마지막 "완료 체크리스트" 참조. 아래 절차 / 비교 / 회고는 retrospective.
 
 #### Rename vs 새 repo 비교
 
@@ -144,6 +146,19 @@ Move-Item `
 #### Trigger 시점
 
 Phase 1 의 **interface 도입 작업 시작 직전** 이 자연스러움 — repo 이름 (예: `horibot`) 으로 새 디렉토리 시작하면 그 시점부터 모든 작업이 새 이름 context. 이전 history 는 GitHub redirect 로 보존.
+
+#### 완료 체크리스트 (commit `1114524`)
+
+| 단계 | 상태 | 비고 |
+| ---- | ---- | ---- |
+| 1. GitHub rename                              | ✅ | `github.com/zzingobomi/horibot.git` |
+| 2. Local remote URL 갱신                      | ✅ | `git remote -v` 로 확인 |
+| 3. Local directory rename                     | ✅ | `d:\Study\horibot` |
+| 4. 메모리 경로 마이그레이션                   | ✅ | `~/.claude/projects/d--Study-horibot/memory/` |
+| 5. README / 문서의 repo URL                   | ✅ | 본 문서 §2 의 historical reference 외 잔존 없음 |
+| 6. CLAUDE.md 프로젝트 명                      | ✅ | "Horibot — OMX_F ..." |
+| 7. CI / external integrations                 | N/A | CI workflow 없음 |
+| 8. 외부 dependents                            | N/A | 없음 |
 
 ---
 
@@ -713,7 +728,7 @@ robotStore: {
 
 작업:
 
-1. **Repo 이름 변경** (§2.4)
+1. ~~**Repo 이름 변경** (§2.4)~~ ✅ 선행 완료 (commit `1114524`)
 2. **IKSolver Protocol** 정의 ([iksolver.py](../backend/modules/kinematics/iksolver.py)) + `PybulletSolver` → `PybulletIKSolver` rename / interface 만족 refactor
 3. **CorrectedIKSolver Decorator** — sag / link_offset 보정 별도 layer 분리
 4. **MotorBackend Protocol** 정의 + `DynamixelBackend` adapter (현재 코드 wrap)

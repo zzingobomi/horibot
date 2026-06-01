@@ -2,7 +2,7 @@
 # 모터 제어 + 모션 계획
 #
 # 시작 예:
-#   uv sync --only-group pi-motor
+#   uv sync --no-default-groups --group pi-motor
 #   uv run --no-sync python main.py --host pi_motor
 host_name: pi_motor
 

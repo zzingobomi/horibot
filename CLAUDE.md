@@ -44,16 +44,18 @@ uv sync
 uv run python main.py                    # --host 미지정 → host_dev.yaml fallback
 
 # 분산: PC 역할
-uv run python main.py --host pc
+uv sync                                  # default-groups (dev + all) 다 받음
+uv run --no-sync python main.py --host pc
 
 # 분산: 모터 Pi (192.168.0.101)
-uv sync --only-group pi-motor
-uv run python main.py --host pi_motor
+uv sync --no-default-groups --group pi-motor
+uv run --no-sync python main.py --host pi_motor
 
 # 분산: 카메라 Pi (192.168.0.102)
 # pyrealsense2는 사전 소스 빌드 후 별도 install
-uv sync --only-group pi-camera --no-install-package pyrealsense2
-uv run python main.py --host pi_camera
+uv sync --no-default-groups --group pi-camera --no-install-package pyrealsense2
+uv pip install ~/pyrealsense2-2.55.1-cp311-cp311-linux_aarch64.whl
+uv run --no-sync python main.py --host pi_camera
 ```
 
 호스트 config 파일들 ([backend/config/](backend/config/)):

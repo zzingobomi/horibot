@@ -1,5 +1,6 @@
 # 분산 모드에서 PC 역할 — heavy 연산 + 브릿지.
 # 실행:
+#   uv sync
 #   uv run --no-sync python main.py --host pc
 host_name: pc
 

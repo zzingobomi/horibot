@@ -189,116 +189,453 @@ Phase 1 의 **interface 도입 작업 시작 직전** 이 자연스러움 — re
 
 ### 3.1 IKSolver (Protocol)
 
+**책임 경계**: URDF 의 *ideal 기구학*만. sag / link_offset / joint_offset 같은 보정은 외부가 적용:
+- joint_offset 적용 — `JointCoordinates` (입력 joints 받기 전, motor raw ↔ URDF rad 변환 시)
+- sag 적용 — §3.2 `CorrectedIKSolver` (Decorator, fk 출력 / ik 입력 모두)
+- link_offset 적용 — `PybulletIKSolver` 생성자에서 patched URDF 로 로드 (이미 URDF 자체에 박힘, FK/IK 양쪽 자동)
+
+**Protocol 정의:**
+
 ```python
 # backend/modules/kinematics/iksolver.py
 from typing import Protocol
 import numpy as np
 
+class IKSolverError(Exception):
+    """IK solver 관련 예외 base."""
+
+class IKConvergenceError(IKSolverError):
+    """IK 수렴 실패 (max_iter 도달 또는 pos_error_limit 초과)."""
+
 class IKSolver(Protocol):
-    def fk(self, joints: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """joints (n,) → position (3,), quaternion (4,)"""
-        ...
-    def ik(self, pos: np.ndarray, quat: np.ndarray | None = None,
-           seed: np.ndarray | None = None) -> np.ndarray:
-        """target pose → joints (n,)"""
-        ...
-    def fk_to_matrix(self, joints: np.ndarray) -> np.ndarray: ...
-    def self_collision(self, joints: np.ndarray) -> bool: ...
     @property
-    def dof(self) -> int: ...
+    def dof(self) -> int:
+        """관절 자유도 (arm 만, gripper 제외). omx_f=5, so101_6dof=6."""
+        ...
+
+    @property
+    def ee_link_name(self) -> str:
+        """end-effector link 이름 (URDF link name). fk/ik 기준점."""
+        ...
+
+    def fk(self, joints: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """joints (dof,) URDF rad → ee position (3,) m + quaternion (4,) [x,y,z,w], base frame.
+
+        Ideal URDF 기구학만 (sag 적용 X).
+        """
+        ...
+
+    def ik(
+        self,
+        pos: np.ndarray,
+        quat: np.ndarray | None = None,
+        seed: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """target pose (base frame, sag 역적용 후) → joints (dof,) URDF rad.
+
+        - seed=None → 0 벡터 사용
+        - quat=None → position-only IK (orientation 자유)
+        - 수렴 실패 시 `IKConvergenceError` raise
+        """
+        ...
+
+    def fk_to_matrix(self, joints: np.ndarray) -> np.ndarray:
+        """fk(joints) 의 4x4 homogeneous matrix 표현."""
+        ...
+
+    def self_collision(self, joints: np.ndarray) -> bool:
+        """주어진 자세에서 self-collision 발생 여부."""
+        ...
 ```
+
+**Lifecycle / 스레딩:**
+
+- 생성자에서 URDF 로드, init 후 immutable (URDF 변경은 process 재시작)
+- 모든 method **thread-safe** (내부 mutex — PyBullet 같은 single-threaded backend 보호)
+- `close()` 메서드 없음 — process 종료 시 GC
 
 **Adapters:**
 
-- `PybulletIKSolver(urdf_path)` — 현재 [`PybulletSolver`](../backend/modules/kinematics/solver.py) refactor. 5DOF (OMX) / 6DOF (SO-101) 둘 다 호환 (PyBullet 의 `calculateInverseKinematics` 가 DOF 자동 처리)
-- `MujocoIKSolver(mjcf_path)` — Track C ([random_palletizing.md](random_palletizing.md)) 의 학습 env 와 단일 model 일관성. mink (QP-based IK) 또는 numerical IK 직접
-- 어느 adapter 사용할지는 robot 별 config 로 결정 (`solver: pybullet | mujoco`)
+| Adapter | 설명 | DOF | Phase |
+|---|---|---|---|
+| `PybulletIKSolver(urdf_path)` | 현 [`PybulletSolver`](../backend/modules/kinematics/solver.py) refactor. DIRECT 모드 PyBullet. `calculateInverseKinematics` 가 DOF 자동 처리 | 5 / 6 / 임의 | Phase 1 |
+| `MujocoIKSolver(mjcf_path)` | Track C 학습 env 와 single-model. mink (QP-IK) 또는 numerical IK | 미정 | Open Q 9 (도입 시점 미정) |
 
-### 3.2 sag/link_offset Correction (Decorator)
+robots.yaml 의 `iksolver: pybullet | mujoco` 필드로 robot 별 결정.
 
-현재 `PybulletSolver` 안에 sag / link_offset 보정이 박혀있음 ([calibration_apply_flow.md](calibration_apply_flow.md)). 이것을 separate layer (Decorator pattern) 로 빼냄:
+**기존 코드와의 mapping:**
+
+| 현재 ([solver.py](../backend/modules/kinematics/solver.py)) | 새 위치 |
+|---|---|
+| `PybulletSolver` 클래스 (process singleton + sag patch + link_offset patch) | `PybulletIKSolver` (singleton 제거, robot 별 인스턴스, no sag patch — ideal 만) |
+| `fk()` 안의 `apply_gravity_sag` 호출 | §3.2 `CorrectedIKSolver.fk()` 로 이동 |
+| `ik()` 안의 sag 역적용 | §3.2 `CorrectedIKSolver.ik()` 로 이동 |
+| `write_patched_urdf(URDF_PATH, link_offsets)` | `PybulletIKSolver` 생성자 그대로 유지 (link_offset 은 URDF 자체에 박는 게 자연) |
+| 클래스 상수 `URDF_PATH` (hardcoded) | 제거 — 생성자 인자로 받음 |
+
+`RobotRegistry` 가 robot 별 `IKSolver` 인스턴스 보유: `registry.iksolver("omx_f_0") -> CorrectedIKSolver(inner=PybulletIKSolver(...), sag=..., joint_coords=...)`.
+
+**Pydantic payload type:** IKSolver 는 process-internal API — 네트워크 boundary 아님 → Pydantic 모델 불필요. fk/ik 결과를 토픽으로 publish 하는 caller 가 자기 페이로드를 Pydantic 으로 wrap.
+
+### 3.2 CorrectedIKSolver (Decorator)
+
+**역할**: 어느 inner `IKSolver` (PyBullet / MuJoCo) 든 동일하게 **sag 보정** 적용 + `IKSolver` Protocol 그대로 만족 (caller 입장에서 inner 와 동일 인터페이스). link_offset 은 inner solver 의 URDF patch 로 이미 처리되므로 여기서는 sag 만.
+
+**Decorator 정의:**
 
 ```python
+# backend/modules/kinematics/corrected.py
+from modules.kinematics.iksolver import IKSolver
+from core.sag_coordinates import SagCoordinates
+import numpy as np
+
 class CorrectedIKSolver:
-    def __init__(self, inner: IKSolver, link_offset, sag_model):
+    """sag 보정을 inner IKSolver 의 fk 출력 / ik 입력에 적용. IKSolver Protocol 만족."""
+
+    def __init__(self, inner: IKSolver, sag: SagCoordinates):
         self._inner = inner
+        self._sag = sag
+
+    @property
+    def dof(self) -> int:
+        return self._inner.dof
+
+    @property
+    def ee_link_name(self) -> str:
+        return self._inner.ee_link_name
+
+    def fk(self, joints: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        ideal_pos, ideal_quat = self._inner.fk(joints)
+        return self._sag.apply_forward(ideal_pos, ideal_quat, joints)
+
+    def ik(
+        self,
+        pos: np.ndarray,
+        quat: np.ndarray | None = None,
+        seed: np.ndarray | None = None,
+    ) -> np.ndarray:
+        pre_pos, pre_quat = self._sag.apply_inverse(pos, quat, seed)
+        return self._inner.ik(pre_pos, pre_quat, seed)
+
+    def fk_to_matrix(self, joints: np.ndarray) -> np.ndarray:
+        # sag 보정 후 pos/quat 으로 4x4 조립
+        pos, quat = self.fk(joints)
+        # quat → 3x3 + pos → 4x4 (구체 implementation)
         ...
-    def fk(self, joints):
-        pos, quat = self._inner.fk(joints)
-        return self._sag.apply_forward(pos, quat, joints)
-    def ik(self, pos, quat, seed):
-        pos_pre, quat_pre = self._sag.apply_inverse(pos, quat)
-        return self._inner.ik(pos_pre, quat_pre, seed)
+
+    def self_collision(self, joints: np.ndarray) -> bool:
+        # sag 가 self-collision 에는 영향 안 줌 (URDF link 위치는 그대로) → inner 그대로
+        return self._inner.self_collision(joints)
 ```
 
-이러면:
+**왜 Decorator 인가:**
 
-- inner solver 가 PyBullet 이든 MuJoCo 이든 보정은 한 번만 짜고 양쪽 다 적용
-- robot 별로 다른 sag/offset 가져도 같은 decorator 재사용 (생성자에 robot 별 인스턴스 주입)
+- inner solver 가 무엇이든 sag 적용 코드는 한 번만 작성
+- robot 별로 다른 `SagCoordinates` 인스턴스 주입해서 같은 decorator 클래스 재사용
+- inner 가 ideal kinematics 라 unit test 용이 (sag 없이 검증 가능) + decorator 가 보정 별도 unit test
+- 미래 또 다른 correction (예: thermal drift) 추가 시 새 decorator 한 layer 더 wrap 가능
+
+**기존 코드와의 mapping:**
+
+| 현재 ([solver.py](../backend/modules/kinematics/solver.py)) | 새 위치 |
+|---|---|
+| `apply_gravity_sag` 호출 in `PybulletSolver.fk` | `CorrectedIKSolver.fk` |
+| sag 역적용 in `PybulletSolver.ik` (반복 수렴) | `CorrectedIKSolver.ik` (그대로 이동, 반복 수렴 로직 포함) |
+| `SagCoordinates` 싱글톤 reference | 생성자 인자 `sag` 로 주입 (robot 별 인스턴스 가능) |
+
+`RobotRegistry` 가 robot 별로 `CorrectedIKSolver(PybulletIKSolver(urdf_path), sag=SagCoordinates.for_robot(robot_id))` 생성 — caller (MotionExecutor / Detector / etc.) 는 항상 `CorrectedIKSolver` 만 봄.
 
 ### 3.3 MotorBackend (Protocol)
 
-so101_6dof_plan §6.1 의 핵심. Dynamixel / Feetech SDK 가 완전히 다른 protocol.
+**역할**: motor SDK 의 통합 인터페이스. Dynamixel / Feetech 의 wire protocol 차이를 흡수. raw motor unit (int 0..4095, current raw 등) 에서 동작하고, rad / m 단위 변환 / joint_offset 적용 등은 caller (`JointStateCache`, `MotionExecutor`) 가 처리.
+
+**Protocol 정의:**
 
 ```python
+# backend/modules/motor/backend.py
+from typing import Protocol
+
+class MotorBackendError(Exception):
+    """모터 backend 관련 예외 base."""
+
+class MotorCommError(MotorBackendError):
+    """버스 통신 실패 (timeout, checksum, etc.)."""
+
 class MotorBackend(Protocol):
-    def read_positions(self) -> dict[int, int]: ...   # raw motor units
-    def write_positions(self, cmd: dict[int, int]) -> None: ...
-    def read_currents(self) -> dict[int, int]: ...    # for contact detection
-    def set_torque(self, ids: list[int], enable: bool) -> None: ...
-    def configure_pid(self, ids: list[int], pid: PIDConfig) -> None: ...
-    ...
+    # ─── Lifecycle ─────────────────────────────────────────
+    def connect(self) -> None:
+        """포트 열고 sync read/write 초기화. 실패 시 MotorCommError."""
+        ...
+
+    def disconnect(self) -> None:
+        """torque off + 포트 close. 멱등."""
+        ...
+
+    @property
+    def motor_ids(self) -> list[int]:
+        """이 backend 가 관리하는 모터 ID 목록 (motors.yaml 기반)."""
+        ...
+
+    # ─── State read (sync — 전체 동시) ──────────────────────
+    def read_positions(self) -> dict[int, int]:
+        """전체 모터 raw position (0..4095). 통신 실패 시 빈 dict + log."""
+        ...
+
+    def read_currents(self) -> dict[int, int]:
+        """raw current (signed). Dynamixel XL330=mA, XL430=‰. 모터 모델별 해석은 caller."""
+        ...
+
+    def read_velocities(self) -> dict[int, int]:
+        """raw velocity (signed)."""
+        ...
+
+    # ─── Position command ──────────────────────────────────
+    def write_positions(self, cmd: dict[int, int]) -> None:
+        """전체 모터 raw goal position sync write. limit clamping + reverse flag 는 backend 내부."""
+        ...
+
+    # ─── Torque ───────────────────────────────────────────
+    def set_torque(self, ids: list[int], enable: bool) -> None:
+        """ids 의 torque enable/disable. ids=[] 면 no-op."""
+        ...
+
+    # ─── Profile (max velocity / acceleration) ────────────
+    def write_profile_velocities(self, vel: dict[int, int]) -> None: ...
+    def write_profile_accelerations(self, acc: dict[int, int]) -> None: ...
+
+    # ─── PID ──────────────────────────────────────────────
+    def configure_pid(
+        self, motor_id: int, p: int | None = None,
+        i: int | None = None, d: int | None = None,
+    ) -> None:
+        """raw PID gain. None 인 값은 skip. SDK 가 미지원하는 값은 무시."""
+        ...
+
+    # ─── Gripper (current-based position) ─────────────────
+    def set_goal_current(self, motor_id: int, current: int) -> None:
+        """그리퍼 force control 용. backend 가 지원 안 하면 NotImplementedError."""
+        ...
+
+    # ─── Maintenance ──────────────────────────────────────
+    def reboot(self, motor_id: int) -> None:
+        """모터 재시작 (overload/overheat 복구)."""
+        ...
 ```
+
+**Lifecycle / 스레딩:**
+
+- `connect()` 전에는 read/write 가 `MotorCommError` raise
+- 모든 read/write **thread-safe** (내부 mutex — 시리얼 버스가 single 통신 라인이라 강제)
+- `disconnect()` 에서 torque off 후 close (안전)
 
 **Adapters:**
 
-- `DynamixelBackend(port, baud)` — `dynamixel-sdk`, XL430/330, OpenRB-150
-- `FeetechBackend(port, baud)` — `scservo_sdk` / `feetech-servo-sdk`, STS3215/3250, Waveshare
-- **Mixed 버스 지원** (so101_6dof_plan §6.1) — `FeetechBackend` 안에서 모터 모델 별 (sts3215 vs sts3250) 분기는 motors.yaml 의 `model` 필드로
+| Adapter | SDK | 모터 모델 | Phase |
+|---|---|---|---|
+| `DynamixelBackend(port, baud, motors)` | `dynamixel-sdk` | XL430 / XL330 (OpenRB-150) | Phase 1 (현 [`DynamixelDriver`](../backend/modules/dynamixel/driver.py) wrap) |
+| `FeetechBackend(port, baud, motors)` | `scservo_sdk` / `feetech-servo-sdk` | STS3215 / STS3250 (Waveshare) | Phase 2 (SO-101 도착 시) |
 
-`backend/modules/motor/` 내부 구조도 같이 정리 — 현재 dynamixel 만 가정한 부분을 backend-agnostic 으로.
+**Mixed 버스 지원** (so101_6dof_plan §6.1): `FeetechBackend` 안에서 모터 모델별 (sts3215 vs sts3250) 분기는 `motors.yaml` 의 `model` 필드 (§5.1.2). 같은 type 폴더의 motors.yaml 에서 모터별 model 명시.
+
+**기존 코드와의 mapping:**
+
+| 현재 ([dynamixel/driver.py](../backend/modules/dynamixel/driver.py)) | 새 위치 |
+|---|---|
+| `DynamixelDriver` 클래스 (raw SDK wrap) | `backend/modules/motor/adapters/dynamixel_backend.py` 의 `DynamixelBackend` — Protocol 만족 |
+| `get_present_positions` / `set_goal_positions_sync` 등 sync read/write | Protocol method 매핑 (`read_positions` / `write_positions`) |
+| `torque_enable_all` / `_disable_all` | `set_torque(motor_ids, enable=True/False)` 로 통일 |
+| `set_position_pid` (per motor) | `configure_pid(motor_id, p, i, d)` (signature 동일) |
+| `_apply_limits` + `reverse` flag | backend 내부 그대로 유지 (Protocol method 안에서 자동 적용) |
+| 신규 | `backend/modules/motor/backend.py` Protocol + `adapters/` 폴더 |
+
+**Pydantic payload type:** MotorBackend 는 process-internal — Pydantic 불필요. `MotorNode` 가 backend wrap 후 토픽 (`<robot_id>/motor/state/joint`, `<robot_id>/motor/cmd/joint`) 의 페이로드를 `MotorStateJoint(BaseRobotMessage)` / `MotorCmdJoint(BaseRobotMessage)` Pydantic model 로 정의 (§7.6).
 
 ### 3.4 CameraCapture (Protocol)
 
+**역할**: 카메라 SDK 통합. RealSense / 시뮬레이션 / USB 카메라 등 source 다양성 흡수. color + depth 동시 read 가 가능한 RGBD 카메라 가정 (D405 / D435 / 시뮬레이터). depth-less 카메라는 `get_depth_frame` 에서 `None` 반환.
+
+**Protocol 정의:**
+
 ```python
+# backend/modules/camera/capture.py
+from typing import Protocol
+from dataclasses import dataclass
+import numpy as np
+
+@dataclass(frozen=True)
+class CameraIntrinsic:
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    width: int
+    height: int
+    depth_scale: float | None = None   # depth 픽셀값 → m 환산 계수 (None = depth 없음)
+
+@dataclass(frozen=True)
+class ColorFrame:
+    rgb: np.ndarray              # (H, W, 3) uint8 BGR
+    timestamp: float             # capture 시각 (epoch s)
+
+@dataclass(frozen=True)
+class DepthFrame:
+    color_aligned: np.ndarray    # (H, W, 3) uint8 BGR, depth 와 정렬됨
+    depth: np.ndarray            # (H, W) uint16 Z16 raw
+    timestamp: float
+    intrinsic: CameraIntrinsic   # 이 프레임이 캡처된 시점의 intrinsic
+
+class CameraCaptureError(Exception): ...
+
 class CameraCapture(Protocol):
-    def get_color_jpeg(self) -> bytes: ...
-    def get_depth_frame(self) -> DepthFrame: ...
-    def get_intrinsic(self) -> Intrinsic: ...
+    # ─── Lifecycle ─────────────────────────────────────────
+    def open(self) -> bool: ...
+    def close(self) -> None: ...
+    @property
+    def is_opened(self) -> bool: ...
+
+    # ─── Configuration ────────────────────────────────────
+    def get_intrinsic(self) -> CameraIntrinsic: ...
+    def set_depth_enabled(self, enabled: bool) -> None:
+        """depth stream on/off. Phase 1: 라이브 포인트클라우드 / 캘 캡처 토글."""
+        ...
+
+    # ─── Frame read ───────────────────────────────────────
+    def read_color(self) -> ColorFrame | None:
+        """latest color frame (non-blocking). 아직 first frame 없거나 fps 미달이면 None."""
+        ...
+
+    def read_depth_frame(self) -> DepthFrame | None:
+        """depth_enabled=True 일 때만 동작. color+depth align 된 한 쌍 + intrinsic."""
+        ...
 ```
+
+**Lifecycle / 스레딩:**
+
+- `open()` → 카메라 pipeline 시작 + internal producer thread (현재 RealsenseCapture 와 동일)
+- `read_*` 는 **non-blocking** — 최신 캐시된 프레임 반환 (producer 가 계속 갱신)
+- `close()` 멱등 + producer thread join
+- **per-instance** (singleton X) — robot_id 별로 인스턴스 만들 수 있도록. 단일 카메라 공유 시는 caller 가 같은 인스턴스 share
 
 **Adapters:**
 
-- `RealSenseCapture` — 현재 [`RealsenseCapture`](../backend/core/realsense_capture.py)
-- `MujocoCapture` — sim 내 가상 카메라 (Track C 학습 env 에서 사용)
+| Adapter | Source | Phase |
+|---|---|---|
+| `RealSenseCapture(width, height, fps)` | `pyrealsense2` (현 [`RealsenseCapture`](../backend/core/realsense_capture.py) refactor) | Phase 1 |
+| `MujocoCapture(model, camera_name)` | MuJoCo sim 의 가상 카메라 | Track C 도입 시 (Phase 2+) |
+| `OpenCVCapture(device_id)` | `cv2.VideoCapture` — depth 없음 (color only) | 필요 시 추가 |
 
-D405 한 대를 두 robot 이 공유 가능 (어느 EE 에 마운트). 또는 robot 별 각자. 어느 쪽도 interface 는 동일.
+**기존 코드와의 mapping:**
+
+| 현재 ([core/realsense_capture.py](../backend/core/realsense_capture.py)) | 새 위치 |
+|---|---|
+| `RealsenseCapture` 클래스 (process singleton) | `backend/modules/camera/adapters/realsense.py` 의 `RealSenseCapture` — singleton 제거, per-robot |
+| `open()` / `close()` / `is_opened` | Protocol method 동일 |
+| `read_color()` / `read_aligned_color_depth()` | `read_color()` → `ColorFrame`, `read_depth_frame()` → `DepthFrame` (dataclass 도입) |
+| `set_cloud_enabled()` | `set_depth_enabled()` 으로 rename |
+| `depth_intrinsics()` 등 분산된 property | `get_intrinsic()` 으로 통합 (`CameraIntrinsic` dataclass) |
+
+**Pydantic payload type:** `CameraIntrinsic` / `ColorFrame` / `DepthFrame` 은 **process-internal dataclass** (frozen). 토픽으로 publish 할 때는 별도 Pydantic model:
+- `<robot_id>/camera/state/intrinsic` → `CameraIntrinsicMessage(BaseRobotMessage)` Pydantic
+- `<robot_id>/camera/stream/raw` → binary JPEG (typed 안 함, §7.5)
+- `<robot_id>/camera/stream/depth_frame` → binary framing + **JSON 헤더만** `DepthFrameHeader(BaseModel)` Pydantic (§7.5)
 
 ### 3.5 MotionExecutor (Protocol)
 
+**역할**: motion 명령의 service handler 진입점. robot_id 받아서 해당 robot 의 `CorrectedIKSolver` + `MotorBackend` + `TrajectoryRunner` 를 dispatch. caller 는 `BridgeClient` (frontend) 또는 Step DSL.
+
+**Protocol 정의:**
+
 ```python
+# backend/modules/motion/executor.py
+from typing import Protocol
+from core.messages.motion import (
+    MoveJRequest, MoveLRequest, MoveCRequest, MovePRequest, MoveTCPRequest,
+    MoveResponse, GetTCPResponse, StopResponse,
+)
+
 class MotionExecutor(Protocol):
-    def move_j(self, robot_id: str, joints, **opts) -> ServiceResult: ...
-    def move_l(self, robot_id: str, pose, **opts) -> ServiceResult: ...
-    def move_tcp(self, robot_id: str, target, **opts) -> ServiceResult: ...
-    def get_tcp(self, robot_id: str) -> Pose6: ...
-    ...
+    def move_j(self, req: MoveJRequest) -> MoveResponse: ...
+    def move_l(self, req: MoveLRequest) -> MoveResponse: ...
+    def move_c(self, req: MoveCRequest) -> MoveResponse: ...
+    def move_p(self, req: MovePRequest) -> MoveResponse: ...
+    def move_tcp(self, req: MoveTCPRequest) -> MoveResponse: ...
+    def get_tcp(self, robot_id: str) -> GetTCPResponse: ...
+    def stop(self, robot_id: str) -> StopResponse: ...
 ```
 
-**Adapter**: `MultiRobotMotionExecutor` 단일 구현체. robot_id 받으면 내부에서 해당 robot 의 IKSolver / MotorBackend / TrajectoryRunner 디스패치.
+모든 method 의 request / response 는 Pydantic model (§7.6 `core.messages.motion`). request 의 첫 필드는 항상 `robot_id: str` (Pydantic `BaseRobotMessage` 상속).
 
-또는 robot 마다 별도 MotionNode 인스턴스 + 라우팅 layer — 어느 쪽이 깨끗한지는 11. Open questions 참조.
+**Lifecycle / 스레딩:**
 
-### 3.6 Coordinator (★ 신규 layer)
+- Singleton (process 당 1개) — `RobotRegistry` 에서 모든 robot 의 dependency 받아 초기화
+- thread-safe (motor backend / iksolver 가 thread-safe 인 위에 직접 dispatch)
+- 동시 두 robot 의 motion 호출 가능 (각자 다른 TrajectoryRunner). 같은 robot 의 motion 중복 호출은 `MoveResponse.success=False` 또는 abort
+- abort 가능 — `stop(robot_id)` 호출 시 현재 TrajectoryRunner abort
 
-OMX 단독에서 존재하지 않던 영역. 두 robot 동시 동작 시:
+**구현 방식 — single multi-robot executor (Open Q 2 결정):**
 
-- **Workspace conflict avoidance** — 두 robot 의 motion plan 사전 collision check (PyBullet 의 multi-robot world 에 둘 다 로드), run-time monitoring (joint state cache 의 robot 별 현재 자세)
-- **Synchronization primitives** — `SyncBarrier`, `Lock`, `Channel` — 두 robot 의 phase 동기화 (예: "둘 다 hover pose 도달 후 동시 descend")
-- **Task allocation** — 휴리스틱 (어느 박스를 어느 robot 이) → 추후 RL learn 가능 (Track C 확장)
-- **Handoff sequencing** — 한 robot 이 객체 들고 → 다른 robot 의 그리퍼 도달 → 둘 다 잡은 상태 sync → 첫 robot release → 두 번째 robot 만 잡은 상태. 각 phase 의 sync + force/timing 조율
+```python
+class MultiRobotMotionExecutor:
+    def __init__(self, registry: RobotRegistry):
+        self._registry = registry
+        # robot_id → TrajectoryRunner 의 active 인스턴스 dict
+        self._runners: dict[str, TrajectoryRunner] = {}
+        self._lock = threading.Lock()
 
-Coordinator 가 새 노드인지, MotionExecutor 안의 sub-component 인지, Step DSL 의 step 인지 — 11. Open questions 참조.
+    def move_l(self, req: MoveLRequest) -> MoveResponse:
+        solver = self._registry.iksolver(req.robot_id)        # CorrectedIKSolver
+        backend = self._registry.motor_backend(req.robot_id)
+        # ... TrajectoryRunner 생성, ruckig profile, motor 명령 publish
+        return MoveResponse(success=True, message="...", data=...)
+```
+
+**왜 single executor (Option b 의 robot 별 분리 아닌 이유):**
+
+- robot 간 dispatch 가 dict lookup 한 번 — 구조 단순
+- service handler 등록이 robot 별로 N번 안 박힘 (`<robot_id>/motion/srv/move_l` 의 service handler 가 동적으로 robot_id 분기)
+- coordinator (Phase 2+) 가 multi-robot motion 조합할 때 같은 executor 에 두 번 호출하면 됨
+
+단점: single executor 가 모든 robot 의 motion state 보유 — 매우 복잡한 multi-robot scenario 에선 split 도 가능. 그때는 §3.6 Coordinator 가 dispatch.
+
+**기존 코드와의 mapping:**
+
+| 현재 ([backend/nodes/motion_node.py](../backend/nodes/motion_node.py)) | 새 위치 |
+|---|---|
+| `MotionNode` 클래스 (Zenoh service 등록 + 직접 handler) | `MotionNode` 가 `MotionExecutor` wrap 만 (얇은 layer) — actual logic 은 `MultiRobotMotionExecutor` |
+| service handler `_handle_move_l` 등 | `MotionExecutor.move_l(req: MoveLRequest)` |
+| 직접 `PybulletSolver()` 호출 | `registry.iksolver(robot_id)` |
+| 직접 `MOTOR_CMD_JOINT` publish | TrajectoryRunner 가 robot 별 토픽 (`<robot_id>/motor/cmd/joint`) publish |
+| `motion_commands.py` 의 `MotionCommand` 서브클래스 | `MotionExecutor` method 별로 분리, 검증은 Pydantic request validation 으로 흡수 |
+
+**Pydantic payload type:** §7.6 `backend/core/messages/motion.py` 에 정의:
+- `MoveJRequest(robot_id, joints, vel, acc)`, `MoveLRequest(robot_id, target_pose, ...)`, etc.
+- `MoveResponse(success, message, data: MoveResultData | None)`
+- `MoveResultData(start_joint, end_joint, duration_s, ...)`
+
+frontend codegen 으로 TS type 자동 생성 (§7.3).
+
+### 3.6 Coordinator (★ Phase 2+ 신규 layer)
+
+**Phase 2+ deferred** — contract 의 finalize 는 SO-101 도착 직전에 §10 Coordination layer 와 같이. Phase 1 에선 단순히 stub interface 만 둠 (다른 layer 가 의존 안 함).
+
+OMX 단독에서 존재하지 않던 영역. 두 robot 이상 동시 동작 시:
+
+- **Workspace conflict avoidance** — 두 robot 의 motion plan 사전 collision check (PyBullet 의 multi-robot world 에 둘 다 로드), run-time monitoring
+- **Synchronization primitives** — `SyncBarrier`, `Lock`, `Channel` — phase 동기화 (예: "둘 다 hover pose 도달 후 동시 descend")
+- **Task allocation** — 휴리스틱 → 추후 RL (Track C 확장)
+- **Handoff sequencing** — 한 robot 이 객체 → 다른 robot 그리퍼 도달 → 둘 다 잡은 상태 sync → 첫 robot release. 각 phase 의 sync + force/timing
+
+**Protocol stub (Phase 2+ 에서 확정):**
+
+```python
+class Coordinator(Protocol):
+    def workspace_conflict_check(self, plans: list[MotionPlan]) -> ConflictReport: ...
+    def acquire_workspace_lock(self, robot_id: str, zone: WorkspaceZone) -> LockHandle: ...
+    def sync_barrier(self, robot_ids: list[str]) -> BarrierHandle: ...
+    def handoff(self, from_robot: str, to_robot: str, object_ref: ObjectRef) -> HandoffResult: ...
+```
+
+구현 위치는 §10.5 Open Q 3 (신규 노드 / MotionExecutor 내부 / Step DSL 내부 중) — Phase 2+ 에서 결정.
 
 ---
 

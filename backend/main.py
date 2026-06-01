@@ -55,7 +55,7 @@ def _load_config(path: Path) -> dict[str, Any]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="OMX Control 백엔드")
+    parser = argparse.ArgumentParser(description="Horibot 백엔드")
     parser.add_argument(
         "--host",
         default=None,
@@ -71,7 +71,7 @@ def main():
     requested_nodes: list[str] = list(cfg.get("nodes", []))
     bridge_cfg: dict[str, Any] = cfg.get("bridge", {}) or {}
 
-    logger.info("=== OMX Control 시작 (host=%s) ===", host_name)
+    logger.info("=== Horibot 시작 (host=%s) ===", host_name)
     logger.info("실행할 노드: %s", requested_nodes)
 
     unknown = [n for n in requested_nodes if n not in known_nodes()]

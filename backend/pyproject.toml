@@ -1,7 +1,7 @@
 [project]
-name = "omx-control-backend"
+name = "horibot-backend"
 version = "0.1.0"
-description = "OMX Control Backend"
+description = "Horibot Backend"
 requires-python = ">=3.11"
 
 dependencies = [

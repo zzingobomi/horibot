@@ -55,7 +55,7 @@ export function Sidebar() {
       >
         {!collapsed && (
           <div className="min-w-0">
-            <h1 className="text-lg font-semibold tracking-tight">OMX Control</h1>
+            <h1 className="text-lg font-semibold tracking-tight">Horibot</h1>
             <p className="text-xs text-muted-foreground">Robot Arm Controller</p>
           </div>
         )}

@@ -89,6 +89,9 @@ class RobotRegistry:
             return
         self._initialized = True
         self._robots: dict[str, RobotConfig] = {}
+        self._iksolvers: dict[str, object] = {}  # IKSolver — lazy import 회피
+        self._motor_backends: dict[str, object] = {}  # MotorBackend
+        self._factory_lock = threading.Lock()
         self._load()
 
     def _load(self) -> None:
@@ -190,3 +193,67 @@ class RobotRegistry:
                 "명시적 robot_id 로 get() 사용."
             )
         return next(iter(self._robots.values()))
+
+    # ─── Factory methods (per-robot 인스턴스 캐시) ───────────────
+
+    def _resolve(self, robot_id: str | None) -> str:
+        return robot_id if robot_id is not None else self.default_robot_id()
+
+    def get_iksolver(self, robot_id: str | None = None):
+        """robot 의 IKSolver 인스턴스 반환. 캐시 (process 당 1 인스턴스 per robot).
+
+        cfg.iksolver = "pybullet" → CorrectedIKSolver(PybulletIKSolver(urdf), ...)
+        cfg.iksolver = "mujoco" → 미구현 (Phase 2+)
+        """
+        rid = self._resolve(robot_id)
+        with self._factory_lock:
+            if rid not in self._iksolvers:
+                self._iksolvers[rid] = self._build_iksolver(rid)
+            return self._iksolvers[rid]
+
+    def _build_iksolver(self, robot_id: str):
+        # Lazy import — RobotRegistry 가 kinematics 모듈에 의존 X
+        from core.link_coordinates import LinkCoordinates
+        from core.sag_coordinates import SagCoordinates
+        from modules.kinematics.adapters.pybullet_solver import PybulletIKSolver
+        from modules.kinematics.corrected import CorrectedIKSolver
+
+        cfg = self.get(robot_id)
+        if cfg.iksolver == "pybullet":
+            inner = PybulletIKSolver(cfg.urdf_path)
+            return CorrectedIKSolver(
+                inner, LinkCoordinates(), SagCoordinates()
+            )
+        if cfg.iksolver == "mujoco":
+            raise NotImplementedError(
+                f"mujoco IKSolver — Phase 2+ (robot_id={robot_id})"
+            )
+        raise ValueError(f"unknown iksolver: {cfg.iksolver!r} (robot_id={robot_id})")
+
+    def get_motor_backend(self, robot_id: str | None = None):
+        """robot 의 MotorBackend 인스턴스 반환. 캐시.
+
+        cfg.motor_backend = "dynamixel" → DynamixelBackend(port, motors)
+        cfg.motor_backend = "feetech" → 미구현 (Phase 2+)
+        """
+        rid = self._resolve(robot_id)
+        with self._factory_lock:
+            if rid not in self._motor_backends:
+                self._motor_backends[rid] = self._build_motor_backend(rid)
+            return self._motor_backends[rid]
+
+    def _build_motor_backend(self, robot_id: str):
+        from modules.dynamixel.motor_config import load_motor_config
+        from modules.motor.adapters.dynamixel_backend import DynamixelBackend
+
+        cfg = self.get(robot_id)
+        port_cfg, motors = load_motor_config(robot_id)
+        if cfg.motor_backend == "dynamixel":
+            return DynamixelBackend(port_cfg.get(), motors)
+        if cfg.motor_backend == "feetech":
+            raise NotImplementedError(
+                f"feetech MotorBackend — Phase 2+ (robot_id={robot_id})"
+            )
+        raise ValueError(
+            f"unknown motor_backend: {cfg.motor_backend!r} (robot_id={robot_id})"
+        )

@@ -1290,34 +1290,62 @@ robotStore: {
 
 ### Phase 1 — Interface 도입 (OMX 만 implement, 동작 변화 0)
 
-**목표**: abstraction layer 도입하되 동작 변화 0 (regression test 통과). OMX 만 작동, SO-101 은 stub.
+**목표**: abstraction layer 도입하되 동작 변화 0. OMX 만 작동, SO-101 은 design 만.
 
-작업:
+**Phase 1 status (2026-06-01 기준):**
 
-1. ~~**Repo 이름 변경** (§2.4)~~ ✅ 선행 완료 (commit `1114524`)
-2. **IKSolver Protocol** 정의 ([iksolver.py](../backend/modules/kinematics/iksolver.py)) + `PybulletSolver` → `PybulletIKSolver` rename / interface 만족 refactor
-3. **CorrectedIKSolver Decorator** — sag / link_offset 보정 별도 layer 분리
-4. **MotorBackend Protocol** 정의 + `DynamixelBackend` adapter (현재 코드 wrap)
-5. **CameraCapture Protocol** + `RealSenseCapture` adapter
-6. **토픽 namespace 정정** — `omx/*` → `omx_f/*` + `system/*` 분리 + `viz/*` 분리. [topic_map.py](../backend/core/topic_map.py) + [topics.ts](../frontend/src/constants/topics.ts) 둘 다 갱신
-7. **디렉토리 재구성** (§5) — `robot/calibration/omx_f/` 로 이동 + `robot/config/robots.yaml` 신규
-8. **호출처 갱신** — MotionNode / Detector / TrajectoryRunner 모두 Protocol 의존으로
-9. **Regression test** — 동작 변화 0 검증
+| # | 작업 | 상태 | commit |
+|---|---|---|---|
+| 0 | Repo 이름 변경 (§2.4) | ✅ 완료 | `1114524` |
+| - | doc design 정리 (§1.2 / §4 / §5 / §6 / §7) | ✅ 완료 | `f2c7c91` / `65340c5` |
+| - | Pydantic v2 + openapi-typescript codegen 인프라 scaffolding (§7) | ✅ 완료 | `b207246` |
+| 7 | 디렉토리 재구성 + `robots.yaml` + `RobotRegistry` (§5) | ✅ 완료 | `592bf52` |
+| 2 | IKSolver Protocol + PybulletIKSolver + CorrectedIKSolver Decorator (§3.1 / §3.2) | ✅ 완료 | `5bfbe72` |
+| 3 | CorrectedIKSolver Decorator (sag 분리) | ✅ 완료 (위와 같이) | `5bfbe72` |
+| 4 | MotorBackend Protocol + DynamixelBackend adapter (§3.3) | ✅ 완료 | (이번 phase commit) |
+| 5 | CameraCapture Protocol + dataclasses (§3.4) | ✅ 완료 | `5ec460f` |
+| - | robot_id 차원 Sub-A (Coordinates dict / JointStateCache) | ✅ 완료 | `e8f75ea` |
+| - | robot_id 차원 Sub-B (RobotRegistry factory) | ✅ 완료 | `6d95551` |
+| 6 | **토픽 namespace 정정** (`omx/*` → `<robot_id>/*` + `system/*` + `viz/*`) | ⏸ **Phase 2 deferred** | — |
+| 8 | 호출처 갱신 — MotionNode 의 robot_id dispatch / Step DSL robot_id | ⏸ **Phase 2 deferred** | — |
+| - | Pydantic typed payload 실 적용 (service / topic 페이로드 migration) | ⏸ **Phase 2 deferred** | — |
+| 9 | Regression test | 동작 변화 0 확인 (main.py boot OK) | — |
 
-이 phase 끝나면: 코드는 깨끗 + interface 깔림 + SO-101 추가 시점에 매끄러운 분기점 마련
+**Phase 1 의 deliverable:**
 
-### Phase 2 — SO-101 도착 → 두 번째 adapter
+- SO-101 이 도착하면 다음만 하면 됨 — single robot SWAP 시나리오 (OMX → SO-101 대체):
+  1. `robot/so101_6dof/urdf/` 배치 (mesh + URDF)
+  2. `robot/instances/so101_6dof_0/` 생성 (calibration 빈 폴더)
+  3. `FeetechBackend` adapter 신규 (DynamixelBackend 와 같은 Protocol 만족)
+  4. `robots.yaml` 에 entry 추가 + omx_f_0 의 `enabled: false`
+- DUAL-ARM (OMX + SO-101 동시) 시나리오는 추가 작업 필요 (Phase 2-3):
+  - 토픽 namespace 분리
+  - Motion node 의 robot_id dispatch
+  - Step DSL 의 robot_id field
+  - Coordinator layer (§10)
 
-so101_6dof_plan §6, §7 의 작업 그대로 + interface 위에서:
+**왜 토픽 rename / Motion dispatch / Step DSL robot_id 가 Phase 2 로 미뤄졌는지:**
 
-1. **URDF 배치** (`robot/urdf/so101_6dof/`)
-2. **FeetechBackend** adapter 신규
-3. **PybulletIKSolver(so101_6dof.urdf)** 인스턴스 생성 (5DOF/6DOF 둘 다 호환)
-4. **JointStateCache / Coordinates 의 robot_id 차원 도입**
-5. **Step DSL 의 robot_id 인자** 추가 (옵션 a/b/c §8.1 결정)
-6. **캘리브레이션 5종** SO-101 용 새로 산출 + `robot/calibration/so101_6dof/`
-7. **모터 Pi 2 (SO-101 전용)** 분산 토폴로지 추가 — 또는 1 모터 Pi 가 두 controller 동시 처리
-8. **두 robot 단독 동작 검증** — cooperative 없이 각자 motion 정상
+- N=1 환경에선 변화 0 (cosmetic string rename / API parameter addition 만)
+- 실제 검증은 SO-101 dual-arm 동작 시점에 처음 가능
+- 그때 실 시나리오 따라 짜는 게 over-engineering 회피
+
+### Phase 2 — SO-101 도착 → 두 번째 adapter + multi-robot 운영
+
+so101_6dof_plan §6, §7 + Phase 1 에서 deferred 된 multi-robot 운영 작업 합쳐서:
+
+1. **URDF 배치** (`robot/so101_6dof/urdf/`) + mesh STL
+2. **FeetechBackend adapter 신규** (DynamixelBackend 와 같은 MotorBackend Protocol 만족)
+3. **PybulletIKSolver(so101_6dof.urdf)** 인스턴스 생성 (5DOF/6DOF 둘 다 호환 — Registry.get_iksolver 자동)
+4. **캘리브레이션 5종** SO-101 용 새로 산출 + `robot/instances/so101_6dof_0/calibration/`
+5. **robots.yaml** 에 so101_6dof_0 entry 추가
+6. ~~JointStateCache / Coordinates 의 robot_id 차원~~ ✅ Phase 1 에서 완료
+7. **토픽 namespace 정정** (Phase 1 deferred) — `omx/*` → `<robot_id>/*` + `system/*` / `task/*` 등. topic_map.py + topics.ts 갱신
+8. **Motion node 의 robot_id dispatch** (Phase 1 deferred) — service handler 가 payload 의 robot_id 보고 적절한 IKSolver/MotorBackend 라우팅. 또는 per-robot MotionNode 인스턴스 분리
+9. **Step DSL 의 robot_id 인자** (Phase 1 deferred) — Step base 에 robot_id field. 옵션 a/b/c §8.1 결정 (제 추천: explicit a)
+10. **Pydantic typed payload 실 적용** — 우선 service signature 부터 (§7.4 단계 A)
+11. **모터 Pi 2 (SO-101 전용)** 분산 토폴로지 추가 — 또는 1 모터 Pi 가 두 controller 동시 처리
+12. **두 robot 단독 동작 검증** — cooperative 없이 각자 motion 정상
 
 ### Phase 3 — Coordinator 도입
 

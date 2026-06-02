@@ -24,7 +24,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-ROBOT_ROOT = Path(__file__).parents[2] / "robot"
+ROBOT_ROOT = Path(__file__).parents[3] / "robot"
 ROBOTS_YAML_PATH = ROBOT_ROOT / "robots.yaml"
 
 # 예약 top-level 이름 (§5.1) — robot_type / robot_id 로 사용 금지

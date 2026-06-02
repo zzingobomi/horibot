@@ -99,7 +99,7 @@ graph TB
 | **`RobotConfig`** | 같은 파일 | frozen dataclass — robot 1개의 모든 path / 설정 |
 | **`IKSolver` Protocol** | [modules/kinematics/iksolver.py](../backend/modules/kinematics/iksolver.py) | fk / ik / fk_to_matrix / joint_limits 의 통합 인터페이스 |
 | **`MotorBackend` Protocol** | [modules/motor/backend.py](../backend/modules/motor/backend.py) | Dynamixel / Feetech SDK 의 통합 인터페이스 |
-| **`CameraCapture`** | [modules/camera/capture.py](../backend/modules/camera/capture.py) | Protocol — RealSense / MuJoCo / USB 카메라의 통합 인터페이스. 구현체는 [adapters/realsense.py](../backend/modules/camera/adapters/realsense.py) 등 |
+| **`CameraCapture`** | [modules/camera/capture.py](../backend/modules/camera/capture.py) | Protocol — RealSense / MuJoCo / USB 카메라의 통합 인터페이스. 구현체는 [adapters/realsense_capture.py](../backend/modules/camera/adapters/realsense_capture.py) (`RealsenseCapture`), raw SDK wrap 은 [adapters/realsense_driver.py](../backend/modules/camera/adapters/realsense_driver.py) (`RealsenseDriver`) |
 
 ---
 
@@ -344,7 +344,7 @@ graph TB
 | [modules/kinematics/solver.py](../backend/modules/kinematics/solver.py) | 갱신 | `PybulletSolver()` facade — Registry.get_iksolver() 위임 |
 | [modules/motor/backend.py](../backend/modules/motor/backend.py) | 신규 | `MotorBackend` Protocol |
 | [modules/motor/adapters/dynamixel_backend.py](../backend/modules/motor/adapters/dynamixel_backend.py) | 신규 | `DynamixelBackend` (Protocol + legacy aliases) |
-| [modules/camera/capture.py](../backend/modules/camera/capture.py) | 갱신 | `CameraCapture` Protocol + dataclasses (구현체는 `adapters/realsense.py` 의 `RealSenseCapture`) |
+| [modules/camera/capture.py](../backend/modules/camera/capture.py) | 갱신 | `CameraCapture` Protocol + dataclasses (구현체는 `adapters/realsense_capture.py` 의 `RealsenseCapture`, raw SDK wrap 은 `adapters/realsense_driver.py` 의 `RealsenseDriver`) |
 
 ### 4.2 Phase 1 에 path 만 갱신된 파일 (caller)
 

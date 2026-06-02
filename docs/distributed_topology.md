@@ -172,9 +172,10 @@ class RobotConfig:
 
 본 절 6.1~6.5 는 *refactor 전* 의 design plan. 아래 변경 적용됨:
 - `CameraCaptureProtocol` → `CameraCapture` (Protocol 이름 회수)
-- `CameraCapture` (RealSense impl) → `RealSenseCapture` ([modules/camera/adapters/realsense.py](../backend/modules/camera/adapters/realsense.py))
+- `CameraCapture` (RealSense impl) → `RealsenseCapture` ([modules/camera/adapters/realsense_capture.py](../backend/modules/camera/adapters/realsense_capture.py))
 - [capture.py](../backend/modules/camera/capture.py) 는 Protocol + data classes 만
 - **`camera_backend` selector layout 추가** (motor/ik 와 동일 패턴) — `CameraBackendName = Literal["realsense", "opencv", "mujoco"]` + `RobotRegistry.get_camera_capture(robot_id)` factory + `robots.yaml` 의 `camera_backend:` 필드. opencv / mujoco impl 은 placeholder (`NotImplementedError`) — SO-101 도착 (§1) / Track C 진입 시 작성
+- **후속 통일 (Jun 3)**: raw SDK wrap 을 별도 파일로 분리해 motor 도메인의 `*Driver` / `*Backend` 어휘와 정합 — `realsense_capture.py` (raw SDK 가 들어있던 자리) → [`realsense_driver.py::RealsenseDriver`](../backend/modules/camera/adapters/realsense_driver.py), Protocol impl 자리 `realsense.py::RealSenseCapture` → [`realsense_capture.py::RealsenseCapture`](../backend/modules/camera/adapters/realsense_capture.py). 이로써 (Protocol `CameraCapture` ← impl `RealsenseCapture` ← raw `RealsenseDriver`) 가 motor (Protocol `MotorBackend` ← impl `DynamixelBackend` ← raw `DynamixelDriver`) 와 동형.
 
 ### 6.1 변경 전 현황 (일관성 깨짐)
 

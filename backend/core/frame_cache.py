@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 
+from core.messages.camera import CameraStatus
 from core.robot_registry import RobotRegistry
 from core.topic_map import Topic
 
@@ -44,7 +45,7 @@ class FrameCache:
         self._initialized = True
         self._lock = threading.Lock()
         self._latest_jpeg_by_robot: dict[str, bytes] = {}
-        self._latest_status_by_robot: dict[str, dict] = {}
+        self._latest_status_by_robot: dict[str, CameraStatus] = {}
         self._subscribed_robots: set[str] = set()
 
     def _resolve(self, robot_id: str | None) -> str:
@@ -66,14 +67,15 @@ class FrameCache:
         )
         node.create_subscriber(
             Topic.CAMERA_STATE_STATUS,
-            lambda data, _rid=rid: self._on_status(_rid, data),
+            CameraStatus,
+            lambda status, _rid=rid: self._on_status(_rid, status),
         )
 
     def _on_frame(self, robot_id: str, payload: bytes) -> None:
         with self._lock:
             self._latest_jpeg_by_robot[robot_id] = payload
 
-    def _on_status(self, robot_id: str, status: dict) -> None:
+    def _on_status(self, robot_id: str, status: CameraStatus) -> None:
         with self._lock:
             self._latest_status_by_robot[robot_id] = status
 
@@ -98,12 +100,14 @@ class FrameCache:
     def width(self, robot_id: str | None = None) -> int | None:
         rid = self._resolve(robot_id)
         with self._lock:
-            return self._latest_status_by_robot.get(rid, {}).get("width")
+            status = self._latest_status_by_robot.get(rid)
+            return status.width if status is not None else None
 
     def height(self, robot_id: str | None = None) -> int | None:
         rid = self._resolve(robot_id)
         with self._lock:
-            return self._latest_status_by_robot.get(rid, {}).get("height")
+            status = self._latest_status_by_robot.get(rid)
+            return status.height if status is not None else None
 
     def is_ready(self, robot_id: str | None = None) -> bool:
         rid = self._resolve(robot_id)

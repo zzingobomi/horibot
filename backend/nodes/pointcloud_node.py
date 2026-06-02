@@ -9,6 +9,7 @@ import open3d as o3d
 from core.base_node import BaseNode
 from core.common import GRIPPER_ID
 from core.joint_state_cache import JointStateCache
+from core.messages.camera import CameraSetDepthStreamReq, CameraSetDepthStreamRes
 from core.topic_map import Service, Topic
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
 from modules.motor.motor_config import load_motor_config
@@ -106,12 +107,13 @@ class PointCloudNode(BaseNode):
             target = bool(data["enabled"])
             res = self.call_service(
                 Service.CAMERA_SET_DEPTH_STREAM,
-                {"enabled": target},
+                CameraSetDepthStreamReq(enabled=target),
+                CameraSetDepthStreamRes,
             )
-            if not res.get("success"):
+            if not res.success:
                 return {
                     "success": False,
-                    "message": f"카메라 depth 스트림 전환 실패: {res.get('message')}",
+                    "message": f"카메라 depth 스트림 전환 실패: {res.message}",
                     "data": {},
                 }
             with self._cfg_lock:

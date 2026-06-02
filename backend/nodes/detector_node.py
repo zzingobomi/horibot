@@ -8,6 +8,7 @@ from core.common import GRIPPER_ID
 from core.base_node import BaseNode
 from core.frame_cache import FrameCache
 from core.joint_state_cache import JointStateCache
+from core.messages.camera import CameraSetDepthStreamReq, CameraSetDepthStreamRes
 from core.topic_map import Service, Topic
 from modules.calibration.loader import load_calibration
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
@@ -225,12 +226,14 @@ class DetectorNode(BaseNode):
 
         if need_enable:
             res = self.call_service(
-                Service.CAMERA_SET_DEPTH_STREAM, {"enabled": True}
+                Service.CAMERA_SET_DEPTH_STREAM,
+                CameraSetDepthStreamReq(enabled=True),
+                CameraSetDepthStreamRes,
             )
-            if not res.get("success"):
+            if not res.success:
                 return {
                     "success": False,
-                    "message": f"depth enable 실패: {res.get('message')}",
+                    "message": f"depth enable 실패: {res.message}",
                     "data": {},
                 }
             # 새 frame 한 장 기다림

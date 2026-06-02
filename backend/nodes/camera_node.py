@@ -3,6 +3,12 @@ import threading
 import time
 
 from core.base_node import BaseNode
+from core.messages.base import ServiceRequest, ServiceResponse
+from core.messages.camera import (
+    CameraSetDepthStreamReq,
+    CameraSetDepthStreamRes,
+    CameraStatus,
+)
 from core.robot_registry import RobotRegistry
 from core.topic_map import Service, Topic
 from core.zenoh_session import ZenohSession
@@ -36,6 +42,8 @@ class CameraNode(BaseNode):
 
         self.create_service(
             Service.CAMERA_SET_DEPTH_STREAM,
+            CameraSetDepthStreamReq,
+            CameraSetDepthStreamRes,
             self._srv_set_depth_stream,
         )
 
@@ -105,7 +113,7 @@ class CameraNode(BaseNode):
             t0 = time.time()
             color, depth, intr = self.camera.read_aligned()
             if color is None or depth is None or intr is None:
-                # 첫 프레임은 RealsenseCapture 내부 producer가 cloud_enabled를 받고 다음 사이클에 채움. 잠깐 대기.
+                # 첫 프레임은 RealsenseDriver 내부 producer가 cloud_enabled를 받고 다음 사이클에 채움. 잠깐 대기.
                 time.sleep(DEPTH_IDLE_SLEEP)
                 continue
 
@@ -129,37 +137,31 @@ class CameraNode(BaseNode):
 
     # ─── Services ────────────────────────────────────────────
 
-    def _srv_set_depth_stream(self, req: dict) -> dict:
-        data = req.get("data", {}) or {}
-        if "enabled" not in data:
-            return {
-                "success": False,
-                "message": "'enabled' 필드 필요",
-                "data": {},
-            }
-
-        enabled = bool(data["enabled"])
+    def _srv_set_depth_stream(
+        self, req: ServiceRequest[CameraSetDepthStreamReq]
+    ) -> ServiceResponse[CameraSetDepthStreamRes]:
+        enabled = req.data.enabled
         self.camera.set_cloud_enabled(enabled)
         with self._depth_lock:
             self._depth_enabled = enabled
         logger.info("depth 스트림 %s", "ON" if enabled else "OFF")
-        return {
-            "success": True,
-            "message": "ok",
-            "data": {"enabled": enabled},
-        }
+        return ServiceResponse(
+            success=True,
+            message="ok",
+            data=CameraSetDepthStreamRes(enabled=enabled),
+        )
 
     # ─── Status ──────────────────────────────────────────────
 
     def _publish_status(self, connected: bool) -> None:
         self.publish(
             Topic.CAMERA_STATE_STATUS,
-            {
-                "timestamp": time.time(),
-                "connected": connected,
-                "width": self.camera.width,
-                "height": self.camera.height,
-                "fps": self.camera.fps,
-                "depth_scale": self.camera.depth_scale,
-            },
+            CameraStatus(
+                timestamp=time.time(),
+                connected=connected,
+                width=self.camera.width,
+                height=self.camera.height,
+                fps=self.camera.fps,
+                depth_scale=self.camera.depth_scale,
+            ),
         )

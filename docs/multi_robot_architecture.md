@@ -520,15 +520,15 @@ class CameraCapture(Protocol):
 
 | Adapter | Source | Phase |
 |---|---|---|
-| `RealSenseCapture(width, height, fps)` | `pyrealsense2` (현 [`RealsenseCapture`](../backend/core/realsense_capture.py) refactor) | Phase 1 |
+| `RealsenseCapture(width, height, fps)` | `pyrealsense2` (현 [`RealsenseDriver`](../backend/modules/camera/adapters/realsense_driver.py) wrap) | Phase 1 |
 | `OpenCVCapture(device_id)` | `cv2.VideoCapture` — depth 없음 (color only) | Phase 2 — `omx_f_0` UVC 카메라용 (§16 카메라 배치 변경) |
 | `MujocoCapture(model, camera_name)` | MuJoCo sim 의 가상 카메라 | Track C 도입 시 (Phase 2+) |
 
 **기존 코드와의 mapping:**
 
-| 현재 ([core/realsense_capture.py](../backend/core/realsense_capture.py)) | 새 위치 |
+| 현재 ([modules/camera/adapters/realsense_driver.py](../backend/modules/camera/adapters/realsense_driver.py)) | 새 위치 |
 |---|---|
-| `RealsenseCapture` 클래스 (process singleton) | `backend/modules/camera/adapters/realsense.py` 의 `RealSenseCapture` — singleton 제거, per-robot |
+| `RealsenseDriver` (process singleton, raw SDK) | `backend/modules/camera/adapters/realsense_capture.py` 의 `RealsenseCapture` — Protocol impl, 내부에 `RealsenseDriver` 위임. multi-robot 시 RobotRegistry factory 가 per-robot 인스턴스 제공 |
 | `open()` / `close()` / `is_opened` | Protocol method 동일 |
 | `read_color()` / `read_aligned_color_depth()` | `read_color()` → `ColorFrame`, `read_depth_frame()` → `DepthFrame` (dataclass 도입) |
 | `set_cloud_enabled()` | `set_depth_enabled()` 으로 rename |

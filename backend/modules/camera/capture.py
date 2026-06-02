@@ -53,7 +53,7 @@ class CameraCapture(Protocol):
 
     [multi_robot_architecture.md §3.4](../../../docs/multi_robot_architecture.md#34-cameracapture-protocol)
     의 design API. 구현체는 이 Protocol 만 만족하면 plug-and-play
-    (예: `RealSenseCapture`, 추후 `OpenCVCapture` / `MujocoCapture`).
+    (예: `RealsenseCapture`, 추후 `OpenCVCapture` / `MujocoCapture`).
     """
 
     def open(self) -> bool: ...

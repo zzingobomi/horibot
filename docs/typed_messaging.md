@@ -159,16 +159,23 @@ frontend 도 typed 로 가져가려면 별도 작업 (Python schema → JSON Sch
   - 모터 service 호출자도 같이 typed: `motion_node._set_arm_profile`, `gamepad_node` 의 `MOTOR_ENABLE` / `MOTOR_GRIPPER`, `task/steps.py::Gripper`
   - `modules/task/schema.py` 는 `core.values` 재export 로 호환 유지
   - pyright 41 → 0 (다른 pre-existing 에러도 같이 정리 — pyrealsense2 Any rebind, gamepad None narrowing, MoveTcpFn signature, opencv `# type: ignore` 등)
-- [ ] **다음 슬라이스 가기 전: 폴더 구조 / 파일 네이밍 전체 검토**
+- [x] **카메라 노드 vertical slice 완료** (2026-06-03)
+  - `core/messages/camera.py` 새 schema — `CameraStatus` (state publish) / `CameraSetDepthStreamReq` / `CameraSetDepthStreamRes`
+  - `nodes/camera_node.py` typed — `_publish_status` → `CameraStatus`, `_srv_set_depth_stream` → `ServiceRequest[CameraSetDepthStreamReq] → ServiceResponse[CameraSetDepthStreamRes]`
+  - `core/frame_cache.py` — `_latest_status_by_robot: dict[str, CameraStatus]`, `.width`/`.height` attribute 접근 (기존 `.get("width")` 대신), `node.create_subscriber(CAMERA_STATE_STATUS, CameraStatus, ...)` typed
+  - service caller 도 같이 typed: `detector_node` 의 `_handle_grounded_detect` 안 `CAMERA_SET_DEPTH_STREAM` 호출, `pointcloud_node` 의 `_srv_configure` 안 동일 호출 — req `CameraSetDepthStreamReq` / res `CameraSetDepthStreamRes` 명시
+  - `CAMERA_STREAM_RAW` (JPEG bytes) / `CAMERA_DEPTH_FRAME` (header+JPEG+zstd) 은 binary raw 트랙 — 본 슬라이스 scope 밖 (typed_messaging.md §미해결 #1, #2)
+  - pyright 0
+- [x] **camera 슬라이스 직전: 폴더 구조 / 파일 네이밍 검토 + 정합화** (2026-06-03)
   - **계기**: 작업 중 `core/realsense_capture.py` 가 leftover (May 9 ca6cc04 의 raw SDK wrap, Jun 2 4365171 architecture 리팩토링에서 `modules/camera/adapters/realsense.py` 가 위에 추가됐는데 원본은 core 에 남음) — `pyrealsense2` import 가 `core/` 에 있다는 시점에 이상하다 알아챘어야. 옮긴 후 발견.
-  - **검토 항목**:
-    - `core/` 전체 — cross-domain infrastructure 만 있는가? hardware driver / 도메인 specific 파일 잔존?
-    - `modules/<domain>/` — adapter 패턴 일관성. motor 의 `dynamixel_driver.py` (raw SDK) + `dynamixel_backend.py` (Protocol impl) ↔ camera 의 `realsense_capture.py` (raw SDK) + `realsense.py` (Protocol impl). 네이밍 비대칭 (`*_driver` / `*_backend` vs `*_capture` / 무 suffix). 통일 후보:
-      - `realsense_capture.py::RealsenseCapture` → `realsense_driver.py::RealsenseDriver`
-      - `realsense.py::RealSenseCapture` → `realsense_backend.py::RealsenseBackend`
-      - 단 `CameraCapture` Protocol 이름은 그대로 (Capture = 도메인 어휘)
-    - 다른 도메인 (`detector`, `pointcloud`, `calibration`, `task`, `motion`) 도 동일 패턴 검토
-  - **언제**: 다음 노드 (camera or motion) vertical slice 들어가기 직전. type 만들면서 같이 보면 자연.
+  - **검토 결과 / 적용**:
+    - `core/` — `realsense_capture.py` leftover 는 Jun 2 4365171 시점에 이미 `modules/camera/adapters/` 로 이전됨. 잔존 hardware/도메인 specific 파일 없음. **회색 한 개**: `core/gripper_setup.py` — task-specific (self-play 시절 잔재). task 슬라이스 (#7) 시 `modules/task/` 로 이전. **추가 발견**: `core/` 18+ 파일 평면 = 분류감 부족. transport / calibdata / cache / robot / top 으로 그룹화 후보. typed_messaging 슬라이스 끝나고 `core/messages/` 안정된 후 별도 turn 으로.
+    - `modules/<domain>/` — 네이밍 정합화:
+      - `realsense_capture.py::RealsenseCapture` (raw) → `realsense_driver.py::RealsenseDriver`
+      - `realsense.py::RealSenseCapture` (impl) → `realsense_capture.py::RealsenseCapture`
+      - Protocol `CameraCapture` 이름 유지 (도메인 어휘). 결과 (Protocol `CameraCapture` ← impl `RealsenseCapture` ← raw `RealsenseDriver`) 가 motor (Protocol `MotorBackend` ← impl `DynamixelBackend` ← raw `DynamixelDriver`) 와 동형
+    - `modules/dynamixel/` 빈 폴더 (Jun 2 리팩토 leftover) 삭제
+    - kinematics / detector / motion / task / pointcloud / calibration — 도메인 안 일관성 OK. detector 의 `BaseDetector` ABC → Protocol 전환은 detector 슬라이스 (#6) 때 함께
 
 ## 작업 재개 시 첫 번째 prompt 추천
 

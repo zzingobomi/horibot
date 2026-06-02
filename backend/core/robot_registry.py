@@ -302,9 +302,9 @@ class RobotRegistry:
         )
 
     def get_camera_capture(self, robot_id: str | None = None) -> Any:
-        """cfg.camera_backend = "realsense" → RealSenseCapture() / "opencv" / "mujoco" 미구현.
+        """cfg.camera_backend = "realsense" → RealsenseCapture() / "opencv" / "mujoco" 미구현.
 
-        return 이 Any 인 이유: camera_node 는 현재 RealSenseCapture 의 legacy method
+        return 이 Any 인 이유: camera_node 는 현재 RealsenseCapture 의 legacy method
         (`read` / `read_aligned` / `width` / ...) 를 사용 — CameraCapture Protocol 에
         없음. camera_node Protocol 마이그레이션 완료 후 `-> CameraCapture` 로 좁힘.
         """
@@ -314,9 +314,9 @@ class RobotRegistry:
         cfg = self.get(robot_id)
         if cfg.camera_backend == "realsense":
             # Lazy import — pyrealsense2 는 camera host 에서만 설치됨
-            from modules.camera.adapters.realsense import RealSenseCapture
+            from modules.camera.adapters.realsense_capture import RealsenseCapture
 
-            return RealSenseCapture()
+            return RealsenseCapture()
         if cfg.camera_backend == "opencv":
             raise NotImplementedError(
                 f"opencv CameraCapture — Phase 2 (omx_f UVC, "

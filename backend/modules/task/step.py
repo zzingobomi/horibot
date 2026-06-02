@@ -25,13 +25,13 @@ from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, overload
 
 from pydantic import BaseModel
 
-from core.messages.base import ServiceResponse
+from core.transport.messages.base import ServiceResponse
 from core.types import TrajStatus
 from modules.task.schema import Slot
 
 if TYPE_CHECKING:
-    from core.base_node import BaseNode
-    from core.joint_state_cache import JointStateCache
+    from core.transport.base_node import BaseNode
+    from core.cache.joint_state_cache import JointStateCache
     from modules.calibration.loader import CalibrationData
     from modules.motor.motor_config import MotorConfig
 

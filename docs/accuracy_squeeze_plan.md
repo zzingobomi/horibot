@@ -103,8 +103,8 @@ A, B 는 perception 문제. C 는 모든 task 공통의 **TCP 프레임 정의**
 
 **Fix 적용 (2026-05-28).**
 - `LinkCoordinates.commit_offsets` / `SagCoordinates.commit_offsets` → **overwrite** 로 변경
-  (참조: [link_coordinates.py](../backend/core/link_coordinates.py),
-  [sag_coordinates.py](../backend/core/sag_coordinates.py))
+  (참조: [link_coordinates.py](../backend/core/coords/link_coordinates.py),
+  [sag_coordinates.py](../backend/core/coords/sag_coordinates.py))
 - `_srv_handeye_commit` 변수명 / 주석 명확화
   ([calibration_node.py](../backend/nodes/calibration_node.py) `_srv_handeye_commit`)
 - 모듈 문서 갱신: `link_offsets.py`, `sag_offsets.py`, `hand_eye.py:compute_with_diagnostics`,
@@ -285,7 +285,7 @@ OMX_F 정확도 문제는 셋 다 아님 → RL 부적합.
 | # | 후보 | 무엇 | 효과 추정 | 비용 |
 |--|--|--|--|--|
 | 1 | **repeatability floor 측정** | 같은 명령 N회 → 분산 측정. 모든 squeeze 의 baseline (이 floor 보다 잘 짜내려는 시도는 무의미) | (측정만) | 30분 |
-| 2 | **link_offset BA 자유도 확장 → `end_effector_joint` xyz 포함** | URDF 의 92mm 가 실제 그리퍼 끝점 (핑거 닫혔을 때 만나는 점) 과 안 맞는 부분을 BA 가 같이 풀게. 별도 산출물 추가 X, 기존 link_offset 캘 흐름 안에서 처리. 진단이 C 로 나오면 1순위 fix. **적용 layer 변경 필요**: 현재 [urdf_patcher.py](../backend/core/urdf_patcher.py) 의 `_default_joint_id_map` 은 joint1\~5 만 알기 때문에 `end_effector_joint` 도 처리하도록 확장 필요 + `LinkOffsets` 자료 구조에 fixed joint 표현 추가. **⚠️ 자유도 추가 = gauge freedom 위험 ([extended_ba §5](hand_eye_extended_ba.md))** — hand-eye t 와 swap 가능. regularization 재튜닝 + hold-out + sanity check 필수 | mm 단위 (C 결판 시) | 1\~2시간 (BA + LinkOffsets + patcher map + reg sweep + hold-out) |
+| 2 | **link_offset BA 자유도 확장 → `end_effector_joint` xyz 포함** | URDF 의 92mm 가 실제 그리퍼 끝점 (핑거 닫혔을 때 만나는 점) 과 안 맞는 부분을 BA 가 같이 풀게. 별도 산출물 추가 X, 기존 link_offset 캘 흐름 안에서 처리. 진단이 C 로 나오면 1순위 fix. **적용 layer 변경 필요**: 현재 [urdf_patcher.py](../backend/core/coords/urdf_patcher.py) 의 `_default_joint_id_map` 은 joint1\~5 만 알기 때문에 `end_effector_joint` 도 처리하도록 확장 필요 + `LinkOffsets` 자료 구조에 fixed joint 표현 추가. **⚠️ 자유도 추가 = gauge freedom 위험 ([extended_ba §5](hand_eye_extended_ba.md))** — hand-eye t 와 swap 가능. regularization 재튜닝 + hold-out + sanity check 필수 | mm 단위 (C 결판 시) | 1\~2시간 (BA + LinkOffsets + patcher map + reg sweep + hold-out) |
 | 3 | ~~**empirical residual 학습 layer**~~ — **실측 후 효과 없음 확정** | 2026-05-28 [analyze_residuals.py](../backend/scripts/analyze_residuals.py) 로 LOO RBF 시험. **올바른 baseline σ_t 7.77mm 에서 hold-out σ_t 8.33mm (악화)**. 잔차 ↔ joint angle 상관도 모두 \|corr\|<0.3 — 자세 의존 시그널 없음. BA 가 이미 다 짜냄. **이 후보는 폐기.** mm 미만 정확도 필요시 §3.4 visual servoing 으로. | 효과 없음 (실측 확정) | — |
 | 4 | **백래시 방향성 보정** | XL430/XL330 둘 다 backlash 존재. 같은 각도여도 CW 접근 vs CCW 접근에 raw 다름. direction-dependent offset | sub-degree, 끝단 mm 단위 | 측정 1시간 + raw 변환 layer 패치 (#3 의 잔차 학습이 흡수할 수도 — 중복 검증 필요) |
 | 5 | **sag 모델 J4/J5 확장** | 현재 J2/J3 만. J4(wrist roll) 자세에 따라 J5 처짐 모멘트 바뀜 | sub-mm \~ mm | 데이터 캡처 + 모델 확장 (#3 잔차 학습이 흡수할 수도) |

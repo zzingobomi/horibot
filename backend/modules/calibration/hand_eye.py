@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from scipy.stats import median_abs_deviation
 
-from core.joint_coordinates import JointCoordinates
+from core.coords.joint_coordinates import JointCoordinates
 from modules.motor.motor_config import MotorConfig
 
 from . import thresholds as T

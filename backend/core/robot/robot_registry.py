@@ -264,8 +264,8 @@ class RobotRegistry:
 
     def _build_iksolver(self, robot_id: str):
         # Lazy import — RobotRegistry 가 kinematics 모듈에 의존 X
-        from core.link_coordinates import LinkCoordinates
-        from core.sag_coordinates import SagCoordinates
+        from core.coords.link_coordinates import LinkCoordinates
+        from core.coords.sag_coordinates import SagCoordinates
         from modules.kinematics.adapters.pybullet_solver import PybulletIKSolver
         from modules.kinematics.corrected import CorrectedIKSolver
 

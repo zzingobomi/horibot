@@ -29,7 +29,7 @@ import cv2
 import numpy as np
 import open3d as o3d
 
-from core.joint_coordinates import JointCoordinates
+from core.coords.joint_coordinates import JointCoordinates
 from modules.calibration.loader import load_calibration
 from modules.motor.motor_config import MotorConfig
 from modules.kinematics.solver import PybulletSolver

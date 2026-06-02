@@ -1,6 +1,6 @@
 """Tool offset 의 런타임 진입점. robot_id 차원 도입 (multi_robot §4.5).
 
-[LinkCoordinates](backend/core/link_coordinates.py) 와 같은 dict[robot_id] 패턴.
+[LinkCoordinates](backend/core/coords/link_coordinates.py) 와 같은 dict[robot_id] 패턴.
 state: `dict[robot_id] -> ToolOffset`.
 
 LinkCoordinates 와 다른 점:
@@ -18,7 +18,7 @@ import threading
 
 import numpy as np
 
-from core.robot_registry import RobotRegistry
+from core.robot.robot_registry import RobotRegistry
 from modules.calibration import tool_offset as tool_offset_io
 from modules.calibration.tool_offset import ToolOffset
 

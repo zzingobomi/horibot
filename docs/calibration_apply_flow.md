@@ -34,9 +34,9 @@ robot/calibration/<name>.npz  ─ 디스크 (git 추적)
 ```
 
 관련 코드:
-- [backend/core/joint_coordinates.py](../backend/core/joint_coordinates.py)
-- [backend/core/link_coordinates.py](../backend/core/link_coordinates.py)
-- [backend/core/sag_coordinates.py](../backend/core/sag_coordinates.py)
+- [backend/core/coords/joint_coordinates.py](../backend/core/coords/joint_coordinates.py)
+- [backend/core/coords/link_coordinates.py](../backend/core/coords/link_coordinates.py)
+- [backend/core/coords/sag_coordinates.py](../backend/core/coords/sag_coordinates.py)
 
 COMMIT 시 `commit_offsets()`가 디스크 save + 메모리 reload를 한 트랜잭션으로 처리한다. 같은 PC에서는 즉시 반영되나 다른 머신은 `git pull` + 재시작 필요.
 
@@ -61,7 +61,7 @@ BA(Bundle Adjustment)가 이걸 풀어내서 *"joint i는 raw 값을 URDF rad로
 
 ### 어디서 적용되는가 — 두 방향
 
-핵심은 **모터 raw ↔ URDF rad 변환 자체가 offset을 흡수**한다는 점. 이게 [backend/core/joint_coordinates.py](../backend/core/joint_coordinates.py)의 두 함수:
+핵심은 **모터 raw ↔ URDF rad 변환 자체가 offset을 흡수**한다는 점. 이게 [backend/core/coords/joint_coordinates.py](../backend/core/coords/joint_coordinates.py)의 두 함수:
 
 ```python
 # 모터 → URDF (FK 입력으로 쓸 때)
@@ -81,7 +81,7 @@ def urdf_to_motor(self, rad, cfg, ...) -> int:
 
 **입력 방향 (state → FK):**
 
-[backend/core/joint_state_cache.py:48](../backend/core/joint_state_cache.py#L48) — `JointStateCache.get_joint_angles_rad()`가 motor state 토픽에서 읽은 raw를 `motor_to_urdf()`로 환산. motion / task / detector / calibration 노드가 현재 EE pose 알고 싶을 때 거치는 단일 진입점.
+[backend/core/cache/joint_state_cache.py:48](../backend/core/cache/joint_state_cache.py#L48) — `JointStateCache.get_joint_angles_rad()`가 motor state 토픽에서 읽은 raw를 `motor_to_urdf()`로 환산. motion / task / detector / calibration 노드가 현재 EE pose 알고 싶을 때 거치는 단일 진입점.
 
 **출력 방향 (IK → motor cmd):**
 
@@ -112,7 +112,7 @@ OMX_F는 Robotis OMX의 커스텀 변형이라 URDF의 `<joint><origin xyz rpy/>
 
 joint/sag offset과 결정적으로 다른 점: link offset은 **함수 호출 시점에 끼어드는 게 아니라 URDF 자체를 patch**한다. PyBullet이 URDF를 한 번 로드한 뒤 link transform이 부팅 후 고정되기 때문 — 매 IK마다 다른 link geometry를 시뮬에 박을 방법이 없다.
 
-해결책: [backend/core/urdf_patcher.py](../backend/core/urdf_patcher.py)
+해결책: [backend/core/coords/urdf_patcher.py](../backend/core/coords/urdf_patcher.py)
 
 ```python
 # patch_urdf_text() — 원본 URDF 텍스트를 읽어
@@ -376,9 +376,9 @@ DetectorNode._handle_detect()
 ## 7. 디버깅 노트
 
 - 어느 보정이 적용 중인지 확인하려면 부팅 로그에 다음 줄들을 본다:
-  - `joint_offsets 적용: {1: 0.012, ...}` ([joint_coordinates.py:57](../backend/core/joint_coordinates.py#L57))
-  - `link_offsets 적용: N joints` ([link_coordinates.py:54](../backend/core/link_coordinates.py#L54))
-  - `sag_offsets 적용: J2=..., J3=...` ([sag_coordinates.py:57](../backend/core/sag_coordinates.py#L57))
+  - `joint_offsets 적용: {1: 0.012, ...}` ([joint_coordinates.py:57](../backend/core/coords/joint_coordinates.py#L57))
+  - `link_offsets 적용: N joints` ([link_coordinates.py:54](../backend/core/coords/link_coordinates.py#L54))
+  - `sag_offsets 적용: J2=..., J3=...` ([sag_coordinates.py:57](../backend/core/coords/sag_coordinates.py#L57))
   - `patched URDF 로드: .../omx_f.urdf` ([solver.py:57](../backend/modules/kinematics/solver.py#L57))
 - `JointStateCache.get_joint_angles_rad_uncorrected()`로 offset 적용 *전* 값도 볼 수 있다 (캘 진단용)
 - sag만 disable하고 싶으면 `sag_offsets.npz`를 지우거나 빈 값으로 commit. `_sag_enabled = False`가 되면 fk/ik가 no-op

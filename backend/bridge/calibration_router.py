@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from core.joint_coordinates import JointCoordinates
+from core.coords.joint_coordinates import JointCoordinates
 from modules.calibration.loader import load_calibration, to_json
 
 calibration_router = APIRouter(prefix="/calibration", tags=["calibration"])

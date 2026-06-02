@@ -1,7 +1,7 @@
 """자세 의존 중력 sag stiffness 의 런타임 진입점. robot_id 차원 도입 (multi_robot §4.5).
 
-[JointCoordinates](backend/core/joint_coordinates.py),
-[LinkCoordinates](backend/core/link_coordinates.py) 와 같은 dict[robot_id] 패턴.
+[JointCoordinates](backend/core/coords/joint_coordinates.py),
+[LinkCoordinates](backend/core/coords/link_coordinates.py) 와 같은 dict[robot_id] 패턴.
 state: `dict[robot_id] -> SagOffsets`.
 
 joint_offsets / link_offsets 와 다른 점:
@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from core.robot_registry import RobotRegistry
+from core.robot.robot_registry import RobotRegistry
 from modules.calibration import sag_offsets as sag_offsets_io
 from modules.calibration.sag_offsets import SagOffsets
 

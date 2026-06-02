@@ -7,10 +7,10 @@ from typing import Callable, TypeVar, overload
 import zenoh
 from pydantic import BaseModel
 
-from core.zenoh_session import ZenohSession
-from core.topic_map import Topic
-from core.messages.base import ServiceRequest, ServiceResponse
-from core.messages.system import Heartbeat, LogMessage
+from core.transport.zenoh_session import ZenohSession
+from core.transport.topic_map import Topic
+from core.transport.messages.base import ServiceRequest, ServiceResponse
+from core.transport.messages.system import Heartbeat, LogMessage
 
 logger = logging.getLogger(__name__)
 

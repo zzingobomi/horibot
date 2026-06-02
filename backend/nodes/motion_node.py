@@ -3,11 +3,11 @@ import logging
 import numpy as np
 from ruckig import Ruckig, InputParameter, OutputParameter, Result
 
-from core.base_node import BaseNode
-from core.topic_map import Service, Topic
-from core.joint_coordinates import JointCoordinates
-from core.joint_state_cache import JointStateCache
-from core.tool_coordinates import ToolCoordinates
+from core.transport.base_node import BaseNode
+from core.transport.topic_map import Service, Topic
+from core.coords.joint_coordinates import JointCoordinates
+from core.cache.joint_state_cache import JointStateCache
+from core.coords.tool_coordinates import ToolCoordinates
 from core.common import GRIPPER_ID
 from modules.motor.motor_config import MotorConfig, load_motor_config
 from modules.kinematics.motion_modes import MotionModes
@@ -20,8 +20,8 @@ from modules.kinematics.motion_commands import (
     MoveLCommand,
     MovePCommand
 )
-from core.messages.base import EmptyData
-from core.messages.motor import MotorSetProfileAllReq
+from core.transport.messages.base import EmptyData
+from core.transport.messages.motor import MotorSetProfileAllReq
 
 logger = logging.getLogger(__name__)
 

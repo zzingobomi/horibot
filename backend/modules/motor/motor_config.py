@@ -3,7 +3,7 @@ import yaml
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.robot_registry import RobotRegistry
+from core.robot.robot_registry import RobotRegistry
 
 
 @dataclass

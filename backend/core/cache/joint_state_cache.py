@@ -11,13 +11,13 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING
 
-from core.robot_registry import RobotRegistry
-from core.topic_map import Topic
+from core.robot.robot_registry import RobotRegistry
+from core.transport.topic_map import Topic
 from core.units import raw_to_rad
 from modules.motor.motor_config import MotorConfig
 
 if TYPE_CHECKING:
-    from core.base_node import BaseNode
+    from core.transport.base_node import BaseNode
 
 
 class JointStateCache:
@@ -80,7 +80,7 @@ class JointStateCache:
         robot_id: str | None = None,
     ) -> list[float] | None:
         """캘리브레이션된 조인트각 반환. JointCoordinates 로 offset 자동 보정."""
-        from core.joint_coordinates import JointCoordinates
+        from core.coords.joint_coordinates import JointCoordinates
 
         rid = self._resolve(robot_id)
         coords = JointCoordinates()

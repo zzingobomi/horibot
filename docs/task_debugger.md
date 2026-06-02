@@ -224,7 +224,7 @@ PAUSED 시 `current_step` 을 i (0-based, "다음" 의미) 로 세팅하는 점 
 
 ### 토픽 / 서비스
 
-[topic_map.py](../backend/core/topic_map.py) 추가분:
+[topic_map.py](../backend/core/transport/topic_map.py) 추가분:
 
 ```python
 # Topic
@@ -554,7 +554,7 @@ useEffect(() => {
 | Step DSL 의 id 필드 + 자동 부여 | [step_types.py](../backend/modules/task/step_types.py) |
 | TaskRunner 의 디버거 게이트 | [task_runner.py:_should_pause_before](../backend/modules/task/task_runner.py#L218-L242) |
 | TaskRunner 의 외부 API (resume/step_once/run_to/toggle_breakpoint) | [task_runner.py](../backend/modules/task/task_runner.py#L116-L160) |
-| 토픽 / 서비스 키 (백엔드) | [topic_map.py](../backend/core/topic_map.py) |
+| 토픽 / 서비스 키 (백엔드) | [topic_map.py](../backend/core/transport/topic_map.py) |
 | 토픽 / 서비스 키 (프론트) | [topics.ts](../frontend/src/constants/topics.ts) |
 | Service 핸들러 (위임 패턴) | [task_node.py:_handle_step](../backend/nodes/task_node.py) |
 | Tree publish 타이밍 | [task_node.py:_handle_run](../backend/nodes/task_node.py) |

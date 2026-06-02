@@ -6,11 +6,11 @@ import time
 import numpy as np
 import open3d as o3d
 
-from core.base_node import BaseNode
+from core.transport.base_node import BaseNode
 from core.common import GRIPPER_ID
-from core.joint_state_cache import JointStateCache
-from core.messages.camera import CameraSetDepthStreamReq, CameraSetDepthStreamRes
-from core.topic_map import Service, Topic
+from core.cache.joint_state_cache import JointStateCache
+from core.transport.messages.camera import CameraSetDepthStreamReq, CameraSetDepthStreamRes
+from core.transport.topic_map import Service, Topic
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
 from modules.motor.motor_config import load_motor_config
 from modules.pointcloud import scan_capture, scan_io, tsdf_builder

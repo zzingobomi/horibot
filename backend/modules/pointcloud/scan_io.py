@@ -17,7 +17,7 @@ from typing import Sequence
 
 import numpy as np
 
-from core.robot_registry import RobotRegistry
+from core.robot.robot_registry import RobotRegistry
 
 
 def _scans_dir() -> Path:

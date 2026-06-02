@@ -12,7 +12,7 @@ from typing import TypedDict
 
 import yaml
 
-from core.robot_registry import RobotRegistry
+from core.robot.robot_registry import RobotRegistry
 
 logger = logging.getLogger(__name__)
 

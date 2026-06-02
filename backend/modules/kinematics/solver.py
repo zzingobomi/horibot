@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import TypeAlias
 
-from core.robot_registry import RobotRegistry
+from core.robot.robot_registry import RobotRegistry
 from modules.kinematics.corrected import CorrectedIKSolver
 
 # 호환 type alias (기존 [solver.py](solver.py) 가 export 하던 것들)

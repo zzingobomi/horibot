@@ -16,13 +16,13 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Callable
 
-from core.topic_map import Topic
+from core.transport.topic_map import Topic
 from modules.task.schema import StepResult
 from modules.task.step import Step, StepContext, Task, collect_step_ids
 
 if TYPE_CHECKING:
-    from core.base_node import BaseNode
-    from core.joint_state_cache import JointStateCache
+    from core.transport.base_node import BaseNode
+    from core.cache.joint_state_cache import JointStateCache
     from modules.calibration.loader import CalibrationData
     from modules.motor.motor_config import MotorConfig
 

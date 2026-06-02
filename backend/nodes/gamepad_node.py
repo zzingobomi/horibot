@@ -14,10 +14,10 @@ import threading
 import logging
 
 from core.common import GRIPPER_ID
-from core.base_node import BaseNode
-from core.topic_map import Service
-from core.messages.base import EmptyData
-from core.messages.motor import (
+from core.transport.base_node import BaseNode
+from core.transport.topic_map import Service
+from core.transport.messages.base import EmptyData
+from core.transport.messages.motor import (
     MotorEnableReq,
     MotorEnableRes,
     MotorGripperReq,

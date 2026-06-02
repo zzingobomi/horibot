@@ -13,7 +13,7 @@ ideas.md "Step DSL 레고화" 의 "매크로 → recipe 함수" 정신. SearchAn
 
 from __future__ import annotations
 
-from core.robot_poses import list_pose_names
+from core.robot.robot_poses import list_pose_names
 from modules.task.schema import Detection, Slot
 from modules.task.step import Step
 from modules.task.steps import (

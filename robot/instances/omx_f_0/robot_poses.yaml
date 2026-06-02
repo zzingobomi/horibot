@@ -20,7 +20,7 @@ rest:
 
 # ─── Search poses (self-play detect 실패 시 lexical 정렬 순으로 순회) ─────
 # 첫 detect 시도는 home(또는 직전 자세) 에서 3회 retry → 그래도 실패면 아래 자세
-# 순회. backend/core/robot_poses.py 의 `list_pose_names("search_")` 가 자동 수집.
+# 순회. backend/core/robot/robot_poses.py 의 `list_pose_names("search_")` 가 자동 수집.
 #
 # 아래 값은 placeholder — J1 (베이스 회전) 으로 좌/중/우 책상 시야 커버하는
 # 초기안. 실제 책상 / 큐브 위치 보면서 micro tune. 자세가 책상에 부딪히지 않는지

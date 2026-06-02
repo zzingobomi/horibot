@@ -2,12 +2,12 @@ import time
 import logging
 import threading
 
-from core.base_node import BaseNode
-from core.topic_map import Topic, Service
+from core.transport.base_node import BaseNode
+from core.transport.topic_map import Topic, Service
 from core.units import raw_to_deg
 from core.common import GRIPPER_ID
-from core.messages.base import EmptyData, ServiceRequest, ServiceResponse
-from core.messages.motor import (
+from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
+from core.transport.messages.motor import (
     MotorCmd,
     MotorConfigItem,
     MotorEnableReq,

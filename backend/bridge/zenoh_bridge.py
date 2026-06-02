@@ -12,8 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from core.zenoh_session import ZenohSession
-from core.topic_map import Topic
+from core.transport.zenoh_session import ZenohSession
+from core.transport.topic_map import Topic
 from bridge.calibration_router import calibration_router
 from bridge.client_stream import ConnectionManager
 

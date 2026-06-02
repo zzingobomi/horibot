@@ -1,6 +1,6 @@
 """URDF link origin offset 의 런타임 진입점. robot_id 차원 도입 (multi_robot §4.5).
 
-[JointCoordinates](backend/core/joint_coordinates.py) 와 같은 dict[robot_id] 패턴.
+[JointCoordinates](backend/core/coords/joint_coordinates.py) 와 같은 dict[robot_id] 패턴.
 state: `dict[robot_id] -> LinkOffsets`.
 
 joint_offsets 와 다른 점은 동일:
@@ -17,7 +17,7 @@ import threading
 
 import numpy as np
 
-from core.robot_registry import RobotRegistry
+from core.robot.robot_registry import RobotRegistry
 from modules.calibration import link_offsets as link_offsets_io
 from modules.calibration.link_offsets import LinkOffsets
 

@@ -58,14 +58,14 @@ eac7e7d "feat: TSDF 적용"
 | 위치 | 용도 |
 |------|------|
 | [backend/nodes/pointcloud_node.py](../backend/nodes/pointcloud_node.py) | 확장 대상. 현재 187줄, 라이브 스트림만 |
-| [backend/core/topic_map.py](../backend/core/topic_map.py) | Topic/Service 키 추가 |
+| [backend/core/transport/topic_map.py](../backend/core/transport/topic_map.py) | Topic/Service 키 추가 |
 | [backend/modules/camera/depth_frame.py](../backend/modules/camera/depth_frame.py) | `DepthFrame` dataclass + `decode/encode` |
 | [backend/modules/kinematics/solver.py](../backend/modules/kinematics/solver.py) | `PybulletSolver.fk(joint_angles_rad) → (pos, quat)` — sag+link 적용된 actual ee |
 | [backend/modules/kinematics/fk_chain.py](../backend/modules/kinematics/fk_chain.py) | numpy FK + `apply_gravity_sag` (참고용. solver.fk만 쓰면 호출 안 해도 됨) |
-| [backend/core/joint_state_cache.py](../backend/core/joint_state_cache.py) | `get_raw_motor_positions(arm_cfgs) → dict[int, int]` ← capture에 쓸 것 |
-| [backend/core/joint_coordinates.py](../backend/core/joint_coordinates.py) | `motor_to_urdf(raw, cfg) → rad` — capture raw로부터 URDF rad 변환 |
-| [backend/core/link_coordinates.py](../backend/core/link_coordinates.py) | `LinkCoordinates().snapshot()` — link offsets 메타 |
-| [backend/core/sag_coordinates.py](../backend/core/sag_coordinates.py) | sag stiffness 메타 |
+| [backend/core/cache/joint_state_cache.py](../backend/core/cache/joint_state_cache.py) | `get_raw_motor_positions(arm_cfgs) → dict[int, int]` ← capture에 쓸 것 |
+| [backend/core/coords/joint_coordinates.py](../backend/core/coords/joint_coordinates.py) | `motor_to_urdf(raw, cfg) → rad` — capture raw로부터 URDF rad 변환 |
+| [backend/core/coords/link_coordinates.py](../backend/core/coords/link_coordinates.py) | `LinkCoordinates().snapshot()` — link offsets 메타 |
+| [backend/core/coords/sag_coordinates.py](../backend/core/coords/sag_coordinates.py) | sag stiffness 메타 |
 | [backend/modules/calibration/loader.py](../backend/modules/calibration/loader.py) | `load_calibration()` → `CalibrationData` (intrinsic + hand_eye) |
 | `robot/calibration/hand_eye.npz` | `R` (3x3), `t` (3x1) — T_cam2gripper |
 | `robot/calibration/{joint,link,sag}_offsets.npz` | 캘 메타 (mtime을 capture npz에 박을 거) |
@@ -159,7 +159,7 @@ robot/
 
 ## 5. 신규 토픽 / 서비스 키
 
-### 5a. Backend ([backend/core/topic_map.py](../backend/core/topic_map.py))
+### 5a. Backend ([backend/core/transport/topic_map.py](../backend/core/transport/topic_map.py))
 
 `Service` 클래스에 추가:
 ```python
@@ -198,7 +198,7 @@ POINTCLOUD_LIST_MESHES  = "omx/pointcloud/srv/list_meshes"
 
 확장:
 - `backend/nodes/pointcloud_node.py` — 신규 서비스 핸들러들 (얇은 wrapper, 비즈니스 로직은 위 모듈로 위임)
-- `backend/core/topic_map.py` — § 5a
+- `backend/core/transport/topic_map.py` — § 5a
 - `.gitignore` — `robot/scans/`, `robot/models/`
 
 ### 6b. `scan_io.py` 핵심 함수
@@ -913,7 +913,7 @@ robot/models/
 
 ## 11. 첫 commit 범위 체크리스트
 
-- [ ] `backend/core/topic_map.py` — Service 키 7개 추가
+- [ ] `backend/core/transport/topic_map.py` — Service 키 7개 추가
 - [ ] `backend/modules/pointcloud/__init__.py`
 - [ ] `backend/modules/pointcloud/scan_io.py`
 - [ ] `backend/modules/pointcloud/scan_capture.py`

@@ -8,7 +8,7 @@ Protocol 정의 + 공통 데이터 타입만. 구현체 (RealSense / OpenCV / Mu
 
 데이터 클래스 (`CameraIntrinsic` / `ColorFrame` / `DepthFrame`) 는 frozen dataclass
 — process-internal 사용. 토픽 페이로드로 publish 시는 별도 Pydantic model
-(`backend/core/messages/camera.py` 의 `DepthFrameHeader` 등).
+(`backend/core/transport/messages/camera.py` 의 `DepthFrameHeader` 등).
 """
 
 from __future__ import annotations

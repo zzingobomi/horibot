@@ -3,7 +3,7 @@ import logging
 
 from fastapi import WebSocket
 
-from core.topic_map import Topic
+from core.transport.topic_map import Topic
 
 logger = logging.getLogger(__name__)
 

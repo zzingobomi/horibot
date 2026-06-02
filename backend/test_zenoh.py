@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import zenoh
 
-from core.topic_map import Topic, Service
+from core.transport.topic_map import Topic, Service
 from core.units import raw_to_deg
 
 PUBLISH_HZ = 20

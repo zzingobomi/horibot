@@ -109,7 +109,7 @@ Phase 2 에선 머신 4대 + 로봇 2대 + 카메라 2종 + 모터 backend 2종 
 
 ### 4.1 문제
 
-현재 [robot_registry.py:51](../backend/core/robot_registry.py#L51) 의 `RobotConfig.host: str` 1개 필드는 motor/motion 만 가리킴 ([multi_robot_architecture.md:680](multi_robot_architecture.md#L680)). 본 문서의 3.2 분배는 **한 로봇이 두 머신에 흩어짐** — so101 motor=hori3, so101 camera=hori2. 1 필드로 표현 불가.
+현재 [robot_registry.py:51](../backend/core/robot/robot_registry.py#L51) 의 `RobotConfig.host: str` 1개 필드는 motor/motion 만 가리킴 ([multi_robot_architecture.md:680](multi_robot_architecture.md#L680)). 본 문서의 3.2 분배는 **한 로봇이 두 머신에 흩어짐** — so101 motor=hori3, so101 camera=hori2. 1 필드로 표현 불가.
 
 ### 4.2 후보
 
@@ -143,7 +143,7 @@ robots:
 
 ## 5. 타입 안전성 — study TODO
 
-현재 [robot_registry.py:52-53](../backend/core/robot_registry.py#L52-L53):
+현재 [robot_registry.py:52-53](../backend/core/robot/robot_registry.py#L52-L53):
 
 ```python
 motor_backend: str  # "dynamixel" | "feetech"
@@ -282,13 +282,13 @@ camera/
 
 | 클래스 | robot_id 차원 |
 |---|---|
-| [`JointStateCache`](../backend/core/joint_state_cache.py) | ✅ done (Phase 1 sub-A, commit `e8f75ea`) |
-| [`JointCoordinates`](../backend/core/joint_coordinates.py) | ✅ done |
-| [`LinkCoordinates`](../backend/core/link_coordinates.py) | ✅ done |
-| [`SagCoordinates`](../backend/core/sag_coordinates.py) | ✅ done |
-| [`ToolCoordinates`](../backend/core/tool_coordinates.py) | ✅ done |
-| [`RobotRegistry`](../backend/core/robot_registry.py) | ✅ done (factory per-robot 캐시) |
-| **[`FrameCache`](../backend/core/frame_cache.py)** | ⚠️ **Phase 2 todo** — 한 카메라 1대 가정 |
+| [`JointStateCache`](../backend/core/cache/joint_state_cache.py) | ✅ done (Phase 1 sub-A, commit `e8f75ea`) |
+| [`JointCoordinates`](../backend/core/coords/joint_coordinates.py) | ✅ done |
+| [`LinkCoordinates`](../backend/core/coords/link_coordinates.py) | ✅ done |
+| [`SagCoordinates`](../backend/core/coords/sag_coordinates.py) | ✅ done |
+| [`ToolCoordinates`](../backend/core/coords/tool_coordinates.py) | ✅ done |
+| [`RobotRegistry`](../backend/core/robot/robot_registry.py) | ✅ done (factory per-robot 캐시) |
+| **[`FrameCache`](../backend/core/cache/frame_cache.py)** | ⚠️ **Phase 2 todo** — 한 카메라 1대 가정 |
 
 ### 8.2 FrameCache 변경 안
 

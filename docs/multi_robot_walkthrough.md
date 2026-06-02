@@ -95,7 +95,7 @@ graph TB
 | 컨셉 | 코드 위치 | 역할 |
 |---|---|---|
 | **`robots.yaml`** | [robot/robots.yaml](../robot/robots.yaml) | 모든 robot instance 선언. registry 의 source of truth |
-| **`RobotRegistry`** | [core/robot_registry.py](../backend/core/robot_registry.py) | yaml 싱글톤 + `RobotConfig` 조립 + factory (`get_iksolver` / `get_motor_backend`) |
+| **`RobotRegistry`** | [core/robot_registry.py](../backend/core/robot/robot_registry.py) | yaml 싱글톤 + `RobotConfig` 조립 + factory (`get_iksolver` / `get_motor_backend`) |
 | **`RobotConfig`** | 같은 파일 | frozen dataclass — robot 1개의 모든 path / 설정 |
 | **`IKSolver` Protocol** | [modules/kinematics/iksolver.py](../backend/modules/kinematics/iksolver.py) | fk / ik / fk_to_matrix / joint_limits 의 통합 인터페이스 |
 | **`MotorBackend` Protocol** | [modules/motor/backend.py](../backend/modules/motor/backend.py) | Dynamixel / Feetech SDK 의 통합 인터페이스 |
@@ -330,14 +330,14 @@ graph TB
 | [robot/robots.yaml](../robot/robots.yaml) | 신규 | robot instance registry |
 | [robot/omx_f/motors.yaml](../robot/omx_f/motors.yaml) | 이동+split | type-level motor spec (port 제외) |
 | [robot/instances/omx_f_0/instance.yaml](../robot/instances/omx_f_0/instance.yaml) | 신규 | instance-level (USB port / baud) |
-| [core/robot_registry.py](../backend/core/robot_registry.py) | 신규 | `RobotRegistry` 싱글톤 + factory |
-| [core/joint_coordinates.py](../backend/core/joint_coordinates.py) | 갱신 | dict[robot_id] 화 |
-| [core/link_coordinates.py](../backend/core/link_coordinates.py) | 갱신 | dict[robot_id] 화 |
-| [core/sag_coordinates.py](../backend/core/sag_coordinates.py) | 갱신 | dict[robot_id] 화 |
-| [core/tool_coordinates.py](../backend/core/tool_coordinates.py) | 갱신 | dict[robot_id] 화 |
-| [core/joint_state_cache.py](../backend/core/joint_state_cache.py) | 갱신 | dict[robot_id] state |
-| [core/messages/__init__.py](../backend/core/messages/__init__.py) | 신규 | Pydantic typed payload 패키지 |
-| [core/messages/base.py](../backend/core/messages/base.py) | 신규 | `BaseRobotMessage` / `ServiceResponse[T]` |
+| [core/robot_registry.py](../backend/core/robot/robot_registry.py) | 신규 | `RobotRegistry` 싱글톤 + factory |
+| [core/joint_coordinates.py](../backend/core/coords/joint_coordinates.py) | 갱신 | dict[robot_id] 화 |
+| [core/link_coordinates.py](../backend/core/coords/link_coordinates.py) | 갱신 | dict[robot_id] 화 |
+| [core/sag_coordinates.py](../backend/core/coords/sag_coordinates.py) | 갱신 | dict[robot_id] 화 |
+| [core/tool_coordinates.py](../backend/core/coords/tool_coordinates.py) | 갱신 | dict[robot_id] 화 |
+| [core/joint_state_cache.py](../backend/core/cache/joint_state_cache.py) | 갱신 | dict[robot_id] state |
+| [core/messages/__init__.py](../backend/core/transport/messages/__init__.py) | 신규 | Pydantic typed payload 패키지 |
+| [core/messages/base.py](../backend/core/transport/messages/base.py) | 신규 | `BaseRobotMessage` / `ServiceResponse[T]` |
 | [modules/kinematics/iksolver.py](../backend/modules/kinematics/iksolver.py) | 신규 | `IKSolver` Protocol + exceptions |
 | [modules/kinematics/adapters/pybullet_solver.py](../backend/modules/kinematics/adapters/pybullet_solver.py) | 신규 | `PybulletIKSolver` (ideal only) |
 | [modules/kinematics/corrected.py](../backend/modules/kinematics/corrected.py) | 신규 | `CorrectedIKSolver` Decorator |

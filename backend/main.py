@@ -9,8 +9,8 @@ from typing import Any
 
 import yaml
 
-from core.zenoh_session import ZenohSession
-from core.node_registry import create_node, known_nodes
+from core.transport.zenoh_session import ZenohSession
+from core.transport.node_registry import create_node, known_nodes
 
 
 logging.basicConfig(
@@ -83,7 +83,7 @@ def main():
 
     # ─── D405 intrinsic seed (camera 노드 있을 때만) ──────────
     if "camera" in requested_nodes:
-        from core.robot_registry import RobotRegistry
+        from core.robot.robot_registry import RobotRegistry
         from modules.camera.factory_intrinsic import seed_d405_intrinsic_if_missing
 
         calib_dir = RobotRegistry().default().calibration_dir

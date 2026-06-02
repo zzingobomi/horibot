@@ -2,16 +2,16 @@ import logging
 import threading
 import time
 
-from core.base_node import BaseNode
-from core.messages.base import ServiceRequest, ServiceResponse
-from core.messages.camera import (
+from core.transport.base_node import BaseNode
+from core.transport.messages.base import ServiceRequest, ServiceResponse
+from core.transport.messages.camera import (
     CameraSetDepthStreamReq,
     CameraSetDepthStreamRes,
     CameraStatus,
 )
-from core.robot_registry import RobotRegistry
-from core.topic_map import Service, Topic
-from core.zenoh_session import ZenohSession
+from core.robot.robot_registry import RobotRegistry
+from core.transport.topic_map import Service, Topic
+from core.transport.zenoh_session import ZenohSession
 from modules.camera.depth_frame import encode as encode_depth_frame
 from modules.camera.stream import frame_to_jpeg_bytes
 

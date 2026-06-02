@@ -9,7 +9,7 @@ multi_robot_architecture.md §3.1 참조.
 
 책임 외 (외부 layer 가 적용):
 - sag 보정 → `modules.kinematics.corrected.CorrectedIKSolver` (Decorator)
-- joint_offset → `core.joint_coordinates.JointCoordinates` (raw↔rad 변환 시)
+- joint_offset → `core.coords.joint_coordinates.JointCoordinates` (raw↔rad 변환 시)
 
 기존 [solver.py](../solver.py) 의 `PybulletSolver` 에서 sag 관련 코드 제거 + singleton
 제거 (per-robot 인스턴스 가능하게).
@@ -25,8 +25,8 @@ from typing import Sequence
 import numpy as np
 import pybullet as p
 
-from core.link_coordinates import LinkCoordinates
-from core.urdf_patcher import write_patched_urdf
+from core.coords.link_coordinates import LinkCoordinates
+from core.coords.urdf_patcher import write_patched_urdf
 from modules.kinematics.iksolver import (
     Position3,
     Quaternion,

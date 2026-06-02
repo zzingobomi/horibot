@@ -1,6 +1,6 @@
 # API generated types
 
-`backend/core/messages/*.py` 의 Pydantic 모델로부터 자동 생성된 TypeScript type
+`backend/core/transport/messages/*.py` 의 Pydantic 모델로부터 자동 생성된 TypeScript type
 [multi_robot_architecture.md §7.3](../../../../docs/multi_robot_architecture.md) 참조.
 
 ## 생성 방법

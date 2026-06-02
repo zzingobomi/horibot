@@ -27,10 +27,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
 from core.common import GRIPPER_ID, GRIPPER_SETTLE
-from core.messages.base import EmptyData
-from core.messages.motor import MotorGripperReq
-from core.robot_poses import load_pose
-from core.topic_map import Service
+from core.transport.messages.base import EmptyData
+from core.transport.messages.motor import MotorGripperReq
+from core.robot.robot_poses import load_pose
+from core.transport.topic_map import Service
 from modules.task.schema import Detection, Position3, Slot, SlotOr
 from modules.task.step import Step, StepContext
 

@@ -21,8 +21,8 @@ from typing import Sequence
 
 import numpy as np
 
-from core.link_coordinates import LinkCoordinates
-from core.sag_coordinates import SagCoordinates
+from core.coords.link_coordinates import LinkCoordinates
+from core.coords.sag_coordinates import SagCoordinates
 from modules.kinematics.fk_chain import (
     actual_to_commanded,
     apply_gravity_sag,

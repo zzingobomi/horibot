@@ -159,6 +159,14 @@ frontend 도 typed 로 가져가려면 별도 작업 (Python schema → JSON Sch
   - 모터 service 호출자도 같이 typed: `motion_node._set_arm_profile`, `gamepad_node` 의 `MOTOR_ENABLE` / `MOTOR_GRIPPER`, `task/steps.py::Gripper`
   - `modules/task/schema.py` 는 `core.values` 재export 로 호환 유지
   - pyright 41 → 0 (다른 pre-existing 에러도 같이 정리 — pyrealsense2 Any rebind, gamepad None narrowing, MoveTcpFn signature, opencv `# type: ignore` 등)
+- [x] **core/ 폴더 재구성 완료** (2026-06-03) — 18+ 파일 평면 → sub-folder 5개로 분류
+  - `core/transport/` — `zenoh_session.py`, `base_node.py`, `node_registry.py`, `topic_map.py`, `messages/` (typed payload schemas)
+  - `core/coords/` — `joint_coordinates.py`, `link_coordinates.py`, `sag_coordinates.py`, `tool_coordinates.py`, `urdf_patcher.py` (캘 산출물 적용 layer. `modules/calibration/` 와 이름 차별)
+  - `core/cache/` — `joint_state_cache.py`, `frame_cache.py` (토픽 구독 latest-state)
+  - `core/robot/` — `robot_registry.py`, `robot_poses.py` (robots.yaml 기반 identity)
+  - top-level (4 파일) — `values.py`, `units.py`, `common.py`, `types.py` (도메인-중립 primitives + `TrajStatus` motion 슬라이스 때 흡수 후보)
+  - `gripper_setup.py` 는 task 슬라이스 때 `modules/task/` 로 이전 후보 (지금 commit 안 옮김)
+  - import 34 파일 일괄 갱신 (`from core.X` → `from core.<sub>.X`). docs / yaml path 링크도 같이 갱신. pyright 0
 - [x] **카메라 노드 vertical slice 완료** (2026-06-03)
   - `core/messages/camera.py` 새 schema — `CameraStatus` (state publish) / `CameraSetDepthStreamReq` / `CameraSetDepthStreamRes`
   - `nodes/camera_node.py` typed — `_publish_status` → `CameraStatus`, `_srv_set_depth_stream` → `ServiceRequest[CameraSetDepthStreamReq] → ServiceResponse[CameraSetDepthStreamRes]`

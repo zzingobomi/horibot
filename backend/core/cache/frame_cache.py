@@ -17,12 +17,12 @@ from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 
-from core.messages.camera import CameraStatus
-from core.robot_registry import RobotRegistry
-from core.topic_map import Topic
+from core.transport.messages.camera import CameraStatus
+from core.robot.robot_registry import RobotRegistry
+from core.transport.topic_map import Topic
 
 if TYPE_CHECKING:
-    from core.base_node import BaseNode
+    from core.transport.base_node import BaseNode
 
 logger = logging.getLogger(__name__)
 

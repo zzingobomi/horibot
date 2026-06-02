@@ -19,9 +19,10 @@
 
 from __future__ import annotations
 
+from core.transport.messages.base import StrictModel
+
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict
 
 
 # ─── TrajStatus ──────────────────────────────────────────────────────
@@ -38,10 +39,8 @@ class TrajStatus(str, Enum):
 # ─── Topic: MOTION_STATE_TRAJ ────────────────────────────────────────
 
 
-class MotionTrajState(BaseModel):
+class MotionTrajState(StrictModel):
     """trajectory 진행 상태 publish. runner / 핸들러 가 발행."""
-
-    model_config = ConfigDict(extra="forbid")
 
     status: TrajStatus
     progress: float = 0.0
@@ -51,10 +50,8 @@ class MotionTrajState(BaseModel):
 # ─── Service: MOTION_GET_TCP ─────────────────────────────────────────
 
 
-class MotionTcpPose(BaseModel):
+class MotionTcpPose(StrictModel):
     """URDF EE pose. position (m) + quaternion [x, y, z, w]."""
-
-    model_config = ConfigDict(extra="forbid")
 
     position: list[float]
     quaternion: list[float]
@@ -63,10 +60,8 @@ class MotionTcpPose(BaseModel):
 # ─── Service: MOTION_MOVE_TCP ────────────────────────────────────────
 
 
-class MoveTcpReq(BaseModel):
+class MoveTcpReq(StrictModel):
     """target_pos (user frame). motion 핸들러가 tool_offset 보정 후 IK."""
-
-    model_config = ConfigDict(extra="forbid")
 
     position: list[float]
 
@@ -74,19 +69,15 @@ class MoveTcpReq(BaseModel):
 # ─── Service: MOTION_MOVE_J ──────────────────────────────────────────
 
 
-class JointDegree(BaseModel):
+class JointDegree(StrictModel):
     """모터 id 와 목표 각도 (degrees)."""
-
-    model_config = ConfigDict(extra="forbid")
 
     id: int
     degree: float
 
 
-class MoveJReq(BaseModel):
+class MoveJReq(StrictModel):
     """관절 공간 이동. joints[i] 가 없으면 0도."""
-
-    model_config = ConfigDict(extra="forbid")
 
     joints: list[JointDegree]
 
@@ -94,10 +85,8 @@ class MoveJReq(BaseModel):
 # ─── Service: MOTION_MOVE_L (linear) ─────────────────────────────────
 
 
-class MoveLReq(BaseModel):
+class MoveLReq(StrictModel):
     """target position (user frame, m). 시작점은 현재 TCP."""
-
-    model_config = ConfigDict(extra="forbid")
 
     position: list[float]
 
@@ -105,10 +94,8 @@ class MoveLReq(BaseModel):
 # ─── Service: MOTION_MOVE_C (circular via 1 mid + end) ───────────────
 
 
-class MoveCReq(BaseModel):
+class MoveCReq(StrictModel):
     """원호. via / end 둘 다 user frame."""
-
-    model_config = ConfigDict(extra="forbid")
 
     via: list[float]
     end: list[float]
@@ -117,9 +104,7 @@ class MoveCReq(BaseModel):
 # ─── Service: MOTION_MOVE_P (spline) ─────────────────────────────────
 
 
-class MovePReq(BaseModel):
+class MovePReq(StrictModel):
     """spline waypoints. 최소 2개 — 시작점은 현재 TCP 가 prepend 됨."""
-
-    model_config = ConfigDict(extra="forbid")
 
     waypoints: list[list[float]]

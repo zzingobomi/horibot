@@ -3,6 +3,8 @@ import threading
 from typing import Callable
 
 from core.transport.base_node import BaseNode
+from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
+from core.transport.messages.task import TaskStepIdReq
 from core.transport.topic_map import Service, Topic
 from core.cache.joint_state_cache import JointStateCache
 from core.common import GRIPPER_ID
@@ -63,17 +65,36 @@ class TaskNode(BaseNode):
     def start(self) -> None:
         self._joint_cache.subscribe(self)
 
+        # RUN / PREVIEW / STATUS 는 typed 면제 (factory 동적 인자 + tree/state 자유 dict
+        # 응답 — typed_messaging.md §마이그레이션 사유). legacy create_service form.
         self.create_service(Service.TASK_RUN, self._handle_run)
-        self.create_service(Service.TASK_STOP, self._handle_stop)
-        self.create_service(Service.TASK_PAUSE, self._handle_pause)
-        self.create_service(Service.TASK_RESUME, self._handle_resume)
-        self.create_service(Service.TASK_STATUS, self._handle_status)
-        self.create_service(Service.TASK_STEP, self._handle_step)
-        self.create_service(Service.TASK_RUN_TO, self._handle_run_to)
-        self.create_service(
-            Service.TASK_TOGGLE_BREAKPOINT, self._handle_toggle_breakpoint
-        )
         self.create_service(Service.TASK_PREVIEW, self._handle_preview)
+        self.create_service(Service.TASK_STATUS, self._handle_status)
+        # 단순 명령들은 typed
+        self.create_service(
+            Service.TASK_STOP, EmptyData, EmptyData, self._handle_stop
+        )
+        self.create_service(
+            Service.TASK_PAUSE, EmptyData, EmptyData, self._handle_pause
+        )
+        self.create_service(
+            Service.TASK_RESUME, EmptyData, EmptyData, self._handle_resume
+        )
+        self.create_service(
+            Service.TASK_STEP, EmptyData, EmptyData, self._handle_step
+        )
+        self.create_service(
+            Service.TASK_RUN_TO,
+            TaskStepIdReq,
+            EmptyData,
+            self._handle_run_to,
+        )
+        self.create_service(
+            Service.TASK_TOGGLE_BREAKPOINT,
+            TaskStepIdReq,
+            EmptyData,
+            self._handle_toggle_breakpoint,
+        )
 
         super().start()
 
@@ -135,56 +156,71 @@ class TaskNode(BaseNode):
         logger.info("Task 시작: %s", task_name)
         return {"success": True, "message": "ok", "data": {}}
 
-    def _handle_stop(self, _req: dict) -> dict:
+    def _handle_stop(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[EmptyData]:
         self._runner.stop()
-        return {"success": True, "message": "ok", "data": {}}
+        return ServiceResponse(success=True, message="ok", data=EmptyData())
 
-    def _handle_pause(self, _req: dict) -> dict:
+    def _handle_pause(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[EmptyData]:
         ok = self._runner.pause()
-        return {
-            "success": ok,
-            "message": "ok" if ok else "RUNNING 상태 아님",
-            "data": {},
-        }
+        return ServiceResponse(
+            success=ok,
+            message="ok" if ok else "RUNNING 상태 아님",
+            data=EmptyData() if ok else None,
+        )
 
-    def _handle_resume(self, _req: dict) -> dict:
+    def _handle_resume(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[EmptyData]:
         ok = self._runner.resume()
-        return {
-            "success": ok,
-            "message": "ok" if ok else "PAUSED 상태 아님",
-            "data": {},
-        }
+        return ServiceResponse(
+            success=ok,
+            message="ok" if ok else "PAUSED 상태 아님",
+            data=EmptyData() if ok else None,
+        )
 
     def _handle_status(self, _req: dict) -> dict:
+        """legacy — state.to_dict 가 free-form (typed 면제)."""
         return {"success": True, "message": "ok", "data": self._runner.state.to_dict()}
 
-    def _handle_step(self, _req: dict) -> dict:
+    def _handle_step(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[EmptyData]:
         ok = self._runner.step_once()
-        return {
-            "success": ok,
-            "message": "ok" if ok else "PAUSED 상태 아님",
-            "data": {},
-        }
+        return ServiceResponse(
+            success=ok,
+            message="ok" if ok else "PAUSED 상태 아님",
+            data=EmptyData() if ok else None,
+        )
 
-    def _handle_run_to(self, req: dict) -> dict:
-        data = req.get("data", {})
-        step_id = str(data.get("step_id") or "").strip()
+    def _handle_run_to(
+        self, req: ServiceRequest[TaskStepIdReq]
+    ) -> ServiceResponse[EmptyData]:
+        step_id = req.data.step_id.strip()
         if not step_id:
-            return {"success": False, "message": "step_id 필요", "data": {}}
+            return ServiceResponse(
+                success=False, message="step_id 필요", data=None
+            )
         ok = self._runner.run_to(step_id)
-        return {
-            "success": ok,
-            "message": "ok" if ok else "PAUSED 상태 아님",
-            "data": {},
-        }
+        return ServiceResponse(
+            success=ok,
+            message="ok" if ok else "PAUSED 상태 아님",
+            data=EmptyData() if ok else None,
+        )
 
-    def _handle_toggle_breakpoint(self, req: dict) -> dict:
-        data = req.get("data", {})
-        step_id = str(data.get("step_id") or "").strip()
+    def _handle_toggle_breakpoint(
+        self, req: ServiceRequest[TaskStepIdReq]
+    ) -> ServiceResponse[EmptyData]:
+        step_id = req.data.step_id.strip()
         if not step_id:
-            return {"success": False, "message": "step_id 필요", "data": {}}
+            return ServiceResponse(
+                success=False, message="step_id 필요", data=None
+            )
         self._runner.toggle_breakpoint(step_id)
-        return {"success": True, "message": "ok", "data": {}}
+        return ServiceResponse(success=True, message="ok", data=EmptyData())
 
     def _handle_preview(self, req: dict) -> dict:
         """task factory 만 실행해서 tree 만 빌드 (실행 X). Run 전 사전 표시용.

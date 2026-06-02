@@ -167,6 +167,28 @@ frontend 도 typed 로 가져가려면 별도 작업 (Python schema → JSON Sch
   - top-level (4 파일) — `values.py`, `units.py`, `common.py`, `types.py` (도메인-중립 primitives + `TrajStatus` motion 슬라이스 때 흡수 후보)
   - `gripper_setup.py` 는 task 슬라이스 때 `modules/task/` 로 이전 후보 (지금 commit 안 옮김)
   - import 34 파일 일괄 갱신 (`from core.X` → `from core.<sub>.X`). docs / yaml path 링크도 같이 갱신. pyright 0
+- [x] **남은 노드 일괄 vertical slice 완료** (2026-06-03)
+  - **detector** ([core/transport/messages/detector.py](../backend/core/transport/messages/detector.py))
+    - publish: `DetectorState` (YOLO raw 5fps, `YoloDetection` 의 `class` 필드는 python keyword 라 `cls_` + alias `"class"` 처리 — `base_node.publish` / `create_service` 의 `model_dump_json(by_alias=True)` 갱신으로 wire 형태 보존)
+    - service: `DETECT_SERVICE` → `DetectResult`, `PERCEPTION_GROUNDED_DETECT` → `GroundedDetectionResult` (topic broadcast 도 동일 모델)
+    - caller: `task/steps.py::GroundedDetect` typed (`GroundedDetectReq` / `GroundedDetectionResult`)
+  - **pointcloud** ([core/transport/messages/pointcloud.py](../backend/core/transport/messages/pointcloud.py))
+    - publish: `PointcloudState` (binary `POINTCLOUD_STREAM` 은 typed 면제 — §미해결 #1, #2)
+    - service 8개 모두 typed (Configure / NewSession / Capture / ListSessions / ListScans / DeleteScan / BuildMesh / ListMeshes)
+  - **calibration** ([core/transport/messages/calibration.py](../backend/core/transport/messages/calibration.py))
+    - service 7개 typed (Capture / IntrinsicStart / IntrinsicSave / HandeyeCapture / HandeyeReset / HandeyeCommit / HandeyeListPoses / HandeyePreviewEnable)
+    - **typed 면제** (typed_messaging.md §마이그레이션 사유 *"동적 dict 정확 모델링 어려움"* 인용):
+      - `CALIB_HANDEYE_COMPUTE` — 응답 ~25 필드 동적 (BA mode 분기 + per_pose_residual / method_compare / coach / recommendations)
+      - `CALIB_HANDEYE_THRESHOLDS` — `thresholds.as_dict()` free-form
+      - `CALIB_HANDEYE_PREVIEW` topic — CHESSBOARD 검출 메타 (optional corners / tilt 동적)
+  - **task** ([core/transport/messages/task.py](../backend/core/transport/messages/task.py))
+    - service 6개 typed (`STOP/PAUSE/RESUME/STEP` empty req+res, `RUN_TO/TOGGLE_BREAKPOINT` 의 `TaskStepIdReq`)
+    - **typed 면제**:
+      - `TASK_RUN` / `TASK_PREVIEW` — task factory 동적 인자 (task name + extras)
+      - `TASK_STATUS` — `state.to_dict()` free-form 응답
+      - `TASK_TREE` / `TASK_STATE` / `TASK_STEP_RESULT` topic publish — Step 재귀 union + typed value class union (Detection/Position3/Pose6/None), 프론트가 type 별 dispatch
+  - `core/transport/base_node.py` 의 `publish` / typed `create_service` / `_call_service_typed` 의 `model_dump_json` 호출에 `by_alias=True` 추가 — alias 가진 모델 (현재 `YoloDetection.cls_`) 의 wire 형태 frontend 와 일치. alias 없는 모델은 영향 0
+  - pyright 0, ruff (touched files) 통과
 - [x] **Motion 노드 vertical slice 완료** (2026-06-03)
   - `core/transport/messages/motion.py` 새 schema — service 7개 (MOTION_GET_TCP / MOVE_TCP / MOVE_J / MOVE_L / MOVE_C / MOVE_P / STOP) + publish 1개 (MOTION_STATE_TRAJ → `MotionTrajState`)
   - `TrajStatus` Enum 을 `core/types.py` 에서 `core/transport/messages/motion.py` 로 흡수 (core reorg 후속), 빈 `types.py` 삭제

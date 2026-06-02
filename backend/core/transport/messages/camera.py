@@ -11,20 +11,19 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from core.transport.messages.base import StrictModel
+
 
 
 # ─── Topic: CAMERA_STATE_STATUS ──────────────────────────────────────
 
 
-class CameraStatus(BaseModel):
+class CameraStatus(StrictModel):
     """CAMERA_STATE_STATUS publish 페이로드. 연결/해제 시점 + 카메라 메타.
 
     width/height/fps 는 `is_opened` 가 False 일 때 0 — 그래도 필드 유지 (consumer 가
     optional 체크 안 하도록).
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     timestamp: float
     connected: bool
@@ -37,17 +36,13 @@ class CameraStatus(BaseModel):
 # ─── Service: CAMERA_SET_DEPTH_STREAM ────────────────────────────────
 
 
-class CameraSetDepthStreamReq(BaseModel):
+class CameraSetDepthStreamReq(StrictModel):
     """depth_frame 토픽 스트림 enable/disable."""
-
-    model_config = ConfigDict(extra="forbid")
 
     enabled: bool
 
 
-class CameraSetDepthStreamRes(BaseModel):
+class CameraSetDepthStreamRes(StrictModel):
     """전환 후 상태 echo."""
-
-    model_config = ConfigDict(extra="forbid")
 
     enabled: bool

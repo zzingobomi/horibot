@@ -154,13 +154,13 @@ class BaseNode:
                         raise ValueError("typed service 호출에 페이로드 없음")
                     req = req_envelope_cls.model_validate_json(payload.to_bytes())
                     res = typed_handler(req)
-                    query.reply(key, res.model_dump_json().encode())
+                    query.reply(key, res.model_dump_json(by_alias=True).encode())
                 except Exception as e:
                     logger.error(
                         f"[{self.node_name}] typed service 처리 오류 ({key}): {e}"
                     )
                     err = ServiceResponse(success=False, message=str(e), data=None)
-                    query.reply(key, err.model_dump_json().encode())
+                    query.reply(key, err.model_dump_json(by_alias=True).encode())
 
         queryable = self.session.declare_queryable(key, _handler)
         self._queryables.append(queryable)
@@ -252,7 +252,7 @@ class BaseNode:
     ) -> ServiceResponse:
         # ServiceRequest envelope 로 감싸 발신.
         req_obj = ServiceRequest(timestamp=time.time(), data=data)
-        payload = req_obj.model_dump_json().encode()
+        payload = req_obj.model_dump_json(by_alias=True).encode()
         res_envelope_cls = ServiceResponse[res_cls]  # type: ignore[valid-type]
 
         try:
@@ -314,9 +314,14 @@ class BaseNode:
     # ─── Publisher ───────────────────────────────────────────
 
     def publish(self, topic: str, data: dict | BaseModel) -> None:
-        """JSON 직렬화 후 토픽 발행. BaseModel 이면 model_dump_json, 아니면 dict."""
+        """JSON 직렬화 후 토픽 발행. BaseModel 이면 model_dump_json, 아니면 dict.
+
+        `by_alias=True` — 필드 alias 가 있는 모델 (예: `YoloDetection.cls_` ↔
+        `"class"`) 의 wire 형태를 frontend / 다른 노드와 일치시킴. alias 없는
+        모델은 영향 0.
+        """
         if isinstance(data, BaseModel):
-            payload = data.model_dump_json().encode()
+            payload = data.model_dump_json(by_alias=True).encode()
         else:
             payload = json.dumps(data).encode()
         self.session.put(topic, payload)

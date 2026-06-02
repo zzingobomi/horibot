@@ -11,6 +11,22 @@ from core.coords.link_coordinates import LinkCoordinates
 from core.robot.robot_registry import RobotRegistry
 from core.coords.sag_coordinates import SagCoordinates
 from modules.calibration.sag_offsets import SagOffsets
+from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
+from core.transport.messages.calibration import (
+    CalibCaptureReq,
+    CalibCaptureRes,
+    HandeyeCaptureRes,
+    HandeyeCommitRes,
+    HandeyeListPosesRes,
+    HandeyePoseMeta,
+    HandeyePreviewEnableReq,
+    HandeyePreviewEnableRes,
+    HandeyeResetRes,
+    IntrinsicSaveRes,
+    JointOffsetEntry,
+    LinkOffsetEntry,
+    SagOffsetEntry,
+)
 from core.transport.topic_map import Service, Topic
 from core.cache.frame_cache import FrameCache
 from core.cache.joint_state_cache import JointStateCache
@@ -67,26 +83,59 @@ class CalibrationNode(BaseNode):
         self._preview_thread: threading.Thread | None = None
 
         # 내부 캘리브레이션
-        self.create_service(Service.CALIB_CAPTURE, self._srv_capture)
-        self.create_service(Service.CALIB_INTRINSIC_START,
-                            self._srv_intrinsic_start)
-        self.create_service(Service.CALIB_INTRINSIC_SAVE,
-                            self._srv_intrinsic_save)
-
-        # Hand-Eye 캘리브레이션
-        self.create_service(Service.CALIB_HANDEYE_CAPTURE,
-                            self._srv_handeye_capture)
-        self.create_service(Service.CALIB_HANDEYE_RESET,
-                            self._srv_handeye_reset)
-        self.create_service(Service.CALIB_HANDEYE_COMPUTE,
-                            self._srv_handeye_compute)
-        self.create_service(Service.CALIB_HANDEYE_COMMIT,
-                            self._srv_handeye_commit)
         self.create_service(
-            Service.CALIB_HANDEYE_LIST_POSES, self._srv_handeye_list_poses
+            Service.CALIB_CAPTURE,
+            CalibCaptureReq,
+            CalibCaptureRes,
+            self._srv_capture,
         )
         self.create_service(
-            Service.CALIB_HANDEYE_PREVIEW_ENABLE, self._srv_handeye_preview_enable
+            Service.CALIB_INTRINSIC_START,
+            EmptyData,
+            EmptyData,
+            self._srv_intrinsic_start,
+        )
+        self.create_service(
+            Service.CALIB_INTRINSIC_SAVE,
+            EmptyData,
+            IntrinsicSaveRes,
+            self._srv_intrinsic_save,
+        )
+
+        # Hand-Eye 캘리브레이션
+        self.create_service(
+            Service.CALIB_HANDEYE_CAPTURE,
+            EmptyData,
+            HandeyeCaptureRes,
+            self._srv_handeye_capture,
+        )
+        self.create_service(
+            Service.CALIB_HANDEYE_RESET,
+            EmptyData,
+            HandeyeResetRes,
+            self._srv_handeye_reset,
+        )
+        # COMPUTE / THRESHOLDS 는 free-form dict 응답 (typed 면제 — typed_messaging.md
+        # §마이그레이션 사유: 동적 dict 정확 모델링 어려움). legacy create_service form.
+        self.create_service(Service.CALIB_HANDEYE_COMPUTE,
+                            self._srv_handeye_compute)
+        self.create_service(
+            Service.CALIB_HANDEYE_COMMIT,
+            EmptyData,
+            HandeyeCommitRes,
+            self._srv_handeye_commit,
+        )
+        self.create_service(
+            Service.CALIB_HANDEYE_LIST_POSES,
+            EmptyData,
+            HandeyeListPosesRes,
+            self._srv_handeye_list_poses,
+        )
+        self.create_service(
+            Service.CALIB_HANDEYE_PREVIEW_ENABLE,
+            HandeyePreviewEnableReq,
+            HandeyePreviewEnableRes,
+            self._srv_handeye_preview_enable,
         )
         self.create_service(
             Service.CALIB_HANDEYE_THRESHOLDS, self._srv_handeye_thresholds
@@ -108,102 +157,116 @@ class CalibrationNode(BaseNode):
 
     # ─── 이미지 캡처 ─────────────────────────────────────────
 
-    def _srv_capture(self, req: dict) -> dict:
-        mode = req.get("data", {}).get("mode", "intrinsic")
+    def _srv_capture(
+        self, req: ServiceRequest[CalibCaptureReq]
+    ) -> ServiceResponse[CalibCaptureRes]:
+        mode = req.data.mode
 
         ret, frame = self._frame_cache.get_frame()
         if not ret or frame is None:
-            return {
-                "success": False,
-                "message": "카메라 프레임을 읽을 수 없습니다",
-                "data": {},
-            }
+            return ServiceResponse(
+                success=False,
+                message="카메라 프레임을 읽을 수 없습니다",
+                data=None,
+            )
 
         if mode == "intrinsic":
             detected, vis = self.intrinsic.capture(frame)
             b64 = frame_to_base64(vis)
-            return {
-                "success": True,
-                "message": "체커보드 감지됨" if detected else "체커보드 미감지",
-                "data": {
-                    "detected": detected,
-                    "captured_count": len(self.intrinsic.obj_points),
-                    "preview": b64,
-                },
-            }
+            return ServiceResponse(
+                success=True,
+                message="체커보드 감지됨" if detected else "체커보드 미감지",
+                data=CalibCaptureRes(
+                    detected=detected,
+                    captured_count=len(self.intrinsic.obj_points),
+                    preview=b64,
+                ),
+            )
 
-        return {"success": False, "message": f"알 수 없는 mode: {mode}", "data": {}}
+        return ServiceResponse(
+            success=False, message=f"알 수 없는 mode: {mode}", data=None
+        )
 
     # ─── 내부 캘리브레이션 ────────────────────────────────────
 
-    def _srv_intrinsic_start(self, req: dict) -> dict:
+    def _srv_intrinsic_start(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[EmptyData]:
         self.intrinsic.reset()
-        return {"success": True, "message": "내부 캘리브레이션 초기화됨", "data": {}}
+        return ServiceResponse(
+            success=True, message="내부 캘리브레이션 초기화됨", data=EmptyData()
+        )
 
-    def _srv_intrinsic_save(self, req: dict) -> dict:
+    def _srv_intrinsic_save(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[IntrinsicSaveRes]:
         width = self._frame_cache.width()
         height = self._frame_cache.height()
         if width is None or height is None:
-            return {
-                "success": False,
-                "message": "카메라 status(width/height) 미수신",
-                "data": {},
-            }
+            return ServiceResponse(
+                success=False,
+                message="카메라 status(width/height) 미수신",
+                data=None,
+            )
         image_size = (width, height)
         result = self.intrinsic.calibrate(image_size)
 
         if result is None:
-            return {
-                "success": False,
-                "message": f"캘리브레이션 실패 (캡처 수: {len(self.intrinsic.obj_points)})",
-                "data": {},
-            }
+            return ServiceResponse(
+                success=False,
+                message=f"캘리브레이션 실패 (캡처 수: {len(self.intrinsic.obj_points)})",
+                data=None,
+            )
 
         path = _save_dir() / "intrinsic.npz"
         self.intrinsic.save(path)
 
-        return {
-            "success": True,
-            "message": f"저장 완료: {path}",
-            "data": {
-                "rms_error": result.rms_error,
-                "camera_matrix": result.camera_matrix.tolist(),
-                "dist_coeffs": result.dist_coeffs.tolist(),
-                "captured_count": result.captured_count,
-            },
-        }
+        return ServiceResponse(
+            success=True,
+            message=f"저장 완료: {path}",
+            data=IntrinsicSaveRes(
+                rms_error=result.rms_error,
+                camera_matrix=result.camera_matrix.tolist(),
+                dist_coeffs=result.dist_coeffs.tolist(),
+                captured_count=result.captured_count,
+            ),
+        )
 
     # ─── Hand-Eye 캘리브레이션 ────────────────────────────────
 
-    def _srv_handeye_capture(self, req: dict) -> dict:
+    def _srv_handeye_capture(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[HandeyeCaptureRes]:
         if self.intrinsic.result is None:
-            return {
-                "success": False,
-                "message": "내부 캘리브레이션 결과가 필요합니다",
-                "data": {},
-            }
+            return ServiceResponse(
+                success=False,
+                message="내부 캘리브레이션 결과가 필요합니다",
+                data=None,
+            )
 
         # raw motor — 시점 독립 ground truth. URDF rad / FK는 COMPUTE 시점에 계산.
         raw_positions = self._cache.get_raw_motor_positions(self._arm_cfgs)
         if raw_positions is None:
-            return {
-                "success": False,
-                "message": "관절 상태 수신 전",
-                "data": {},
-            }
+            return ServiceResponse(
+                success=False, message="관절 상태 수신 전", data=None
+            )
 
         # 카메라 캡처 + 체커보드 검출
         ret, frame = self._frame_cache.get_frame()
         if not ret or frame is None:
-            return {"success": False, "message": "카메라 프레임 읽기 실패", "data": {}}
+            return ServiceResponse(
+                success=False, message="카메라 프레임 읽기 실패", data=None
+            )
 
         detected, _ = self.intrinsic.capture(frame)
         if not detected:
-            return {
-                "success": False,
-                "message": "체커보드 미감지",
-                "data": {"detected": False, "pose_count": len(self.hand_eye.poses)},
-            }
+            return ServiceResponse(
+                success=False,
+                message="체커보드 미감지",
+                data=HandeyeCaptureRes(
+                    detected=False, pose_count=len(self.hand_eye.poses)
+                ),
+            )
 
         pose = self.pose_estimator.estimate(
             obj_points=self.intrinsic.obj_points[-1],
@@ -212,7 +275,9 @@ class CalibrationNode(BaseNode):
             dist_coeffs=self.intrinsic.result.dist_coeffs,
         )
         if pose is None:
-            return {"success": False, "message": "포즈 추정 실패", "data": {}}
+            return ServiceResponse(
+                success=False, message="포즈 추정 실패", data=None
+            )
 
         self.hand_eye.add_pose(
             Pose(
@@ -230,16 +295,17 @@ class CalibrationNode(BaseNode):
 
         # 캡처 응답에는 추천 포함 X — 추천은 [계산] 응답에서만. 사용자 흐름:
         # 캡처 → 계산 → 피드백+추천 → 이동 → 캡처 → 계산 → ... → 커밋.
-        return {
-            "success": True,
-            "message": f"포즈 기록됨 ({len(self.hand_eye.poses)}개) — [계산]을 눌러 진척 확인",
-            "data": {
-                "detected": True,
-                "pose_count": len(self.hand_eye.poses),
-            },
-        }
+        return ServiceResponse(
+            success=True,
+            message=f"포즈 기록됨 ({len(self.hand_eye.poses)}개) — [계산]을 눌러 진척 확인",
+            data=HandeyeCaptureRes(
+                detected=True, pose_count=len(self.hand_eye.poses)
+            ),
+        )
 
-    def _srv_handeye_reset(self, req: dict) -> dict:
+    def _srv_handeye_reset(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[HandeyeResetRes]:
         self.hand_eye.reset()
         self._last_compute = None
         # 디스크 파일도 삭제 — "처음부터 다시" 의도와 일치.
@@ -248,22 +314,27 @@ class CalibrationNode(BaseNode):
                 _handeye_poses_path().unlink()
             except OSError as e:
                 logger.warning("포즈 파일 삭제 실패: %s", e)
-        return {
-            "success": True,
-            "message": "Hand-Eye 누적 포즈 초기화됨",
-            "data": {"pose_count": 0},
-        }
+        return ServiceResponse(
+            success=True,
+            message="Hand-Eye 누적 포즈 초기화됨",
+            data=HandeyeResetRes(pose_count=0),
+        )
 
-    def _srv_handeye_list_poses(self, req: dict) -> dict:
-        return {
-            "success": True,
-            "message": "ok",
-            "data": {
-                # *현재 offset*으로 변환된 표시용 joint_angles_rad 포함
-                "poses": self.hand_eye.list_poses_meta(self._arm_cfgs),
-                "pose_count": len(self.hand_eye.poses),
-            },
-        }
+    def _srv_handeye_list_poses(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[HandeyeListPosesRes]:
+        # *현재 offset*으로 변환된 표시용 joint_angles_rad 포함
+        poses = [
+            HandeyePoseMeta.model_validate(m)
+            for m in self.hand_eye.list_poses_meta(self._arm_cfgs)
+        ]
+        return ServiceResponse(
+            success=True,
+            message="ok",
+            data=HandeyeListPosesRes(
+                poses=poses, pose_count=len(self.hand_eye.poses)
+            ),
+        )
 
     def _srv_handeye_compute(self, req: dict) -> dict:
         arm_motor_ids = [cfg.id for cfg in self._arm_cfgs]
@@ -302,13 +373,13 @@ class CalibrationNode(BaseNode):
             "data": diag,
         }
 
-    def _srv_handeye_commit(self, req: dict) -> dict:
+    def _srv_handeye_commit(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[HandeyeCommitRes]:
         if self._last_compute is None or self.hand_eye.result is None:
-            return {
-                "success": False,
-                "message": "먼저 COMPUTE를 실행하세요",
-                "data": {},
-            }
+            return ServiceResponse(
+                success=False, message="먼저 COMPUTE를 실행하세요", data=None
+            )
 
         # 1) hand_eye.npz — 카메라↔그리퍼 외부 보정
         hand_eye_path = _save_dir() / "hand_eye.npz"
@@ -415,33 +486,39 @@ class CalibrationNode(BaseNode):
                  for m in sag_applied_meta},
             )
 
-        return {
-            "success": True,
-            "message": f"저장 완료: {hand_eye_path}{offset_msg}{link_msg}{sag_msg}",
-            "data": {
-                "path": str(hand_eye_path),
-                "method": self.hand_eye.result.method,
-                "joint_offsets_applied": self._last_compute.get(
+        return ServiceResponse(
+            success=True,
+            message=f"저장 완료: {hand_eye_path}{offset_msg}{link_msg}{sag_msg}",
+            data=HandeyeCommitRes(
+                path=str(hand_eye_path),
+                method=self.hand_eye.result.method,
+                joint_offsets_applied=self._last_compute.get(
                     "joint_offset_estimated", False
                 ),
-                "joint_offsets": [
-                    {"motor_id": int(mid), "offset_rad": float(off)}
+                joint_offsets=[
+                    JointOffsetEntry(motor_id=int(mid), offset_rad=float(off))
                     for mid, off in sorted(applied.items())
                 ],
-                "link_offsets_applied": self._last_compute.get(
+                link_offsets_applied=self._last_compute.get(
                     "link_offset_estimated", False
                 ),
-                "link_offsets": link_applied_meta,
-                "sag_offsets_applied": self._last_compute.get(
+                link_offsets=[
+                    LinkOffsetEntry.model_validate(m)
+                    for m in link_applied_meta
+                ],
+                sag_offsets_applied=self._last_compute.get(
                     "sag_offset_estimated", False
                 ),
-                "sag_offsets": sag_applied_meta,
-                "restart_required": restart_required,
-            },
-        }
+                sag_offsets=[
+                    SagOffsetEntry.model_validate(m)
+                    for m in sag_applied_meta
+                ],
+                restart_required=restart_required,
+            ),
+        )
 
     def _srv_handeye_thresholds(self, req: dict) -> dict:
-        """프론트엔드가 mount 시 1회 fetch. 단일 출처 보장."""
+        """legacy dict — thresholds.as_dict() free-form, typed 면제 (§마이그레이션 사유)."""
         return {
             "success": True,
             "message": "ok",
@@ -477,14 +554,16 @@ class CalibrationNode(BaseNode):
         )
         return [next_pose_planner.to_dict(r) for r in recs]
 
-    def _srv_handeye_preview_enable(self, req: dict) -> dict:
-        enabled = bool(req.get("data", {}).get("enabled", False))
+    def _srv_handeye_preview_enable(
+        self, req: ServiceRequest[HandeyePreviewEnableReq]
+    ) -> ServiceResponse[HandeyePreviewEnableRes]:
+        enabled = req.data.enabled
         self._preview_enabled = enabled
-        return {
-            "success": True,
-            "message": f"preview {'enabled' if enabled else 'disabled'}",
-            "data": {"enabled": enabled},
-        }
+        return ServiceResponse(
+            success=True,
+            message=f"preview {'enabled' if enabled else 'disabled'}",
+            data=HandeyePreviewEnableRes(enabled=enabled),
+        )
 
     def _preview_loop(self) -> None:
         # SB는 조명/블러에 강함. preview는 속도 우선이라 EXHAUSTIVE/ACCURACY 미사용.

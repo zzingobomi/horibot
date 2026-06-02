@@ -17,16 +17,15 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
+from core.transport.messages.base import StrictModel
 
 
 # ─── Topic: MOTOR_STATE_JOINT ────────────────────────────────────────
 
 
-class MotorJoint(BaseModel):
+class MotorJoint(StrictModel):
     """state 토픽 한 모터 항목."""
-
-    model_config = ConfigDict(extra="forbid")
 
     id: int
     name: str
@@ -37,10 +36,8 @@ class MotorJoint(BaseModel):
     load: int = 0
 
 
-class MotorJointState(BaseModel):
+class MotorJointState(StrictModel):
     """MOTOR_STATE_JOINT publish 페이로드. STATE_PUBLISH_HZ 로 발행."""
-
-    model_config = ConfigDict(extra="forbid")
 
     timestamp: float
     joints: list[MotorJoint]
@@ -49,19 +46,15 @@ class MotorJointState(BaseModel):
 # ─── Topic: MOTOR_CMD_JOINT ──────────────────────────────────────────
 
 
-class MotorCmdJoint(BaseModel):
+class MotorCmdJoint(StrictModel):
     """cmd 토픽 한 모터 명령. position 만 받음 (raw 0..4095)."""
-
-    model_config = ConfigDict(extra="forbid")
 
     id: int
     position: int
 
 
-class MotorCmd(BaseModel):
+class MotorCmd(StrictModel):
     """MOTOR_CMD_JOINT subscribe 페이로드. TrajectoryRunner 가 100Hz 로 발행."""
-
-    model_config = ConfigDict(extra="forbid")
 
     timestamp: float = 0.0
     joints: list[MotorCmdJoint]
@@ -70,31 +63,27 @@ class MotorCmd(BaseModel):
 # ─── Service: MOTOR_ENABLE ────────────────────────────────────────────
 
 
-class MotorEnableReq(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class MotorEnableReq(StrictModel):
     enable: bool = True
 
 
-class MotorEnableRes(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class MotorEnableRes(StrictModel):
     enable: bool
 
 
 # ─── Service: MOTOR_REBOOT ────────────────────────────────────────────
 
 
-class MotorRebootReq(BaseModel):
+class MotorRebootReq(StrictModel):
     """id=None 이면 전 모터 reboot."""
 
-    model_config = ConfigDict(extra="forbid")
     id: int | None = None
 
 
 # ─── Service: MOTOR_SET_PROFILE (single motor) ────────────────────────
 
 
-class MotorSetProfileReq(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class MotorSetProfileReq(StrictModel):
     id: int
     velocity: int | None = None
     acceleration: int | None = None
@@ -103,10 +92,9 @@ class MotorSetProfileReq(BaseModel):
 # ─── Service: MOTOR_SET_PROFILE_ALL (multi motor) ─────────────────────
 
 
-class MotorSetProfileAllReq(BaseModel):
+class MotorSetProfileAllReq(StrictModel):
     """ids=None 이면 driver.motor_ids 전체 적용."""
 
-    model_config = ConfigDict(extra="forbid")
     ids: list[int] | None = None
     velocity: int = 0
     acceleration: int = 0
@@ -115,14 +103,12 @@ class MotorSetProfileAllReq(BaseModel):
 # ─── Service: MOTOR_GET_CONFIG ────────────────────────────────────────
 
 
-class MotorLimit(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class MotorLimit(StrictModel):
     min: int
     max: int
 
 
-class MotorConfigItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class MotorConfigItem(StrictModel):
     id: int
     name: str
     model: str
@@ -131,8 +117,7 @@ class MotorConfigItem(BaseModel):
     limit: MotorLimit
 
 
-class MotorGetConfigRes(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class MotorGetConfigRes(StrictModel):
     motors: list[MotorConfigItem]
     torque_enabled: bool
 
@@ -140,10 +125,9 @@ class MotorGetConfigRes(BaseModel):
 # ─── Service: MOTOR_GRIPPER ───────────────────────────────────────────
 
 
-class MotorGripperReq(BaseModel):
+class MotorGripperReq(StrictModel):
     """객체별 셋업에서 position override 가능 — None 이면 default open/close."""
 
-    model_config = ConfigDict(extra="forbid")
     action: Literal["open", "close"] = "open"
     current: int = Field(default=200, description="목표 전류 [mA] — 파지력")
     position: int | None = None

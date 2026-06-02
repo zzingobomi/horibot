@@ -28,6 +28,10 @@ from typing import Any, Callable, Literal
 
 from core.common import GRIPPER_ID, GRIPPER_SETTLE
 from core.transport.messages.base import EmptyData
+from core.transport.messages.detector import (
+    GroundedDetectReq,
+    GroundedDetectionResult,
+)
 from core.transport.messages.motion import JointDegree, MoveJReq, MoveLReq
 from core.transport.messages.motor import MotorGripperReq
 from core.robot.robot_poses import load_pose
@@ -249,24 +253,20 @@ class GroundedDetect(Step[Detection]):
         logger.info("GroundedDetect '%s'  [%s]", prompt, self.label)
         res = ctx.call_service(
             Service.PERCEPTION_GROUNDED_DETECT,
-            {"prompt": prompt},
+            GroundedDetectReq(prompt=prompt),
+            GroundedDetectionResult,
             timeout=60.0,
         )
-        if not res.get("success"):
+        if not res.success or res.data is None:
             raise RuntimeError(
-                f"GroundedDetect 실패: {res.get('message')} [{self.label}]"
+                f"GroundedDetect 실패: {res.message} [{self.label}]"
             )
 
-        data = res.get("data", {})
-        position_raw = data.get("position")
-        if position_raw is None:
-            raise RuntimeError(f"GroundedDetect: position 없음 [{self.label}]")
-
         detection = Detection(
-            position=Position3.from_iter(position_raw),
-            height=float(data.get("height", 0.0)),
-            base_z=float(data.get("base_z", 0.0)),
-            confidence=float(data.get("confidence", 0.0)),
+            position=Position3.from_iter(res.data.position),
+            height=res.data.height,
+            base_z=res.data.base_z,
+            confidence=res.data.confidence,
             prompt=prompt,
         )
         logger.info(

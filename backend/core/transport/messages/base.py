@@ -2,6 +2,11 @@
 
 multi_robot_architecture.md §7.6 / §4 참조 (BaseRobotMessage).
 typed_messaging.md 결정 사항 #2 참조 (ServiceRequest / ServiceResponse envelope).
+
+`StrictModel` — 모든 message 모델의 기본 base. `extra="forbid"` 한 자리에서
+강제하고 자식들은 상속만 — 자식이 자기 `model_config` 로 override 가능 (pydantic v2
+의 model_config 는 merge 됨; 예: `populate_by_name=True` 만 추가 시 `extra="forbid"`
+유지). 자유 schema 가 필요한 자리만 `extra="allow"` override.
 """
 
 from __future__ import annotations
@@ -13,46 +18,42 @@ from pydantic import BaseModel, ConfigDict, Field
 T = TypeVar("T", bound=BaseModel)
 
 
-class BaseRobotMessage(BaseModel):
+class StrictModel(BaseModel):
+    """모든 typed message / envelope 의 base. extra="forbid" 강제."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class BaseRobotMessage(StrictModel):
     """robot-scoped 토픽 페이로드의 공통 base.
 
     robot_id 가 모든 페이로드에 강제 — multi-robot routing 시 일관성.
     timestamp 는 발신 시각 (epoch seconds, UTC).
     """
 
-    model_config = ConfigDict(
-        # Zenoh JSON 통신에 frozen 까지는 필요 X — 그러나 extra="forbid" 로
-        # schema 외 필드 들어오면 에러 (drift 방지).
-        extra="forbid",
-    )
-
     robot_id: str = Field(..., description="robot instance id (robots.yaml 의 key)")
     timestamp: float = Field(..., description="발신 시각, epoch seconds (UTC)")
 
 
-class EmptyData(BaseModel):
+class EmptyData(StrictModel):
     """payload 가 빈 service request / response 용. unused `_req` 자리에도 쓰임.
 
     generic envelope 의 data 필드가 required 라서 빈 모델이라도 인스턴스가 필요.
     """
 
-    model_config = ConfigDict(extra="forbid")
 
-
-class ServiceRequest(BaseModel, Generic[T]):
+class ServiceRequest(StrictModel, Generic[T]):
     """Zenoh get payload 의 typed wrapper. data 는 도메인별 ReqData 모델.
 
     `base_node.call_service` 가 caller 측에서 timestamp 채워 발신.
     handler 는 `req.data.<field>` 로 접근.
     """
 
-    model_config = ConfigDict(extra="forbid")
-
     timestamp: float
     data: T
 
 
-class ServiceResponse(BaseModel, Generic[T]):
+class ServiceResponse(StrictModel, Generic[T]):
     """모든 service response 의 envelope.
 
     기존 free-form dict `{success, message, data}` 의 typed 버전.
@@ -60,14 +61,12 @@ class ServiceResponse(BaseModel, Generic[T]):
     error 시 `success=False`, `data=None`. caller 는 success 확인 후 data 접근.
 
     Example:
-        class MoveResultData(BaseModel):
+        class MoveResultData(StrictModel):
             duration_s: float
 
         def move_l(...) -> ServiceResponse[MoveResultData]:
             ...
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     success: bool
     message: str = ""

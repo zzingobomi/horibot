@@ -10,25 +10,22 @@ log 는 BaseNode.log() 가 호출 시점 발행.
 
 from __future__ import annotations
 
+from core.transport.messages.base import StrictModel
+
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
 
 
-class Heartbeat(BaseModel):
+class Heartbeat(StrictModel):
     """SYSTEM_HEARTBEAT 페이로드. 노드별 1Hz."""
-
-    model_config = ConfigDict(extra="forbid")
 
     node: str
     timestamp: float
     status: str = "ok"
 
 
-class LogMessage(BaseModel):
+class LogMessage(StrictModel):
     """SYSTEM_LOG 페이로드. BaseNode.log("info", "...") 호출 시 발행."""
-
-    model_config = ConfigDict(extra="forbid")
 
     node: str
     timestamp: float

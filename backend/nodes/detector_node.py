@@ -8,8 +8,16 @@ from core.common import GRIPPER_ID
 from core.transport.base_node import BaseNode
 from core.cache.frame_cache import FrameCache
 from core.cache.joint_state_cache import JointStateCache
-from core.transport.messages.base import EmptyData
+from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.camera import CameraSetDepthStreamReq, CameraSetDepthStreamRes
+from core.transport.messages.detector import (
+    Bbox2D,
+    DetectResult,
+    DetectorState,
+    GroundedDetectReq,
+    GroundedDetectionResult,
+    YoloDetection,
+)
 from core.transport.messages.motion import MotionTcpPose
 from core.transport.topic_map import Service, Topic
 from modules.calibration.loader import load_calibration
@@ -64,9 +72,17 @@ class DetectorNode(BaseNode):
         self.create_raw_subscriber(
             Topic.CAMERA_DEPTH_FRAME, self._on_depth_frame
         )
-        self.create_service(Service.DETECT_SERVICE, self._handle_detect)
         self.create_service(
-            Service.PERCEPTION_GROUNDED_DETECT, self._handle_grounded_detect
+            Service.DETECT_SERVICE,
+            EmptyData,
+            DetectResult,
+            self._handle_detect,
+        )
+        self.create_service(
+            Service.PERCEPTION_GROUNDED_DETECT,
+            GroundedDetectReq,
+            GroundedDetectionResult,
+            self._handle_grounded_detect,
         )
         super().start()
 
@@ -112,13 +128,17 @@ class DetectorNode(BaseNode):
             try:
                 ret, frame = self._frame_cache.get_frame()
                 if ret and frame is not None:
-                    results = self._detector.raw_detect(frame)
+                    raw_results = self._detector.raw_detect(frame)
+                    # raw_detect dict ({"class","bbox","conf"}) → typed
+                    detections = [
+                        YoloDetection.model_validate(d) for d in raw_results
+                    ]
                     self.publish(
                         Topic.DETECTOR_STATE,
-                        {
-                            "timestamp": time.time(),
-                            "detections": results,
-                        },
+                        DetectorState(
+                            timestamp=time.time(),
+                            detections=detections,
+                        ),
                     )
             except Exception as e:
                 logger.debug("detection loop 오류: %s", e)
@@ -126,21 +146,29 @@ class DetectorNode(BaseNode):
 
     # ─── Service: YOLO + plane Z=0 (기존) ───────────────────
 
-    def _handle_detect(self, req: dict) -> dict:
+    def _handle_detect(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[DetectResult]:
         if not self._calib.is_ready():
-            return {"success": False, "message": "캘리브레이션 미완료", "data": {}}
+            return ServiceResponse(
+                success=False, message="캘리브레이션 미완료", data=None
+            )
         assert self._calib.intrinsic is not None
         assert self._calib.hand_eye is not None
 
         # ── 카메라 프레임 취득 ────────────────────
         ret, frame = self._frame_cache.get_frame()
         if not ret or frame is None:
-            return {"success": False, "message": "카메라 프레임 취득 실패", "data": {}}
+            return ServiceResponse(
+                success=False, message="카메라 프레임 취득 실패", data=None
+            )
 
         # ── 물체 감지 → image centroid ────────────
         result = self._detector.detect(frame)
         if result is None:
-            return {"success": False, "message": "물체 감지 실패", "data": {}}
+            return ServiceResponse(
+                success=False, message="물체 감지 실패", data=None
+            )
 
         cx, cy = result
         logger.info("감지: centroid (%.1f, %.1f)", cx, cy)
@@ -159,11 +187,9 @@ class DetectorNode(BaseNode):
             Service.MOTION_GET_TCP, EmptyData(), MotionTcpPose
         )
         if not res.success or res.data is None:
-            return {
-                "success": False,
-                "message": f"get_tcp 실패: {res.message}",
-                "data": {},
-            }
+            return ServiceResponse(
+                success=False, message=f"get_tcp 실패: {res.message}", data=None
+            )
 
         R_be = _quat_to_rot(res.data.quaternion)  # end-effector → base
         t_be = np.array(res.data.position)
@@ -178,15 +204,17 @@ class DetectorNode(BaseNode):
 
         denom = R_total[2, 0] * xn + R_total[2, 1] * yn + R_total[2, 2]
         if abs(denom) < 1e-6:
-            return {"success": False, "message": "Z_cam 역산 실패 (분모 0)", "data": {}}
+            return ServiceResponse(
+                success=False, message="Z_cam 역산 실패 (분모 0)", data=None
+            )
 
         Z_cam = -t_total[2] / denom
         if Z_cam <= 0:
-            return {
-                "success": False,
-                "message": f"Z_cam 음수 ({Z_cam:.3f}), 캘리브레이션 확인 필요",
-                "data": {},
-            }
+            return ServiceResponse(
+                success=False,
+                message=f"Z_cam 음수 ({Z_cam:.3f}), 캘리브레이션 확인 필요",
+                data=None,
+            )
 
         logger.info("Z_cam 역산: %.3fm", Z_cam)
 
@@ -197,22 +225,27 @@ class DetectorNode(BaseNode):
 
         logger.info("감지 완료: base=(%.3f, %.3f, %.3f)", *obj_in_base)
 
-        return {
-            "success": True,
-            "message": "ok",
-            "data": {"position": obj_in_base.tolist()},
-        }
+        return ServiceResponse(
+            success=True,
+            message="ok",
+            data=DetectResult(position=obj_in_base.tolist()),
+        )
 
     # ─── Service: Grounding DINO + depth median ─────────────
 
-    def _handle_grounded_detect(self, req: dict) -> dict:
-        data = req.get("data", {}) or {}
-        prompt = str(data.get("prompt", "")).strip()
+    def _handle_grounded_detect(
+        self, req: ServiceRequest[GroundedDetectReq]
+    ) -> ServiceResponse[GroundedDetectionResult]:
+        prompt = req.data.prompt.strip()
         if not prompt:
-            return {"success": False, "message": "prompt 필요", "data": {}}
+            return ServiceResponse(
+                success=False, message="prompt 필요", data=None
+            )
 
         if not self._calib.is_ready():
-            return {"success": False, "message": "캘리브레이션 미완료", "data": {}}
+            return ServiceResponse(
+                success=False, message="캘리브레이션 미완료", data=None
+            )
         assert self._calib.hand_eye is not None
 
         # ── depth stream 확보 (on-demand) ────────────────
@@ -229,11 +262,11 @@ class DetectorNode(BaseNode):
                 CameraSetDepthStreamRes,
             )
             if not res.success:
-                return {
-                    "success": False,
-                    "message": f"depth enable 실패: {res.message}",
-                    "data": {},
-                }
+                return ServiceResponse(
+                    success=False,
+                    message=f"depth enable 실패: {res.message}",
+                    data=None,
+                )
             # 새 frame 한 장 기다림
             deadline = time.time() + DEPTH_WAIT_TIMEOUT
             while time.time() < deadline:
@@ -246,25 +279,27 @@ class DetectorNode(BaseNode):
         with self._depth_lock:
             depth_frame = self._latest_depth_frame
         if depth_frame is None:
-            return {
-                "success": False,
-                "message": "depth frame 없음 (카메라 노드/스트림 확인)",
-                "data": {},
-            }
+            return ServiceResponse(
+                success=False,
+                message="depth frame 없음 (카메라 노드/스트림 확인)",
+                data=None,
+            )
 
         # ── Grounding DINO inference ─────────────────────
         try:
             det = self._grounded.detect(depth_frame.color_bgr, prompt)
         except Exception as e:
             logger.exception("Grounding DINO inference 실패")
-            return {"success": False, "message": f"detection 실패: {e}", "data": {}}
+            return ServiceResponse(
+                success=False, message=f"detection 실패: {e}", data=None
+            )
 
         if det is None:
-            return {
-                "success": False,
-                "message": f"'{prompt}' 감지 실패 (threshold 미달)",
-                "data": {},
-            }
+            return ServiceResponse(
+                success=False,
+                message=f"'{prompt}' 감지 실패 (threshold 미달)",
+                data=None,
+            )
 
         (x1, y1, x2, y2), score = det
 
@@ -275,16 +310,18 @@ class DetectorNode(BaseNode):
         ix2 = min(w, int(round(x2)))
         iy2 = min(h, int(round(y2)))
         if ix2 <= ix1 or iy2 <= iy1:
-            return {"success": False, "message": "bbox 무효", "data": {}}
+            return ServiceResponse(
+                success=False, message="bbox 무효", data=None
+            )
 
         roi = depth_frame.depth_z16[iy1:iy2, ix1:ix2]
         valid = roi[roi > 0]
         if valid.size == 0:
-            return {
-                "success": False,
-                "message": "bbox 영역에 valid depth 없음",
-                "data": {},
-            }
+            return ServiceResponse(
+                success=False,
+                message="bbox 영역에 valid depth 없음",
+                data=None,
+            )
 
         # 객체 윗면 z (카메라에 가장 가까운 percentile 25)
         top_raw = float(np.percentile(valid, 25))
@@ -302,11 +339,9 @@ class DetectorNode(BaseNode):
             Service.MOTION_GET_TCP, EmptyData(), MotionTcpPose
         )
         if not res.success or res.data is None:
-            return {
-                "success": False,
-                "message": f"get_tcp 실패: {res.message}",
-                "data": {},
-            }
+            return ServiceResponse(
+                success=False, message=f"get_tcp 실패: {res.message}", data=None
+            )
 
         R_be = _quat_to_rot(res.data.quaternion)
         t_be = np.array(res.data.position)
@@ -367,29 +402,26 @@ class DetectorNode(BaseNode):
             *obj_in_base, floor_z, height, pad,
         )
 
-        result_payload = {
-            "prompt": prompt,
-            "position": obj_in_base.tolist(),  # 객체 윗면 base xyz
-            "bbox2d": {
-                "x1": float(x1),
-                "y1": float(y1),
-                "x2": float(x2),
-                "y2": float(y2),
-            },
-            "confidence": score,
-            "base_z": base_z,
-            "height": height,
-            "timestamp": time.time() * 1000.0,  # ms (frontend Date.now() 호환)
-        }
+        result = GroundedDetectionResult(
+            prompt=prompt,
+            position=obj_in_base.tolist(),  # 객체 윗면 base xyz
+            bbox2d=Bbox2D(
+                x1=float(x1), y1=float(y1), x2=float(x2), y2=float(y2)
+            ),
+            confidence=score,
+            base_z=base_z,
+            height=height,
+            timestamp=time.time() * 1000.0,  # ms (frontend Date.now() 호환)
+        )
 
         # 호출자 무관하게 카메라 feed / 3D 마커에 자동 표시되도록 토픽 broadcast.
         # (self-play / pick_and_place GroundedDetectStep 등 backend 호출도 시각화됨)
         try:
-            self.publish(Topic.PERCEPTION_GROUNDED_STATE, result_payload)
+            self.publish(Topic.PERCEPTION_GROUNDED_STATE, result)
         except Exception as exc:
             logger.warning("grounded_state publish 실패: %s", exc)
 
-        return {"success": True, "message": "ok", "data": result_payload}
+        return ServiceResponse(success=True, message="ok", data=result)
 
 
 def _quat_to_rot(quat: list[float]) -> np.ndarray:

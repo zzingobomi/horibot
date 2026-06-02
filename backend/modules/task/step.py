@@ -151,6 +151,8 @@ def _convert_value(value: Any) -> Any:
         return [_convert_value(v) for v in value]
     if isinstance(value, dict):
         return {k: _convert_value(v) for k, v in value.items()}
+    if isinstance(value, BaseModel):
+        return value.model_dump()
     if is_dataclass(value) and not isinstance(value, type):
         return asdict(value)
     return value

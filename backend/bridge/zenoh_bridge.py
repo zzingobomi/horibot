@@ -256,7 +256,6 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
 
         req_payload = json.dumps(
             {
-                "request_id": request_id,
                 "timestamp": time.time(),
                 "data": data,
             }

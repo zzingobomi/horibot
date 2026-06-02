@@ -12,7 +12,7 @@ from dynamixel_sdk import (
     DXL_HIWORD,
 )
 
-from modules.dynamixel.motor_config import MotorConfig
+from modules.motor.motor_config import MotorConfig
 
 logger = logging.getLogger(__name__)
 

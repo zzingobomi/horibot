@@ -18,7 +18,7 @@ import threading
 from core.robot_registry import RobotRegistry
 from core.units import raw_to_rad, rad_to_raw
 from modules.calibration import joint_offsets as joint_offsets_io
-from modules.dynamixel.motor_config import MotorConfig
+from modules.motor.motor_config import MotorConfig
 
 logger = logging.getLogger(__name__)
 

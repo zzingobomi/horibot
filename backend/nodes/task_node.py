@@ -6,7 +6,7 @@ from core.base_node import BaseNode
 from core.topic_map import Service, Topic
 from core.joint_state_cache import JointStateCache
 from core.common import GRIPPER_ID
-from modules.dynamixel.motor_config import MotorConfig, load_motor_config
+from modules.motor.motor_config import MotorConfig, load_motor_config
 from modules.calibration.loader import load_calibration
 from modules.llm import prompt_parser
 from modules.llm.prompt_parser import parse_pick_place

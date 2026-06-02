@@ -31,7 +31,7 @@ import open3d as o3d
 
 from core.joint_coordinates import JointCoordinates
 from modules.calibration.loader import load_calibration
-from modules.dynamixel.motor_config import MotorConfig
+from modules.motor.motor_config import MotorConfig
 from modules.kinematics.solver import PybulletSolver
 
 logger = logging.getLogger(__name__)

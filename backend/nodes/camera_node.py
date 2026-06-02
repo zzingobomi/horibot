@@ -3,9 +3,9 @@ import threading
 import time
 
 from core.base_node import BaseNode
+from core.robot_registry import RobotRegistry
 from core.topic_map import Service, Topic
 from core.zenoh_session import ZenohSession
-from modules.camera.capture import CameraCapture
 from modules.camera.depth_frame import encode as encode_depth_frame
 from modules.camera.stream import frame_to_jpeg_bytes
 
@@ -19,7 +19,7 @@ DEPTH_IDLE_SLEEP = 0.1
 class CameraNode(BaseNode):
     def __init__(self):
         super().__init__("camera_node")
-        self.camera = CameraCapture()
+        self.camera = RobotRegistry().get_camera_capture()
         self._stream_thread: threading.Thread | None = None
         self._depth_thread: threading.Thread | None = None
 

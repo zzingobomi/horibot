@@ -12,15 +12,13 @@ Phase 2 (SO-101 도착 후) 분산 토폴로지 + 카메라 배치 design 결정
 
 영향 작은 순:
 
-| 순 | 항목 | 절 | 영향 범위 |
-|---|---|---|---|
-| 1 | Literal 타입 도입 | [§5](#5-타입-안전성--study-todo) | 0 (순수 타입 강화) |
-| 2 | `robots.yaml` `hosts: {motor, camera}` 스키마 분리 | [§4](#4-robotsyaml-host-필드-표현-한계-미해결) | 0 (값은 `dev` 그대로, 어차피 안 읽힘) |
-| 3 | `FrameCache` `dict[robot_id]` 화 | [§8](#8-cache-류-robot_id-차원-도입-마무리--framecache) | 0 (default 인자, 사용처 무영향) |
-| 4 | `dynamixel/` 폴더 leftover 정리 | [§7](#7-protocoladapter-패턴-적용-범위) | S (import 처 갱신) |
-| 5 | Protocol 네이밍 통일 + camera 폴더 분리 | [§6](#6-protocol-네이밍-통일--mini-refactor) | M (rename + 파일 이동 + import 처) |
-
-권장: 1~3 한 commit 묶음, 4 / 5 각각 별도 commit.
+| 순 | 항목 | 절 | 영향 범위 | 상태 |
+|---|---|---|---|---|
+| 1 | Literal 타입 도입 | [§5](#5-타입-안전성--study-todo) | 0 (순수 타입 강화) | ✅ done |
+| 2 | `robots.yaml` `hosts: {motor, camera}` 스키마 분리 | [§4](#4-robotsyaml-host-필드-표현-한계-미해결) | 0 (값은 `dev` 그대로, 어차피 안 읽힘) | ✅ done |
+| 3 | `FrameCache` `dict[robot_id]` 화 | [§8](#8-cache-류-robot_id-차원-도입-마무리--framecache) | 0 (default 인자, 사용처 무영향) | ✅ done |
+| 4 | `dynamixel/` 폴더 leftover 정리 | [§7](#7-protocoladapter-패턴-적용-범위) | S (import 처 갱신) | ✅ done |
+| 5 | Protocol 네이밍 통일 + camera 폴더 분리 | [§6](#6-protocol-네이밍-통일--mini-refactor) | M (rename + 파일 이동 + import 처) | ✅ done |
 
 ### 0.2 SO-101 도착 후 가능 (3개)
 
@@ -170,15 +168,21 @@ class RobotConfig:
 
 + `_build_config` 에서 yaml load 시 set 멤버십 체크 (fail-fast). enum 대비 yaml 친화 + Phase 2 새 backend 추가가 가벼움.
 
-## 6. Protocol 네이밍 통일 — mini refactor
+## 6. Protocol 네이밍 통일 — mini refactor ✅ 완료
 
-### 6.1 현황 (일관성 깨짐)
+본 절 6.1~6.5 는 *refactor 전* 의 design plan. 아래 변경 적용됨:
+- `CameraCaptureProtocol` → `CameraCapture` (Protocol 이름 회수)
+- `CameraCapture` (RealSense impl) → `RealSenseCapture` ([modules/camera/adapters/realsense.py](../backend/modules/camera/adapters/realsense.py))
+- [capture.py](../backend/modules/camera/capture.py) 는 Protocol + data classes 만
+- **`camera_backend` selector layout 추가** (motor/ik 와 동일 패턴) — `CameraBackendName = Literal["realsense", "opencv", "mujoco"]` + `RobotRegistry.get_camera_capture(robot_id)` factory + `robots.yaml` 의 `camera_backend:` 필드. opencv / mujoco impl 은 placeholder (`NotImplementedError`) — SO-101 도착 (§1) / Track C 진입 시 작성
+
+### 6.1 변경 전 현황 (일관성 깨짐)
 
 | Protocol | 구현체 | 접미사 |
 |---|---|---|
 | [`IKSolver`](../backend/modules/kinematics/iksolver.py) | `PybulletIKSolver`, `MujocoIKSolver` | ❌ 없음 |
 | [`MotorBackend`](../backend/modules/motor/backend.py) | `DynamixelBackend`, `FeetechBackend` | ❌ 없음 |
-| [`CameraCaptureProtocol`](../backend/modules/camera/capture.py) | `CameraCapture` (RealSense wrap) | ✅ **`Protocol` 붙음** |
+| `CameraCaptureProtocol` (구) | `CameraCapture` (구, RealSense wrap) | ✅ **`Protocol` 붙음** |
 
 ### 6.2 원인
 
@@ -254,22 +258,22 @@ camera/
 |---|---|---|
 | [`kinematics/`](../backend/modules/kinematics/) | ✅ 이미 adapter | PyBullet ↔ MuJoCo swap |
 | [`motor/`](../backend/modules/motor/) | ✅ 이미 adapter | Dynamixel ↔ Feetech swap |
-| [`camera/`](../backend/modules/camera/) | 🔄 Phase 2 정리 예정 (§6) | RealSense ↔ OpenCV ↔ sim |
+| [`camera/`](../backend/modules/camera/) | ✅ adapter 분리 완료 (§6) | RealSense ↔ OpenCV ↔ sim |
 | [`detector/`](../backend/modules/detector/) | 🤔 검토 가치 | YOLO / Grounded / Color — `base_detector.py` 가 사실상 base. Protocol 명시화 가능 |
 | [`llm/`](../backend/modules/llm/) | 🤔 필요 시 도입 | Anthropic ↔ OpenAI swap 가능성 |
 | [`gamepad/`](../backend/modules/gamepad/) | ❌ 불필요 | USB HID 표준 — pygame 1개로 충분 |
 | [`calibration/`](../backend/modules/calibration/) | ❌ 불필요 | 순수 알고리즘 (BA, hand_eye, sag 등) |
 | [`pointcloud/`](../backend/modules/pointcloud/) | ❌ 불필요 | Open3D 알고리즘 — swap SDK 없음 |
 | [`task/`](../backend/modules/task/) | ❌ 불필요 | Step DSL framework — 자체 패턴 |
-| [`dynamixel/`](../backend/modules/dynamixel/) | ⚠️ **정리 대상** | Phase 1 refactor 때 `motor/adapters/` 로 옮겨졌어야. `motor_config.py` leftover |
+| ~~`dynamixel/`~~ | ✅ 정리 완료 | `driver.py` → `motor/adapters/dynamixel_driver.py`, `motor_config.py` → `motor/motor_config.py` (Dynamixel-비종속) |
 
 ### 7.3 카테고리별 후속 action
 
 - **✅ 이미 패턴 적용 (3)** — 현재 코드 그대로 유지
-- **🔄 Phase 2 정리 (1)** — camera, §6 의 mini refactor 와 묶음
+- **✅ camera adapter 분리 완료 (1)** — `CameraCapture` Protocol + `RealSenseCapture` adapter (§6)
 - **🤔 검토 가치 (2)** — detector / llm. 실제 두 번째 구현체 추가 시점에 자연스러운 분기점. 미리 박으면 over-engineering
 - **❌ 분리 불필요 (4)** — 그대로
-- **⚠️ 정리 대상 (1)** — `dynamixel/` 폴더. Phase 2 진입 시 `motor_config.py` 의 책임 위치 재검토 (motor/ 안으로 흡수 또는 신규 위치)
+- **✅ 정리 완료 (1)** — ~~`dynamixel/`~~ 폴더 삭제. `motor_config.py` 는 `motor/` 으로 (Dynamixel 비종속 = generic motor metadata), `driver.py` 는 `motor/adapters/dynamixel_driver.py` 로 (Dynamixel-specific 저수준은 backend adapter 옆)
 
 ## 8. Cache 류 robot_id 차원 도입 마무리 — `FrameCache`
 

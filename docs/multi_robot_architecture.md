@@ -432,14 +432,14 @@ class MotorBackend(Protocol):
 
 | Adapter | SDK | 모터 모델 | Phase |
 |---|---|---|---|
-| `DynamixelBackend(port, baud, motors)` | `dynamixel-sdk` | XL430 / XL330 (OpenRB-150) | Phase 1 (현 [`DynamixelDriver`](../backend/modules/dynamixel/driver.py) wrap) |
+| `DynamixelBackend(port, baud, motors)` | `dynamixel-sdk` | XL430 / XL330 (OpenRB-150) | Phase 1 (현 [`DynamixelDriver`](../backend/modules/motor/adapters/dynamixel_driver.py) wrap) |
 | `FeetechBackend(port, baud, motors)` | `scservo_sdk` / `feetech-servo-sdk` | STS3215 / STS3250 (Waveshare) | Phase 2 (SO-101 도착 시) |
 
 **Mixed 버스 지원** (so101_6dof_plan §6.1): `FeetechBackend` 안에서 모터 모델별 (sts3215 vs sts3250) 분기는 `motors.yaml` 의 `model` 필드 (§5.1.2). 같은 type 폴더의 motors.yaml 에서 모터별 model 명시.
 
 **기존 코드와의 mapping:**
 
-| 현재 ([dynamixel/driver.py](../backend/modules/dynamixel/driver.py)) | 새 위치 |
+| 현재 ([motor/adapters/dynamixel_driver.py](../backend/modules/motor/adapters/dynamixel_driver.py)) | 새 위치 |
 |---|---|
 | `DynamixelDriver` 클래스 (raw SDK wrap) | `backend/modules/motor/adapters/dynamixel_backend.py` 의 `DynamixelBackend` — Protocol 만족 |
 | `get_present_positions` / `set_goal_positions_sync` 등 sync read/write | Protocol method 매핑 (`read_positions` / `write_positions`) |
@@ -677,25 +677,30 @@ robots:
   omx_f_0:
     type: omx_f
     enabled: true
-    host: pi_motor                # 어느 backend host 의 motor/motion node 가 담당
-    motor:
-      port: /dev/ttyACM0          # instance-specific
-      baud: 1000000
-    # 미래 추가: solver: pybullet|mujoco, etc.
+    hosts:                        # distributed_topology.md §4 — robot 자원이 두 머신에 흩어짐
+      motor: dev                  # motor/motion node 가 도는 host (Phase 2: hori3)
+      camera: dev                 # camera node 가 도는 host (Phase 2: hori2)
+    motor_backend: dynamixel      # dynamixel | feetech — RobotRegistry.get_motor_backend() 분기
+    iksolver: pybullet            # pybullet | mujoco — get_iksolver() 분기
+    camera_backend: realsense     # realsense | opencv | mujoco — get_camera_capture() 분기
 
   so101_6dof_0:
     type: so101_6dof
     enabled: false                # SO-101 도착 전까지 false
-    host: pi_motor_2
-    motor:
-      port: /dev/ttyACM1
-      baud: 1000000
+    hosts:
+      motor: hori3
+      camera: hori2
+    motor_backend: feetech
+    iksolver: pybullet
+    camera_backend: realsense
 
 # Phase 2+ — Coordination 영역
 cooperation:
   pairs:
     - [omx_f_0, so101_6dof_0]     # robot-to-robot extrinsic 적용 pair
 ```
+
+instance-specific 한 hardware 세부 (motor port / baud 등) 는 `robot/instances/<robot_id>/instance.yaml` 로 분리 — robots.yaml 은 *registry* 역할만 (어떤 robot 이 어떤 type / backend 조합으로 enabled 인지).
 
 ### 4.4 Validation rules
 

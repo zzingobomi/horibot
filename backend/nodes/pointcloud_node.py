@@ -11,7 +11,7 @@ from core.common import GRIPPER_ID
 from core.joint_state_cache import JointStateCache
 from core.topic_map import Service, Topic
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
-from modules.dynamixel.motor_config import load_motor_config
+from modules.motor.motor_config import load_motor_config
 from modules.pointcloud import scan_capture, scan_io, tsdf_builder
 
 logger = logging.getLogger(__name__)

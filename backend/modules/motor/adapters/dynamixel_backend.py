@@ -2,7 +2,7 @@
 
 multi_robot_architecture.md §3.3 참조.
 
-기존 [DynamixelDriver](../../dynamixel/driver.py) 의 raw SDK wrap 을 그대로 활용.
+기존 [DynamixelDriver](dynamixel_driver.py) 의 raw SDK wrap 을 그대로 활용.
 이 adapter 는 `MotorBackend` Protocol 메서드 (clean names) + 기존 legacy method
 aliases 양쪽 다 제공 → motor_node 같은 caller 가 import 만 바꿔도 동작.
 
@@ -12,8 +12,8 @@ caller migration 은 점진 — 새 코드는 Protocol method (`read_positions` 
 
 from __future__ import annotations
 
-from modules.dynamixel.driver import DynamixelDriver
-from modules.dynamixel.motor_config import MotorConfig
+from modules.motor.adapters.dynamixel_driver import DynamixelDriver
+from modules.motor.motor_config import MotorConfig
 from modules.motor.backend import MotorCommError
 
 

@@ -8,9 +8,12 @@ robots:
   omx_f_0:
     type: omx_f
     enabled: true
-    host: dev              # single machine dev. 분산: pi_motor / pi_camera / pc
+    hosts:                 # Phase 2 (distributed_topology.md §3.2): hori1/2/3.
+      motor: dev           # 현재 single machine — caller 아직 없음 (잠정값).
+      camera: dev
     motor_backend: dynamixel
     iksolver: pybullet
+    camera_backend: realsense    # Phase 2 (distributed_topology.md §1): omx_f → opencv (UVC)
 
 # Phase 2+ — Cooperation 영역 (so101 도착 시 활성화).
 # cooperation:

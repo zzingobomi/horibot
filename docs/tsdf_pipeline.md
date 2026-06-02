@@ -381,7 +381,7 @@ def build_mesh(
     # ─── 1. 자세별 초기 T_base_cam 계산 ────────────────────────────
     from core.joint_coordinates import JointCoordinates
     from modules.kinematics.solver import PybulletSolver
-    from modules.dynamixel.motor_config import MotorConfig
+    from modules.motor.motor_config import MotorConfig
     from modules.calibration.loader import load_calibration
 
     calib = load_calibration()

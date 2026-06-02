@@ -9,7 +9,7 @@ from core.joint_coordinates import JointCoordinates
 from core.joint_state_cache import JointStateCache
 from core.tool_coordinates import ToolCoordinates
 from core.common import GRIPPER_ID
-from modules.dynamixel.motor_config import MotorConfig, load_motor_config
+from modules.motor.motor_config import MotorConfig, load_motor_config
 from modules.kinematics.motion_modes import MotionModes
 from modules.kinematics.solver import PybulletSolver
 from modules.kinematics.trajectory_runner import TrajectoryRunner

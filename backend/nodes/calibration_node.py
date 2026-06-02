@@ -15,7 +15,7 @@ from core.topic_map import Service, Topic
 from core.frame_cache import FrameCache
 from core.joint_state_cache import JointStateCache
 from core.common import GRIPPER_ID
-from modules.dynamixel.motor_config import load_motor_config
+from modules.motor.motor_config import load_motor_config
 from modules.camera.stream import frame_to_base64
 from modules.calibration.intrinsic import CHECKERBOARD, IntrinsicCalibration
 from modules.calibration.hand_eye import HandEyeCalibration, Pose
@@ -141,8 +141,8 @@ class CalibrationNode(BaseNode):
         return {"success": True, "message": "내부 캘리브레이션 초기화됨", "data": {}}
 
     def _srv_intrinsic_save(self, req: dict) -> dict:
-        width = self._frame_cache.width
-        height = self._frame_cache.height
+        width = self._frame_cache.width()
+        height = self._frame_cache.height()
         if width is None or height is None:
             return {
                 "success": False,

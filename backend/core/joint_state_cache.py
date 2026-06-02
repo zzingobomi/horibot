@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from core.robot_registry import RobotRegistry
 from core.topic_map import Topic
 from core.units import raw_to_rad
-from modules.dynamixel.motor_config import MotorConfig
+from modules.motor.motor_config import MotorConfig
 
 if TYPE_CHECKING:
     from core.base_node import BaseNode

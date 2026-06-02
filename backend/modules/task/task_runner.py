@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from core.base_node import BaseNode
     from core.joint_state_cache import JointStateCache
     from modules.calibration.loader import CalibrationData
-    from modules.dynamixel.motor_config import MotorConfig
+    from modules.motor.motor_config import MotorConfig
 
 
 logger = logging.getLogger(__name__)

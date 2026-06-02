@@ -6,7 +6,7 @@ from core.base_node import BaseNode
 from core.topic_map import Topic, Service
 from core.units import raw_to_deg
 from core.common import GRIPPER_ID
-from modules.dynamixel.motor_config import load_motor_config
+from modules.motor.motor_config import load_motor_config
 from modules.motor.adapters.dynamixel_backend import DynamixelBackend
 from modules.motor.backend import MotorCommError
 

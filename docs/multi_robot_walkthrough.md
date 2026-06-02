@@ -33,7 +33,7 @@ JOINT_OFFSETS_PATH = Path(__file__).parents[2] / "robot" / "calibration" / "join
 URDF_PATH          = Path(__file__).parents[3] / "robot" / "urdf" / "omx_f" / "omx_f.urdf"
 
 # Hardware 가 곳곳에 박힘
-from modules.dynamixel.driver import DynamixelDriver
+from modules.motor.adapters.dynamixel_driver import DynamixelDriver
 solver = PybulletSolver()   # singleton, sag 코드도 안에 박힘
 driver = DynamixelDriver(port, motors)
 ```
@@ -99,7 +99,7 @@ graph TB
 | **`RobotConfig`** | 같은 파일 | frozen dataclass — robot 1개의 모든 path / 설정 |
 | **`IKSolver` Protocol** | [modules/kinematics/iksolver.py](../backend/modules/kinematics/iksolver.py) | fk / ik / fk_to_matrix / joint_limits 의 통합 인터페이스 |
 | **`MotorBackend` Protocol** | [modules/motor/backend.py](../backend/modules/motor/backend.py) | Dynamixel / Feetech SDK 의 통합 인터페이스 |
-| **`CameraCaptureProtocol`** | [modules/camera/capture.py](../backend/modules/camera/capture.py) | RealSense / MuJoCo / USB 카메라의 통합 인터페이스 |
+| **`CameraCapture`** | [modules/camera/capture.py](../backend/modules/camera/capture.py) | Protocol — RealSense / MuJoCo / USB 카메라의 통합 인터페이스. 구현체는 [adapters/realsense.py](../backend/modules/camera/adapters/realsense.py) 등 |
 
 ---
 
@@ -344,7 +344,7 @@ graph TB
 | [modules/kinematics/solver.py](../backend/modules/kinematics/solver.py) | 갱신 | `PybulletSolver()` facade — Registry.get_iksolver() 위임 |
 | [modules/motor/backend.py](../backend/modules/motor/backend.py) | 신규 | `MotorBackend` Protocol |
 | [modules/motor/adapters/dynamixel_backend.py](../backend/modules/motor/adapters/dynamixel_backend.py) | 신규 | `DynamixelBackend` (Protocol + legacy aliases) |
-| [modules/camera/capture.py](../backend/modules/camera/capture.py) | 갱신 | `CameraCaptureProtocol` + dataclasses + `CameraCapture` adapter |
+| [modules/camera/capture.py](../backend/modules/camera/capture.py) | 갱신 | `CameraCapture` Protocol + dataclasses (구현체는 `adapters/realsense.py` 의 `RealSenseCapture`) |
 
 ### 4.2 Phase 1 에 path 만 갱신된 파일 (caller)
 
@@ -352,7 +352,7 @@ graph TB
 
 - [main.py](../backend/main.py) — intrinsic seed path
 - [modules/calibration/loader.py](../backend/modules/calibration/loader.py) — `_calib_dir()` 함수
-- [modules/dynamixel/motor_config.py](../backend/modules/dynamixel/motor_config.py) — `load_motor_config(robot_id)` split load
+- [modules/motor/motor_config.py](../backend/modules/motor/motor_config.py) — `load_motor_config(robot_id)` split load
 - [modules/pointcloud/scan_io.py](../backend/modules/pointcloud/scan_io.py) — `_scans_dir()` / `meshes_dir()` / `_calib_dir()`
 - [nodes/calibration_node.py](../backend/nodes/calibration_node.py) — `_save_dir()` / `_handeye_poses_path()`
 - [nodes/pointcloud_node.py](../backend/nodes/pointcloud_node.py) — `scan_io.meshes_dir()` / `scan_io.robot_root()`
@@ -477,7 +477,7 @@ ROS 2 multi-robot namespace 표준 + Zenoh wildcard subscribe 와 자연.
 | **PybulletIKSolver adapter** | `5bfbe72` | `modules/kinematics/adapters/pybullet_solver.py` | sag 코드가 *없음* 에 주목 |
 | **CorrectedIKSolver Decorator** | `5bfbe72` | `modules/kinematics/corrected.py` | `_commanded_to_actual` / `_actual_to_commanded` 양방향 |
 | **MotorBackend Protocol + Adapter** | `8fd77ab` | `modules/motor/{backend.py, adapters/dynamixel_backend.py}` | DynamixelBackend 의 legacy aliases 가 caller backward compat |
-| **CameraCapture Protocol** | `5ec460f` | `modules/camera/capture.py` | `CameraCaptureProtocol` + dataclass + 기존 class 가 Protocol 만족 |
+| **CameraCapture Protocol** | `5ec460f` | `modules/camera/capture.py` | `CameraCaptureProtocol` + dataclass + 기존 class 가 Protocol 만족 (후속 commit: Protocol 이름 `CameraCapture` 회수 + impl `RealSenseCapture` 로 rename + `adapters/realsense.py` 분리) |
 | **Coordinates dict[robot_id]** | `e8f75ea` | `core/{joint,link,sag,tool}_coordinates.py`, `joint_state_cache.py` | 모든 메서드의 `robot_id=None` kwarg pattern |
 | **Registry factory** | `6d95551` | `core/robot_registry.py` | `get_iksolver` / `get_motor_backend` + `_build_*` lazy import |
 | **PybulletSolver facade 단순화** | `6d95551` | `modules/kinematics/solver.py` | 50줄 → 15줄 |

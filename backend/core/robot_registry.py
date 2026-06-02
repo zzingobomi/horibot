@@ -18,6 +18,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast, get_args
 
 import yaml
 
@@ -36,6 +37,32 @@ RESERVED_TOPIC_DOMAINS = frozenset(
     {"system", "task", "coord", "viz", "cameras"}
 )
 
+# Valid backend / solver 이름 — yaml typo 부팅 시 fail-fast.
+# 새 backend 추가 시 여기에 + factory 분기 추가 (pyright 가 두 곳 동기화 검사).
+MotorBackendName = Literal["dynamixel", "feetech"]
+IKSolverName = Literal["pybullet", "mujoco"]
+CameraBackendName = Literal["realsense", "opencv", "mujoco"]
+
+_VALID_MOTOR_BACKENDS = frozenset(get_args(MotorBackendName))
+_VALID_IKSOLVERS = frozenset(get_args(IKSolverName))
+_VALID_CAMERA_BACKENDS = frozenset(get_args(CameraBackendName))
+
+
+@dataclass(frozen=True)
+class HostMap:
+    """robot 자원이 분산된 머신 매핑.
+
+    Phase 2 (distributed_topology.md §3.2) 에선 한 robot 이 두 머신에 흩어짐
+    (예: so101 motor=hori3 / camera=hori2). 1 필드 (`host: str`) 로 표현 불가 →
+    motor / camera 별로 분리.
+
+    값 자체는 아직 caller 가 없어서 무영향 — Phase 2 진입 시 coordinator /
+    Zenoh routing 결정 시 reference.
+    """
+
+    motor: str
+    camera: str
+
 
 @dataclass(frozen=True)
 class RobotConfig:
@@ -48,9 +75,10 @@ class RobotConfig:
     robot_id: str
     robot_type: str
     enabled: bool
-    host: str
-    motor_backend: str  # "dynamixel" | "feetech"
-    iksolver: str  # "pybullet" | "mujoco"
+    hosts: HostMap
+    motor_backend: MotorBackendName
+    iksolver: IKSolverName
+    camera_backend: CameraBackendName
 
     # type-level paths — robot/<robot_type>/
     type_dir: Path
@@ -91,6 +119,7 @@ class RobotRegistry:
         self._robots: dict[str, RobotConfig] = {}
         self._iksolvers: dict[str, object] = {}  # IKSolver — lazy import 회피
         self._motor_backends: dict[str, object] = {}  # MotorBackend
+        self._camera_captures: dict[str, object] = {}  # CameraCapture
         self._factory_lock = threading.Lock()
         self._load()
 
@@ -144,13 +173,35 @@ class RobotRegistry:
         type_dir = ROBOT_ROOT / robot_type
         instance_dir = ROBOT_ROOT / "instances" / robot_id
 
+        motor_backend = str(entry.get("motor_backend", "dynamixel"))
+        if motor_backend not in _VALID_MOTOR_BACKENDS:
+            raise ValueError(f"robot '{robot_id}' motor_backend={motor_backend!r} 미지원. 가능: {sorted(_VALID_MOTOR_BACKENDS)}")
+        iksolver = str(entry.get("iksolver", "pybullet"))
+        if iksolver not in _VALID_IKSOLVERS:
+            raise ValueError(f"robot '{robot_id}' iksolver={iksolver!r} 미지원. 가능: {sorted(_VALID_IKSOLVERS)}")
+        camera_backend = str(entry.get("camera_backend", "realsense"))
+        if camera_backend not in _VALID_CAMERA_BACKENDS:
+            raise ValueError(f"robot '{robot_id}' camera_backend={camera_backend!r} 미지원. 가능: {sorted(_VALID_CAMERA_BACKENDS)}")
+
+        hosts_raw = entry.get("hosts", {})
+        if not isinstance(hosts_raw, dict):
+            raise ValueError(
+                f"robot '{robot_id}' hosts 가 dict 아님 ({type(hosts_raw).__name__}). "
+                "예: hosts: {motor: dev, camera: dev}"
+            )
+        hosts = HostMap(
+            motor=str(hosts_raw.get("motor", "dev")),
+            camera=str(hosts_raw.get("camera", "dev")),
+        )
+
         return RobotConfig(
             robot_id=robot_id,
             robot_type=robot_type,
             enabled=bool(entry.get("enabled", True)),
-            host=str(entry.get("host", "dev")),
-            motor_backend=str(entry.get("motor_backend", "dynamixel")),
-            iksolver=str(entry.get("iksolver", "pybullet")),
+            hosts=hosts,
+            motor_backend=cast(MotorBackendName, motor_backend),
+            iksolver=cast(IKSolverName, iksolver),
+            camera_backend=cast(CameraBackendName, camera_backend),
             type_dir=type_dir,
             urdf_path=type_dir / "urdf" / f"{robot_type}.urdf",
             type_motors_yaml=type_dir / "motors.yaml",
@@ -199,17 +250,17 @@ class RobotRegistry:
     def _resolve(self, robot_id: str | None) -> str:
         return robot_id if robot_id is not None else self.default_robot_id()
 
-    def get_iksolver(self, robot_id: str | None = None):
-        """robot 의 IKSolver 인스턴스 반환. 캐시 (process 당 1 인스턴스 per robot).
-
-        cfg.iksolver = "pybullet" → CorrectedIKSolver(PybulletIKSolver(urdf), ...)
-        cfg.iksolver = "mujoco" → 미구현 (Phase 2+)
-        """
+    def _get_or_build(self, cache: dict, robot_id: str | None, builder) -> object:
+        """per-robot 인스턴스 캐시 lookup + miss 시 builder 호출. lock 보호."""
         rid = self._resolve(robot_id)
         with self._factory_lock:
-            if rid not in self._iksolvers:
-                self._iksolvers[rid] = self._build_iksolver(rid)
-            return self._iksolvers[rid]
+            if rid not in cache:
+                cache[rid] = builder(rid)
+            return cache[rid]
+
+    def get_iksolver(self, robot_id: str | None = None):
+        """cfg.iksolver = "pybullet" → CorrectedIKSolver(PybulletIKSolver(urdf), ...) / "mujoco" 미구현."""
+        return self._get_or_build(self._iksolvers, robot_id, self._build_iksolver)
 
     def _build_iksolver(self, robot_id: str):
         # Lazy import — RobotRegistry 가 kinematics 모듈에 의존 X
@@ -231,19 +282,11 @@ class RobotRegistry:
         raise ValueError(f"unknown iksolver: {cfg.iksolver!r} (robot_id={robot_id})")
 
     def get_motor_backend(self, robot_id: str | None = None):
-        """robot 의 MotorBackend 인스턴스 반환. 캐시.
-
-        cfg.motor_backend = "dynamixel" → DynamixelBackend(port, motors)
-        cfg.motor_backend = "feetech" → 미구현 (Phase 2+)
-        """
-        rid = self._resolve(robot_id)
-        with self._factory_lock:
-            if rid not in self._motor_backends:
-                self._motor_backends[rid] = self._build_motor_backend(rid)
-            return self._motor_backends[rid]
+        """cfg.motor_backend = "dynamixel" → DynamixelBackend(port, motors) / "feetech" 미구현."""
+        return self._get_or_build(self._motor_backends, robot_id, self._build_motor_backend)
 
     def _build_motor_backend(self, robot_id: str):
-        from modules.dynamixel.motor_config import load_motor_config
+        from modules.motor.motor_config import load_motor_config
         from modules.motor.adapters.dynamixel_backend import DynamixelBackend
 
         cfg = self.get(robot_id)
@@ -256,4 +299,29 @@ class RobotRegistry:
             )
         raise ValueError(
             f"unknown motor_backend: {cfg.motor_backend!r} (robot_id={robot_id})"
+        )
+
+    def get_camera_capture(self, robot_id: str | None = None):
+        """cfg.camera_backend = "realsense" → RealSenseCapture() / "opencv" / "mujoco" 미구현."""
+        return self._get_or_build(self._camera_captures, robot_id, self._build_camera_capture)
+
+    def _build_camera_capture(self, robot_id: str):
+        cfg = self.get(robot_id)
+        if cfg.camera_backend == "realsense":
+            # Lazy import — pyrealsense2 는 camera host 에서만 설치됨
+            from modules.camera.adapters.realsense import RealSenseCapture
+
+            return RealSenseCapture()
+        if cfg.camera_backend == "opencv":
+            raise NotImplementedError(
+                f"opencv CameraCapture — Phase 2 (omx_f UVC, "
+                f"distributed_topology.md §1) (robot_id={robot_id})"
+            )
+        if cfg.camera_backend == "mujoco":
+            raise NotImplementedError(
+                f"mujoco CameraCapture — Track C sim (random_palletizing.md) "
+                f"(robot_id={robot_id})"
+            )
+        raise ValueError(
+            f"unknown camera_backend: {cfg.camera_backend!r} (robot_id={robot_id})"
         )

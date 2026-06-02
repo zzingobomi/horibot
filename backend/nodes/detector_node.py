@@ -13,7 +13,7 @@ from modules.calibration.loader import load_calibration
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
 from modules.detector.grounded_detector import GroundedDetector
 from modules.detector.yolo_detector import YoloDetector
-from modules.dynamixel.motor_config import MotorConfig, load_motor_config
+from modules.motor.motor_config import MotorConfig, load_motor_config
 
 
 logger = logging.getLogger(__name__)

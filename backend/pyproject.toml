@@ -45,6 +45,7 @@ pc = [
     # Grounding DINO Swin-B (open-vocabulary detection).
     # v5 는 AutoModelForZeroShotObjectDetection 제거 → 4.x 로 핀.
     "transformers>=4.45.0,<5",
+    "accelerate>=0.34.0",
     "pillow>=10.0.0",
     # CUDA 13 빌드 — host nvidia driver(13.2)와 매치. cu130 index 에서 받음
     # (tool.uv.sources 참고). transitive 의존성으로 끌려오면 source 매핑이

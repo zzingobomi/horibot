@@ -6,7 +6,7 @@ export interface JointAngle {
   degree: number;
 }
 
-const ROBOT_POSES_URL = `${BASE_URL}/robot/config/robot_poses.yaml`;
+const ROBOT_POSES_URL = `${BASE_URL}/robot/instances/omx_f_0/robot_poses.yaml`;
 
 let cache: Record<string, JointAngle[]> | null = null;
 

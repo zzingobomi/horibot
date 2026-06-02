@@ -47,10 +47,10 @@ export function RobotModel({
       omx_description: `${BASE_URL}/robot`,
       omx_f: `${BASE_URL}/robot`,
     };
-    loader.workingPath = `${BASE_URL}/robot/urdf/omx_f/`;
+    loader.workingPath = `${BASE_URL}/robot/omx_f/urdf/`;
 
     loader.load(
-      `${BASE_URL}/robot/urdf/omx_f/omx_f.urdf`,
+      `${BASE_URL}/robot/omx_f/urdf/omx_f.urdf`,
       (robot: URDFRobot) => {
         if (cancelled) return;
 

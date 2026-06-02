@@ -6,6 +6,21 @@ from core.base_node import BaseNode
 from core.topic_map import Topic, Service
 from core.units import raw_to_deg
 from core.common import GRIPPER_ID
+from core.messages.base import EmptyData, ServiceRequest, ServiceResponse
+from core.messages.motor import (
+    MotorCmd,
+    MotorConfigItem,
+    MotorEnableReq,
+    MotorEnableRes,
+    MotorGetConfigRes,
+    MotorGripperReq,
+    MotorJoint,
+    MotorJointState,
+    MotorLimit,
+    MotorRebootReq,
+    MotorSetProfileAllReq,
+    MotorSetProfileReq,
+)
 from modules.motor.motor_config import load_motor_config
 from modules.motor.adapters.dynamixel_backend import DynamixelBackend
 from modules.motor.backend import MotorCommError
@@ -40,14 +55,31 @@ class MotorNode(BaseNode):
 
         self._state_thread: threading.Thread | None = None
 
-        self.create_subscriber(Topic.MOTOR_CMD_JOINT, self._on_cmd_joint)
-        self.create_service(Service.MOTOR_ENABLE, self._srv_enable)
-        self.create_service(Service.MOTOR_REBOOT, self._srv_reboot)
-        self.create_service(Service.MOTOR_SET_PROFILE, self._srv_set_profile)
-        self.create_service(Service.MOTOR_SET_PROFILE_ALL,
-                            self._srv_set_profile_all)
-        self.create_service(Service.MOTOR_GET_CONFIG, self._srv_get_config)
-        self.create_service(Service.MOTOR_GRIPPER, self._srv_gripper)
+        self.create_subscriber(Topic.MOTOR_CMD_JOINT, MotorCmd, self._on_cmd_joint)
+        self.create_service(
+            Service.MOTOR_ENABLE, MotorEnableReq, MotorEnableRes, self._srv_enable
+        )
+        self.create_service(
+            Service.MOTOR_REBOOT, MotorRebootReq, EmptyData, self._srv_reboot
+        )
+        self.create_service(
+            Service.MOTOR_SET_PROFILE,
+            MotorSetProfileReq,
+            EmptyData,
+            self._srv_set_profile,
+        )
+        self.create_service(
+            Service.MOTOR_SET_PROFILE_ALL,
+            MotorSetProfileAllReq,
+            EmptyData,
+            self._srv_set_profile_all,
+        )
+        self.create_service(
+            Service.MOTOR_GET_CONFIG, EmptyData, MotorGetConfigRes, self._srv_get_config
+        )
+        self.create_service(
+            Service.MOTOR_GRIPPER, MotorGripperReq, EmptyData, self._srv_gripper
+        )
 
     # ─── Lifecycle ───────────────────────────────────────────
 
@@ -126,45 +158,37 @@ class MotorNode(BaseNode):
         try:
             positions = self.driver.get_present_positions()
             loads = self.driver.get_present_loads()
-            joints = []
+            joints: list[MotorJoint] = []
             for cfg in self.motor_cfgs:
                 raw = positions.get(cfg.id)
                 if raw is None:
                     logger.warning(f"모터 {cfg.id}({cfg.name}) 위치 읽기 실패")
                     continue
                 joints.append(
-                    {
-                        "id": cfg.id,
-                        "name": cfg.name,
-                        "position": raw,
-                        "degree": raw_to_deg(raw),
-                        "velocity": 0.0,
-                        "torque": 0.0,
-                        "load": loads.get(cfg.id, 0),
-                    }
+                    MotorJoint(
+                        id=cfg.id,
+                        name=cfg.name,
+                        position=raw,
+                        degree=raw_to_deg(raw),
+                        velocity=0.0,
+                        torque=0.0,
+                        load=loads.get(cfg.id, 0),
+                    )
                 )
             self.publish(
                 Topic.MOTOR_STATE_JOINT,
-                {
-                    "timestamp": time.time(),
-                    "joints": joints,
-                },
+                MotorJointState(timestamp=time.time(), joints=joints),
             )
         except Exception as e:
             logger.error(f"상태 발행 오류: {e}")
 
     # ─── Subscribers ─────────────────────────────────────────
 
-    def _on_cmd_joint(self, data: dict) -> None:
+    def _on_cmd_joint(self, cmd: MotorCmd) -> None:
         if not self.connected:
             return
         try:
-            joints = data.get("joints", [])
-            positions = {
-                j["id"]: int(j["position"])
-                for j in joints
-                if "id" in j and "position" in j
-            }
+            positions = {j.id: int(j.position) for j in cmd.joints}
             if positions:
                 self.driver.set_goal_positions_sync(positions)
         except Exception as e:
@@ -172,8 +196,10 @@ class MotorNode(BaseNode):
 
     # ─── Services ────────────────────────────────────────────
 
-    def _srv_enable(self, req: dict) -> dict:
-        enable: bool = req.get("data", {}).get("enable", True)
+    def _srv_enable(
+        self, req: ServiceRequest[MotorEnableReq]
+    ) -> ServiceResponse[MotorEnableRes]:
+        enable = req.data.enable
         try:
             if enable:
                 self.driver.torque_enable_all()
@@ -181,12 +207,16 @@ class MotorNode(BaseNode):
                 self.driver.torque_disable_all()
             self.torque_enabled = enable
             self.log("info", f"토크 {'ON' if enable else 'OFF'}")
-            return {"success": True, "message": "ok", "data": {"enable": enable}}
+            return ServiceResponse(
+                success=True, message="ok", data=MotorEnableRes(enable=enable)
+            )
         except Exception as e:
-            return {"success": False, "message": str(e), "data": {}}
+            return ServiceResponse(success=False, message=str(e), data=None)
 
-    def _srv_reboot(self, req: dict) -> dict:
-        motor_id: int | None = req.get("data", {}).get("id")
+    def _srv_reboot(
+        self, req: ServiceRequest[MotorRebootReq]
+    ) -> ServiceResponse[EmptyData]:
+        motor_id = req.data.id
         try:
             if motor_id:
                 self.driver.reboot(motor_id)
@@ -197,79 +227,71 @@ class MotorNode(BaseNode):
             # 부드러운 동작 default 복원.
             if motor_id is None or motor_id == GRIPPER_ID:
                 self._apply_gripper_smooth_profile()
-            return {"success": True, "message": "ok", "data": {}}
+            return ServiceResponse(success=True, message="ok", data=EmptyData())
         except Exception as e:
-            return {"success": False, "message": str(e), "data": {}}
+            return ServiceResponse(success=False, message=str(e), data=None)
 
-    def _srv_set_profile(self, req: dict) -> dict:
-        data = req.get("data", {})
-        motor_id = data.get("id")
-        velocity = data.get("velocity")
-        acceleration = data.get("acceleration")
+    def _srv_set_profile(
+        self, req: ServiceRequest[MotorSetProfileReq]
+    ) -> ServiceResponse[EmptyData]:
+        d = req.data
         try:
-            if motor_id and velocity is not None:
-                self.driver.set_profile_velocity(motor_id, int(velocity))
-            if motor_id and acceleration is not None:
-                self.driver.set_profile_acceleration(
-                    motor_id, int(acceleration))
-            return {"success": True, "message": "ok", "data": {}}
+            if d.velocity is not None:
+                self.driver.set_profile_velocity(d.id, int(d.velocity))
+            if d.acceleration is not None:
+                self.driver.set_profile_acceleration(d.id, int(d.acceleration))
+            return ServiceResponse(success=True, message="ok", data=EmptyData())
         except Exception as e:
-            return {"success": False, "message": str(e), "data": {}}
+            return ServiceResponse(success=False, message=str(e), data=None)
 
-    def _srv_set_profile_all(self, req: dict) -> dict:
-        data = req.get("data", {})
-        target_ids = data.get("ids", self.driver.motor_ids)
-        velocity = int(data.get("velocity", 0))
-        acceleration = int(data.get("acceleration", 0))
-
+    def _srv_set_profile_all(
+        self, req: ServiceRequest[MotorSetProfileAllReq]
+    ) -> ServiceResponse[EmptyData]:
+        d = req.data
+        target_ids = d.ids if d.ids is not None else list(self.driver.motor_ids)
         try:
-            vel_map = {mid: velocity for mid in target_ids}
-            acc_map = {mid: acceleration for mid in target_ids}
+            vel_map = {mid: d.velocity for mid in target_ids}
+            acc_map = {mid: d.acceleration for mid in target_ids}
             self.driver.set_profile_accelerations_sync(acc_map)
             self.driver.set_profile_velocities_sync(vel_map)
-            return {"success": True, "message": "ok", "data": {}}
+            return ServiceResponse(success=True, message="ok", data=EmptyData())
         except Exception as e:
-            return {"success": False, "message": str(e), "data": {}}
+            return ServiceResponse(success=False, message=str(e), data=None)
 
-    def _srv_get_config(self, req: dict) -> dict:
-        configs = [
-            {
-                "id": cfg.id,
-                "name": cfg.name,
-                "model": cfg.model,
-                "mode": cfg.mode,
-                "home": cfg.home,
-                "limit": {"min": cfg.limit_min, "max": cfg.limit_max},
-            }
+    def _srv_get_config(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[MotorGetConfigRes]:
+        motors = [
+            MotorConfigItem(
+                id=cfg.id,
+                name=cfg.name,
+                model=cfg.model,
+                mode=cfg.mode,
+                home=cfg.home,
+                limit=MotorLimit(min=cfg.limit_min, max=cfg.limit_max),
+            )
             for cfg in self.motor_cfgs
         ]
-        return {
-            "success": True,
-            "message": "ok",
-            "data": {"motors": configs, "torque_enabled": self.torque_enabled},
-        }
+        return ServiceResponse(
+            success=True,
+            message="ok",
+            data=MotorGetConfigRes(
+                motors=motors, torque_enabled=self.torque_enabled
+            ),
+        )
 
-    def _srv_gripper(self, req: dict) -> dict:
-        data = req.get("data", {})
-        action = data.get("action", "open")
-        current = int(data.get("current", GRIPPER_CURRENT_DEFAULT))
-        # 객체별 셋업 (self-play 의 paper_cup vs cube 등) 에서 raw position
-        # override 가능. None 이면 default (open=2600 / close=1800).
-        position_override = data.get("position")
-
-        if action not in ("open", "close"):
-            return {
-                "success": False,
-                "message": f"action은 open/close만 허용: {action}",
-                "data": {},
-            }
-
-        if position_override is not None:
-            raw = int(position_override)
+    def _srv_gripper(
+        self, req: ServiceRequest[MotorGripperReq]
+    ) -> ServiceResponse[EmptyData]:
+        d = req.data
+        # 객체별 셋업 (paper_cup vs cube 등) 에서 raw position override 가능.
+        # None 이면 default (open=2600 / close=1800).
+        if d.position is not None:
+            raw = int(d.position)
         else:
-            raw = GRIPPER_OPEN_RAW if action == "open" else GRIPPER_CLOSE_RAW
+            raw = GRIPPER_OPEN_RAW if d.action == "open" else GRIPPER_CLOSE_RAW
 
-        self.driver.set_goal_current(GRIPPER_ID, current)
+        self.driver.set_goal_current(GRIPPER_ID, int(d.current))
         self.driver.set_goal_position(GRIPPER_ID, raw)
 
-        return {"success": True, "message": "ok", "data": {}}
+        return ServiceResponse(success=True, message="ok", data=EmptyData())

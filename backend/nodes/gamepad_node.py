@@ -16,6 +16,12 @@ import logging
 from core.common import GRIPPER_ID
 from core.base_node import BaseNode
 from core.topic_map import Service
+from core.messages.base import EmptyData
+from core.messages.motor import (
+    MotorEnableReq,
+    MotorEnableRes,
+    MotorGripperReq,
+)
 from modules.motor.motor_config import load_motor_config
 from modules.gamepad.driver import GamepadDriver, GamepadState
 from modules.gamepad import mapper as M
@@ -58,6 +64,8 @@ class ButtonRepeater:
             self._next_repeat = now + self._initial_delay
             return True
 
+        # press_time != None 이면 _next_repeat 도 같이 set 됐음 — 동기 set.
+        assert self._next_repeat is not None
         if now >= self._next_repeat:
             self._next_repeat = now + self._interval
             return True
@@ -156,14 +164,17 @@ class GamepadNode(BaseNode):
         # X: 토크 ON/OFF
         if M.BTN_X in pressed:
             self._torque_on = not self._torque_on
-            res = self.call_service(Service.MOTOR_ENABLE, {
-                                    "enable": self._torque_on})
-            if res.get("success"):
+            res = self.call_service(
+                Service.MOTOR_ENABLE,
+                MotorEnableReq(enable=self._torque_on),
+                MotorEnableRes,
+            )
+            if res.success:
                 self.log("info", f"토크 {'ON' if self._torque_on else 'OFF'}")
                 self._sync_tcp()
             else:
                 logger.warning(
-                    f"토크 {'ON' if self._torque_on else 'OFF'} 실패: {res.get('message')}")
+                    f"토크 {'ON' if self._torque_on else 'OFF'} 실패: {res.message}")
                 self._torque_on = not self._torque_on
 
         # Y: 홈 이동
@@ -224,6 +235,8 @@ class GamepadNode(BaseNode):
         if self._tcp_position is None:
             if not self._sync_tcp():
                 return
+        # _sync_tcp 가 True 면 self._tcp_position 채워짐 — pyright 보강용 assert.
+        assert self._tcp_position is not None
 
         target = [
             self._tcp_position[0] + dx,
@@ -266,12 +279,11 @@ class GamepadNode(BaseNode):
         self._gripper_open = not self._gripper_open
         res = self.call_service(
             Service.MOTOR_GRIPPER,
-            {
-                "action": "open" if self._gripper_open else "close",
-            },
+            MotorGripperReq(action="open" if self._gripper_open else "close"),
+            EmptyData,
         )
-        if res.get("success"):
+        if res.success:
             self.log("info", f"그리퍼 {'열기' if self._gripper_open else '닫기'}")
         else:
             self._gripper_open = not self._gripper_open  # 실패 시 롤백
-            logger.warning(f"그리퍼 실패: {res.get('message')}")
+            logger.warning(f"그리퍼 실패: {res.message}")

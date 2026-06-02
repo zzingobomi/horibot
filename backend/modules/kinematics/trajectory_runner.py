@@ -9,6 +9,7 @@ from ruckig import Ruckig, InputParameter, OutputParameter, Result
 from scipy.interpolate import CubicSpline
 
 from core.types import TrajStatus
+from .iksolver import Position3
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ _CART_HOLD_STEPS = 25
 PublishCmdFn = Callable[[list[float]], None]
 PublishStateFn = Callable[[str, float], None]
 SetProfileFn = Callable[[int, int], bool]
-MoveTcpFn = Callable[[list[float], list[float]], list[float] | None]
+MoveTcpFn = Callable[[Position3, list[float]], list[float] | None]
 
 # ═══════════════════════════════════════════════════════════════
 # Path 추상화 (Cartesian)
@@ -171,7 +172,7 @@ class TrajectoryRunner:
         return bool(self._thread and self._thread.is_alive())
 
     def stop(self) -> None:
-        if self.is_running:
+        if self._thread is not None and self._thread.is_alive():
             self._stop_ev.set()
             self._thread.join(timeout=2.0)
         self._thread = None
@@ -231,7 +232,8 @@ class TrajectoryRunner:
 
         def _ik_step(s: float) -> bool:
             nonlocal q_filt, last_raw
-            wp = path.position_at(s)
+            wp_list = path.position_at(s)
+            wp: Position3 = (wp_list[0], wp_list[1], wp_list[2])
             raw = self._move_tcp(wp, q_filt)
             if raw is None:
                 logger.warning(f"{label} IK 실패 | s={s*100:.1f}cm")

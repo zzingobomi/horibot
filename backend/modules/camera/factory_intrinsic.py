@@ -1,8 +1,12 @@
 import logging
 from pathlib import Path
+from typing import Any
 
 import numpy as np
-import pyrealsense2 as rs
+import pyrealsense2  # type: ignore[import-not-found]
+
+# stub 미흡 — pipeline / config / stream / format 동적 attribute 허용용 Any rebind.
+rs: Any = pyrealsense2
 
 logger = logging.getLogger(__name__)
 

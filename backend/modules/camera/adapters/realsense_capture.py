@@ -4,7 +4,11 @@ import time
 from typing import Any
 
 import numpy as np
-import pyrealsense2 as rs
+import pyrealsense2  # type: ignore[import-not-found]
+
+# pyrealsense2 stub 이 일부 attribute (pipeline / config / stream / format / align)
+# 만 노출. Any 로 rebind 해 동적 attribute 접근 허용 — 런타임은 정상.
+rs: Any = pyrealsense2
 
 logger = logging.getLogger(__name__)
 

@@ -24,9 +24,11 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from core.common import GRIPPER_ID, GRIPPER_SETTLE
+from core.messages.base import EmptyData
+from core.messages.motor import MotorGripperReq
 from core.robot_poses import load_pose
 from core.topic_map import Service
 from modules.task.schema import Detection, Position3, Slot, SlotOr
@@ -104,7 +106,7 @@ class MoveTCP(Step[None]):
     """
 
     target: SlotOr[Position3 | Detection]
-    offset: Position3 = Position3(0.0, 0.0, 0.0)
+    offset: Position3 = Position3(x=0.0, y=0.0, z=0.0)
 
     def execute(self, ctx: StepContext) -> None:
         resolved = ctx.resolve(self.target)
@@ -142,7 +144,7 @@ class Gripper(Step[None]):
     flag 로 유지.
     """
 
-    action: str = "open"  # "open" | "close"
+    action: Literal["open", "close"] = "open"
     current: int = 200  # mA, 파지력
     verify_grasp: bool = False
 
@@ -153,11 +155,12 @@ class Gripper(Step[None]):
         )
         res = ctx.call_service(
             Service.MOTOR_GRIPPER,
-            {"action": self.action, "current": self.current},
+            MotorGripperReq(action=self.action, current=self.current),
+            EmptyData,
         )
-        if not res.get("success"):
+        if not res.success:
             raise RuntimeError(
-                f"Gripper 서비스 실패: {res.get('message')} [{self.label}]"
+                f"Gripper 서비스 실패: {res.message} [{self.label}]"
             )
 
         time.sleep(GRIPPER_SETTLE)
@@ -290,7 +293,7 @@ class GraspPolicy(Step[Position3]):
             )
 
         grasp_z = det.base_z + det.height * self.grasp_ratio
-        out = Position3(det.position.x, det.position.y, grasp_z)
+        out = Position3(x=det.position.x, y=det.position.y, z=grasp_z)
         logger.info(
             "GraspPolicy base_z=%.3f height=%.3f → grasp_z=%.3f  [%s]",
             det.base_z, det.height, grasp_z, self.label,
@@ -314,7 +317,7 @@ class PlacePolicy(Step[Position3]):
 
         top_z = det.position.z
         place_z = top_z + self.drop_clearance
-        out = Position3(det.position.x, det.position.y, place_z)
+        out = Position3(x=det.position.x, y=det.position.y, z=place_z)
         logger.info(
             "PlacePolicy: top_z=%.3f → place_z=%.3f (clearance=%.3f)  [%s]",
             top_z, place_z, self.drop_clearance, self.label,

@@ -9,7 +9,7 @@ TARGET_CLASSES = {"cup", "bottle", "fork",
 
 class YoloDetector(BaseDetector):
     def __init__(self, model_path: str = "yolov8n.pt") -> None:
-        from ultralytics import YOLO
+        from ultralytics import YOLO  # type: ignore[reportPrivateImportUsage]
 
         self._model = YOLO(model_path)
 

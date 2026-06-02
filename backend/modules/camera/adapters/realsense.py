@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from core.realsense_capture import RealsenseCapture
+from modules.camera.adapters.realsense_capture import RealsenseCapture
 from modules.camera.capture import CameraIntrinsic, ColorFrame, DepthFrame
 
 

@@ -18,7 +18,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast, get_args
+from typing import Any, Literal, cast, get_args
 
 import yaml
 
@@ -301,8 +301,13 @@ class RobotRegistry:
             f"unknown motor_backend: {cfg.motor_backend!r} (robot_id={robot_id})"
         )
 
-    def get_camera_capture(self, robot_id: str | None = None):
-        """cfg.camera_backend = "realsense" → RealSenseCapture() / "opencv" / "mujoco" 미구현."""
+    def get_camera_capture(self, robot_id: str | None = None) -> Any:
+        """cfg.camera_backend = "realsense" → RealSenseCapture() / "opencv" / "mujoco" 미구현.
+
+        return 이 Any 인 이유: camera_node 는 현재 RealSenseCapture 의 legacy method
+        (`read` / `read_aligned` / `width` / ...) 를 사용 — CameraCapture Protocol 에
+        없음. camera_node Protocol 마이그레이션 완료 후 `-> CameraCapture` 로 좁힘.
+        """
         return self._get_or_build(self._camera_captures, robot_id, self._build_camera_capture)
 
     def _build_camera_capture(self, robot_id: str):

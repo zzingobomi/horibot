@@ -78,7 +78,7 @@ def _ensure_loaded() -> bool:
                 _MODEL_ID,
                 dtype=torch.float16 if _device == "cuda" else torch.float32,
                 low_cpu_mem_usage=False,
-            ).to(_device)
+            ).to(_device)  # type: ignore[arg-type]
             logger.info("LLM 모델 로드 완료")
             return True
         except Exception as exc:

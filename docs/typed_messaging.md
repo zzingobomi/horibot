@@ -149,18 +149,30 @@ frontend 도 typed 로 가져가려면 별도 작업 (Python schema → JSON Sch
 - [x] 결정 사항 합의 (위 4 개)
 - [x] 폴더 구조 합의
 - [x] 노드 5 개 코드 survey (motor / camera / motion / detector / task)
-- [ ] **다음: 모터 노드 vertical slice**
-  - `core/values.py` (Position3 등 promote, pydantic 변환)
-  - `core/service_envelope.py` (Generic envelope)
-  - `core/messages/motor.py` (MotorJointState, MotorCmd, MotorEnableData, etc.)
-  - `core/messages/system.py` (Heartbeat, Log)
-  - `core/base_node.py` (publish/subscribe/service 시그니처 typed)
-  - `nodes/motor_node.py` migrate
-  - pyright 통과 확인
+- [x] **모터 노드 vertical slice 완료** (2026-06-03)
+  - `core/values.py` (Position3/Quaternion/Pose6/Detection pydantic BaseModel 로 promote)
+  - `core/messages/base.py` 에 `ServiceRequest[T]` / `ServiceResponse[T]` / `EmptyData` 통합
+    (기존 multi_robot_architecture.md §7.6 의 `base.py` 가 이미 envelope 보유 — `core/service_envelope.py` 별도 파일 안 만들고 합침. plan 의 "core/service_envelope.py" 항목은 폐기)
+  - `core/messages/motor.py`, `core/messages/system.py` 새 schema
+  - `core/base_node.py` 에 typed `publish` / `create_subscriber(topic, ModelCls, cb)` / `create_service(key, ReqCls, ResCls, h)` / `call_service(key, ReqModel, ResCls)` 오버로드 추가 — legacy dict API 도 살아있어 다른 노드 영향 X
+  - `nodes/motor_node.py` 완전 typed (state/cmd publish/subscribe + 6 service handlers)
+  - 모터 service 호출자도 같이 typed: `motion_node._set_arm_profile`, `gamepad_node` 의 `MOTOR_ENABLE` / `MOTOR_GRIPPER`, `task/steps.py::Gripper`
+  - `modules/task/schema.py` 는 `core.values` 재export 로 호환 유지
+  - pyright 41 → 0 (다른 pre-existing 에러도 같이 정리 — pyrealsense2 Any rebind, gamepad None narrowing, MoveTcpFn signature, opencv `# type: ignore` 등)
+- [ ] **다음 슬라이스 가기 전: 폴더 구조 / 파일 네이밍 전체 검토**
+  - **계기**: 작업 중 `core/realsense_capture.py` 가 leftover (May 9 ca6cc04 의 raw SDK wrap, Jun 2 4365171 architecture 리팩토링에서 `modules/camera/adapters/realsense.py` 가 위에 추가됐는데 원본은 core 에 남음) — `pyrealsense2` import 가 `core/` 에 있다는 시점에 이상하다 알아챘어야. 옮긴 후 발견.
+  - **검토 항목**:
+    - `core/` 전체 — cross-domain infrastructure 만 있는가? hardware driver / 도메인 specific 파일 잔존?
+    - `modules/<domain>/` — adapter 패턴 일관성. motor 의 `dynamixel_driver.py` (raw SDK) + `dynamixel_backend.py` (Protocol impl) ↔ camera 의 `realsense_capture.py` (raw SDK) + `realsense.py` (Protocol impl). 네이밍 비대칭 (`*_driver` / `*_backend` vs `*_capture` / 무 suffix). 통일 후보:
+      - `realsense_capture.py::RealsenseCapture` → `realsense_driver.py::RealsenseDriver`
+      - `realsense.py::RealSenseCapture` → `realsense_backend.py::RealsenseBackend`
+      - 단 `CameraCapture` Protocol 이름은 그대로 (Capture = 도메인 어휘)
+    - 다른 도메인 (`detector`, `pointcloud`, `calibration`, `task`, `motion`) 도 동일 패턴 검토
+  - **언제**: 다음 노드 (camera or motion) vertical slice 들어가기 직전. type 만들면서 같이 보면 자연.
 
 ## 작업 재개 시 첫 번째 prompt 추천
 
-> typed_messaging.md 의 plan 대로 모터 노드 vertical slice 시작해줘. base_node API + core/values.py + core/service_envelope.py + core/messages/motor.py + core/messages/system.py + motor_node.py 까지. pyright 통과까지.
+> typed_messaging.md 보고 폴더 구조 / 네이밍 검토부터 해줘. 그 다음 다음 노드 슬라이스.
 
 ## 미해결 / 결정 필요한 자잘한 거
 

@@ -63,8 +63,10 @@ class IntrinsicCalibration:
             )
             return None
 
+        # cv2.calibrateCamera 는 cameraMatrix/distCoeffs 가 None 일 때 내부 할당
+        # — opencv-python stub 은 MatLike 강제라 type: ignore 필요.
         rms, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
-            self.obj_points, self.img_points, image_size, None, None
+            self.obj_points, self.img_points, image_size, None, None  # type: ignore[arg-type,call-overload]
         )
 
         self.result = IntrinsicResult(

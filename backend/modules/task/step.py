@@ -21,8 +21,11 @@ import threading
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, overload
 
+from pydantic import BaseModel
+
+from core.messages.base import ServiceResponse
 from core.types import TrajStatus
 from modules.task.schema import Slot
 
@@ -31,6 +34,10 @@ if TYPE_CHECKING:
     from core.joint_state_cache import JointStateCache
     from modules.calibration.loader import CalibrationData
     from modules.motor.motor_config import MotorConfig
+
+
+ReqT = TypeVar("ReqT", bound=BaseModel)
+ResT = TypeVar("ResT", bound=BaseModel)
 
 
 logger = logging.getLogger(__name__)
@@ -296,10 +303,23 @@ class StepContext:
 
     # ─── Convenience: service call / publish — base_node passthrough ──
 
+    @overload
     def call_service(
         self, key: str, data: dict, timeout: float = 5.0
-    ) -> dict:
-        return self.node.call_service(key, data, timeout)
+    ) -> dict: ...
+
+    @overload
+    def call_service(
+        self,
+        key: str,
+        data: BaseModel,
+        res_cls: type[ResT],
+        timeout: float = 5.0,
+    ) -> "ServiceResponse[ResT]": ...
+
+    def call_service(self, key, data, *args, **kwargs):  # type: ignore[no-untyped-def]
+        """BaseNode.call_service 의 passthrough — dict / typed 두 형태 모두 지원."""
+        return self.node.call_service(key, data, *args, **kwargs)
 
     def call_motion(
         self, key: str, data: dict, timeout: float = 5.0

@@ -67,7 +67,7 @@ def create_pick_and_place_task(
         grasp,
         MoveTCP(
             target=grasp.out,
-            offset=Position3(0.0, 0.0, PRE_GRASP_DZ),
+            offset=Position3(x=0.0, y=0.0, z=PRE_GRASP_DZ),
             label="pre_grasp",
         ),
         MoveTCP(target=grasp.out, label="grasp"),
@@ -75,7 +75,7 @@ def create_pick_and_place_task(
         Wait(duration_sec=0.5, label="grip_settle"),
         MoveTCP(
             target=grasp.out,
-            offset=Position3(0.0, 0.0, LIFT_DZ),
+            offset=Position3(x=0.0, y=0.0, z=LIFT_DZ),
             label="lift",
         ),
         VerifyGrasp(label="verify_after_lift"),
@@ -87,7 +87,7 @@ def create_pick_and_place_task(
             place_xyz,
             MoveTCP(
                 target=place_xyz.out,
-                offset=Position3(0.0, 0.0, PLACE_HOVER_DZ),
+                offset=Position3(x=0.0, y=0.0, z=PLACE_HOVER_DZ),
                 label="pre_place",
             ),
             MoveTCP(target=place_xyz.out, label="place"),
@@ -96,7 +96,7 @@ def create_pick_and_place_task(
             Wait(duration_sec=0.3, label="release_settle"),
             MoveTCP(
                 target=place_xyz.out,
-                offset=Position3(0.0, 0.0, PLACE_HOVER_DZ),
+                offset=Position3(x=0.0, y=0.0, z=PLACE_HOVER_DZ),
                 label="post_place_retreat",
             ),
         ]

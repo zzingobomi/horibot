@@ -20,6 +20,8 @@ from modules.kinematics.motion_commands import (
     MoveLCommand,
     MovePCommand
 )
+from core.messages.base import EmptyData
+from core.messages.motor import MotorSetProfileAllReq
 
 logger = logging.getLogger(__name__)
 
@@ -257,10 +259,11 @@ class MotionNode(BaseNode):
     def _set_arm_profile(self, velocity: int, acceleration: int) -> bool:
         res = self.call_service(
             Service.MOTOR_SET_PROFILE_ALL,
-            {
-                "ids": self._arm_ids,
-                "velocity": velocity,
-                "acceleration": acceleration
-            },
+            MotorSetProfileAllReq(
+                ids=self._arm_ids,
+                velocity=velocity,
+                acceleration=acceleration,
+            ),
+            EmptyData,
         )
-        return res.get("success", False)
+        return res.success

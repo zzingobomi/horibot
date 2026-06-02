@@ -91,7 +91,8 @@ class GamepadDriver:
             self._prev_buttons = cur
 
             if self._joystick.get_numhats() > 0:
-                state.hat = self._joystick.get_hat(M.HAT_INDEX)
+                hat = self._joystick.get_hat(M.HAT_INDEX)
+                state.hat = (int(hat[0]), int(hat[1]))
 
         except Exception as e:
             logger.warning(f"조이스틱 읽기 오류: {e}")
@@ -130,6 +131,8 @@ class GamepadDriver:
             self._prev_buttons = {}
 
     def _get_axis(self, index: int) -> float:
+        if self._joystick is None:
+            return 0.0
         try:
             if index < self._joystick.get_numaxes():
                 return float(self._joystick.get_axis(index))

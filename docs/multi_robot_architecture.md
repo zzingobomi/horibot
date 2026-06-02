@@ -521,8 +521,8 @@ class CameraCapture(Protocol):
 | Adapter | Source | Phase |
 |---|---|---|
 | `RealSenseCapture(width, height, fps)` | `pyrealsense2` (현 [`RealsenseCapture`](../backend/core/realsense_capture.py) refactor) | Phase 1 |
+| `OpenCVCapture(device_id)` | `cv2.VideoCapture` — depth 없음 (color only) | Phase 2 — `omx_f_0` UVC 카메라용 (§16 카메라 배치 변경) |
 | `MujocoCapture(model, camera_name)` | MuJoCo sim 의 가상 카메라 | Track C 도입 시 (Phase 2+) |
-| `OpenCVCapture(device_id)` | `cv2.VideoCapture` — depth 없음 (color only) | 필요 시 추가 |
 
 **기존 코드와의 mapping:**
 
@@ -1378,7 +1378,7 @@ so101_6dof_plan §6, §7 + Phase 1 에서 deferred 된 multi-robot 운영 작업
 7. ~~**Typed payload schema 옵션** (§7.2)~~ — ✅ **결정: Pydantic v2** (Step DSL dataclass 연속성 유지) — §7.2
 8. ~~**Schema codegen 인프라** (§7.3)~~ — ✅ **결정: openapi-typescript codegen** (bridge `/openapi.json` → `frontend/src/api/generated/types.ts`) — §7.3
 9. **MuJoCo IK adapter 도입 시점** — Phase 1 안에 / Phase 2 / Phase 3 / Track C 작동 후
-10. **분산 토폴로지** — 모터 Pi 2대 vs 1대로 통합 (USB 대역폭 / latency tradeoff)
+10. ~~**분산 토폴로지** — 모터 Pi 2대 vs 1대로 통합 (USB 대역폭 / latency tradeoff)~~ — ✅ **잠정 결정** (Phase 2 진입 전): Pi 3대 (`hori1/2/3`) + PC 구성. so101 D405 양도 (omx_f 는 UVC 카메라). [distributed_topology.md](distributed_topology.md) 참조
 11. **Frontend dock view layout** (§11) — 두 robot panel 좌우 배치 / 탭 / 자유 dock
 12. **Cooperation config** (§4.3 `robots.yaml`) 의 workspace_overlap 표현 — bounding box / polygon / 격자
 

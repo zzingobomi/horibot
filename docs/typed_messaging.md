@@ -167,6 +167,23 @@ frontend 도 typed 로 가져가려면 별도 작업 (Python schema → JSON Sch
   - top-level (4 파일) — `values.py`, `units.py`, `common.py`, `types.py` (도메인-중립 primitives + `TrajStatus` motion 슬라이스 때 흡수 후보)
   - `gripper_setup.py` 는 task 슬라이스 때 `modules/task/` 로 이전 후보 (지금 commit 안 옮김)
   - import 34 파일 일괄 갱신 (`from core.X` → `from core.<sub>.X`). docs / yaml path 링크도 같이 갱신. pyright 0
+- [x] **Motion 노드 vertical slice 완료** (2026-06-03)
+  - `core/transport/messages/motion.py` 새 schema — service 7개 (MOTION_GET_TCP / MOVE_TCP / MOVE_J / MOVE_L / MOVE_C / MOVE_P / STOP) + publish 1개 (MOTION_STATE_TRAJ → `MotionTrajState`)
+  - `TrajStatus` Enum 을 `core/types.py` 에서 `core/transport/messages/motion.py` 로 흡수 (core reorg 후속), 빈 `types.py` 삭제
+  - `nodes/motion_node.py` typed:
+    - publish 2개: `MotionTrajState` (traj state) + `MotorCmd` (motor 슬라이스 schema 재사용 — `_publish_cmd` 도 dict → typed)
+    - service 핸들러 7개 모두 `ServiceRequest[X] → ServiceResponse[Y]`
+    - `_cartesian_handler_factory` / `_make_handler` 내부: cmd 의 dict API 와 호환을 위해 `{"data": req.data.model_dump()}` envelope wrap (typed_messaging.md §미해결 #4 결정 — `MotionCommand` 내부 안 건드림)
+  - `modules/kinematics/trajectory_runner.py` 의 `PublishStateFn` 타입을 `Callable[[str, float], None]` → `Callable[[TrajStatus, float], None]` 좁힘
+  - `modules/task/step.py`:
+    - `call_motion(key, data: BaseModel, timeout)` 으로 시그니처 변경 — motion service 응답 data 가 모두 `EmptyData` 라 res_cls 고정
+    - `on_traj_state(state: MotionTrajState)` typed
+  - `modules/task/task_runner.py` 의 `MOTION_STATE_TRAJ` subscribe 도 typed
+  - caller typed:
+    - `modules/task/steps.py`: MoveJByName / MoveTCP — `MoveJReq(joints=[JointDegree(...)])`, `MoveLReq(position=...)`
+    - `nodes/gamepad_node.py`: `_sync_tcp`/`_move_tcp_delta`/`_go_home` — `MotionTcpPose`/`MoveTcpReq`/`MoveJReq`
+    - `nodes/detector_node.py`: `_handle_detect` / `_handle_grounded_detect` 의 `MOTION_GET_TCP` 호출 (2자리) — `MotionTcpPose` typed response
+  - pyright 0
 - [x] **카메라 노드 vertical slice 완료** (2026-06-03)
   - `core/messages/camera.py` 새 schema — `CameraStatus` (state publish) / `CameraSetDepthStreamReq` / `CameraSetDepthStreamRes`
   - `nodes/camera_node.py` typed — `_publish_status` → `CameraStatus`, `_srv_set_depth_stream` → `ServiceRequest[CameraSetDepthStreamReq] → ServiceResponse[CameraSetDepthStreamRes]`

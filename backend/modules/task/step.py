@@ -25,12 +25,13 @@ from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, overload
 
 from pydantic import BaseModel
 
-from core.transport.messages.base import ServiceResponse
-from core.types import TrajStatus
+from core.transport.messages.base import EmptyData, ServiceResponse
+from core.transport.messages.motion import TrajStatus
 from modules.task.schema import Slot
 
 if TYPE_CHECKING:
     from core.transport.base_node import BaseNode
+    from core.transport.messages.motion import MotionTrajState
     from core.cache.joint_state_cache import JointStateCache
     from modules.calibration.loader import CalibrationData
     from modules.motor.motor_config import MotorConfig
@@ -284,11 +285,10 @@ class StepContext:
 
     # ─── Motion trajectory wait — step_executor 의 _on_traj_state 패턴 ─
 
-    def on_traj_state(self, data: dict) -> None:
+    def on_traj_state(self, state: "MotionTrajState") -> None:
         """MOTION_STATE_TRAJ subscriber callback. runner 가 셋업."""
-        status = data.get("status", "")
-        self._traj_status = status
-        if status in (TrajStatus.DONE, TrajStatus.FAILED, TrajStatus.STOPPED):
+        self._traj_status = state.status
+        if state.status in (TrajStatus.DONE, TrajStatus.FAILED, TrajStatus.STOPPED):
             self._traj_event.set()
 
     def start_traj(self) -> None:
@@ -324,17 +324,19 @@ class StepContext:
         return self.node.call_service(key, data, *args, **kwargs)
 
     def call_motion(
-        self, key: str, data: dict, timeout: float = 5.0
+        self, key: str, data: BaseModel, timeout: float = 5.0
     ) -> bool:
         """motion 서비스 호출 + trajectory 완료 대기 — 거의 모든 move 의 공통 패턴.
 
         성공 (서비스 OK + 궤적 DONE) 이면 True. 사용자 step 의 execute 가
         흔히 쓸 헬퍼. trajectory 안 따르는 service (Gripper 등) 는 그냥
         call_service.
+
+        motion 서비스는 모두 응답 data 가 EmptyData 라 res_cls 고정.
         """
         self.start_traj()
-        res = self.call_service(key, data, timeout)
-        if not res.get("success"):
-            logger.error("motion 서비스 실패 (%s): %s", key, res.get("message"))
+        res = self.call_service(key, data, EmptyData, timeout)
+        if not res.success:
+            logger.error("motion 서비스 실패 (%s): %s", key, res.message)
             return False
         return self.wait_for_traj()

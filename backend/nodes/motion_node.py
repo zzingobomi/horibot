@@ -1,7 +1,6 @@
 import time
 import logging
 import numpy as np
-from ruckig import Ruckig, InputParameter, OutputParameter, Result
 
 from core.transport.base_node import BaseNode
 from core.transport.topic_map import Service, Topic
@@ -20,8 +19,19 @@ from modules.kinematics.motion_commands import (
     MoveLCommand,
     MovePCommand
 )
-from core.transport.messages.base import EmptyData
-from core.transport.messages.motor import MotorSetProfileAllReq
+from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
+from core.transport.messages.motor import MotorCmd, MotorCmdJoint, MotorSetProfileAllReq
+from core.transport.messages.motion import (
+    MotionTcpPose,
+    MotionTrajState,
+    MoveCReq,
+    MoveJReq,
+    MoveLReq,
+    MovePReq,
+    MoveTcpReq,
+    TrajStatus,
+)
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -63,18 +73,40 @@ class MotionNode(BaseNode):
             move_tcp=self._motion.move_tcp,
         )
 
-        self.create_service(Service.MOTION_GET_TCP,  self._srv_get_tcp)
-        self.create_service(Service.MOTION_MOVE_TCP, self._srv_move_tcp)
-        self.create_service(Service.MOTION_MOVE_J,
-                            self._make_handler(MoveJCommand(self._arm_cfgs)))
+        self.create_service(
+            Service.MOTION_GET_TCP, EmptyData, MotionTcpPose, self._srv_get_tcp
+        )
+        self.create_service(
+            Service.MOTION_MOVE_TCP, MoveTcpReq, EmptyData, self._srv_move_tcp
+        )
+        self.create_service(
+            Service.MOTION_MOVE_J,
+            MoveJReq,
+            EmptyData,
+            self._make_handler(MoveJCommand(self._arm_cfgs)),
+        )
         # MoveL/C/P 는 cartesian 좌표 입출력 → tool_offset 변환 적용
-        self.create_service(Service.MOTION_MOVE_L,
-                            self._cartesian_handler_factory(MoveLCommand()))
-        self.create_service(Service.MOTION_MOVE_C,
-                            self._cartesian_handler_factory(MoveCCommand()))
-        self.create_service(Service.MOTION_MOVE_P,
-                            self._cartesian_handler_factory(MovePCommand()))
-        self.create_service(Service.MOTION_STOP,     self._srv_stop)
+        self.create_service(
+            Service.MOTION_MOVE_L,
+            MoveLReq,
+            EmptyData,
+            self._cartesian_handler_factory(MoveLCommand()),
+        )
+        self.create_service(
+            Service.MOTION_MOVE_C,
+            MoveCReq,
+            EmptyData,
+            self._cartesian_handler_factory(MoveCCommand()),
+        )
+        self.create_service(
+            Service.MOTION_MOVE_P,
+            MovePReq,
+            EmptyData,
+            self._cartesian_handler_factory(MovePCommand()),
+        )
+        self.create_service(
+            Service.MOTION_STOP, EmptyData, EmptyData, self._srv_stop
+        )
 
     # ─── Tool offset 변환 유틸 ─────────────────────────────────
     #
@@ -96,86 +128,114 @@ class MotionNode(BaseNode):
     def _cartesian_handler_factory(self, cmd: MotionCommand):
         """MoveL / MoveC / MoveP — cartesian 좌표 입출력. tool_offset 변환 적용.
 
-        입력 (req["data"]["position"/"via"/"end"/"waypoints"]) = user frame.
+        입력 (req.data.position / via / end / waypoints) = user frame.
         내부 cmd.execute 에는 URDF frame 으로 변환해 전달 (= 입력 - tool_offset_base).
         시작점 tcp_pos 도 URDF frame (solver.fk 결과 그대로) 사용 → start/end 일관.
+
+        cmd 내부는 dict API 유지 (typed_messaging.md §미해결 #4) — handler 가
+        `{"data": {...}}` envelope dict 로 wrap 해 cmd 에 넘김.
         """
-        def handler(req: dict) -> dict:
-            error = cmd.validate(req)
+        def handler(
+            req: ServiceRequest[BaseModel],
+        ) -> ServiceResponse[EmptyData]:
+            # cmd 내부 dict API 와 호환: envelope dict 재구성
+            data_dict = req.data.model_dump()
+            req_dict = {"data": data_dict}
+
+            error = cmd.validate(req_dict)
             if error:
-                return {"success": False, "message": error, "data": {}}
+                return ServiceResponse(success=False, message=error, data=None)
 
             angles = self._cache.get_joint_angles_rad(self._arm_cfgs)
             if angles is None:
-                return {"success": False, "message": "관절 상태 수신 전", "data": {}}
+                return ServiceResponse(
+                    success=False, message="관절 상태 수신 전", data=None
+                )
 
             try:
                 tcp_pos_urdf = list(self._motion.get_tcp_pose(angles).position)
                 tool_base = self._tool_offset_base(angles)
             except Exception as e:
-                return {"success": False, "message": f"FK 오류: {e}", "data": {}}
+                return ServiceResponse(
+                    success=False, message=f"FK 오류: {e}", data=None
+                )
 
             # user → URDF 변환 (in-place 수정 피하려고 dict copy)
-            data = dict(req.get("data", {}) or {})
-            user_pos_before = data.get("position")
+            user_pos_before = data_dict.get("position")
             for key in ("position", "via", "end"):
-                if key in data and data[key] is not None:
-                    data[key] = (np.asarray(data[key], dtype=float) - tool_base).tolist()
-            if "waypoints" in data and data["waypoints"] is not None:
-                data["waypoints"] = [
+                if key in data_dict and data_dict[key] is not None:
+                    data_dict[key] = (
+                        np.asarray(data_dict[key], dtype=float) - tool_base
+                    ).tolist()
+            if "waypoints" in data_dict and data_dict["waypoints"] is not None:
+                data_dict["waypoints"] = [
                     (np.asarray(wp, dtype=float) - tool_base).tolist()
-                    for wp in data["waypoints"]
+                    for wp in data_dict["waypoints"]
                 ]
-            req_urdf = {**req, "data": data}
+            req_urdf = {"data": data_dict}
             logger.info(
                 "[tool_offset] %s tool_base=%s  user→urdf: %s → %s",
                 cmd.label, np.round(tool_base, 4).tolist(),
-                user_pos_before, data.get("position"),
+                user_pos_before, data_dict.get("position"),
             )
 
             try:
                 cmd.execute(req_urdf, angles, tcp_pos_urdf, self._runner)
                 self.log("info", f"{cmd.label} 시작")
-                return {"success": True, "message": "ok", "data": {}}
+                return ServiceResponse(
+                    success=True, message="ok", data=EmptyData()
+                )
             except ValueError as e:
-                return {"success": False, "message": str(e), "data": {}}
+                return ServiceResponse(success=False, message=str(e), data=None)
             except Exception as e:
                 logger.error(f"{cmd.label} execute 오류: {e}")
-                return {"success": False, "message": str(e), "data": {}}
+                return ServiceResponse(success=False, message=str(e), data=None)
 
         return handler
 
     def _make_handler(self, cmd: MotionCommand):
-        """MoveJ 전용 (joint 명령 — tool offset 무관)."""
-        def handler(req: dict) -> dict:
-            error = cmd.validate(req)
+        """MoveJ 전용 (joint 명령 — tool offset 무관). cmd 는 dict API 그대로."""
+        def handler(
+            req: ServiceRequest[MoveJReq],
+        ) -> ServiceResponse[EmptyData]:
+            req_dict = {"data": req.data.model_dump()}
+
+            error = cmd.validate(req_dict)
             if error:
-                return {"success": False, "message": error, "data": {}}
+                return ServiceResponse(success=False, message=error, data=None)
 
             angles = self._cache.get_joint_angles_rad(self._arm_cfgs)
             if angles is None:
-                return {"success": False, "message": "관절 상태 수신 전", "data": {}}
+                return ServiceResponse(
+                    success=False, message="관절 상태 수신 전", data=None
+                )
 
             try:
                 tcp_pos = list(self._motion.get_tcp_pose(angles).position)
             except Exception as e:
-                return {"success": False, "message": f"FK 오류: {e}", "data": {}}
+                return ServiceResponse(
+                    success=False, message=f"FK 오류: {e}", data=None
+                )
 
             try:
-                cmd.execute(req, angles, tcp_pos, self._runner)
+                cmd.execute(req_dict, angles, tcp_pos, self._runner)
                 self.log("info", f"{cmd.label} 시작")
-                return {"success": True, "message": "ok", "data": {}}
+                return ServiceResponse(
+                    success=True, message="ok", data=EmptyData()
+                )
             except ValueError as e:
-                return {"success": False, "message": str(e), "data": {}}
+                return ServiceResponse(success=False, message=str(e), data=None)
             except Exception as e:
                 logger.error(f"{cmd.label} execute 오류: {e}")
-                return {"success": False, "message": str(e), "data": {}}
+                return ServiceResponse(success=False, message=str(e), data=None)
 
         return handler
 
     # ─── Services ─────────────────────────────────────────────
 
-    def _srv_get_tcp(self, req: dict) -> dict:
+    def _srv_get_tcp(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[MotionTcpPose]:
         """URDF EE pose 그대로 반환 (변환 X).
 
         detect 의 hand_eye 캘은 URDF EE 기준으로 풀려 있어 obj_in_base 계산 시
@@ -192,22 +252,32 @@ class MotionNode(BaseNode):
         """
         angles = self._cache.get_joint_angles_rad(self._arm_cfgs)
         if angles is None:
-            return {"success": False, "message": "관절 상태 수신 전", "data": {}}
+            return ServiceResponse(
+                success=False, message="관절 상태 수신 전", data=None
+            )
         try:
             pose = self._motion.get_tcp_pose(angles)
-            return {"success": True, "message": "ok",
-                    "data": {"position": pose.position, "quaternion": pose.quaternion}}
+            return ServiceResponse(
+                success=True,
+                message="ok",
+                data=MotionTcpPose(
+                    position=list(pose.position),
+                    quaternion=list(pose.quaternion),
+                ),
+            )
         except Exception as e:
-            return {"success": False, "message": str(e), "data": {}}
+            return ServiceResponse(success=False, message=str(e), data=None)
 
-    def _srv_move_tcp(self, req: dict) -> dict:
+    def _srv_move_tcp(
+        self, req: ServiceRequest[MoveTcpReq]
+    ) -> ServiceResponse[EmptyData]:
         """target_pos (user frame) → URDF frame → IK."""
-        target_pos_user = req.get("data", {}).get("position")
-        if target_pos_user is None:
-            return {"success": False, "message": "position 필요", "data": {}}
+        target_pos_user = req.data.position
         angles = self._cache.get_joint_angles_rad(self._arm_cfgs)
         if angles is None:
-            return {"success": False, "message": "관절 상태 수신 전", "data": {}}
+            return ServiceResponse(
+                success=False, message="관절 상태 수신 전", data=None
+            )
         try:
             tool_base = self._tool_offset_base(angles)
             target_pos_urdf = (
@@ -215,46 +285,56 @@ class MotionNode(BaseNode):
             ).tolist()
             result = self._motion.move_tcp(target_pos_urdf, angles)
             if result is None:
-                return {"success": False, "message": "IK 수렴 실패", "data": {}}
+                return ServiceResponse(
+                    success=False, message="IK 수렴 실패", data=None
+                )
             self._publish_cmd(result)
-            return {"success": True, "message": "ok", "data": {}}
+            return ServiceResponse(success=True, message="ok", data=EmptyData())
         except Exception as e:
-            return {"success": False, "message": str(e), "data": {}}
+            return ServiceResponse(success=False, message=str(e), data=None)
 
-    def _srv_stop(self, req: dict) -> dict:
+    def _srv_stop(
+        self, _req: ServiceRequest[EmptyData]
+    ) -> ServiceResponse[EmptyData]:
         was_running = self._runner.is_running
         self._runner.stop()
         if was_running:
-            self._publish_traj_state("stopped", 0.0)
+            self._publish_traj_state(TrajStatus.STOPPED, 0.0)
             self.log("info", "트래젝토리 중단")
-        return {"success": True, "message": "ok", "data": {}}
+        return ServiceResponse(success=True, message="ok", data=EmptyData())
 
     # ─── Internal ────────────────────────────────────────────
 
     def _publish_cmd(self, angles_rad: list[float]) -> None:
         coords = JointCoordinates()
-        self.publish(Topic.MOTOR_CMD_JOINT, {
-            "timestamp": time.time(),
-            "joints": [
-                {
-                    "id":       cfg.id,
-                    "position": coords.urdf_to_motor(
-                        angle,
-                        cfg,
-                        min_raw=cfg.limit_min,
-                        max_raw=cfg.limit_max,
-                    ),
-                }
-                for cfg, angle in zip(self._arm_cfgs, angles_rad)
-            ],
-        })
+        self.publish(
+            Topic.MOTOR_CMD_JOINT,
+            MotorCmd(
+                timestamp=time.time(),
+                joints=[
+                    MotorCmdJoint(
+                        id=cfg.id,
+                        position=coords.urdf_to_motor(
+                            angle,
+                            cfg,
+                            min_raw=cfg.limit_min,
+                            max_raw=cfg.limit_max,
+                        ),
+                    )
+                    for cfg, angle in zip(self._arm_cfgs, angles_rad)
+                ],
+            ),
+        )
 
-    def _publish_traj_state(self, status: str, progress: float) -> None:
-        self.publish(Topic.MOTION_STATE_TRAJ, {
-            "status":    status,
-            "progress":  round(progress, 3),
-            "timestamp": time.time(),
-        })
+    def _publish_traj_state(self, status: TrajStatus, progress: float) -> None:
+        self.publish(
+            Topic.MOTION_STATE_TRAJ,
+            MotionTrajState(
+                status=status,
+                progress=round(progress, 3),
+                timestamp=time.time(),
+            ),
+        )
 
     def _set_arm_profile(self, velocity: int, acceleration: int) -> bool:
         res = self.call_service(

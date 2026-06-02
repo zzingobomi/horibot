@@ -8,7 +8,7 @@ import numpy as np
 from ruckig import Ruckig, InputParameter, OutputParameter, Result
 from scipy.interpolate import CubicSpline
 
-from core.types import TrajStatus
+from core.transport.messages.motion import TrajStatus
 from .iksolver import Position3
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ _CART_HOLD_STEPS = 25
 
 # ── 콜백 타입 ──────────────────────────────────────────────────
 PublishCmdFn = Callable[[list[float]], None]
-PublishStateFn = Callable[[str, float], None]
+PublishStateFn = Callable[[TrajStatus, float], None]
 SetProfileFn = Callable[[int, int], bool]
 MoveTcpFn = Callable[[Position3, list[float]], list[float] | None]
 

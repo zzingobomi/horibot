@@ -16,6 +16,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Callable
 
+from core.transport.messages.motion import MotionTrajState
 from core.transport.topic_map import Topic
 from modules.task.schema import StepResult
 from modules.task.step import Step, StepContext, Task, collect_step_ids
@@ -120,7 +121,9 @@ class TaskRunner:
             calibration=calibration,
             stop_event=self._stop_event,
         )
-        node.create_subscriber(Topic.MOTION_STATE_TRAJ, self._ctx.on_traj_state)
+        node.create_subscriber(
+            Topic.MOTION_STATE_TRAJ, MotionTrajState, self._ctx.on_traj_state
+        )
 
         # ForEach / Try 같은 control flow step 이 자식 unroll 시 사용.
         # 자기 _execute_one_step 을 ctx 에 주입 → ctx.run_child(child) 가 디버거

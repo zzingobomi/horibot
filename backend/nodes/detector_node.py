@@ -8,7 +8,9 @@ from core.common import GRIPPER_ID
 from core.transport.base_node import BaseNode
 from core.cache.frame_cache import FrameCache
 from core.cache.joint_state_cache import JointStateCache
+from core.transport.messages.base import EmptyData
 from core.transport.messages.camera import CameraSetDepthStreamReq, CameraSetDepthStreamRes
+from core.transport.messages.motion import MotionTcpPose
 from core.transport.topic_map import Service, Topic
 from modules.calibration.loader import load_calibration
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
@@ -153,22 +155,18 @@ class DetectorNode(BaseNode):
         yn = float(pt_undistorted[0, 0, 1])
 
         # ── FK: get_tcp → R_be, t_be ──────────────
-        res = self.call_service(Service.MOTION_GET_TCP, {})
-        if not res.get("success"):
+        res = self.call_service(
+            Service.MOTION_GET_TCP, EmptyData(), MotionTcpPose
+        )
+        if not res.success or res.data is None:
             return {
                 "success": False,
-                "message": f"get_tcp 실패: {res.get('message')}",
+                "message": f"get_tcp 실패: {res.message}",
                 "data": {},
             }
 
-        tcp_data = res.get("data", {})
-        pos = tcp_data.get("position")
-        quat = tcp_data.get("quaternion")
-        if pos is None or quat is None:
-            return {"success": False, "message": "TCP pose 없음", "data": {}}
-
-        R_be = _quat_to_rot(quat)  # end-effector → base
-        t_be = np.array(pos)
+        R_be = _quat_to_rot(res.data.quaternion)  # end-effector → base
+        t_be = np.array(res.data.position)
 
         # ── hand-eye 행렬 ─────────────────────────
         R_ce = self._calib.hand_eye.R  # camera → end-effector
@@ -300,21 +298,18 @@ class DetectorNode(BaseNode):
         obj_in_cam = np.array([X_cam, Y_cam, Z_cam])
 
         # ── TCP pose ────────────────────────────────────
-        res = self.call_service(Service.MOTION_GET_TCP, {})
-        if not res.get("success"):
+        res = self.call_service(
+            Service.MOTION_GET_TCP, EmptyData(), MotionTcpPose
+        )
+        if not res.success or res.data is None:
             return {
                 "success": False,
-                "message": f"get_tcp 실패: {res.get('message')}",
+                "message": f"get_tcp 실패: {res.message}",
                 "data": {},
             }
-        tcp_data = res.get("data", {})
-        pos = tcp_data.get("position")
-        quat = tcp_data.get("quaternion")
-        if pos is None or quat is None:
-            return {"success": False, "message": "TCP pose 없음", "data": {}}
 
-        R_be = _quat_to_rot(quat)
-        t_be = np.array(pos)
+        R_be = _quat_to_rot(res.data.quaternion)
+        t_be = np.array(res.data.position)
 
         # ── hand_eye → base 좌표 ────────────────────────
         R_ce = self._calib.hand_eye.R

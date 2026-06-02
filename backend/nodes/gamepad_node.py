@@ -17,6 +17,12 @@ from core.common import GRIPPER_ID
 from core.transport.base_node import BaseNode
 from core.transport.topic_map import Service
 from core.transport.messages.base import EmptyData
+from core.transport.messages.motion import (
+    JointDegree,
+    MotionTcpPose,
+    MoveJReq,
+    MoveTcpReq,
+)
 from core.transport.messages.motor import (
     MotorEnableReq,
     MotorEnableRes,
@@ -148,9 +154,11 @@ class GamepadNode(BaseNode):
             self._driver.quit()
 
     def _sync_tcp(self) -> bool:
-        res = self.call_service(Service.MOTION_GET_TCP, {})
-        if res.get("success") and res.get("data", {}).get("position"):
-            self._tcp_position = list(res["data"]["position"])
+        res = self.call_service(
+            Service.MOTION_GET_TCP, EmptyData(), MotionTcpPose
+        )
+        if res.success and res.data is not None and res.data.position:
+            self._tcp_position = list(res.data.position)
             return True
         logger.debug("TCP 동기화 실패")
         self._tcp_position = None
@@ -246,13 +254,14 @@ class GamepadNode(BaseNode):
 
         res = self.call_service(
             Service.MOTION_MOVE_TCP,
-            {"position": target}
+            MoveTcpReq(position=target),
+            EmptyData,
         )
 
-        if res.get("success"):
+        if res.success:
             self._tcp_position = target
         else:
-            logger.debug(f"move_tcp 실패: {res.get('message')} — TCP 재동기화")
+            logger.debug(f"move_tcp 실패: {res.message} — TCP 재동기화")
             self._sync_tcp()
 
     # ─── Home ─────────────────────────────────────────────────────────────────
@@ -260,18 +269,19 @@ class GamepadNode(BaseNode):
     def _go_home(self) -> None:
         res = self.call_service(
             Service.MOTION_MOVE_J,
-            {
-                "joints": [
-                    {"id": cfg.id, "degree": 0.0}
+            MoveJReq(
+                joints=[
+                    JointDegree(id=cfg.id, degree=0.0)
                     for cfg in self._arm_cfgs
                 ]
-            },
+            ),
+            EmptyData,
         )
-        if res.get("success"):
+        if res.success:
             self.log("info", "홈 이동")
             self._tcp_position = None
         else:
-            logger.warning(f"홈 이동 실패: {res.get('message')}")
+            logger.warning(f"홈 이동 실패: {res.message}")
 
     # ─── Gripper toggle ────────────────────────────────────────────────────────
 

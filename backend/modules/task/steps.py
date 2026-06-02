@@ -28,6 +28,7 @@ from typing import Any, Callable, Literal
 
 from core.common import GRIPPER_ID, GRIPPER_SETTLE
 from core.transport.messages.base import EmptyData
+from core.transport.messages.motion import JointDegree, MoveJReq, MoveLReq
 from core.transport.messages.motor import MotorGripperReq
 from core.robot.robot_poses import load_pose
 from core.transport.topic_map import Service
@@ -89,7 +90,12 @@ class MoveJByName(Step[None]):
             raise RuntimeError(f"MoveJByName: 자세 '{name}' 없음") from exc
 
         logger.info("MoveJ '%s'  [%s]", name, self.label)
-        if not ctx.call_motion(Service.MOTION_MOVE_J, {"joints": joints}):
+        joints_typed = [
+            JointDegree(id=j["id"], degree=j["degree"]) for j in joints
+        ]
+        if not ctx.call_motion(
+            Service.MOTION_MOVE_J, MoveJReq(joints=joints_typed)
+        ):
             raise RuntimeError(f"MoveJ '{name}' 실패")
 
 
@@ -127,7 +133,7 @@ class MoveTCP(Step[None]):
         )
         if not ctx.call_motion(
             Service.MOTION_MOVE_L,
-            {"position": position.to_list()},
+            MoveLReq(position=position.to_list()),
         ):
             raise RuntimeError(f"MoveL 실패 [{self.label}]")
 

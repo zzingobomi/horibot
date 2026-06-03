@@ -10,7 +10,11 @@ import { useMotionStore } from "@/store/motionStore";
 import type { TrajectoryState } from "@/types/motion";
 import { useTaskStore } from "@/store/taskStore";
 import type { TaskState, TaskTree } from "@/types/task";
-import { useDetectorStore, type Detection } from "@/store/detectorStore";
+import {
+  useDetectorStore,
+  type Detection,
+  type GroundedResult,
+} from "@/store/detectorStore";
 import { usePointCloudStore } from "@/store/pointCloudStore";
 import { useTaskResultStore, type StepResultPayload } from "@/store/taskResultStore";
 
@@ -126,19 +130,22 @@ export function useBridge() {
     const unsubGrounded = bridge.subscribe(
       Topic.PERCEPTION_GROUNDED_STATE,
       (data) => {
-        const r = data as {
-          prompt?: string;
-          position?: [number, number, number];
-          bbox2d?: { x1: number; y1: number; x2: number; y2: number };
-          confidence?: number;
-          timestamp?: number;
-        };
-        if (r.prompt && r.position && r.bbox2d && r.confidence != null) {
+        const r = data as Partial<GroundedResult>;
+        if (
+          r.prompt &&
+          r.position &&
+          r.bbox2d &&
+          r.confidence != null &&
+          r.base_z != null &&
+          r.height != null
+        ) {
           setGroundedResult({
             prompt: r.prompt,
             position: r.position,
             bbox2d: r.bbox2d,
             confidence: r.confidence,
+            base_z: r.base_z,
+            height: r.height,
             timestamp: r.timestamp ?? Date.now(),
           });
         }

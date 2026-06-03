@@ -2,6 +2,10 @@ import ReconnectingWebSocket from "reconnecting-websocket";
 import { WsMsgType } from "@/types/bridge";
 import type { WsIncoming, WsOutgoing } from "@/types/bridge";
 import { WS_URL } from "@/constants";
+import type {
+  ServiceMap,
+  TopicPayloadMap,
+} from "@/api/generated/contract";
 
 type TopicCallback = (data: Record<string, unknown>) => void;
 type BinaryTopicCallback = (payload: ArrayBuffer) => void;
@@ -10,6 +14,12 @@ type ServiceResolver = (res: {
   message: string;
   data: Record<string, unknown>;
 }) => void;
+
+export type ServiceResponse<T> = {
+  success: boolean;
+  message: string;
+  data: T;
+};
 
 // 바이너리 프레임: [u8 v=1][u8 type=1][u16 BE topic_len][topic UTF-8][payload]
 const BIN_VERSION = 1;
@@ -126,6 +136,11 @@ class BridgeClient {
     }
   }
 
+  subscribe<T extends keyof TopicPayloadMap>(
+    topic: T,
+    callback: (data: TopicPayloadMap[T]) => void,
+  ): () => void;
+  subscribe(topic: string, callback: TopicCallback): () => void;
   subscribe(topic: string, callback: TopicCallback): () => void {
     console.log(`[Bridge] 구독 요청: ${topic}`);
 
@@ -190,28 +205,46 @@ class BridgeClient {
     };
   }
 
-  publish(topic: string, data: Record<string, unknown>): void {
-    this._send({ type: WsMsgType.Publish, topic, data });
+  publish<T extends keyof TopicPayloadMap>(
+    topic: T,
+    data: TopicPayloadMap[T],
+  ): void;
+  publish(topic: string, data: Record<string, unknown>): void;
+  publish(topic: string, data: unknown): void {
+    this._send({
+      type: WsMsgType.Publish,
+      topic,
+      data: data as Record<string, unknown>,
+    });
   }
 
+  callService<K extends keyof ServiceMap>(
+    key: K,
+    data: ServiceMap[K]["req"],
+    options?: { timeoutMs?: number },
+  ): Promise<ServiceResponse<ServiceMap[K]["res"]>>;
   callService(
     key: string,
     data: Record<string, unknown>,
-    options?: { timeoutMs?: number }
-  ): Promise<{
-    success: boolean;
-    message: string;
-    data: Record<string, unknown>;
-  }> {
+    options?: { timeoutMs?: number },
+  ): Promise<ServiceResponse<Record<string, unknown>>>;
+  callService(
+    key: string,
+    data: unknown,
+    options?: { timeoutMs?: number },
+  ): Promise<ServiceResponse<unknown>> {
     const timeoutMs = options?.timeoutMs ?? 5000;
     return new Promise((resolve) => {
       const request_id = makeRequestId();
-      this.pendingServices.set(request_id, resolve);
+      this.pendingServices.set(
+        request_id,
+        resolve as ServiceResolver,
+      );
       this._send({
         type: WsMsgType.Service,
         key,
         request_id,
-        data,
+        data: data as Record<string, unknown>,
         timeout: timeoutMs / 1000,
       });
 
@@ -221,7 +254,7 @@ class BridgeClient {
           resolve({
             success: false,
             message: "서비스 응답 타임아웃",
-            data: {},
+            data: {} as unknown,
           });
         }
       }, timeoutMs);

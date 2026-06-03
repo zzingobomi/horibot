@@ -88,7 +88,7 @@ export function HandEyeTab() {
       {}
     );
     if (res.success) {
-      const data = res.data as { poses: PoseMeta[] };
+      const data = res.data as unknown as { poses: PoseMeta[] };
       setPoses(data.poses ?? []);
     }
   }, []);
@@ -97,7 +97,7 @@ export function HandEyeTab() {
     let cancelled = false;
     bridge.callService(ServiceKey.CALIB_HANDEYE_LIST_POSES, {}).then((res) => {
       if (cancelled || !res.success) return;
-      const data = res.data as { poses: PoseMeta[] };
+      const data = res.data as unknown as { poses: PoseMeta[] };
       setPoses(data.poses ?? []);
     });
     bridge

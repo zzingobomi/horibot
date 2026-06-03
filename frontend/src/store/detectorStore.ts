@@ -1,21 +1,11 @@
 import { create } from "zustand";
 
-// YOLO 결과
-export interface Detection {
-  class: string;
-  bbox: [number, number, number, number]; // [x1, y1, x2, y2]
-  conf: number;
-}
+import type { components } from "@/api/generated/types";
 
-// Grounding DINO 결과
-export interface GroundedResult {
-  prompt: string;
-  position: [number, number, number]; // base frame (m)
-  // 이미지 픽셀 좌표. bbox2d는 정규화된 0~1 또는 절대값 둘 다 가능하게 단순화 — 절대 px.
-  bbox2d: { x1: number; y1: number; x2: number; y2: number };
-  confidence: number;
-  timestamp: number;
-}
+// backend `core/transport/messages/detector.py` 의 pydantic 모델에서 자동 생성됨.
+// drift 방지 — schema 변경 시 `pnpm gen:types` 로 재생성.
+export type Detection = components["schemas"]["YoloDetection"];
+export type GroundedResult = components["schemas"]["GroundedDetectionResult"];
 
 interface DetectorStore {
   detections: Detection[];

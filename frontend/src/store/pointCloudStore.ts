@@ -1,43 +1,28 @@
 import { create } from "zustand";
 import { bridge } from "@/api/bridge";
+import type { components } from "@/api/generated/types";
 import { Topic, ServiceKey } from "@/constants/topics";
 
+// POINTCLOUD_STREAM 은 binary raw 트랙 (typed 면제) — wire-side 파싱 결과
+// frontend 자체 데이터 클래스. typed_messaging.md §미해결 #1 참조.
 export interface PointCloudFrame {
   count: number;
   positions: Float32Array;
   colors: Uint8Array;
 }
 
-export interface ScanMeta {
-  id: number;
-  path: string;
-  timestamp: number;
-  num_frames: number;
-}
+// backend `core/transport/messages/pointcloud.py` 의 pydantic 모델에서 자동 생성됨.
+// drift 방지 — schema 변경 시 `pnpm gen:types` 로 재생성.
+export type ScanMeta = components["schemas"]["ScanMeta"];
+export type MeshMeta = components["schemas"]["MeshMeta"];
+export type BuildResultSummary = components["schemas"]["PointcloudBuildMeshRes"];
 
-export interface MeshMeta {
-  session_id: string;
-  path: string; // robot 기준 상대경로 (e.g. "models/mesh_session_xxx.ply")
-  size?: number;
-  mtime?: number;
-}
-
-export interface BuildParams {
-  voxel_size?: number;
-  sdf_trunc?: number;
-  depth_trunc?: number;
-  icp_max_dist?: number;
-}
-
-export interface BuildResultSummary {
-  session_id: string;
-  path: string;
-  vertex_count: number;
-  triangle_count: number;
-  n_scans: number;
-  n_edges: number;
-  elapsed: number;
-}
+// BuildParams 는 buildMesh service request 에서 session_id 를 frontend 가 따로
+// 합쳐 보내는 자리 — backend req 모델에서 session_id 만 제외한 subset.
+export type BuildParams = Omit<
+  components["schemas"]["PointcloudBuildMeshReq"],
+  "session_id"
+>;
 
 interface PointCloudState {
   // ── live stream

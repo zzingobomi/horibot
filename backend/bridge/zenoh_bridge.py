@@ -9,9 +9,19 @@ from pathlib import Path
 import zenoh
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from typing import Any, cast
 
+from pydantic import create_model
+
+from api_contract import (
+    PUBLIC_BINARY_TOPICS,
+    PUBLIC_TOPICS,
+    all_referenced_models,
+    to_x_contract,
+)
 from core.transport.zenoh_session import ZenohSession
 from core.transport.topic_map import Topic
 from bridge.calibration_router import calibration_router
@@ -71,6 +81,65 @@ ROBOT_DIR = Path(__file__).parents[2] / "robot"
 app.mount("/robot", StaticFiles(directory=str(ROBOT_DIR)), name="robot")
 
 app.include_router(calibration_router)
+
+
+# ─── OpenAPI schema export — auto from api_contract ──────
+# api_contract.PUBLIC_TOPICS / PUBLIC_SERVICES 가 참조하는 모든 모델을 한
+# class 의 optional 필드로 묶어 `/openapi.json::components/schemas` 에 자동
+# 등재. Nested model (예: MotorJoint) 은 referenced 만 해도 FastAPI 가 자동
+# 등록 → 본 클래스는 top-level publish/service payload 만 명시.
+#
+# 새 모델 추가 = `api_contract.py` 에 entry 추가 (`OpenApiSchemaRegistry` 안
+# 건드림).
+
+_referenced_models = sorted(all_referenced_models(), key=lambda m: m.__name__)
+_registry_fields = {m.__name__: (m | None, None) for m in _referenced_models}
+# pydantic v2 `create_model` overload 시그니처가 `**field_definitions` 형태라
+# pyright 가 일반 dict unpack 을 reserved kwargs 와 헷갈림 — runtime 정상.
+OpenApiSchemaRegistry = cast(Any, create_model)(
+    "OpenApiSchemaRegistry", **_registry_fields
+)
+OpenApiSchemaRegistry.__doc__ = (
+    "OpenAPI schema export only — auto-built from api_contract."
+)
+
+
+@app.get(
+    "/_schemas",
+    response_model=OpenApiSchemaRegistry,
+    include_in_schema=True,
+    summary="Type registry (OpenAPI export only)",
+)
+def _schemas():
+    """OpenAPI schema export only — clients 가 호출 X.
+
+    Used by `frontend/pnpm gen:types` to emit TS interfaces from Pydantic models.
+    """
+    return OpenApiSchemaRegistry()
+
+
+# ─── OpenAPI x-contract extension ────────────────────────
+# api_contract 의 (topic_key → schema_name) / (service_key → req,res) 매핑을
+# `/openapi.json` 의 vendor extension `x-contract` 키로 인라인. frontend
+# `gen-contract.ts` 가 같은 JSON 의 이 키를 읽어 `contract.ts` emit.
+#
+# OpenAPI spec 상 `x-*` 키는 vendor extension — `openapi-typescript` 는 무시.
+
+
+def custom_openapi() -> dict:
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version="1.0.0",
+        routes=app.routes,
+    )
+    schema["x-contract"] = to_x_contract()
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi  # type: ignore[assignment]
 
 _extra_origins = [
     o.strip()
@@ -133,20 +202,10 @@ def _camera_callback(jpeg_bytes: bytes) -> None:
             _loop.call_soon_threadsafe(_put_frame, q, jpeg_bytes)
 
 
-_ALWAYS_SUBSCRIBE = [
-    Topic.MOTOR_STATE_JOINT,
-    Topic.CAMERA_STATE_STATUS,
-    Topic.CALIB_HANDEYE_PREVIEW,
-    Topic.SYSTEM_HEARTBEAT,
-    Topic.SYSTEM_LOG,
-    Topic.MOTION_STATE_TRAJ,
-    Topic.TASK_STATE,
-    Topic.TASK_TREE,
-    Topic.TASK_STEP_RESULT,
-    Topic.DETECTOR_STATE,
-    Topic.PERCEPTION_GROUNDED_STATE,
-    Topic.POINTCLOUD_STATE,
-]
+# JSON 토픽: api_contract.PUBLIC_TOPICS 에서 자동 도출.
+# Binary 토픽: PUBLIC_BINARY_TOPICS (별도 raw frame 라우팅).
+_ALWAYS_SUBSCRIBE = list(PUBLIC_TOPICS)
+_ALWAYS_SUBSCRIBE_BINARY = list(PUBLIC_BINARY_TOPICS)
 
 _zenoh_subs: list[zenoh.Subscriber] = []
 
@@ -169,7 +228,8 @@ def setup_zenoh_subscribers() -> None:
         _zenoh_subs.append(session.declare_subscriber(
             topic, make_handler(topic)))
 
-    # 카메라는 raw bytes로 수신
+    # 카메라는 raw bytes 로 MJPEG `/camera/stream` HTTP 라우트로 별도 송출.
+    # contract 의 PUBLIC_BINARY_TOPICS 에 없는 (별도 라우트) 자리.
     def camera_handler(sample: zenoh.Sample):
         _camera_callback(sample.payload.to_bytes())
 
@@ -177,14 +237,18 @@ def setup_zenoh_subscribers() -> None:
         session.declare_subscriber(Topic.CAMERA_STREAM_RAW, camera_handler)
     )
 
-    # 포인트클라우드는 바이너리 WS 프레임으로 직송
-    def pointcloud_handler(sample: zenoh.Sample):
-        _zenoh_callback_bytes(Topic.POINTCLOUD_STREAM,
-                              sample.payload.to_bytes())
+    # contract 의 binary 토픽은 WS binary frame 으로 직송.
+    for topic in _ALWAYS_SUBSCRIBE_BINARY:
 
-    _zenoh_subs.append(
-        session.declare_subscriber(Topic.POINTCLOUD_STREAM, pointcloud_handler)
-    )
+        def make_binary_handler(tp: str):
+            def handler(sample: zenoh.Sample):
+                _zenoh_callback_bytes(tp, sample.payload.to_bytes())
+
+            return handler
+
+        _zenoh_subs.append(
+            session.declare_subscriber(topic, make_binary_handler(topic))
+        )
 
     logger.info("Zenoh 구독 설정 완료")
 

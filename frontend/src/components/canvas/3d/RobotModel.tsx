@@ -113,6 +113,12 @@ export function RobotModel({
   }, [robotType, onLinksLoaded]);
 
   // Joint 각도 적용
+  //
+  // 무한루프 주의 — 부모 (RobotLayer / RobotScene) 가 onTCPMatrix 를 인라인
+  // arrow 로 전달하면 매 렌더마다 새 함수 참조. 이 effect 의 dep 에 prop 을
+  // 직접 두면: emit → 부모 setState → 리렌더 → 새 onTCPMatrix → dep 변경 →
+  // effect 재실행 → emit → ... 무한 루프 → React reconciler stall → 라우팅까지
+  // 막힘. emitTCP 는 latest callback ref 로만 호출하고 dep 은 jointAngles 만.
   useEffect(() => {
     const robot = robotRef.current;
     if (!robot) return;
@@ -124,8 +130,8 @@ export function RobotModel({
       }
     });
 
-    emitTCP(robot, onTCPMatrix);
-  }, [jointAngles, onTCPMatrix]);
+    emitTCP(robot, onTCPMatrixRef.current);
+  }, [jointAngles]);
 
   // 전체 visible
   useEffect(() => {

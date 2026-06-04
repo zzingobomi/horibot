@@ -12,7 +12,7 @@
  * 첫 프로토타입 scope — Page Preset / Layer registry / ViewState store /
  * 명령 권한 같은 추상화는 안 만듦. 만져보고 발견.
  */
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { DockviewReact, type DockviewReadyEvent } from "dockview";
 import { RotateCcw } from "lucide-react";
@@ -38,6 +38,9 @@ type PanelSpec = {
   height: number;
 };
 
+// ====== STAGE 3 디버그 — panel 0개 ======
+// dockview 컨테이너만 마운트, panel content 0개. 라우팅 되면 어느 panel component
+// 가 unmount 막는 것, 안 되면 dockview 컨테이너 자체 (라이브러리) 가 막는 것.
 const PANELS: PanelSpec[] = [
   { id: "robot-state", component: "robotState", title: "Robot State", width: 260, height: 270 },
   { id: "motion", component: "motion", title: "Motion", width: 320, height: 360 },
@@ -120,10 +123,6 @@ export function RobotsPage() {
     window.location.reload();
   }, [layoutKey]);
 
-  // dockview 의 onReady 가 key 바뀌면 새로 호출되도록 — robot 전환 시 layout
-  // 도 새 로드. key 안 바꾸면 같은 layout 유지.
-  const dockviewKey = useMemo(() => layoutKey, [layoutKey]);
-
   if (error) {
     return (
       <div className="p-6 text-red-400 font-mono">/robots 응답 실패: {error}</div>
@@ -153,9 +152,17 @@ export function RobotsPage() {
         <RobotSceneContainer focusId={id} />
       </div>
 
-      <div className="absolute inset-0 z-10 workspace-dockview pointer-events-none">
+      {/* dockview overlay — wrapper 에 pointer-events-none 박아서 빈 영역
+          mouse event 를 z-0 R3F Canvas 의 OrbitControls 로 통과시킴.
+          dockview 의 floating panel container (`.dv-floating-group-container`)
+          는 자체 `pointer-events: all` 명시라 panel 영역은 hit-test 받음.
+
+          이전 주석은 "wrapper 에 pointer-events-none 박으면 dockview internal
+          state cleanup 깨진다" 였는데, 그 진단은 라우팅 leak 의 root cause 를
+          dockview 로 오인한 위에 세워진 것. 진짜 root cause 는 RobotModel 의
+          emitTCP 무한루프였고 fix 적용됨. */}
+      <div className="absolute inset-0 z-10 pointer-events-none workspace-dockview">
         <DockviewReact
-          key={dockviewKey}
           className="dockview-theme-dark"
           components={PANEL_COMPONENTS}
           onReady={onReady}

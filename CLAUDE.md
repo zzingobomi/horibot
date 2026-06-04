@@ -283,6 +283,8 @@ PointCloudNode (PC) — [backend/nodes/pointcloud_node.py](backend/nodes/pointcl
 
 `RobotsPage` / `TasksPage` 둘 다 [dockview](https://dockview.dev/) 플로팅 패널 위에 [react-three-fiber](https://r3f.docs.pmnd.rs/) 씬 + [urdf-loader](https://github.com/gkjohnson/urdf-loaders). 패널 컴포넌트는 [frontend/src/components/canvas/dockview/panelComponents.ts](frontend/src/components/canvas/dockview/panelComponents.ts) 에 등록. URDF에 들어가는 조인트각은 `MOTOR_STATE_JOINT`에서 `(position - 2048) / 4095 * 2π` 형태로 도출 (`units.raw_to_rad`와 일치).
 
+> **⚠ dockview 라우팅 leak (진행 중)** — 우리 사용 패턴 (3D base + dockview floating overlay only, dock area 안 씀) 이 dockview 의도 (main viewport + dock split + tab + popout 종합) 와 안 맞아 사이드바 NavLink 라우팅 시 RobotsPage 가 unmount 안 되는 누적 leak 발생. 단순 fix (cleanup 명시 / pointer-events / 라이브러리 업그레이드) 로 못 풀음. **react-rnd 로 전환 작업이 별도 세션에서 진행 예정** — 작업 지시서 + 설계 + fallback 절차는 [docs/dockview_to_rnd_migration.md](docs/dockview_to_rnd_migration.md). 현재 코드는 dockview 6.6.1 + 정통화된 사용 (`pointer-events-none` 제거 등) 적용 상태.
+
 **Multi-robot 시각화** — [RobotLayer](frontend/src/components/canvas/3d/RobotLayer.tsx) 가 `useRobots()` (backend `/robots` fetch) 의 N robot 동시 마운트. `robots.yaml` 의 `base_pose: {x, y, z, yaw_deg}` 로 world frame 분리. focus 모드는 others dim (default opacity 0.25). joint state 는 *focus robot 만* `robotStore` 에서 받고, 나머지는 home pose — §4 결정 3 의 "store 임시 호환 코드" (충돌 자리 생기면 dict 화).
 
 **Backend SSOT endpoint** ([bridge/zenoh_bridge.py](backend/bridge/zenoh_bridge.py)):

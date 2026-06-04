@@ -46,7 +46,9 @@ pc = [
     "zstandard>=0.22.0",
     # Grounding DINO Swin-B (open-vocabulary detection).
     # v5 는 AutoModelForZeroShotObjectDetection 제거 → 4.x 로 핀.
-    "transformers>=4.45.0,<5",
+    # 4.57.x 는 dispatch_model 경로에서 meta tensor + .to(device) 가 깨짐
+    # (NotImplementedError: Cannot copy out of meta tensor) — Qwen2.5 LLM 로드 실패.
+    "transformers>=4.45.0,<4.57",
     "accelerate>=0.34.0",
     "pillow>=10.0.0",
     # CUDA 13 빌드 — host nvidia driver(13.2)와 매치. cu130 index 에서 받음

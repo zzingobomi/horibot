@@ -69,15 +69,9 @@ def _ensure_loaded() -> bool:
                 "LLM 모델 로드 시작: %s (device=%s)", _MODEL_ID, _device
             )
             _tokenizer = AutoTokenizer.from_pretrained(_MODEL_ID)
-            # torch 2.11 + transformers 4.57 조합에서 meta tensor + .to() 충돌.
-            # device_map / 기본 lazy init 모두 dispatch_model 경로에서 meta tensor 가
-            # 남아 model.to(device) 가 NotImplementedError.
-            # low_cpu_mem_usage=False 로 meta init 자체를 끄고, weight 를 직접 디바이스에
-            # materialize. ~3GB 모델이라 메모리 부담은 미미.
             _model = AutoModelForCausalLM.from_pretrained(
                 _MODEL_ID,
                 dtype=torch.float16 if _device == "cuda" else torch.float32,
-                low_cpu_mem_usage=False,
             ).to(_device)  # type: ignore[arg-type]
             logger.info("LLM 모델 로드 완료")
             return True

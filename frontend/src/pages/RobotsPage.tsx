@@ -152,12 +152,16 @@ export function RobotsPage() {
         <RobotSceneContainer focusId={id} />
       </div>
 
-      {/* dockview overlay — `pointer-events-none` 을 root 에 박지 않는다.
-          dockview 가 자기 영역의 mouse/focus event 를 받아야 internal state
-          machine (drag, focus, cleanup handshake) 이 정상 동작 → unmount 시
-          cleanup 도 정상. 빈 dock 영역의 click 통과는 workspace-dockview.css
-          의 .dv-dockview / .dv-groupview 에 pointer-events:none 으로 처리. */}
-      <div className="absolute inset-0 z-10 workspace-dockview">
+      {/* dockview overlay — wrapper 에 pointer-events-none 박아서 빈 영역
+          mouse event 를 z-0 R3F Canvas 의 OrbitControls 로 통과시킴.
+          dockview 의 floating panel container (`.dv-floating-group-container`)
+          는 자체 `pointer-events: all` 명시라 panel 영역은 hit-test 받음.
+
+          이전 주석은 "wrapper 에 pointer-events-none 박으면 dockview internal
+          state cleanup 깨진다" 였는데, 그 진단은 라우팅 leak 의 root cause 를
+          dockview 로 오인한 위에 세워진 것. 진짜 root cause 는 RobotModel 의
+          emitTCP 무한루프였고 fix 적용됨. */}
+      <div className="absolute inset-0 z-10 pointer-events-none workspace-dockview">
         <DockviewReact
           className="dockview-theme-dark"
           components={PANEL_COMPONENTS}

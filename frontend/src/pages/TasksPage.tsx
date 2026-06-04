@@ -141,7 +141,9 @@ export function TasksPage() {
         <RobotSceneContainer focusId={null} />
       </div>
 
-      <div className="absolute inset-0 z-10 workspace-dockview">
+      {/* wrapper pointer-events-none 으로 빈 영역 R3F 통과. floating panel
+          container 가 자체 pointer-events:all 명시라 panel hit-test 정상. */}
+      <div className="absolute inset-0 z-10 pointer-events-none workspace-dockview">
         <DockviewReact
           className="dockview-theme-dark"
           components={PANEL_COMPONENTS}

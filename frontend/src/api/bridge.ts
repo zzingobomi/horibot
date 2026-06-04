@@ -1,11 +1,24 @@
 import ReconnectingWebSocket from "reconnecting-websocket";
 import { WsMsgType } from "@/types/bridge";
 import type { WsIncoming, WsOutgoing } from "@/types/bridge";
-import { WS_URL } from "@/constants";
+import { DEFAULT_ROBOT_ID, WS_URL } from "@/constants";
 import type {
   ServiceMap,
   TopicPayloadMap,
 } from "@/api/generated/contract";
+
+// robot-scoped template (`horibot/{robot_id}/...`) 자동 expand. multi_robot_
+// phase2_frontend.md §4 결정 3 — N=1 호환 코드. Slice C 에서 focus robot
+// 명시화 시 caller 가 robotId 인자 받게 변경 (reversible).
+function expandTopicKey(key: string, robotId: string): string {
+  return key.includes("{robot_id}")
+    ? key.replace(/\{robot_id\}/g, robotId)
+    : key;
+}
+
+export function topicFor(template: string, robotId: string = DEFAULT_ROBOT_ID): string {
+  return expandTopicKey(template, robotId);
+}
 
 type TopicCallback = (data: Record<string, unknown>) => void;
 type BinaryTopicCallback = (payload: ArrayBuffer) => void;
@@ -57,6 +70,15 @@ class BridgeClient {
   private binaryTopicListeners = new Map<string, Set<BinaryTopicCallback>>();
   private pendingServices = new Map<string, ServiceResolver>();
   private onStatusChange?: (connected: boolean) => void;
+  private defaultRobotId: string = DEFAULT_ROBOT_ID;
+
+  setDefaultRobotId(robotId: string): void {
+    this.defaultRobotId = robotId;
+  }
+
+  private _expand(key: string): string {
+    return expandTopicKey(key, this.defaultRobotId);
+  }
 
   connect(onStatusChange?: (connected: boolean) => void): void {
     this.onStatusChange = onStatusChange;
@@ -142,34 +164,35 @@ class BridgeClient {
   ): () => void;
   subscribe(topic: string, callback: TopicCallback): () => void;
   subscribe(topic: string, callback: TopicCallback): () => void {
-    console.log(`[Bridge] 구독 요청: ${topic}`);
+    const expanded = this._expand(topic);
+    console.log(`[Bridge] 구독 요청: ${expanded}`);
 
-    if (!this.topicListeners.has(topic)) {
-      this.topicListeners.set(topic, new Set());
+    if (!this.topicListeners.has(expanded)) {
+      this.topicListeners.set(expanded, new Set());
     }
 
-    this.topicListeners.get(topic)!.add(callback);
+    this.topicListeners.get(expanded)!.add(callback);
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this._send({
         type: WsMsgType.Subscribe,
-        topic,
+        topic: expanded,
       });
     }
 
     return () => {
-      const cbs = this.topicListeners.get(topic);
+      const cbs = this.topicListeners.get(expanded);
       if (!cbs) return;
 
       cbs.delete(callback);
 
       if (cbs.size === 0) {
-        this.topicListeners.delete(topic);
+        this.topicListeners.delete(expanded);
 
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
           this._send({
             type: WsMsgType.Unsubscribe,
-            topic,
+            topic: expanded,
           });
         }
       }
@@ -177,29 +200,30 @@ class BridgeClient {
   }
 
   subscribeBinary(topic: string, callback: BinaryTopicCallback): () => void {
-    console.log(`[Bridge] 바이너리 구독 요청: ${topic}`);
+    const expanded = this._expand(topic);
+    console.log(`[Bridge] 바이너리 구독 요청: ${expanded}`);
 
-    if (!this.binaryTopicListeners.has(topic)) {
-      this.binaryTopicListeners.set(topic, new Set());
+    if (!this.binaryTopicListeners.has(expanded)) {
+      this.binaryTopicListeners.set(expanded, new Set());
     }
 
-    this.binaryTopicListeners.get(topic)!.add(callback);
+    this.binaryTopicListeners.get(expanded)!.add(callback);
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this._send({ type: WsMsgType.Subscribe, topic });
+      this._send({ type: WsMsgType.Subscribe, topic: expanded });
     }
 
     return () => {
-      const cbs = this.binaryTopicListeners.get(topic);
+      const cbs = this.binaryTopicListeners.get(expanded);
       if (!cbs) return;
 
       cbs.delete(callback);
 
       if (cbs.size === 0) {
-        this.binaryTopicListeners.delete(topic);
+        this.binaryTopicListeners.delete(expanded);
 
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this._send({ type: WsMsgType.Unsubscribe, topic });
+          this._send({ type: WsMsgType.Unsubscribe, topic: expanded });
         }
       }
     };
@@ -213,7 +237,7 @@ class BridgeClient {
   publish(topic: string, data: unknown): void {
     this._send({
       type: WsMsgType.Publish,
-      topic,
+      topic: this._expand(topic),
       data: data as Record<string, unknown>,
     });
   }
@@ -234,6 +258,7 @@ class BridgeClient {
     options?: { timeoutMs?: number },
   ): Promise<ServiceResponse<unknown>> {
     const timeoutMs = options?.timeoutMs ?? 5000;
+    const expanded = this._expand(key);
     return new Promise((resolve) => {
       const request_id = makeRequestId();
       this.pendingServices.set(
@@ -242,7 +267,7 @@ class BridgeClient {
       );
       this._send({
         type: WsMsgType.Service,
-        key,
+        key: expanded,
         request_id,
         data: data as Record<string, unknown>,
         timeout: timeoutMs / 1000,

@@ -57,15 +57,21 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/camera/stream": {
+    "/robots/{robot_id}/camera/stream": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Camera Stream */
-        get: operations["camera_stream_camera_stream_get"];
+        /**
+         * Camera Stream
+         * @description robot 별 MJPEG stream. URL = frontend `/robots/<id>` 라우팅과 동형.
+         *
+         *     multi_robot_phase2_frontend.md §1 결정 — `/camera/stream` → `/robots/<id>/...`
+         *     로 robot-scoped.
+         */
+        get: operations["camera_stream_robots__robot_id__camera_stream_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -175,6 +181,11 @@ export interface components {
             height: number;
             /** Timestamp */
             timestamp: number;
+        };
+        /** HTTPValidationError */
+        HTTPValidationError: {
+            /** Detail */
+            detail?: components["schemas"]["ValidationError"][];
         };
         /**
          * HandeyeCaptureRes
@@ -726,6 +737,19 @@ export interface components {
          * @enum {string}
          */
         TrajStatus: "idle" | "running" | "done" | "stopped" | "failed";
+        /** ValidationError */
+        ValidationError: {
+            /** Location */
+            loc: (string | number)[];
+            /** Message */
+            msg: string;
+            /** Error Type */
+            type: string;
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
+        };
         /**
          * YoloDetection
          * @description YOLO raw_detect 결과 한 항목. frontend 가 그대로 받음.
@@ -789,11 +813,13 @@ export interface operations {
             };
         };
     };
-    camera_stream_camera_stream_get: {
+    camera_stream_robots__robot_id__camera_stream_get: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                robot_id: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -805,6 +831,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

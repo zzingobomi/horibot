@@ -80,14 +80,16 @@ class ButtonRepeater:
 
 
 class GamepadNode(BaseNode):
-    def __init__(self) -> None:
-        super().__init__("gamepad_node")
+    def __init__(self, robot_id: str | None = None) -> None:
+        # gamepad 는 global UI — robot-scoped service 호출 시 self.r() default
+        # fallback (N=1). multi-robot 시 어떤 robot 을 조작할지 결정 필요.
+        super().__init__("gamepad_node", robot_id=robot_id)
 
         self._driver = GamepadDriver()
         self._torque_on = True
         self._last_connected: bool = False
 
-        _, self._motor_cfgs = load_motor_config()
+        _, self._motor_cfgs = load_motor_config(robot_id)
         self._arm_cfgs = [m for m in self._motor_cfgs if m.id != GRIPPER_ID]
         self._tcp_position: list[float] | None = None
         self._gripper_open = False
@@ -155,7 +157,7 @@ class GamepadNode(BaseNode):
 
     def _sync_tcp(self) -> bool:
         res = self.call_service(
-            Service.MOTION_GET_TCP, EmptyData(), MotionTcpPose
+            self.r(Service.MOTION_GET_TCP), EmptyData(), MotionTcpPose
         )
         if res.success and res.data is not None and res.data.position:
             self._tcp_position = list(res.data.position)
@@ -173,7 +175,7 @@ class GamepadNode(BaseNode):
         if M.BTN_X in pressed:
             self._torque_on = not self._torque_on
             res = self.call_service(
-                Service.MOTOR_ENABLE,
+                self.r(Service.MOTOR_ENABLE),
                 MotorEnableReq(enable=self._torque_on),
                 MotorEnableRes,
             )
@@ -253,7 +255,7 @@ class GamepadNode(BaseNode):
         ]
 
         res = self.call_service(
-            Service.MOTION_MOVE_TCP,
+            self.r(Service.MOTION_MOVE_TCP),
             MoveTcpReq(position=target),
             EmptyData,
         )
@@ -268,7 +270,7 @@ class GamepadNode(BaseNode):
 
     def _go_home(self) -> None:
         res = self.call_service(
-            Service.MOTION_MOVE_J,
+            self.r(Service.MOTION_MOVE_J),
             MoveJReq(
                 joints=[
                     JointDegree(id=cfg.id, degree=0.0)
@@ -288,7 +290,7 @@ class GamepadNode(BaseNode):
     def _toggle_gripper(self) -> None:
         self._gripper_open = not self._gripper_open
         res = self.call_service(
-            Service.MOTOR_GRIPPER,
+            self.r(Service.MOTOR_GRIPPER),
             MotorGripperReq(action="open" if self._gripper_open else "close"),
             EmptyData,
         )

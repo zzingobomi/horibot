@@ -23,9 +23,9 @@ DEPTH_IDLE_SLEEP = 0.1
 
 
 class CameraNode(BaseNode):
-    def __init__(self):
-        super().__init__("camera_node")
-        self.camera = RobotRegistry().get_camera_capture()
+    def __init__(self, robot_id: str | None = None):
+        super().__init__("camera_node", robot_id=robot_id)
+        self.camera = RobotRegistry().get_camera_capture(robot_id)
         self._stream_thread: threading.Thread | None = None
         self._depth_thread: threading.Thread | None = None
 
@@ -41,7 +41,7 @@ class CameraNode(BaseNode):
             self.log("error", "카메라 연결 실패")
 
         self.create_service(
-            Service.CAMERA_SET_DEPTH_STREAM,
+            self.r(Service.CAMERA_SET_DEPTH_STREAM),
             CameraSetDepthStreamReq,
             CameraSetDepthStreamRes,
             self._srv_set_depth_stream,
@@ -90,7 +90,7 @@ class CameraNode(BaseNode):
             if ret and frame is not None:
                 try:
                     jpeg_bytes = frame_to_jpeg_bytes(frame)
-                    session.put(Topic.CAMERA_STREAM_RAW, jpeg_bytes)
+                    session.put(self.r(Topic.CAMERA_STREAM_RAW), jpeg_bytes)
                 except Exception as e:
                     logger.error(f"color 스트림 발행 오류: {e}")
 
@@ -128,7 +128,7 @@ class CameraNode(BaseNode):
                     cx=intr.ppx,
                     cy=intr.ppy,
                 )
-                session.put(Topic.CAMERA_DEPTH_FRAME, payload)
+                session.put(self.r(Topic.CAMERA_DEPTH_FRAME), payload)
             except Exception as e:
                 logger.warning(f"depth_frame 인코드/발행 실패: {e}")
 
@@ -155,7 +155,7 @@ class CameraNode(BaseNode):
 
     def _publish_status(self, connected: bool) -> None:
         self.publish(
-            Topic.CAMERA_STATE_STATUS,
+            self.r(Topic.CAMERA_STATE_STATUS),
             CameraStatus(
                 timestamp=time.time(),
                 connected=connected,

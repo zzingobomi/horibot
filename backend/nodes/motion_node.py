@@ -51,10 +51,10 @@ logger = logging.getLogger(__name__)
 
 
 class MotionNode(BaseNode):
-    def __init__(self):
-        super().__init__("motion_node")
+    def __init__(self, robot_id: str | None = None):
+        super().__init__("motion_node", robot_id=robot_id)
 
-        _, self._motor_cfgs = load_motor_config()
+        _, self._motor_cfgs = load_motor_config(robot_id)
         self._arm_cfgs: list[MotorConfig] = [
             m for m in self._motor_cfgs if m.id != GRIPPER_ID
         ]
@@ -74,38 +74,38 @@ class MotionNode(BaseNode):
         )
 
         self.create_service(
-            Service.MOTION_GET_TCP, EmptyData, MotionTcpPose, self._srv_get_tcp
+            self.r(Service.MOTION_GET_TCP), EmptyData, MotionTcpPose, self._srv_get_tcp
         )
         self.create_service(
-            Service.MOTION_MOVE_TCP, MoveTcpReq, EmptyData, self._srv_move_tcp
+            self.r(Service.MOTION_MOVE_TCP), MoveTcpReq, EmptyData, self._srv_move_tcp
         )
         self.create_service(
-            Service.MOTION_MOVE_J,
+            self.r(Service.MOTION_MOVE_J),
             MoveJReq,
             EmptyData,
             self._make_handler(MoveJCommand(self._arm_cfgs)),
         )
         # MoveL/C/P 는 cartesian 좌표 입출력 → tool_offset 변환 적용
         self.create_service(
-            Service.MOTION_MOVE_L,
+            self.r(Service.MOTION_MOVE_L),
             MoveLReq,
             EmptyData,
             self._cartesian_handler_factory(MoveLCommand()),
         )
         self.create_service(
-            Service.MOTION_MOVE_C,
+            self.r(Service.MOTION_MOVE_C),
             MoveCReq,
             EmptyData,
             self._cartesian_handler_factory(MoveCCommand()),
         )
         self.create_service(
-            Service.MOTION_MOVE_P,
+            self.r(Service.MOTION_MOVE_P),
             MovePReq,
             EmptyData,
             self._cartesian_handler_factory(MovePCommand()),
         )
         self.create_service(
-            Service.MOTION_STOP, EmptyData, EmptyData, self._srv_stop
+            self.r(Service.MOTION_STOP), EmptyData, EmptyData, self._srv_stop
         )
 
     # ─── Tool offset 변환 유틸 ─────────────────────────────────
@@ -308,7 +308,7 @@ class MotionNode(BaseNode):
     def _publish_cmd(self, angles_rad: list[float]) -> None:
         coords = JointCoordinates()
         self.publish(
-            Topic.MOTOR_CMD_JOINT,
+            self.r(Topic.MOTOR_CMD_JOINT),
             MotorCmd(
                 timestamp=time.time(),
                 joints=[
@@ -328,7 +328,7 @@ class MotionNode(BaseNode):
 
     def _publish_traj_state(self, status: TrajStatus, progress: float) -> None:
         self.publish(
-            Topic.MOTION_STATE_TRAJ,
+            self.r(Topic.MOTION_STATE_TRAJ),
             MotionTrajState(
                 status=status,
                 progress=round(progress, 3),
@@ -338,7 +338,7 @@ class MotionNode(BaseNode):
 
     def _set_arm_profile(self, velocity: int, acceleration: int) -> bool:
         res = self.call_service(
-            Service.MOTOR_SET_PROFILE_ALL,
+            self.r(Service.MOTOR_SET_PROFILE_ALL),
             MotorSetProfileAllReq(
                 ids=self._arm_ids,
                 velocity=velocity,

@@ -19,7 +19,14 @@ def known_nodes() -> list[str]:
     return list(_NODE_REGISTRY)
 
 
-def create_node(name: str):
+def create_node(name: str, robot_id: str | None = None):
+    """robot_id — robot-scoped 노드 (motor / motion / camera / calibration /
+    detector / pointcloud) 가 담당할 robot id. task / gamepad 는 global.
+
+    모든 노드 __init__ 이 robot_id 받음 (BaseNode signature 일관). global
+    노드는 받아도 안 씀 — robot-scoped service 호출 시 BaseNode.r() 의
+    default fallback 으로 처리.
+    """
     if name not in _NODE_REGISTRY:
         raise KeyError(f"알 수 없는 노드 '{name}'. 등록된 노드: {known_nodes()}")
 
@@ -27,4 +34,4 @@ def create_node(name: str):
     logger.debug("노드 '%s' lazy import: %s.%s", name, module_path, class_name)
     module = importlib.import_module(module_path)
     cls = getattr(module, class_name)
-    return cls()
+    return cls(robot_id=robot_id)

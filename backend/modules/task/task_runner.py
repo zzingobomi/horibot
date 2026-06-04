@@ -122,7 +122,9 @@ class TaskRunner:
             stop_event=self._stop_event,
         )
         node.create_subscriber(
-            Topic.MOTION_STATE_TRAJ, MotionTrajState, self._ctx.on_traj_state
+            node.r(Topic.MOTION_STATE_TRAJ),
+            MotionTrajState,
+            self._ctx.on_traj_state,
         )
 
         # ForEach / Try 같은 control flow step 이 자식 unroll 시 사용.
@@ -375,7 +377,7 @@ class TaskRunner:
             step_id=step.id, type_name=type_name, value=value
         ).to_dict()
         try:
-            self._ctx.node.publish(Topic.TASK_STEP_RESULT, payload)
+            self._ctx.node.publish(self._ctx.node.r(Topic.TASK_STEP_RESULT), payload)
         except Exception as exc:
             logger.warning("step_result publish 실패 (%s): %s", step.id, exc)
 

@@ -43,10 +43,10 @@ GRIPPER_PROFILE_ACCELERATION = 30
 
 
 class MotorNode(BaseNode):
-    def __init__(self):
-        super().__init__("motor_node")
+    def __init__(self, robot_id: str | None = None):
+        super().__init__("motor_node", robot_id=robot_id)
 
-        port_cfg, motors = load_motor_config()
+        port_cfg, motors = load_motor_config(robot_id)
         self.port = port_cfg.get()
         self.motor_cfgs = motors
         self.driver = DynamixelBackend(self.port, motors)
@@ -55,30 +55,35 @@ class MotorNode(BaseNode):
 
         self._state_thread: threading.Thread | None = None
 
-        self.create_subscriber(Topic.MOTOR_CMD_JOINT, MotorCmd, self._on_cmd_joint)
-        self.create_service(
-            Service.MOTOR_ENABLE, MotorEnableReq, MotorEnableRes, self._srv_enable
+        self.create_subscriber(
+            self.r(Topic.MOTOR_CMD_JOINT), MotorCmd, self._on_cmd_joint
         )
         self.create_service(
-            Service.MOTOR_REBOOT, MotorRebootReq, EmptyData, self._srv_reboot
+            self.r(Service.MOTOR_ENABLE), MotorEnableReq, MotorEnableRes, self._srv_enable
         )
         self.create_service(
-            Service.MOTOR_SET_PROFILE,
+            self.r(Service.MOTOR_REBOOT), MotorRebootReq, EmptyData, self._srv_reboot
+        )
+        self.create_service(
+            self.r(Service.MOTOR_SET_PROFILE),
             MotorSetProfileReq,
             EmptyData,
             self._srv_set_profile,
         )
         self.create_service(
-            Service.MOTOR_SET_PROFILE_ALL,
+            self.r(Service.MOTOR_SET_PROFILE_ALL),
             MotorSetProfileAllReq,
             EmptyData,
             self._srv_set_profile_all,
         )
         self.create_service(
-            Service.MOTOR_GET_CONFIG, EmptyData, MotorGetConfigRes, self._srv_get_config
+            self.r(Service.MOTOR_GET_CONFIG),
+            EmptyData,
+            MotorGetConfigRes,
+            self._srv_get_config,
         )
         self.create_service(
-            Service.MOTOR_GRIPPER, MotorGripperReq, EmptyData, self._srv_gripper
+            self.r(Service.MOTOR_GRIPPER), MotorGripperReq, EmptyData, self._srv_gripper
         )
 
     # ─── Lifecycle ───────────────────────────────────────────
@@ -176,7 +181,7 @@ class MotorNode(BaseNode):
                     )
                 )
             self.publish(
-                Topic.MOTOR_STATE_JOINT,
+                self.r(Topic.MOTOR_STATE_JOINT),
                 MotorJointState(timestamp=time.time(), joints=joints),
             )
         except Exception as e:

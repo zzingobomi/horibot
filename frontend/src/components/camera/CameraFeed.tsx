@@ -1,13 +1,13 @@
-import { BASE_URL } from "@/constants";
-
-const CAMERA_URL = `${BASE_URL}/camera/stream`;
+import { BASE_URL, DEFAULT_ROBOT_ID } from "@/constants";
 
 interface Props {
   className?: string;
   overlay?: React.ReactNode;
+  robotId?: string;
 }
 
-export function CameraFeed({ className, overlay }: Props) {
+export function CameraFeed({ className, overlay, robotId = DEFAULT_ROBOT_ID }: Props) {
+  const cameraUrl = `${BASE_URL}/robots/${robotId}/camera/stream`;
   return (
     <div
       className={`relative overflow-hidden rounded-lg bg-black ${
@@ -15,7 +15,7 @@ export function CameraFeed({ className, overlay }: Props) {
       }`}
     >
       <img
-        src={CAMERA_URL}
+        src={cameraUrl}
         alt="camera feed"
         className="w-full h-full object-contain"
       />

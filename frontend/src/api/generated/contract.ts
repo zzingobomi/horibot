@@ -6,125 +6,125 @@
 import type { components } from "./types";
 
 export const Topic = {
-  SYSTEM_HEARTBEAT: "omx/system/heartbeat",
-  SYSTEM_LOG: "omx/system/log",
-  MOTOR_STATE_JOINT: "omx/motor/state/joint",
-  MOTOR_CMD_JOINT: "omx/motor/cmd/joint",
-  CAMERA_STATE_STATUS: "omx/camera/state/status",
-  MOTION_STATE_TRAJ: "omx/motion/state/trajectory",
-  DETECTOR_STATE: "omx/detector/state",
-  PERCEPTION_GROUNDED_STATE: "omx/perception/state/grounded",
-  POINTCLOUD_STATE: "omx/pointcloud/state",
-  TASK_STATE: "omx/task/state",
-  TASK_TREE: "omx/task/tree",
-  TASK_STEP_RESULT: "omx/task/step_result",
-  CALIB_HANDEYE_PREVIEW: "omx/calibration/state/handeye_preview",
-  POINTCLOUD_STREAM: "omx/pointcloud/stream",
+  SYSTEM_HEARTBEAT: "horibot/system/heartbeat",
+  SYSTEM_LOG: "horibot/system/log",
+  MOTOR_STATE_JOINT: "horibot/{robot_id}/motor/state/joint",
+  MOTOR_CMD_JOINT: "horibot/{robot_id}/motor/cmd/joint",
+  CAMERA_STATE_STATUS: "horibot/{robot_id}/camera/state/status",
+  MOTION_STATE_TRAJ: "horibot/{robot_id}/motion/state/trajectory",
+  DETECTOR_STATE: "horibot/{robot_id}/detector/state",
+  PERCEPTION_GROUNDED_STATE: "horibot/{robot_id}/perception/state/grounded",
+  POINTCLOUD_STATE: "horibot/{robot_id}/pointcloud/state",
+  TASK_STATE: "horibot/task/state",
+  TASK_TREE: "horibot/task/tree",
+  TASK_STEP_RESULT: "horibot/task/step_result",
+  CALIB_HANDEYE_PREVIEW: "horibot/{robot_id}/calib/state/handeye_preview",
+  POINTCLOUD_STREAM: "horibot/{robot_id}/pointcloud/stream",
 } as const;
 export type TopicKey = (typeof Topic)[keyof typeof Topic];
 
 export const BINARY_TOPICS: ReadonlySet<string> = new Set([
-  "omx/pointcloud/stream",
+  "horibot/{robot_id}/pointcloud/stream",
 ]);
 
 export type TopicPayloadMap = {
-  "omx/system/heartbeat": components["schemas"]["Heartbeat"];
-  "omx/system/log": components["schemas"]["LogMessage"];
-  "omx/motor/state/joint": components["schemas"]["MotorJointState"];
-  "omx/motor/cmd/joint": components["schemas"]["MotorCmd"];
-  "omx/camera/state/status": components["schemas"]["CameraStatus"];
-  "omx/motion/state/trajectory": components["schemas"]["MotionTrajState"];
-  "omx/detector/state": components["schemas"]["DetectorState"];
-  "omx/perception/state/grounded": components["schemas"]["GroundedDetectionResult"];
-  "omx/pointcloud/state": components["schemas"]["PointcloudState"];
-  "omx/task/state": unknown;
-  "omx/task/tree": unknown;
-  "omx/task/step_result": unknown;
-  "omx/calibration/state/handeye_preview": unknown;
+  "horibot/system/heartbeat": components["schemas"]["Heartbeat"];
+  "horibot/system/log": components["schemas"]["LogMessage"];
+  "horibot/{robot_id}/motor/state/joint": components["schemas"]["MotorJointState"];
+  "horibot/{robot_id}/motor/cmd/joint": components["schemas"]["MotorCmd"];
+  "horibot/{robot_id}/camera/state/status": components["schemas"]["CameraStatus"];
+  "horibot/{robot_id}/motion/state/trajectory": components["schemas"]["MotionTrajState"];
+  "horibot/{robot_id}/detector/state": components["schemas"]["DetectorState"];
+  "horibot/{robot_id}/perception/state/grounded": components["schemas"]["GroundedDetectionResult"];
+  "horibot/{robot_id}/pointcloud/state": components["schemas"]["PointcloudState"];
+  "horibot/task/state": unknown;
+  "horibot/task/tree": unknown;
+  "horibot/task/step_result": unknown;
+  "horibot/{robot_id}/calib/state/handeye_preview": unknown;
 };
 
 export const ServiceKey = {
-  MOTOR_ENABLE: "omx/motor/srv/enable",
-  MOTOR_REBOOT: "omx/motor/srv/reboot",
-  MOTOR_SET_PROFILE: "omx/motor/srv/set_profile",
-  MOTOR_GET_CONFIG: "omx/motor/srv/get_config",
-  MOTION_GET_TCP: "omx/motion/srv/get_tcp",
-  MOTION_MOVE_TCP: "omx/motion/srv/move_tcp",
-  MOTION_MOVE_J: "omx/motion/srv/move_j",
-  MOTION_MOVE_L: "omx/motion/srv/move_l",
-  MOTION_MOVE_C: "omx/motion/srv/move_c",
-  MOTION_MOVE_P: "omx/motion/srv/move_p",
-  MOTION_STOP: "omx/motion/srv/stop",
-  PERCEPTION_GROUNDED_DETECT: "omx/perception/srv/grounded_detect",
-  CALIB_CAPTURE: "omx/calib/srv/capture",
-  CALIB_INTRINSIC_START: "omx/calib/srv/intrinsic/start",
-  CALIB_INTRINSIC_SAVE: "omx/calib/srv/intrinsic/save",
-  CALIB_HANDEYE_CAPTURE: "omx/calib/srv/handeye/capture",
-  CALIB_HANDEYE_RESET: "omx/calib/srv/handeye/reset",
-  CALIB_HANDEYE_COMMIT: "omx/calib/srv/handeye/commit",
-  CALIB_HANDEYE_LIST_POSES: "omx/calib/srv/handeye/list_poses",
-  CALIB_HANDEYE_PREVIEW_ENABLE: "omx/calib/srv/handeye/preview_enable",
-  TASK_STOP: "omx/task/srv/stop",
-  TASK_PAUSE: "omx/task/srv/pause",
-  TASK_RESUME: "omx/task/srv/resume",
-  TASK_STEP: "omx/task/srv/step",
-  TASK_RUN_TO: "omx/task/srv/run_to",
-  TASK_TOGGLE_BREAKPOINT: "omx/task/srv/toggle_breakpoint",
-  POINTCLOUD_CONFIGURE: "omx/pointcloud/srv/configure",
-  POINTCLOUD_NEW_SESSION: "omx/pointcloud/srv/new_session",
-  POINTCLOUD_CAPTURE: "omx/pointcloud/srv/capture",
-  POINTCLOUD_LIST_SESSIONS: "omx/pointcloud/srv/list_sessions",
-  POINTCLOUD_LIST_SCANS: "omx/pointcloud/srv/list_scans",
-  POINTCLOUD_DELETE_SCAN: "omx/pointcloud/srv/delete_scan",
-  POINTCLOUD_BUILD_MESH: "omx/pointcloud/srv/build_mesh",
-  POINTCLOUD_LIST_MESHES: "omx/pointcloud/srv/list_meshes",
-  TASK_RUN: "omx/task/srv/run",
-  TASK_STATUS: "omx/task/srv/status",
-  TASK_PREVIEW: "omx/task/srv/preview",
-  CALIB_HANDEYE_COMPUTE: "omx/calib/srv/handeye/compute",
-  CALIB_HANDEYE_THRESHOLDS: "omx/calib/srv/handeye/thresholds",
+  MOTOR_ENABLE: "horibot/{robot_id}/motor/srv/enable",
+  MOTOR_REBOOT: "horibot/{robot_id}/motor/srv/reboot",
+  MOTOR_SET_PROFILE: "horibot/{robot_id}/motor/srv/set_profile",
+  MOTOR_GET_CONFIG: "horibot/{robot_id}/motor/srv/get_config",
+  MOTION_GET_TCP: "horibot/{robot_id}/motion/srv/get_tcp",
+  MOTION_MOVE_TCP: "horibot/{robot_id}/motion/srv/move_tcp",
+  MOTION_MOVE_J: "horibot/{robot_id}/motion/srv/move_j",
+  MOTION_MOVE_L: "horibot/{robot_id}/motion/srv/move_l",
+  MOTION_MOVE_C: "horibot/{robot_id}/motion/srv/move_c",
+  MOTION_MOVE_P: "horibot/{robot_id}/motion/srv/move_p",
+  MOTION_STOP: "horibot/{robot_id}/motion/srv/stop",
+  PERCEPTION_GROUNDED_DETECT: "horibot/{robot_id}/perception/srv/grounded_detect",
+  CALIB_CAPTURE: "horibot/{robot_id}/calib/srv/capture",
+  CALIB_INTRINSIC_START: "horibot/{robot_id}/calib/srv/intrinsic/start",
+  CALIB_INTRINSIC_SAVE: "horibot/{robot_id}/calib/srv/intrinsic/save",
+  CALIB_HANDEYE_CAPTURE: "horibot/{robot_id}/calib/srv/handeye/capture",
+  CALIB_HANDEYE_RESET: "horibot/{robot_id}/calib/srv/handeye/reset",
+  CALIB_HANDEYE_COMMIT: "horibot/{robot_id}/calib/srv/handeye/commit",
+  CALIB_HANDEYE_LIST_POSES: "horibot/{robot_id}/calib/srv/handeye/list_poses",
+  CALIB_HANDEYE_PREVIEW_ENABLE: "horibot/{robot_id}/calib/srv/handeye/preview_enable",
+  TASK_STOP: "horibot/task/srv/stop",
+  TASK_PAUSE: "horibot/task/srv/pause",
+  TASK_RESUME: "horibot/task/srv/resume",
+  TASK_STEP: "horibot/task/srv/step",
+  TASK_RUN_TO: "horibot/task/srv/run_to",
+  TASK_TOGGLE_BREAKPOINT: "horibot/task/srv/toggle_breakpoint",
+  POINTCLOUD_CONFIGURE: "horibot/{robot_id}/pointcloud/srv/configure",
+  POINTCLOUD_NEW_SESSION: "horibot/{robot_id}/pointcloud/srv/new_session",
+  POINTCLOUD_CAPTURE: "horibot/{robot_id}/pointcloud/srv/capture",
+  POINTCLOUD_LIST_SESSIONS: "horibot/{robot_id}/pointcloud/srv/list_sessions",
+  POINTCLOUD_LIST_SCANS: "horibot/{robot_id}/pointcloud/srv/list_scans",
+  POINTCLOUD_DELETE_SCAN: "horibot/{robot_id}/pointcloud/srv/delete_scan",
+  POINTCLOUD_BUILD_MESH: "horibot/{robot_id}/pointcloud/srv/build_mesh",
+  POINTCLOUD_LIST_MESHES: "horibot/{robot_id}/pointcloud/srv/list_meshes",
+  TASK_RUN: "horibot/task/srv/run",
+  TASK_STATUS: "horibot/task/srv/status",
+  TASK_PREVIEW: "horibot/task/srv/preview",
+  CALIB_HANDEYE_COMPUTE: "horibot/{robot_id}/calib/srv/handeye/compute",
+  CALIB_HANDEYE_THRESHOLDS: "horibot/{robot_id}/calib/srv/handeye/thresholds",
 } as const;
 export type ServiceKeyValue = (typeof ServiceKey)[keyof typeof ServiceKey];
 
 export type ServiceMap = {
-  "omx/motor/srv/enable": { req: components["schemas"]["MotorEnableReq"]; res: components["schemas"]["MotorEnableRes"] };
-  "omx/motor/srv/reboot": { req: components["schemas"]["MotorRebootReq"]; res: Record<string, never> };
-  "omx/motor/srv/set_profile": { req: components["schemas"]["MotorSetProfileReq"]; res: Record<string, never> };
-  "omx/motor/srv/get_config": { req: Record<string, never>; res: components["schemas"]["MotorGetConfigRes"] };
-  "omx/motion/srv/get_tcp": { req: Record<string, never>; res: components["schemas"]["MotionTcpPose"] };
-  "omx/motion/srv/move_tcp": { req: components["schemas"]["MoveTcpReq"]; res: Record<string, never> };
-  "omx/motion/srv/move_j": { req: components["schemas"]["MoveJReq"]; res: Record<string, never> };
-  "omx/motion/srv/move_l": { req: components["schemas"]["MoveLReq"]; res: Record<string, never> };
-  "omx/motion/srv/move_c": { req: components["schemas"]["MoveCReq"]; res: Record<string, never> };
-  "omx/motion/srv/move_p": { req: components["schemas"]["MovePReq"]; res: Record<string, never> };
-  "omx/motion/srv/stop": { req: Record<string, never>; res: Record<string, never> };
-  "omx/perception/srv/grounded_detect": { req: components["schemas"]["GroundedDetectReq"]; res: components["schemas"]["GroundedDetectionResult"] };
-  "omx/calib/srv/capture": { req: components["schemas"]["CalibCaptureReq"]; res: components["schemas"]["CalibCaptureRes"] };
-  "omx/calib/srv/intrinsic/start": { req: Record<string, never>; res: Record<string, never> };
-  "omx/calib/srv/intrinsic/save": { req: Record<string, never>; res: components["schemas"]["IntrinsicSaveRes"] };
-  "omx/calib/srv/handeye/capture": { req: Record<string, never>; res: components["schemas"]["HandeyeCaptureRes"] };
-  "omx/calib/srv/handeye/reset": { req: Record<string, never>; res: components["schemas"]["HandeyeResetRes"] };
-  "omx/calib/srv/handeye/commit": { req: Record<string, never>; res: components["schemas"]["HandeyeCommitRes"] };
-  "omx/calib/srv/handeye/list_poses": { req: Record<string, never>; res: components["schemas"]["HandeyeListPosesRes"] };
-  "omx/calib/srv/handeye/preview_enable": { req: components["schemas"]["HandeyePreviewEnableReq"]; res: components["schemas"]["HandeyePreviewEnableRes"] };
-  "omx/task/srv/stop": { req: Record<string, never>; res: Record<string, never> };
-  "omx/task/srv/pause": { req: Record<string, never>; res: Record<string, never> };
-  "omx/task/srv/resume": { req: Record<string, never>; res: Record<string, never> };
-  "omx/task/srv/step": { req: Record<string, never>; res: Record<string, never> };
-  "omx/task/srv/run_to": { req: components["schemas"]["TaskStepIdReq"]; res: Record<string, never> };
-  "omx/task/srv/toggle_breakpoint": { req: components["schemas"]["TaskStepIdReq"]; res: Record<string, never> };
-  "omx/pointcloud/srv/configure": { req: components["schemas"]["PointcloudConfigureReq"]; res: components["schemas"]["PointcloudConfigureRes"] };
-  "omx/pointcloud/srv/new_session": { req: components["schemas"]["PointcloudNewSessionReq"]; res: components["schemas"]["PointcloudNewSessionRes"] };
-  "omx/pointcloud/srv/capture": { req: components["schemas"]["PointcloudCaptureReq"]; res: components["schemas"]["PointcloudCaptureRes"] };
-  "omx/pointcloud/srv/list_sessions": { req: Record<string, never>; res: components["schemas"]["PointcloudListSessionsRes"] };
-  "omx/pointcloud/srv/list_scans": { req: components["schemas"]["PointcloudListScansReq"]; res: components["schemas"]["PointcloudListScansRes"] };
-  "omx/pointcloud/srv/delete_scan": { req: components["schemas"]["PointcloudDeleteScanReq"]; res: components["schemas"]["PointcloudDeleteScanRes"] };
-  "omx/pointcloud/srv/build_mesh": { req: components["schemas"]["PointcloudBuildMeshReq"]; res: components["schemas"]["PointcloudBuildMeshRes"] };
-  "omx/pointcloud/srv/list_meshes": { req: Record<string, never>; res: components["schemas"]["PointcloudListMeshesRes"] };
-  "omx/task/srv/run": { req: unknown; res: unknown };
-  "omx/task/srv/status": { req: Record<string, never>; res: unknown };
-  "omx/task/srv/preview": { req: unknown; res: unknown };
-  "omx/calib/srv/handeye/compute": { req: unknown; res: unknown };
-  "omx/calib/srv/handeye/thresholds": { req: Record<string, never>; res: unknown };
+  "horibot/{robot_id}/motor/srv/enable": { req: components["schemas"]["MotorEnableReq"]; res: components["schemas"]["MotorEnableRes"] };
+  "horibot/{robot_id}/motor/srv/reboot": { req: components["schemas"]["MotorRebootReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motor/srv/set_profile": { req: components["schemas"]["MotorSetProfileReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motor/srv/get_config": { req: Record<string, never>; res: components["schemas"]["MotorGetConfigRes"] };
+  "horibot/{robot_id}/motion/srv/get_tcp": { req: Record<string, never>; res: components["schemas"]["MotionTcpPose"] };
+  "horibot/{robot_id}/motion/srv/move_tcp": { req: components["schemas"]["MoveTcpReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motion/srv/move_j": { req: components["schemas"]["MoveJReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motion/srv/move_l": { req: components["schemas"]["MoveLReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motion/srv/move_c": { req: components["schemas"]["MoveCReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motion/srv/move_p": { req: components["schemas"]["MovePReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motion/srv/stop": { req: Record<string, never>; res: Record<string, never> };
+  "horibot/{robot_id}/perception/srv/grounded_detect": { req: components["schemas"]["GroundedDetectReq"]; res: components["schemas"]["GroundedDetectionResult"] };
+  "horibot/{robot_id}/calib/srv/capture": { req: components["schemas"]["CalibCaptureReq"]; res: components["schemas"]["CalibCaptureRes"] };
+  "horibot/{robot_id}/calib/srv/intrinsic/start": { req: Record<string, never>; res: Record<string, never> };
+  "horibot/{robot_id}/calib/srv/intrinsic/save": { req: Record<string, never>; res: components["schemas"]["IntrinsicSaveRes"] };
+  "horibot/{robot_id}/calib/srv/handeye/capture": { req: Record<string, never>; res: components["schemas"]["HandeyeCaptureRes"] };
+  "horibot/{robot_id}/calib/srv/handeye/reset": { req: Record<string, never>; res: components["schemas"]["HandeyeResetRes"] };
+  "horibot/{robot_id}/calib/srv/handeye/commit": { req: Record<string, never>; res: components["schemas"]["HandeyeCommitRes"] };
+  "horibot/{robot_id}/calib/srv/handeye/list_poses": { req: Record<string, never>; res: components["schemas"]["HandeyeListPosesRes"] };
+  "horibot/{robot_id}/calib/srv/handeye/preview_enable": { req: components["schemas"]["HandeyePreviewEnableReq"]; res: components["schemas"]["HandeyePreviewEnableRes"] };
+  "horibot/task/srv/stop": { req: Record<string, never>; res: Record<string, never> };
+  "horibot/task/srv/pause": { req: Record<string, never>; res: Record<string, never> };
+  "horibot/task/srv/resume": { req: Record<string, never>; res: Record<string, never> };
+  "horibot/task/srv/step": { req: Record<string, never>; res: Record<string, never> };
+  "horibot/task/srv/run_to": { req: components["schemas"]["TaskStepIdReq"]; res: Record<string, never> };
+  "horibot/task/srv/toggle_breakpoint": { req: components["schemas"]["TaskStepIdReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/pointcloud/srv/configure": { req: components["schemas"]["PointcloudConfigureReq"]; res: components["schemas"]["PointcloudConfigureRes"] };
+  "horibot/{robot_id}/pointcloud/srv/new_session": { req: components["schemas"]["PointcloudNewSessionReq"]; res: components["schemas"]["PointcloudNewSessionRes"] };
+  "horibot/{robot_id}/pointcloud/srv/capture": { req: components["schemas"]["PointcloudCaptureReq"]; res: components["schemas"]["PointcloudCaptureRes"] };
+  "horibot/{robot_id}/pointcloud/srv/list_sessions": { req: Record<string, never>; res: components["schemas"]["PointcloudListSessionsRes"] };
+  "horibot/{robot_id}/pointcloud/srv/list_scans": { req: components["schemas"]["PointcloudListScansReq"]; res: components["schemas"]["PointcloudListScansRes"] };
+  "horibot/{robot_id}/pointcloud/srv/delete_scan": { req: components["schemas"]["PointcloudDeleteScanReq"]; res: components["schemas"]["PointcloudDeleteScanRes"] };
+  "horibot/{robot_id}/pointcloud/srv/build_mesh": { req: components["schemas"]["PointcloudBuildMeshReq"]; res: components["schemas"]["PointcloudBuildMeshRes"] };
+  "horibot/{robot_id}/pointcloud/srv/list_meshes": { req: Record<string, never>; res: components["schemas"]["PointcloudListMeshesRes"] };
+  "horibot/task/srv/run": { req: unknown; res: unknown };
+  "horibot/task/srv/status": { req: Record<string, never>; res: unknown };
+  "horibot/task/srv/preview": { req: unknown; res: unknown };
+  "horibot/{robot_id}/calib/srv/handeye/compute": { req: unknown; res: unknown };
+  "horibot/{robot_id}/calib/srv/handeye/thresholds": { req: Record<string, never>; res: unknown };
 };
 

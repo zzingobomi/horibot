@@ -44,8 +44,8 @@ DEPTH_TRUNC = 1.0  # m
 
 
 class PointCloudNode(BaseNode):
-    def __init__(self) -> None:
-        super().__init__("pointcloud_node")
+    def __init__(self, robot_id: str | None = None) -> None:
+        super().__init__("pointcloud_node", robot_id=robot_id)
         self._cfg_lock = threading.Lock()
         self._enabled = False
         self._voxel_size = DEFAULT_VOXEL_SIZE
@@ -59,65 +59,65 @@ class PointCloudNode(BaseNode):
         self._capture_lock = threading.Lock()
 
         # ─── arm config + motor state cache ───
-        _, motor_cfgs = load_motor_config()
+        _, motor_cfgs = load_motor_config(robot_id)
         self._arm_cfgs = [m for m in motor_cfgs if m.id != GRIPPER_ID]
         self._cache = JointStateCache()
 
     def start(self) -> None:
         # configure
         self.create_service(
-            Service.POINTCLOUD_CONFIGURE,
+            self.r(Service.POINTCLOUD_CONFIGURE),
             PointcloudConfigureReq,
             PointcloudConfigureRes,
             self._srv_configure,
         )
         # capture
         self.create_service(
-            Service.POINTCLOUD_NEW_SESSION,
+            self.r(Service.POINTCLOUD_NEW_SESSION),
             PointcloudNewSessionReq,
             PointcloudNewSessionRes,
             self._srv_new_session,
         )
         self.create_service(
-            Service.POINTCLOUD_CAPTURE,
+            self.r(Service.POINTCLOUD_CAPTURE),
             PointcloudCaptureReq,
             PointcloudCaptureRes,
             self._srv_capture,
         )
         self.create_service(
-            Service.POINTCLOUD_LIST_SESSIONS,
+            self.r(Service.POINTCLOUD_LIST_SESSIONS),
             EmptyData,
             PointcloudListSessionsRes,
             self._srv_list_sessions,
         )
         self.create_service(
-            Service.POINTCLOUD_LIST_SCANS,
+            self.r(Service.POINTCLOUD_LIST_SCANS),
             PointcloudListScansReq,
             PointcloudListScansRes,
             self._srv_list_scans,
         )
         self.create_service(
-            Service.POINTCLOUD_DELETE_SCAN,
+            self.r(Service.POINTCLOUD_DELETE_SCAN),
             PointcloudDeleteScanReq,
             PointcloudDeleteScanRes,
             self._srv_delete_scan,
         )
         # TSDF
         self.create_service(
-            Service.POINTCLOUD_BUILD_MESH,
+            self.r(Service.POINTCLOUD_BUILD_MESH),
             PointcloudBuildMeshReq,
             PointcloudBuildMeshRes,
             self._srv_build_mesh,
         )
         self.create_service(
-            Service.POINTCLOUD_LIST_MESHES,
+            self.r(Service.POINTCLOUD_LIST_MESHES),
             EmptyData,
             PointcloudListMeshesRes,
             self._srv_list_meshes,
         )
         # depth frame subscriber
         self.create_raw_subscriber(
-            Topic.CAMERA_DEPTH_FRAME, self._on_depth_frame)
+            self.r(Topic.CAMERA_DEPTH_FRAME), self._on_depth_frame)
 
         super().start()
         self._cache.subscribe(self)
@@ -159,7 +159,7 @@ class PointCloudNode(BaseNode):
         if data.enabled is not None:
             target = data.enabled
             res = self.call_service(
-                Service.CAMERA_SET_DEPTH_STREAM,
+                self.r(Service.CAMERA_SET_DEPTH_STREAM),
                 CameraSetDepthStreamReq(enabled=target),
                 CameraSetDepthStreamRes,
             )
@@ -186,7 +186,7 @@ class PointCloudNode(BaseNode):
     def _publish_state(self) -> None:
         with self._cfg_lock:
             self.publish(
-                Topic.POINTCLOUD_STATE,
+                self.r(Topic.POINTCLOUD_STATE),
                 PointcloudState(
                     timestamp=time.time(),
                     enabled=self._enabled,
@@ -497,7 +497,7 @@ class PointCloudNode(BaseNode):
                 continue
 
             try:
-                self.session.put(Topic.POINTCLOUD_STREAM, payload)
+                self.session.put(self.r(Topic.POINTCLOUD_STREAM), payload)
                 last_processed_ts = frame.timestamp
             except Exception as e:
                 logger.warning(f"포인트클라우드 발행 실패: {e}")

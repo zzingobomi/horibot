@@ -49,15 +49,15 @@ class JointStateCache:
     def subscribe(self, node: "BaseNode", robot_id: str | None = None) -> None:
         """해당 robot 의 motor state 토픽 구독. None 이면 default robot.
 
-        TODO (todo 10): robot 별 토픽 namespace 분리 시 Topic.MOTOR_STATE_JOINT 가
-        함수형 (`Topic.motor_state_joint(robot_id)`) 으로 변경되면 호출도 갱신.
+        Topic.MOTOR_STATE_JOINT 가 `horibot/{robot_id}/motor/state/joint` template
+        — 명시적 rid 로 expand (node.robot_id 와 다를 수 있어 self.r 사용 X).
         """
         rid = self._resolve(robot_id)
         if rid in self._subscribed_robots:
             return
         self._subscribed_robots.add(rid)
         node.create_subscriber(
-            Topic.MOTOR_STATE_JOINT,
+            Topic.MOTOR_STATE_JOINT.format(robot_id=rid),
             lambda data, _rid=rid: self._on_motor_state(_rid, data),
         )
 

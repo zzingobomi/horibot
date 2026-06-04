@@ -320,8 +320,13 @@ class StepContext:
     ) -> "ServiceResponse[ResT]": ...
 
     def call_service(self, key, data, *args, **kwargs):  # type: ignore[no-untyped-def]
-        """BaseNode.call_service 의 passthrough — dict / typed 두 형태 모두 지원."""
-        return self.node.call_service(key, data, *args, **kwargs)
+        """BaseNode.call_service 의 passthrough — dict / typed 두 형태 모두 지원.
+
+        key 가 robot-scoped template (`horibot/{robot_id}/...`) 이면 node.r() 로
+        expand. step 코드는 그대로 `Service.MOTION_MOVE_L` 같은 raw template
+        넘김 — multi-robot 진입 시 step 이 robot 명시 가능하도록 reversible.
+        """
+        return self.node.call_service(self.node.r(key), data, *args, **kwargs)
 
     def call_motion(
         self, key: str, data: BaseModel, timeout: float = 5.0

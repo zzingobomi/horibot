@@ -55,8 +55,8 @@ PREVIEW_INTERVAL = 0.2  # 5Hz
 
 
 class CalibrationNode(BaseNode):
-    def __init__(self) -> None:
-        super().__init__("calibration_node")
+    def __init__(self, robot_id: str | None = None) -> None:
+        super().__init__("calibration_node", robot_id=robot_id)
 
         self._frame_cache = FrameCache()
         self.intrinsic = IntrinsicCalibration()
@@ -64,7 +64,7 @@ class CalibrationNode(BaseNode):
         self.pose_estimator = PoseEstimator()
         self.solver = PybulletSolver()
 
-        _, motor_cfgs = load_motor_config()
+        _, motor_cfgs = load_motor_config(robot_id)
         self._arm_cfgs = [m for m in motor_cfgs if m.id != GRIPPER_ID]
         self._cache = JointStateCache()
         self._cache.subscribe(self)
@@ -84,19 +84,19 @@ class CalibrationNode(BaseNode):
 
         # 내부 캘리브레이션
         self.create_service(
-            Service.CALIB_CAPTURE,
+            self.r(Service.CALIB_CAPTURE),
             CalibCaptureReq,
             CalibCaptureRes,
             self._srv_capture,
         )
         self.create_service(
-            Service.CALIB_INTRINSIC_START,
+            self.r(Service.CALIB_INTRINSIC_START),
             EmptyData,
             EmptyData,
             self._srv_intrinsic_start,
         )
         self.create_service(
-            Service.CALIB_INTRINSIC_SAVE,
+            self.r(Service.CALIB_INTRINSIC_SAVE),
             EmptyData,
             IntrinsicSaveRes,
             self._srv_intrinsic_save,
@@ -104,41 +104,42 @@ class CalibrationNode(BaseNode):
 
         # Hand-Eye 캘리브레이션
         self.create_service(
-            Service.CALIB_HANDEYE_CAPTURE,
+            self.r(Service.CALIB_HANDEYE_CAPTURE),
             EmptyData,
             HandeyeCaptureRes,
             self._srv_handeye_capture,
         )
         self.create_service(
-            Service.CALIB_HANDEYE_RESET,
+            self.r(Service.CALIB_HANDEYE_RESET),
             EmptyData,
             HandeyeResetRes,
             self._srv_handeye_reset,
         )
         # COMPUTE / THRESHOLDS 는 free-form dict 응답 (typed 면제 — typed_messaging.md
         # §마이그레이션 사유: 동적 dict 정확 모델링 어려움). legacy create_service form.
-        self.create_service(Service.CALIB_HANDEYE_COMPUTE,
-                            self._srv_handeye_compute)
         self.create_service(
-            Service.CALIB_HANDEYE_COMMIT,
+            self.r(Service.CALIB_HANDEYE_COMPUTE), self._srv_handeye_compute
+        )
+        self.create_service(
+            self.r(Service.CALIB_HANDEYE_COMMIT),
             EmptyData,
             HandeyeCommitRes,
             self._srv_handeye_commit,
         )
         self.create_service(
-            Service.CALIB_HANDEYE_LIST_POSES,
+            self.r(Service.CALIB_HANDEYE_LIST_POSES),
             EmptyData,
             HandeyeListPosesRes,
             self._srv_handeye_list_poses,
         )
         self.create_service(
-            Service.CALIB_HANDEYE_PREVIEW_ENABLE,
+            self.r(Service.CALIB_HANDEYE_PREVIEW_ENABLE),
             HandeyePreviewEnableReq,
             HandeyePreviewEnableRes,
             self._srv_handeye_preview_enable,
         )
         self.create_service(
-            Service.CALIB_HANDEYE_THRESHOLDS, self._srv_handeye_thresholds
+            self.r(Service.CALIB_HANDEYE_THRESHOLDS), self._srv_handeye_thresholds
         )
 
     def start(self) -> None:
@@ -577,7 +578,7 @@ class CalibrationNode(BaseNode):
                 ret, frame = self._frame_cache.get_frame()
                 if not ret or frame is None:
                     self.publish(
-                        Topic.CALIB_HANDEYE_PREVIEW,
+                        self.r(Topic.CALIB_HANDEYE_PREVIEW),
                         {
                             "timestamp": time.time(),
                             "detected": False,
@@ -634,7 +635,7 @@ class CalibrationNode(BaseNode):
                         except cv2.error:
                             pass
 
-                self.publish(Topic.CALIB_HANDEYE_PREVIEW, payload)
+                self.publish(self.r(Topic.CALIB_HANDEYE_PREVIEW), payload)
             except Exception as e:
                 logger.debug("preview loop 오류: %s", e)
 

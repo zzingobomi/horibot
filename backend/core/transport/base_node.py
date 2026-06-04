@@ -22,13 +22,40 @@ ResT = TypeVar("ResT", bound=BaseModel)
 
 
 class BaseNode:
-    def __init__(self, node_name: str):
+    def __init__(self, node_name: str, robot_id: str | None = None):
+        """robot_id — robot-scoped 노드 (motor / motion / camera / ...) 는
+        담당 robot 의 id 받음. task / gamepad 같은 global 노드는 None.
+
+        `self.r(template)` 가 self.robot_id 로 `{robot_id}` placeholder 채움.
+        global 노드가 robot-scoped key 호출 (task → motion service) 시 self.robot_id
+        가 None 이면 RobotRegistry.default_robot_id() 자동 fallback — N=1 환경 호환.
+        N>=2 환경에서 default() 가 RuntimeError 던져서 자연스러운 fail-fast.
+        """
         self.node_name = node_name
+        self.robot_id = robot_id
         self.session: zenoh.Session = ZenohSession.get()
         self._subscribers: list[zenoh.Subscriber] = []
         self._queryables: list[zenoh.Queryable] = []
         self._running = False
         self._heartbeat_thread: threading.Thread | None = None
+
+    # ─── Topic/Service key expand ────────────────────────────
+
+    def r(self, template: str) -> str:
+        """robot-scoped template 의 `{robot_id}` placeholder 를 expand.
+
+        global template (`horibot/system/...` / `horibot/task/...`) 은 그대로 반환.
+        self.robot_id None + robot-scoped template 인 경우 RobotRegistry.default
+        fallback (N=1 호환). multi-robot 환경에선 default() 가 RuntimeError →
+        caller 가 명시적 robot_id 사용하도록 강제.
+        """
+        if "{robot_id}" not in template:
+            return template
+        if self.robot_id is not None:
+            return template.format(robot_id=self.robot_id)
+        from core.robot.robot_registry import RobotRegistry
+
+        return template.format(robot_id=RobotRegistry().default_robot_id())
 
     # ─── Subscriber ──────────────────────────────────────────
 

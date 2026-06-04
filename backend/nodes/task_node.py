@@ -36,10 +36,12 @@ TASK_REGISTRY: dict[str, Callable[[dict], Task]] = {
 
 
 class TaskNode(BaseNode):
-    def __init__(self) -> None:
-        super().__init__("task_node")
+    def __init__(self, robot_id: str | None = None) -> None:
+        # task 는 global — robot_id 무관. self.r() 가 robot-scoped service
+        # 호출 시 default fallback (N=1).
+        super().__init__("task_node", robot_id=robot_id)
 
-        _, self._motor_cfgs = load_motor_config()
+        _, self._motor_cfgs = load_motor_config(robot_id)
         self._arm_cfgs: list[MotorConfig] = [
             m for m in self._motor_cfgs if m.id != GRIPPER_ID
         ]
@@ -67,30 +69,30 @@ class TaskNode(BaseNode):
 
         # RUN / PREVIEW / STATUS 는 typed 면제 (factory 동적 인자 + tree/state 자유 dict
         # 응답 — typed_messaging.md §마이그레이션 사유). legacy create_service form.
-        self.create_service(Service.TASK_RUN, self._handle_run)
-        self.create_service(Service.TASK_PREVIEW, self._handle_preview)
-        self.create_service(Service.TASK_STATUS, self._handle_status)
+        self.create_service(self.r(Service.TASK_RUN), self._handle_run)
+        self.create_service(self.r(Service.TASK_PREVIEW), self._handle_preview)
+        self.create_service(self.r(Service.TASK_STATUS), self._handle_status)
         # 단순 명령들은 typed
         self.create_service(
-            Service.TASK_STOP, EmptyData, EmptyData, self._handle_stop
+            self.r(Service.TASK_STOP), EmptyData, EmptyData, self._handle_stop
         )
         self.create_service(
-            Service.TASK_PAUSE, EmptyData, EmptyData, self._handle_pause
+            self.r(Service.TASK_PAUSE), EmptyData, EmptyData, self._handle_pause
         )
         self.create_service(
-            Service.TASK_RESUME, EmptyData, EmptyData, self._handle_resume
+            self.r(Service.TASK_RESUME), EmptyData, EmptyData, self._handle_resume
         )
         self.create_service(
-            Service.TASK_STEP, EmptyData, EmptyData, self._handle_step
+            self.r(Service.TASK_STEP), EmptyData, EmptyData, self._handle_step
         )
         self.create_service(
-            Service.TASK_RUN_TO,
+            self.r(Service.TASK_RUN_TO),
             TaskStepIdReq,
             EmptyData,
             self._handle_run_to,
         )
         self.create_service(
-            Service.TASK_TOGGLE_BREAKPOINT,
+            self.r(Service.TASK_TOGGLE_BREAKPOINT),
             TaskStepIdReq,
             EmptyData,
             self._handle_toggle_breakpoint,
@@ -146,7 +148,7 @@ class TaskNode(BaseNode):
         # 트리 구조를 알고 있어야 step_id 매칭 가능. Zenoh put 은 sync 이므로
         # 순서 보장.
         try:
-            self.publish(Topic.TASK_TREE, task_tree(task))
+            self.publish(self.r(Topic.TASK_TREE), task_tree(task))
         except Exception as exc:
             logger.warning("TASK_TREE 발행 실패: %s", exc)
 
@@ -258,7 +260,7 @@ class TaskNode(BaseNode):
 
         tree = task_tree(task)
         try:
-            self.publish(Topic.TASK_TREE, tree)
+            self.publish(self.r(Topic.TASK_TREE), tree)
         except Exception as exc:
             logger.warning("TASK_TREE preview 발행 실패: %s", exc)
 
@@ -268,7 +270,7 @@ class TaskNode(BaseNode):
 
     def _on_state_change(self, state) -> None:
         try:
-            self.publish(Topic.TASK_STATE, state.to_dict())
+            self.publish(self.r(Topic.TASK_STATE), state.to_dict())
         except Exception as exc:
             logger.warning("state 발행 실패: %s", exc)
 

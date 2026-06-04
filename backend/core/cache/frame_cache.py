@@ -54,19 +54,19 @@ class FrameCache:
     def subscribe(self, node: "BaseNode", robot_id: str | None = None) -> None:
         """해당 robot 의 camera 토픽 구독. None 이면 default robot.
 
-        TODO (todo 7): robot 별 토픽 namespace 분리 시 Topic.CAMERA_STREAM_RAW 가
-        함수형 (`Topic.camera_stream_raw(robot_id)`) 으로 변경되면 호출도 갱신.
+        Topic.CAMERA_STREAM_RAW / CAMERA_STATE_STATUS 가 robot-scoped template
+        — 명시적 rid 로 expand.
         """
         rid = self._resolve(robot_id)
         if rid in self._subscribed_robots:
             return
         self._subscribed_robots.add(rid)
         node.create_raw_subscriber(
-            Topic.CAMERA_STREAM_RAW,
+            Topic.CAMERA_STREAM_RAW.format(robot_id=rid),
             lambda payload, _rid=rid: self._on_frame(_rid, payload),
         )
         node.create_subscriber(
-            Topic.CAMERA_STATE_STATUS,
+            Topic.CAMERA_STATE_STATUS.format(robot_id=rid),
             CameraStatus,
             lambda status, _rid=rid: self._on_status(_rid, status),
         )

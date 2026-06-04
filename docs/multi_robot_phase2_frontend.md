@@ -2,7 +2,13 @@
 
 Phase 1 (foundation) 완료 후 남은 자리. [multi_robot_architecture.md §12](multi_robot_architecture.md) 의 Phase 2 의 *frontend / UX / namespace* 슬라이스.
 
-본 문서는 **entry point** — 본격 논의는 새 세션에서 이 문서 보고 시작. 각 섹션은 *현 상태 + 쟁점 + 옵션 sketch* 수준이고 *결정* 은 보류.
+**상태 (2026-06-04 갱신):**
+- §2 페이지 역할 — **결정 완료**. 화면 sketch + 첫 프로토타입 scope 까지 박힘. 추가 논의 X, 바로 구현.
+- §3 멀티로봇 UX — **§2 에 흡수됨**. selector / split view / focus 가 §2 결정에 의해 환원.
+- §1 namespace — **결정 완료**. §2 dependency 로 옵션 거의 자동 결정 (key prefix 필수). 프로토타입 *전* 에 mechanical migration 슬라이스.
+- §4 store — **결정 완료**. §2 / §1 dependency 로 단위 / lifecycle / 점진 전략 자동 결정. dict[robot_id] + 점진 dict 화 (codegen robot_id 처리만 코드 확인 필요).
+
+**원칙**: reversible 결정 (Layer 단위, data source 패턴, Preset 추상화 등) 은 *문서로 정교화하지 않음*. 만들고 만져보면서 발견. irreversible 만 결정문에 적음.
 
 ## §0. 컨텍스트
 
@@ -37,179 +43,293 @@ Phase 1 (foundation) 완료 후 남은 자리. [multi_robot_architecture.md §12
 - Coordinator (multi-robot 동시 동작 조율) — 별도 슬라이스
 - dual-arm 시퀀스 (e.g. 한 로봇이 picks, 다른 로봇이 places) — 별도
 
-## §1. Zenoh Namespace 개편
+## §1. Zenoh Namespace 개편 [DECIDED]
 
-### 현 상태
+### 전제 (§2 → §1 dependency)
 
-토픽 / 서비스 키가 single robot 가정:
+§2 결정이 §1 옵션을 거의 자동으로 좁힘:
 
-```
-omx/motor/state/joint         ← 어느 로봇?
-omx/motor/srv/enable          ← 어느 로봇?
-omx/motion/srv/move_tcp       ← 어느 로봇?
-omx/camera/state/status       ← 어느 카메라? (현재는 omx_f_0 의 D405)
-omx/calib/srv/handeye/capture ← 어느 로봇의 hand-eye?
-omx/task/state                ← global vs 로봇별?
-omx/system/heartbeat          ← global (노드별 발행, robot 무관)
-omx/pointcloud/stream         ← 어느 카메라?
-```
+| §2 결정 | §1 함의 |
+|---|---|
+| World = SSOT, multi-robot 한 scene | Frontend 가 N robot 데이터 동시 구독 → **key 로 robot 필터링 필수** |
+| Robot = Navigation (`/robots/<id>`) | URL prefix ↔ topic prefix 자연 매핑 |
+| Layer 도메인 단위 (RobotLayer 가 N robot 다룸) | topic prefix 로 robot 별 데이터 분리되어야 layer 깔끔 |
+| Task = global | task 토픽 prefix 없음 |
+| Camera 가 wrist 마운트 (instance 별) | Camera 도 robot-scoped |
 
-[`backend/core/transport/topic_map.py`](../backend/core/transport/topic_map.py) 의 모든 키가 `omx/<domain>/...` 형태. 로봇 식별자 없음.
+§1 의 원래 4개 옵션 중 **옵션 2 (도메인별 차등)** 외에는 §2 와 충돌:
+- 옵션 1 (prefix 무차별): task / heartbeat 도 prefix → "Task = global" 어김
+- 옵션 3 (flat + payload): subscriber 필터링 불가 → multi-robot scene 부담 ↑
+- 옵션 4 (하이브리드): 옵션 2 + 옵션 3 — payload validation 자리는 결정문 §4 에 따로
 
-### 쟁점
+### 결정문 (irreversible)
 
-1. **prefix 만 추가**: `omx/<robot_id>/motor/state/joint`
-   - Pro: 변경 최소, 기존 키 끝 부분 보존
-   - Con: 모든 노드 publish 자리에서 `robot_id` 채워야. global topic (heartbeat / system_log) 과 robot-scoped 토픽 구분 필요
-2. **도메인별 차등**:
-   - robot-scoped: `omx/robot/<id>/motor/state/joint`, `omx/robot/<id>/motion/srv/move_tcp`
-   - global: `omx/system/heartbeat`, `omx/task/state` (task 가 robot 별인지 global 인지 별도 결정)
-3. **flat 유지 + payload 안에 `robot_id` 필드** (현 [`BaseRobotMessage`](../backend/core/transport/messages/base.py) 패턴)
-   - Pro: 키 안 바뀜 → frontend 변경 최소
-   - Con: Zenoh subscriber 가 *robot 별 필터링* 못함 — 모든 메시지 받아서 payload 보고 filter. 분산 환경 부담 ↑
-4. **하이브리드**: 키는 robot prefix, payload 도 `robot_id` (validation 용)
+1. **프로젝트 prefix: `omx` → `horibot`**
+   - `omx` 는 OMX_F robot 타입 leftover. 멀티로봇 generalization 에 부적절. 현 프로젝트명 = `horibot` ([CLAUDE.md](../CLAUDE.md) 상단, working directory).
 
-### 결정해야 할 자리
+2. **도메인별 차등 namespace**:
 
-- robot-scoped vs global 토픽 분류 (전체 35+ 토픽/서비스)
-- prefix 위치 (`omx/<id>/...` vs `omx/robot/<id>/...`)
-- task 가 robot 별인지 global 인지 (한 task 가 N robot 조작 시?)
-- Coordinator (Phase 2 의 별도 슬라이스) 토픽이 robot prefix 위에 어떻게 얹히나
-- 마이그레이션 — 한 번에 갈아엎기 vs 점진 (backward compat 토픽 2벌 publish?)
+   ```
+   robot-scoped:  horibot/<robot_id>/motor/...        (state/joint, cmd/joint, srv/enable, ...)
+                  horibot/<robot_id>/motion/...       (state/trajectory, srv/move_j, move_l, move_tcp, ...)
+                  horibot/<robot_id>/camera/...       (state/status, stream/raw, stream/depth_frame, srv/set_depth_stream, ...)
+                  horibot/<robot_id>/calib/...        (srv/handeye/capture, srv/handeye/commit, state/...)
+                  horibot/<robot_id>/pointcloud/...   (stream, state, srv/capture, srv/build_mesh, ...)
+                  horibot/<robot_id>/detector/...     (state, srv/detect)
+
+   global:        horibot/task/...                    (tree, state, step_result, srv/run, srv/pause, ...)
+                  horibot/system/heartbeat
+                  horibot/system/log
+   ```
+
+   Detector 는 robot-scoped — 한 robot+camera 쌍에 종속 (CAMERA_STREAM_RAW 구독 + MOTION_GET_TCP 호출 + 그 robot base frame 으로 detection 출력).
+
+3. **Prefix 위치: `horibot/<robot_id>/<domain>/...`**
+   - `horibot/robot/<id>/...` 같은 `robot` 키워드 X. robot_id 자체가 `omx_f_0` / `so101_0` 처럼 unique 해서 키워드 불필요. ROS2 `/<robot_name>/joint_states` 와 같은 패턴.
+
+4. **Payload 의 `robot_id` 필드 ([`BaseRobotMessage`](../backend/core/transport/messages/base.py)): 유지**
+   - key 의 prefix 와 redundant 하지만 validation / debug / log 용. 제거는 reversible — 필요해지면 그때.
+
+5. **외부 고정 카메라 추가 시**: 별도 namespace `horibot/world/camera/<cam_id>/...` (아직 없음 — 도착하면 추가).
+
+6. **Heartbeat / system_log**: payload 의 `node_id` 로 식별. 노드가 어느 robot 담당인지는 node identity 로 역추적.
+
+7. **Migration: 한 번에 갈아엎기**
+   - N=1, solo project → backward compat shim 불필요
+   - 같은 슬라이스에서 `omx → horibot` + `<robot_id>` prefix 동시 적용
+   - 프로토타입 (§2) *전* 에 진행 — 안 그러면 새 코드 `omx/...` 로 짜고 바로 다시 쓰기
+
+### 영향 자리 (mechanical refactor)
+
+- [`backend/core/transport/topic_map.py`](../backend/core/transport/topic_map.py) — `Topic` / `Service` 클래스 키 문자열 전부 갱신.
+  - robot-scoped 키: `@staticmethod` 패턴. e.g. `Topic.motor_state_joint(robot_id: str) -> str: return f"horibot/{robot_id}/motor/state/joint"`.
+  - global 키: 0-arg `@staticmethod` 또는 class attribute (호출 측 `Topic.task_state()` 또는 `Topic.TASK_STATE`). 일관성을 위해 *모두 staticmethod* 권장.
+- [`frontend/src/constants/topics.ts`](../frontend/src/constants/topics.ts) — 동기 갱신. 같은 staticmethod 패턴 (TS 의 `static`).
+- [`backend/bridge/zenoh_bridge.py`](../backend/bridge/zenoh_bridge.py) — `_ALWAYS_SUBSCRIBE` 자리. MJPEG HTTP 라우트 `/camera/stream` → **`/robots/<robot_id>/camera/stream`** (frontend URL `/robots/<id>` 와 일관, RESTful).
+- 각 노드 (`backend/nodes/*.py`) — `BaseNode` publish / subscribe / service create 자리에서 `robot_id` 채움. `RobotConfig` 에서 가져옴.
+- [`backend/core/transport/messages/base.py`](../backend/core/transport/messages/base.py) — `BaseRobotMessage.robot_id` 유지 (위 결정 4).
+- typed_messaging codegen — robot_id key 자동 반영되는지 Slice A 시작 시 확인. 안 되면 codegen template 갱신 (이 자리만 진짜 deferred).
 
 ### 참조
 
 - [multi_robot_architecture.md §토픽 namespace 재설계 candidate](multi_robot_architecture.md)
-- ROS2 의 namespace 패턴 (`/<robot_name>/joint_states`) — 산업 표준 참고
+- ROS2 의 namespace 패턴 (`/<robot_name>/joint_states`) — 산업 표준
 
-## §2. 페이지 역할 기획
+## §2. 페이지 역할 기획 [DECIDED]
 
-### 현 상태
+### 한 문장 요약
 
-[frontend/src/pages/](../frontend/src/pages/) 의 메뉴들 — 책임 / 사용자 동작이 *명확하지 않음*.
+> 로봇 여러 대가 있는 하나의 작업 셀(World)을 보여주는 3D 씬은 하나만 만들고, Robots / World / Tasks 페이지는 그 씬을 서로 다른 관점으로 보는 UI 프리셋이다.
 
-| 페이지 | 추정 책임 | 모호한 자리 |
-|---|---|---|
-| Dashboard | 시스템 상태 한눈에 | 어떤 *상태* 가 중요한가? 로봇별 모터/모션 상태? 노드 heartbeat? 시각화? |
-| Workspace3D | 3D 디지털 트윈 + teleop | dashboard 와 겹침? teleop 어디서? |
-| Motion | move_j / move_l 컨트롤 | Workspace3D 의 부분집합? 독립 페이지? |
-| Calibration | 캘 캡처 / commit | intrinsic / hand-eye / 표시 / TSDF mesh build — 한 페이지에 다 들어가나? |
-| Task | task 디버거 / 실행 | task tree 시각화? RUN/PAUSE/STEP 컨트롤? log? |
-| ... | | |
+### 결정문 (irreversible)
 
-### 쟁점
+1. **World = SSOT** — 시스템의 현실 매핑 단위는 World 하나. Robot / Camera / PointCloud / Mesh / Object 모두 World 안에 존재. 캘리브레이션도 결국 `world ↔ robot` / `world ↔ camera` 관계 수정.
+2. **Single `WorldScene`** — R3F scene graph 는 *한 벌*. 페이지마다 별도 scene 만들지 않음. 페이지 차이는 *camera preset + visible layers + side panels* 로 표현. (이유: scene 두 벌 만들면 6개월 안에 95% 동일해지면서 sync 지옥. 또 "현실이 하나니까 모델도 하나" 라는 도메인 reasoning.)
+3. **Pages = 사용자 의도 단위** — `Dashboard / Robots / World / Tasks`. 각 페이지는 `(layer set, view state, panel set)` 의 preset.
+4. **Task = global** — task 가 robot 을 포함 (task 자체는 robot-scoped 아님). Tasks 페이지에 robot selector 없음. §1 namespace 의 task scope 질문도 이 결정으로 환원.
+5. **Focus Robot = Navigation** — `/robots/so101_0` URL 자체가 focus 를 인코딩. selector 별도 UI 없음. 메뉴에서 로봇 클릭 = focus 변경.
+6. **Layer 단위 = 도메인 default** — `<RobotLayer />` / `<PointCloudLayer />` / `<MeshLayer />` / `<CalibrationLayer />` / `<DetectionLayer />` / `<TaskLayer />`. 객체 단위로 잘게 쪼개지 않음 (필요 시 internal sub-toggle). 이유: "import 한 줄 = 도메인 전체" 가 자연스러움.
+7. **3D 객체 → Layer, 폼/버튼 → Panel** — 예: Calibration 의 `CameraFrustum / Checkerboard / HandEyeAxes` 는 `<CalibrationLayer />`, `Capture / Commit / Reject` 버튼은 `<CalibrationPanel />`.
 
-1. **페이지 = 사용자 작업 단계** vs **페이지 = 기능 그룹**:
-   - 전자: "캘 캡처 중인 사용자", "task 디버깅 중인 사용자" 등 시나리오 기반
-   - 후자: 현재 — 도메인별 (motion / calibration / task) 묶음
-2. **Workspace3D 의 위상** — 다른 페이지의 *상위* (모든 페이지가 그 위에 패널)? 아니면 독립 페이지?
-3. **Dashboard 의 위치** — 진짜 *시작 화면* (어디로 갈지 결정) vs 단순 status overview
-4. **사용자 시나리오 명문화 필요**:
-   - "캘리브레이션 새로 잡는 시나리오" — 어떤 페이지 흐름?
-   - "teleop 으로 데모하는 시나리오" — 어떤 페이지?
-   - "task 디버깅 시나리오" — 어떤 페이지?
-   - "scan + TSDF build 시나리오" — 어떤 페이지?
-   - "여러 로봇 동시 운영 시나리오" — 어떤 페이지? (§3 와 연결)
+### 화면 sketch
 
-### 결정해야 할 자리
+#### 왼쪽 메뉴
 
-- 사용자 시나리오 enumeration (5–10개)
-- 각 시나리오의 페이지 흐름
-- 페이지 간 *상태 공유* 자리 (선택된 로봇 / pose / detection 등이 페이지 이동해도 유지?)
-- 페이지 추가/제거/통합 결정
+```
+Dashboard
+Robots
+  ├─ omx_f_0
+  ├─ so101_0
+  └─ so101_1
+World
+Tasks
+  └─ <task list>
+```
 
-## §3. 멀티로봇 UX
+Robots / Tasks 하위는 `robots.yaml` / task registry 에서 자동 enumeration. 로봇 / task 추가 = registry entry 추가 = 메뉴 자동 갱신.
 
-### 현 상태
+#### `Robots > so101_0` (`/robots/so101_0`)
 
-UI 가 *single robot 가정* — 로봇 선택 자리 없음. 모든 store / 컴포넌트가 *그* 로봇 (현 `omx_f_0`) 만 가정.
+```
++-----------------------------------------+
+|                                         |
+|            WorldScene                   |
+|        (camera = focus on so101_0)      |
+|        (다른 로봇 dim / 숨김)            |
+|                                         |
++-------------------+---------------------+
+| Motion Panel      | Calibration Panel   |
+| MoveJ / MoveL     | Capture / Commit    |
+| Home / Teleop     | Status              |
++-------------------+---------------------+
+```
 
-### 쟁점
+- Layer set: `Robot / PointCloud / Calibration`
+- View state: `focus=so101_0, cameraPreset=orbit_focus, dimOthers=true`
+- Panels: `Motion / Calibration / Camera / Diagnostics`
+- 명령 권한: focus robot 에만 허용 (다른 로봇 토크 실수 방지)
 
-1. **로봇 selector 위치**:
-   - global header (모든 페이지 공통, app 전체에서 *active robot* 하나)
-   - per-page selector (페이지마다 다른 로봇 가능)
-   - 페이지 안에 split view (N 로봇 동시 표시, selector 없음)
-2. **동시 운영 시각화**:
-   - tab 전환 (active = 1 robot at a time)
-   - split / multi-pane (N robot 옆에 옆에)
-   - card grid (dashboard 류)
-3. **페이지별 패턴 차이**:
-   - Workspace3D 의 3D scene — N robot URDF 같은 scene 에 띄움? 별도 scene?
-   - Calibration — robot 별로 독립 (한 로봇 캘 잡는 동안 다른 로봇 unrelated)
-   - Task — task 가 multi-robot 인 경우 selector 무의미 (task 가 로봇 지정)
-4. **3D scene 의 좌표계**:
-   - N 로봇이 같은 world frame? 각자 frame?
-   - calibration 결과 (hand-eye / pointcloud) 의 frame 정합
+#### `World` (`/world`)
 
-### 결정해야 할 자리
+```
++------------------------------------------------+
+|                                                |
+|             WorldScene                         |
+|       (camera = world_overview / free orbit)   |
+|                                                |
+|       Robot A           Bottle                 |
+|             Robot B                            |
+|                                                |
++------------------------------------------------+
+[PointCloud] [Mesh] [Detection] [Trajectory]      ← layer toggle bar
+```
 
-- 페이지별 single-robot vs multi-robot view 패턴
-- "active robot" 개념의 layer (URL? store? per-page?)
-- 새 로봇 추가 시 UI 어떻게 자동 인식 (robots.yaml fetch?)
-- 분산 환경 (PC + Pi N대) 의 UI 영향 (latency / 연결 끊김 표시)
+- Layer set: `Robot / PointCloud / Mesh / Detection / Task`
+- View state: `cameraPreset=world_overview, dimOthers=false`
+- Panels: 없음 또는 layer toggle bar
+- 병따기 데모 / 듀얼암 협업 시각화 무대
 
-### 참조 (산업 사례)
+#### `Tasks > OpenBottleTask` (`/tasks/open_bottle`)
+
+```
++----------------------+-------------------------+
+|  Task Tree           |                         |
+|                      |    WorldScene           |
+|  OpenBottleTask      |    (task 에 참여하는    |
+|   ├─ Pick(robot_a)   |     로봇 다 보임)        |
+|   ├─ Hold(robot_b)   |                         |
+|   ├─ Twist(robot_a)  |                         |
+|   └─ Release(robot_b)|                         |
+|                      |                         |
+|  [Run][Pause][Step]  |                         |
++----------------------+-------------------------+
+```
+
+- Layer set: `Robot / Task / Detection`
+- View state: `cameraPreset=world_overview` (task 가 multi-robot 이라)
+- Panels: `TaskTree / TaskControl / TaskLog`
+- **robot selector 없음** — task 가 자기 안에 robot 포함
+
+#### `Dashboard` (`/`)
+
+```
+Robots Online: 2 / 3
+  omx_f_0    OK
+  so101_0    OK
+  so101_1    Offline
+
+Bridge       OK    Zenoh peers: 3
+Camera       OK    CPU: 22%   Mem: 1.4GB
+```
+
+- 시스템 운영 상태 overview. 우선순위 낮음. 3D scene 없음.
+
+### 첫 프로토타입 scope (그대로 구현, 확장 금지)
+
+reversible 결정들 (Layer self-subscribe vs props, Preset 추상화, Layer registry, ViewState store, URL state schema, Panel 모듈 구조 등) 은 *문서로 정교화하지 않고* 코드로 발견.
+
+```
+- robot/robots.yaml 에 가짜 SO101 entry: `type=omx_f` (URDF/mesh 복제 — 시각화만이라 충분), `id=so101_0`, `robot/instances/so101_0/` 폴더만 추가. 진짜 SO-101 type 폴더는 하드웨어 도착 또는 URDF 생성 시점에 별도
+- 왼쪽 메뉴: robots.yaml 자동 enumeration
+- WorldScene 생성: <RobotLayer /> 만 포함 (omx_f_0, so101_0 두 URDF 동시 띄움)
+- /robots/<id> 라우팅 + focus 처리 (camera lookAt + 다른 로봇 opacity)
+- /world 라우팅 (free orbit, 양쪽 다 보임)
+- Page Preset / Layer registry / ViewState store / Panel 페어링 — 일단 안 만듦
+- Motion / Calibration / Camera / Task / Pointcloud Panel — stay (기존 코드 재사용 시도)
+- Tasks 페이지 — stay (구조만 위 sketch)
+- §1 namespace 개편 — stay
+- §4 store 재정비 — stay
+```
+
+만져보면 진짜 불편한 자리가 드러남:
+- "Layer 4개 됐는데 페이지마다 직접 import 하기 귀찮네" → Preset 도입
+- "Layer 가 props 로 다 받으면 페이지 코드가 비대해지네" → self-subscribe 전환
+- "다른 로봇 토픽 다 받느라 네트워크 무겁네" → §1 namespace 시급
+- "robotStore 가 single robot 가정이라 충돌 나네" → §4 store dict[robot_id] 화
+
+*그제서야* reversible decision 들이 의미 있어짐.
+
+## §3. 멀티로봇 UX [§2 에 흡수됨]
+
+§2 결정에 의해 환원:
+
+| 원 질문 | §2 결정으로 환원 |
+|---|---|
+| robot selector 위치 | navigation (URL `/robots/<id>` 자체가 focus) — 별도 selector UI 없음 |
+| 동시 운영 시각화 | 같은 WorldScene 에 N robot URDF 동시 렌더 (World 페이지) |
+| 페이지별 single vs multi view | Robots = focus mode (dim others), World = multi visible, Tasks = task 가 결정 |
+| 3D scene 좌표계 | World = SSOT → 모든 로봇 한 world frame. 각 로봇 base transform 은 `robots.yaml` 에 |
+| 새 로봇 추가 | `robots.yaml` 자동 enumeration → 메뉴 자동 갱신 |
+| 분산 끊김 표시 | Dashboard + 메뉴 로봇별 status dot (Robot.Layer internal) |
+
+남은 디테일 (dim 정도, free orbit 의 default 카메라 각도, status dot 색상 등) 은 *프로토타입 만져보고 발견* 자리. 문서 추가 X.
+
+### 참조 (구현 시 참고용)
 
 - ROS rqt — robot namespace selector + tool 별 dropdown
 - Foxglove Studio — multi-source panel 추가, robot 별 topic prefix
 - 산업용 로봇 컨트롤러 (Teach Pendant) — 보통 single robot per pendant
 
-## §4. 프론트 데이터 플로우 재정비
+## §4. 프론트 데이터 플로우 재정비 [DECIDED]
 
-### 현 상태
+### 전제 (§2 / §1 → §4 dependency)
 
-[frontend/src/store/](../frontend/src/store/) 의 Zustand store 들이 *single robot 가정*:
+§2 의 multi-robot scene + §1 의 robot-prefixed namespace 가 §4 의 핵심 자리들을 자동 결정.
 
-```
-robotStore       — joints / configs / torque (어느 로봇?)
-cameraStore      — status (어느 카메라?)
-motionStore      — trajectory state (어느 로봇?)
-detectorStore    — detections (어느 카메라/로봇?)
-pointCloudStore  — voxel / scans (어느 카메라?)
-taskStore        — state / tree (global? robot 별?)
-sceneStore       — 3D scene config
-systemStore      — bridge / nodes / logs
-```
+| §2 / §1 결정 | §4 함의 |
+|---|---|
+| World = SSOT, multi-robot scene 동시 표시 | store 가 active 만으로 부족 → robot-scoped store 는 `dict[robot_id]` |
+| Layer 도메인 단위 (RobotLayer 가 N robot 다룸) | 페이지 별 subscribe 토글 안 함 → 항상 모든 robot 구독 |
+| §1 namespace 일괄 갈아엎기 | store 도 일괄? — 아니, store 의 dict 화는 *불편한 자리만* 점진. namespace 와 분리. |
 
-`useBridge.ts` 가 모든 토픽 1회 subscribe → store 1개씩 푸시. 토픽 = robot global → store = single.
+### 결정문
 
-### 쟁점
+1. **store 단위**:
+   - robot-scoped: `robotStore` / `cameraStore` / `motionStore` / `detectorStore` / `pointCloudStore` — `dict[robot_id]` 로 평탄화.
+   - global: `taskStore` / `sceneStore` / `systemStore` — 그대로 (robot 무관).
 
-1. **store 재설계** — robot-scoped 부분을 `dict[robot_id]` 로 펴기 vs *active robot* 만 들고 selector 로 swap
-2. **subscribe 패턴** — 모든 robot 토픽 한 번에 vs active robot 만
-3. **codegen 의 추가 layer** — contract.ts 에 robot prefix 도 자동 반영?
-4. **점진 리팩 vs rebuild**:
-   - 점진: §1 namespace 결정 후 store 1개씩 multi-robot 화. 기존 single-robot UI 동작 유지.
-   - rebuild: §2 / §3 결정 후 페이지 / store 통째 재설계.
-5. **현 코드 *억지로 끼워맞춤* 자리**:
-   - 무엇이 억지? (사용자 지적 — 구체 자리 enumeration 필요)
-   - openapi codegen 은 type 만 — 데이터 흐름 / 컴포넌트 책임 / 라우팅은 별도
+2. **subscribe 라이프사이클**: 항상 모든 robot 구독. `useBridge.ts` 가 `robots.yaml` enumerate → robot 별 토픽 prefix 로 subscribe. 페이지 mount/unmount 와 무관.
 
-### 결정해야 할 자리
+3. **점진 vs rebuild**: **점진**. Slice A 의 namespace migration 은 일괄 (irreversible), store 의 dict 화는 Slice C 에서 *불편한 자리만* store 1개씩. 한꺼번에 rebuild 하지 않음 — namespace 만 갈아엎고 store 는 임시로 *focus robot 만 받는* 호환 코드로 N=1 검증.
 
-- store 의 단위 (per-robot dict vs active robot)
-- subscribe / unsubscribe 라이프사이클 (페이지 mount / robot 선택 변경 / 분산 머신 끊김)
-- codegen 산출물의 위상 — types / contract 외에 추가 layer 필요한지
-- 점진 vs rebuild
+4. **codegen 의 robot_id 처리**: Slice A 진입 시 [`backend/api_contract.py`](../backend/api_contract.py) + `pnpm gen:types` 가 robot prefix 자동 반영하는지 확인. 안 되면 codegen template 갱신. *이 자리만 진짜 deferred* — 코드 봐야 알 수 있음.
 
-## §5. 의존성 / 작업 순서 (잠정)
+### 영향 자리
+
+- [`frontend/src/store/`](../frontend/src/store/) — robot-scoped store 5개 `dict[robot_id]` 로. selector hook (`useRobotStore(robotId)`) 추가.
+- [`frontend/src/hooks/useBridge.ts`](../frontend/src/hooks/useBridge.ts) — `robots.yaml` fetch → robot 별 토픽 prefix 로 subscribe loop.
+- [`frontend/src/api/bridge.ts`](../frontend/src/api/bridge.ts) — `callService` / `subscribe` 가 robot_id 인자 받는 형태.
+
+## §5. 작업 순서
 
 ```
-§2 페이지 역할 ─┐
-                ├─→ §3 멀티로봇 UX ─→ §4 프론트 재정비
-                ┘                       ↑
-                                §1 Zenoh namespace
-                                (§4 의 backend dependency)
+Slice A — §1 namespace migration (mechanical refactor, irreversible)
+   - omx → horibot prefix
+   - robot-scoped 키에 <robot_id> 삽입
+   - topic_map.py + topics.ts + 모든 노드 + bridge 동시 갱신
+   - 동작 검증: N=1 (omx_f_0) 환경에서 기존 기능 그대로 동작
+   ↓
+Slice B — §2 프로토타입 (시각화 only, scope 확장 금지)
+   - robot/robots.yaml 에 가짜 SO101 entry
+   - WorldScene + <RobotLayer /> (omx_f_0, so101_0 두 URDF)
+   - /robots/<id> + /world 라우팅 + focus
+   - Page Preset / Layer registry / ViewState store / Panel 페어링 — 안 만듦
+   ↓
+Slice C — 만져보면서 발견 (reversible decisions 코드로 진입)
+   - Layer 추상화 필요? (Preset / Registry)
+   - Layer self-subscribe vs props
+   - Panel 모듈 구조 (Layer + Panel 같은 폴더?)
+   - ViewState store 필요?
+   - §4 store dict[robot_id] 화 시점 (충돌 체감 시점)
 ```
 
-- §2/§3 (기획) 먼저
-- §1 namespace 는 §4 와 같은 슬라이스 또는 약간 먼저 (frontend codegen 영향)
-- §4 가 가장 큰 작업 (점진 리팩 시 여러 슬라이스)
+§1 (irreversible, namespace 일괄 갈아엎기) 먼저, §4 (store dict 화 점진) 는 §2 프로토타입 만지며 *불편한 자리부터*. §2 는 그 사이.
 
 ## 다음 세션 시작 시 첫 prompt 추천
 
-> docs/multi_robot_phase2_frontend.md 보고 §2 (페이지 역할 기획) 부터 시작.
-> 사용자 시나리오 5–10개 enumeration → 각 시나리오의 페이지 흐름 정의.
+> docs/multi_robot_phase2_frontend.md §1 의 "Migration" 슬라이스부터 구현 시작.
+> N=1 동작 검증 후 §2 의 프로토타입 scope 진입.
 
-`§2` / `§3` 의 *기획* 자리는 코드 작업 아니라 *요구사항 정리* — 화이트보드 / 종이에 시나리오 + UI 흐름 그리며 가는 게 자연스러움. 결정 fix 되면 본 문서에 채우고 §1 / §4 코드 작업 진입.
+**§1 / §2 / §4 결정은 확정 — 추가 논의 X.** Slice A → B → C 순서 지킴. §4 의 codegen robot_id 처리 자리는 Slice A 시작 시 코드 확인.
+
+reversible 결정 (Layer self-subscribe vs props, Preset 추상화, Panel 모듈 구조, payload robot_id 제거 여부 등) 을 *문서로 정교화하지 않는* 것이 본 슬라이스의 핵심 원칙. 사용자 메모리 `feedback_reversible_decision_stop.md` 참조.

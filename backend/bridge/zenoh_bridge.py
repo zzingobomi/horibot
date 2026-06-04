@@ -61,7 +61,8 @@ def _encode_binary_topic(topic: str, payload: bytes) -> bytes:
 # ─── 이벤트 루프 ─────────────────────────────────────────
 
 _loop: asyncio.AbstractEventLoop | None = None
-_camera_queues: set[asyncio.Queue] = set()
+# robot 별 카메라 stream 큐 — N>=2 시 robot 마다 별도 MJPEG endpoint.
+_camera_queues_by_robot: dict[str, set[asyncio.Queue]] = {}
 
 
 @asynccontextmanager
@@ -196,61 +197,81 @@ def _put_frame(q: asyncio.Queue, frame: bytes) -> None:
         pass  # 느린 클라이언트는 프레임 드롭
 
 
-def _camera_callback(jpeg_bytes: bytes) -> None:
+def _camera_callback(robot_id: str, jpeg_bytes: bytes) -> None:
     if _loop and not _loop.is_closed():
-        for q in _camera_queues.copy():
+        for q in _camera_queues_by_robot.get(robot_id, set()).copy():
             _loop.call_soon_threadsafe(_put_frame, q, jpeg_bytes)
 
 
-# JSON 토픽: api_contract.PUBLIC_TOPICS 에서 자동 도출.
-# Binary 토픽: PUBLIC_BINARY_TOPICS (별도 raw frame 라우팅).
+# JSON / binary 토픽 template — api_contract.PUBLIC_TOPICS / PUBLIC_BINARY_TOPICS.
+# robot-scoped template (`horibot/{robot_id}/...`) 는 setup_zenoh_subscribers 가
+# robots.yaml enumerate 후 robot 마다 expand 해서 구독.
 _ALWAYS_SUBSCRIBE = list(PUBLIC_TOPICS)
 _ALWAYS_SUBSCRIBE_BINARY = list(PUBLIC_BINARY_TOPICS)
 
 _zenoh_subs: list[zenoh.Subscriber] = []
 
 
+def _expand_for_robots(template: str, robot_ids: list[str]) -> list[str]:
+    """robot-scoped template 은 robot 마다 expand, global 은 그대로 1개."""
+    if "{robot_id}" not in template:
+        return [template]
+    return [template.format(robot_id=rid) for rid in robot_ids]
+
+
 def setup_zenoh_subscribers() -> None:
+    from core.robot.robot_registry import RobotRegistry
+
     session = ZenohSession.get()
+    robot_ids = RobotRegistry().list_robots()
 
-    for topic in _ALWAYS_SUBSCRIBE:
+    for template in _ALWAYS_SUBSCRIBE:
+        for topic in _expand_for_robots(template, robot_ids):
 
-        def make_handler(tp: str):
+            def make_handler(tp: str):
+                def handler(sample: zenoh.Sample):
+                    try:
+                        data = json.loads(sample.payload.to_bytes())
+                        _zenoh_callback(tp, data)
+                    except Exception as e:
+                        logger.error(f"bridge subscriber 오류 ({tp}): {e}")
+
+                return handler
+
+            _zenoh_subs.append(
+                session.declare_subscriber(topic, make_handler(topic))
+            )
+
+    # 카메라 raw bytes — MJPEG `/robots/<robot_id>/camera/stream` HTTP 라우트
+    # 로 별도 송출. contract 의 PUBLIC_BINARY_TOPICS 에 없음 (별도 라우트).
+    for rid in robot_ids:
+        topic = Topic.CAMERA_STREAM_RAW.format(robot_id=rid)
+
+        def make_camera_handler(_rid: str):
             def handler(sample: zenoh.Sample):
-                try:
-                    data = json.loads(sample.payload.to_bytes())
-                    _zenoh_callback(tp, data)
-                except Exception as e:
-                    logger.error(f"bridge subscriber 오류 ({tp}): {e}")
-
-            return handler
-
-        _zenoh_subs.append(session.declare_subscriber(
-            topic, make_handler(topic)))
-
-    # 카메라는 raw bytes 로 MJPEG `/camera/stream` HTTP 라우트로 별도 송출.
-    # contract 의 PUBLIC_BINARY_TOPICS 에 없는 (별도 라우트) 자리.
-    def camera_handler(sample: zenoh.Sample):
-        _camera_callback(sample.payload.to_bytes())
-
-    _zenoh_subs.append(
-        session.declare_subscriber(Topic.CAMERA_STREAM_RAW, camera_handler)
-    )
-
-    # contract 의 binary 토픽은 WS binary frame 으로 직송.
-    for topic in _ALWAYS_SUBSCRIBE_BINARY:
-
-        def make_binary_handler(tp: str):
-            def handler(sample: zenoh.Sample):
-                _zenoh_callback_bytes(tp, sample.payload.to_bytes())
+                _camera_callback(_rid, sample.payload.to_bytes())
 
             return handler
 
         _zenoh_subs.append(
-            session.declare_subscriber(topic, make_binary_handler(topic))
+            session.declare_subscriber(topic, make_camera_handler(rid))
         )
 
-    logger.info("Zenoh 구독 설정 완료")
+    # contract 의 binary 토픽은 WS binary frame 으로 직송.
+    for template in _ALWAYS_SUBSCRIBE_BINARY:
+        for topic in _expand_for_robots(template, robot_ids):
+
+            def make_binary_handler(tp: str):
+                def handler(sample: zenoh.Sample):
+                    _zenoh_callback_bytes(tp, sample.payload.to_bytes())
+
+                return handler
+
+            _zenoh_subs.append(
+                session.declare_subscriber(topic, make_binary_handler(topic))
+            )
+
+    logger.info("Zenoh 구독 설정 완료 (robots=%s)", robot_ids)
 
 
 # ─── WebSocket 엔드포인트 ─────────────────────────────────────
@@ -276,10 +297,15 @@ async def websocket_endpoint(ws: WebSocket):
 # ─── MJPEG HTTP 스트림 ───────────────────────────────────────
 
 
-@app.get("/camera/stream")
-async def camera_stream():
+@app.get("/robots/{robot_id}/camera/stream")
+async def camera_stream(robot_id: str):
+    """robot 별 MJPEG stream. URL = frontend `/robots/<id>` 라우팅과 동형.
+
+    multi_robot_phase2_frontend.md §1 결정 — `/camera/stream` → `/robots/<id>/...`
+    로 robot-scoped.
+    """
     q: asyncio.Queue = asyncio.Queue(maxsize=2)
-    _camera_queues.add(q)
+    _camera_queues_by_robot.setdefault(robot_id, set()).add(q)
 
     async def generate():
         try:
@@ -287,7 +313,7 @@ async def camera_stream():
                 frame = await q.get()
                 yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
         finally:
-            _camera_queues.discard(q)
+            _camera_queues_by_robot.get(robot_id, set()).discard(q)
 
     return StreamingResponse(
         generate(), media_type="multipart/x-mixed-replace; boundary=frame"

@@ -254,25 +254,31 @@ def on_handeye_commit(query):
 
 
 def main():
+    from core.robot.robot_registry import RobotRegistry
+
     session = zenoh.open(zenoh.Config())
+    rid = RobotRegistry().default_robot_id()
 
-    pub_motor = session.declare_publisher(Topic.MOTOR_STATE_JOINT)
-    pub_motion = session.declare_publisher(Topic.MOTION_STATE_TRAJ)
+    def _tkey(template: str) -> str:
+        return template.format(robot_id=rid) if "{robot_id}" in template else template
 
-    session.declare_subscriber(Topic.MOTOR_CMD_JOINT, on_cmd_joint)
+    pub_motor = session.declare_publisher(_tkey(Topic.MOTOR_STATE_JOINT))
+    pub_motion = session.declare_publisher(_tkey(Topic.MOTION_STATE_TRAJ))
 
-    session.declare_queryable(Service.MOTOR_ENABLE, on_enable)
-    session.declare_queryable(Service.MOTOR_GET_CONFIG, on_get_config)
+    session.declare_subscriber(_tkey(Topic.MOTOR_CMD_JOINT), on_cmd_joint)
 
-    session.declare_queryable(Service.MOTION_GET_TCP, on_get_tcp)
-    session.declare_queryable(Service.MOTION_MOVE_TCP, on_move_tcp)
-    session.declare_queryable(Service.MOTION_MOVE_L, on_move_l)
-    session.declare_queryable(Service.MOTION_STOP, on_stop)
+    session.declare_queryable(_tkey(Service.MOTOR_ENABLE), on_enable)
+    session.declare_queryable(_tkey(Service.MOTOR_GET_CONFIG), on_get_config)
 
-    session.declare_queryable(Service.CALIB_CAPTURE, on_calib_capture)
+    session.declare_queryable(_tkey(Service.MOTION_GET_TCP), on_get_tcp)
+    session.declare_queryable(_tkey(Service.MOTION_MOVE_TCP), on_move_tcp)
+    session.declare_queryable(_tkey(Service.MOTION_MOVE_L), on_move_l)
+    session.declare_queryable(_tkey(Service.MOTION_STOP), on_stop)
+
+    session.declare_queryable(_tkey(Service.CALIB_CAPTURE), on_calib_capture)
     session.declare_queryable(
-        Service.CALIB_HANDEYE_CAPTURE, on_handeye_capture)
-    session.declare_queryable(Service.CALIB_HANDEYE_COMMIT, on_handeye_commit)
+        _tkey(Service.CALIB_HANDEYE_CAPTURE), on_handeye_capture)
+    session.declare_queryable(_tkey(Service.CALIB_HANDEYE_COMMIT), on_handeye_commit)
 
     print("[mock] started")
 

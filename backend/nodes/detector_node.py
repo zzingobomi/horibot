@@ -38,11 +38,11 @@ DEPTH_WAIT_TIMEOUT = 5.0  # s
 
 
 class DetectorNode(BaseNode):
-    def __init__(self) -> None:
-        super().__init__("detector_node")
+    def __init__(self, robot_id: str | None = None) -> None:
+        super().__init__("detector_node", robot_id=robot_id)
 
         self._frame_cache = FrameCache()
-        _, self._motor_cfgs = load_motor_config()
+        _, self._motor_cfgs = load_motor_config(robot_id)
         self._arm_cfgs: list[MotorConfig] = [
             m for m in self._motor_cfgs if m.id != GRIPPER_ID
         ]
@@ -70,16 +70,16 @@ class DetectorNode(BaseNode):
         self._frame_cache.subscribe(self)
 
         self.create_raw_subscriber(
-            Topic.CAMERA_DEPTH_FRAME, self._on_depth_frame
+            self.r(Topic.CAMERA_DEPTH_FRAME), self._on_depth_frame
         )
         self.create_service(
-            Service.DETECT_SERVICE,
+            self.r(Service.DETECT_SERVICE),
             EmptyData,
             DetectResult,
             self._handle_detect,
         )
         self.create_service(
-            Service.PERCEPTION_GROUNDED_DETECT,
+            self.r(Service.PERCEPTION_GROUNDED_DETECT),
             GroundedDetectReq,
             GroundedDetectionResult,
             self._handle_grounded_detect,
@@ -134,7 +134,7 @@ class DetectorNode(BaseNode):
                         YoloDetection.model_validate(d) for d in raw_results
                     ]
                     self.publish(
-                        Topic.DETECTOR_STATE,
+                        self.r(Topic.DETECTOR_STATE),
                         DetectorState(
                             timestamp=time.time(),
                             detections=detections,
@@ -184,7 +184,7 @@ class DetectorNode(BaseNode):
 
         # ── FK: get_tcp → R_be, t_be ──────────────
         res = self.call_service(
-            Service.MOTION_GET_TCP, EmptyData(), MotionTcpPose
+            self.r(Service.MOTION_GET_TCP), EmptyData(), MotionTcpPose
         )
         if not res.success or res.data is None:
             return ServiceResponse(
@@ -257,7 +257,7 @@ class DetectorNode(BaseNode):
 
         if need_enable:
             res = self.call_service(
-                Service.CAMERA_SET_DEPTH_STREAM,
+                self.r(Service.CAMERA_SET_DEPTH_STREAM),
                 CameraSetDepthStreamReq(enabled=True),
                 CameraSetDepthStreamRes,
             )
@@ -336,7 +336,7 @@ class DetectorNode(BaseNode):
 
         # ── TCP pose ────────────────────────────────────
         res = self.call_service(
-            Service.MOTION_GET_TCP, EmptyData(), MotionTcpPose
+            self.r(Service.MOTION_GET_TCP), EmptyData(), MotionTcpPose
         )
         if not res.success or res.data is None:
             return ServiceResponse(
@@ -417,7 +417,7 @@ class DetectorNode(BaseNode):
         # 호출자 무관하게 카메라 feed / 3D 마커에 자동 표시되도록 토픽 broadcast.
         # (self-play / pick_and_place GroundedDetectStep 등 backend 호출도 시각화됨)
         try:
-            self.publish(Topic.PERCEPTION_GROUNDED_STATE, result)
+            self.publish(self.r(Topic.PERCEPTION_GROUNDED_STATE), result)
         except Exception as exc:
             logger.warning("grounded_state publish 실패: %s", exc)
 

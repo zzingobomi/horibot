@@ -90,9 +90,17 @@ def main():
         seed_d405_intrinsic_if_missing(calib_dir / "intrinsic.npz")
 
     # ─── 노드 인스턴스 생성 ────────────────────────────────────
+    # N=1 환경: 모든 robot-scoped 노드 (motor/motion/camera/calibration/
+    # detector/pointcloud) 가 default robot 의 instance. multi_robot Phase 2
+    # 진입 시 host config 가 robot_id 명시 (예: nodes: {motor: {robot_id: ...}}).
+    from core.robot.robot_registry import RobotRegistry
+
+    default_robot_id = RobotRegistry().default_robot_id()
+    logger.info("default robot_id=%s (N=1)", default_robot_id)
+
     instances: dict[str, Any] = {}
     for name in requested_nodes:
-        instances[name] = create_node(name)
+        instances[name] = create_node(name, robot_id=default_robot_id)
 
     # ─── 노드 시작 ────────────────────────────────────────────
     for name, node in instances.items():

@@ -14,6 +14,30 @@ robots:
     motor_backend: dynamixel
     iksolver: pybullet
     camera_backend: realsense    # Phase 2 (distributed_topology.md §1): omx_f → opencv (UVC)
+    base_pose:                   # World frame 의 robot base 위치 (m, x/y/z).
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw_deg: 0.0
+
+  # multi_robot_phase2_frontend.md §2 프로토타입 자리 — 가짜 SO101 entry.
+  # type=omx_f 로 URDF/mesh 복제 (시각화만이라 충분). 실 hardware 도착 시
+  # type=so101_6dof 로 교체 + so101_0 instance 폴더의 calibration/poses 갱신.
+  # enabled=false — backend 가 motor/camera 노드 부팅 시도 안 함 (frontend 시각화 only).
+  so101_0:
+    type: omx_f
+    enabled: false
+    hosts:
+      motor: dev
+      camera: dev
+    motor_backend: dynamixel
+    iksolver: pybullet
+    camera_backend: realsense
+    base_pose:
+      x: 0.4
+      y: 0.0
+      z: 0.0
+      yaw_deg: 0.0
 
 # Phase 2+ — Cooperation 영역 (so101 도착 시 활성화).
 # cooperation:

@@ -49,6 +49,20 @@ _VALID_CAMERA_BACKENDS = frozenset(get_args(CameraBackendName))
 
 
 @dataclass(frozen=True)
+class BasePose:
+    """World frame 기준 robot base 위치 (multi_robot_phase2_frontend.md §2).
+
+    frontend WorldScene 이 두 URDF 동시 마운트 시 겹치지 않게 분리하는 자리.
+    실 hardware 도착 시 robot-to-robot extrinsic 캘리브레이션 결과로 update.
+    """
+
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    yaw_deg: float = 0.0
+
+
+@dataclass(frozen=True)
 class HostMap:
     """robot 자원이 분산된 머신 매핑.
 
@@ -76,6 +90,7 @@ class RobotConfig:
     robot_type: str
     enabled: bool
     hosts: HostMap
+    base_pose: BasePose
     motor_backend: MotorBackendName
     iksolver: IKSolverName
     camera_backend: CameraBackendName
@@ -194,11 +209,24 @@ class RobotRegistry:
             camera=str(hosts_raw.get("camera", "dev")),
         )
 
+        pose_raw = entry.get("base_pose", {}) or {}
+        if not isinstance(pose_raw, dict):
+            raise ValueError(
+                f"robot '{robot_id}' base_pose 가 dict 아님 ({type(pose_raw).__name__})"
+            )
+        base_pose = BasePose(
+            x=float(pose_raw.get("x", 0.0)),
+            y=float(pose_raw.get("y", 0.0)),
+            z=float(pose_raw.get("z", 0.0)),
+            yaw_deg=float(pose_raw.get("yaw_deg", 0.0)),
+        )
+
         return RobotConfig(
             robot_id=robot_id,
             robot_type=robot_type,
             enabled=bool(entry.get("enabled", True)),
             hosts=hosts,
+            base_pose=base_pose,
             motor_backend=cast(MotorBackendName, motor_backend),
             iksolver=cast(IKSolverName, iksolver),
             camera_backend=cast(CameraBackendName, camera_backend),
@@ -234,16 +262,19 @@ class RobotRegistry:
         return self.default().robot_id
 
     def default(self) -> RobotConfig:
-        """N=1 single-robot 환경 편의 — robot 1개만 있을 때 그것 반환.
+        """enabled robot 이 1개일 때만 그것 반환 (N=1 single-active 환경).
 
-        N>=2 이면 RuntimeError. 명시적 robot_id 사용 강제.
+        N>=2 enabled 면 RuntimeError. 명시적 robot_id 사용 강제. enabled=false
+        인 robot (예: multi_robot_phase2_frontend.md §2 의 가짜 so101_0 시각화
+        entry) 은 count 에 안 들어감.
         """
-        if len(self._robots) != 1:
+        enabled = self.enabled_robots()
+        if len(enabled) != 1:
             raise RuntimeError(
-                f"default() 는 N=1 일 때만 — 현재 {len(self._robots)} robot 등록. "
-                "명시적 robot_id 로 get() 사용."
+                f"default() 는 enabled=1 일 때만 — 현재 enabled {len(enabled)} "
+                f"(전체 {len(self._robots)}). 명시적 robot_id 로 get() 사용."
             )
-        return next(iter(self._robots.values()))
+        return enabled[0]
 
     # ─── Factory methods (per-robot 인스턴스 캐시) ───────────────
 

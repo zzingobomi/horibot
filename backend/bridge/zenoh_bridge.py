@@ -84,6 +84,41 @@ app.mount("/robot", StaticFiles(directory=str(ROBOT_DIR)), name="robot")
 app.include_router(calibration_router)
 
 
+# ─── /robots — robots.yaml SSOT 노출 ────────────────────────
+# multi_robot_phase2_frontend.md §2 — frontend 가 fetch 해서 메뉴 / WorldScene
+# enumeration 에 사용. robots.yaml 변경 시 backend 재시작 후 자동 반영.
+
+
+@app.get("/robots", summary="Registered robots from robots.yaml")
+def list_robots() -> dict:
+    from core.robot.robot_registry import RobotRegistry
+
+    reg = RobotRegistry()
+    robots = []
+    for rid in reg.list_robots():
+        cfg = reg.get(rid)
+        robots.append(
+            {
+                "id": cfg.robot_id,
+                "type": cfg.robot_type,
+                "enabled": cfg.enabled,
+                "base_pose": {
+                    "x": cfg.base_pose.x,
+                    "y": cfg.base_pose.y,
+                    "z": cfg.base_pose.z,
+                    "yaw_deg": cfg.base_pose.yaw_deg,
+                },
+                "urdf_url": f"/robot/{cfg.robot_type}/urdf/{cfg.robot_type}.urdf",
+            }
+        )
+    # default = enabled 1개일 때만 반환. 0개 / 2개 이상이면 null.
+    try:
+        default_id: str | None = reg.default_robot_id()
+    except RuntimeError:
+        default_id = None
+    return {"robots": robots, "default": default_id}
+
+
 # ─── OpenAPI schema export — auto from api_contract ──────
 # api_contract.PUBLIC_TOPICS / PUBLIC_SERVICES 가 참조하는 모든 모델을 한
 # class 의 optional 필드로 묶어 `/openapi.json::components/schemas` 에 자동

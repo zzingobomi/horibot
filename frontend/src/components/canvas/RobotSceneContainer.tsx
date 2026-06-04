@@ -4,8 +4,14 @@ import { RobotScene } from "@/components/canvas/3d/RobotScene";
 import { useCalibrationResults } from "@/hooks/useCalibrationResults";
 import { useRobotStore } from "@/store/robotStore";
 import { useSceneStore } from "@/store/sceneStore";
+import { useRobots } from "@/hooks/useRobots";
 
-export function RobotSceneContainer() {
+interface RobotSceneContainerProps {
+  /** focus robot id. null=WorldPage(모두 동등). undefined=default(backend default robot). */
+  focusId?: string | null;
+}
+
+export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) {
   const { results } = useCalibrationResults();
 
   const joints = useRobotStore((s) => s.joints);
@@ -33,6 +39,25 @@ export function RobotSceneContainer() {
   const setLinkNames = useSceneStore((s) => s.setLinkNames);
   const setTcpPos = useSceneStore((s) => s.setTcpPos);
 
+  const { robots, defaultId } = useRobots();
+  // focusId undefined = default. null = WorldPage. string = 명시.
+  const effectiveFocus: string | null =
+    focusId === undefined ? defaultId : focusId;
+
+  // focus robot 의 base_pose 로 OrbitControls target 잡음 (lookAt 효과).
+  // WorldPage(focusId=null) 에선 모든 robot 의 중심.
+  const cameraTarget = useMemo<[number, number, number]>(() => {
+    if (effectiveFocus !== null) {
+      const r = robots.find((x) => x.id === effectiveFocus);
+      if (r) return [r.base_pose.x, r.base_pose.y, r.base_pose.z + 0.1];
+    }
+    if (robots.length === 0) return [0, 0.1, 0];
+    const cx = robots.reduce((s, r) => s + r.base_pose.x, 0) / robots.length;
+    const cy = robots.reduce((s, r) => s + r.base_pose.y, 0) / robots.length;
+    const cz = robots.reduce((s, r) => s + r.base_pose.z, 0) / robots.length;
+    return [cx, cy, cz + 0.1];
+  }, [robots, effectiveFocus]);
+
   const handleTCPMatrix = useCallback(
     (m: THREE.Matrix4 | null) => {
       if (!m) {
@@ -53,6 +78,9 @@ export function RobotSceneContainer() {
       linkVisibility={linkVisibility}
       onLinksLoaded={setLinkNames}
       onTCPMatrix={handleTCPMatrix}
+      robots={robots}
+      focusId={effectiveFocus}
+      cameraTarget={cameraTarget}
     />
   );
 }

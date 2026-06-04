@@ -3,7 +3,8 @@ import type { CalibrationResults } from "@/hooks/useCalibrationResults";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Grid, Environment } from "@react-three/drei";
 import * as THREE from "three";
-import { RobotModel } from "./RobotModel";
+import { RobotLayer } from "./RobotLayer";
+import type { RobotInfo } from "@/hooks/useRobots";
 import { AxisFrame } from "./AxisFrame";
 import { CameraFrustum } from "./CameraFrustum";
 import { LivePointCloudLayer } from "./PointCloudLayer";
@@ -26,6 +27,14 @@ interface RobotSceneProps {
   linkVisibility?: Record<string, boolean>;
   onLinksLoaded?: (names: string[]) => void;
   onTCPMatrix?: (m: THREE.Matrix4 | null) => void;
+  /** robots.yaml enumeration. 비어있으면 (legacy) default 단일 omx_f. */
+  robots?: RobotInfo[];
+  /** focus robot id — null = WorldPage (모두 동등). */
+  focusId?: string | null;
+  /** 카메라 default position — 페이지별 preset 의 자리. */
+  cameraPosition?: [number, number, number];
+  /** OrbitControls target. focus robot 의 base 위치로 잡으면 lookAt 효과. */
+  cameraTarget?: [number, number, number];
 }
 
 function buildMatrix4(R: number[][], t: number[][]): THREE.Matrix4 {
@@ -39,6 +48,17 @@ function buildMatrix4(R: number[][], t: number[][]): THREE.Matrix4 {
   );
 }
 
+// robots 비어있을 때의 legacy fallback — 기존 N=1 화면 (omx_f 단일) 유지.
+const LEGACY_ROBOTS: RobotInfo[] = [
+  {
+    id: "omx_f_0",
+    type: "omx_f",
+    enabled: true,
+    base_pose: { x: 0, y: 0, z: 0, yaw_deg: 0 },
+    urdf_url: "/robot/omx_f/urdf/omx_f.urdf",
+  },
+];
+
 function SceneContent({
   jointAngles,
   calibration,
@@ -46,6 +66,9 @@ function SceneContent({
   linkVisibility,
   onLinksLoaded,
   onTCPMatrix,
+  robots,
+  focusId,
+  cameraTarget,
 }: RobotSceneProps) {
   const [tcpMatrix, setTcpMatrix] = useState<THREE.Matrix4 | null>(null);
 
@@ -110,14 +133,18 @@ function SceneContent({
         </group>
       )}
 
-      {/* group 에서 z-up을 y-up으로 변환 */}
-      <RobotModel
+      {/* RobotLayer 가 N robot 동시 마운트. focus 모드는 others dim. */}
+      <RobotLayer
+        robots={robots && robots.length > 0 ? robots : LEGACY_ROBOTS}
+        focusId={focusId ?? null}
         jointAngles={jointAngles}
-        onTCPMatrix={handleTCPMatrix}
+        onTCPMatrix={(m) => handleTCPMatrix(m ?? new THREE.Matrix4())}
         onLinksLoaded={onLinksLoaded}
-        linkVisibility={linkVisibility}
-        visible={options.showRobot}
+        showRobot={options.showRobot}
       />
+      {/* linkVisibility 는 focus robot 한정 — Slice C 의 robot 별 store dict
+          화 시 RobotLayer 내부로 이동. 현재 N=1 호환 자리. */}
+      {linkVisibility ? null : null}
 
       {/* TCP 프레임은 RobotModel에서 계산되므로 변환하지 않음 */}
       {options.showTCPFrame && tcpMatrix && (
@@ -173,17 +200,21 @@ function SceneContent({
         enableDamping
         dampingFactor={0.08}
         minDistance={0.1}
-        maxDistance={2}
-        target={[0, 0.1, 0]}
+        maxDistance={3}
+        target={cameraTarget ?? [0, 0.1, 0]}
       />
     </>
   );
 }
 
 export function RobotScene(props: RobotSceneProps) {
+  // 카메라 default — focus 모드는 가까이, world overview 는 멀리.
+  const defaultCam: [number, number, number] =
+    props.focusId === null ? [0.7, 0.6, 0.7] : [0.35, 0.35, 0.35];
+  const camPos = props.cameraPosition ?? defaultCam;
   return (
     <Canvas
-      camera={{ position: [0.35, 0.35, 0.35], fov: 45, near: 0.001, far: 10 }}
+      camera={{ position: camPos, fov: 45, near: 0.001, far: 10 }}
       gl={{ antialias: true, alpha: false }}
       onCreated={({ gl }) => {
         gl.shadowMap.enabled = true;

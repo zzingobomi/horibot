@@ -5,23 +5,25 @@ import {
   Camera,
   Cpu,
   Settings,
-  Box,
   Home,
   Moon,
   Power,
   Hand,
   PanelLeftClose,
   PanelLeftOpen,
+  Bot,
+  Globe,
 } from "lucide-react";
 import { ConnectionStatus } from "@/components/common/ConnectionStatus";
 import { cn } from "@/lib/utils";
 import { useJointControl } from "@/hooks/useJointControl";
+import { useRobots } from "@/hooks/useRobots";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: Gamepad2 },
   { to: "/motion", label: "Motion", icon: Cpu },
   { to: "/calibration", label: "Calibration", icon: Camera },
-  { to: "/workspace", label: "Workspace3D", icon: Box },
+  { to: "/world", label: "World", icon: Globe },
   { to: "/pick-and-place", label: "Pick & Place", icon: Hand },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
@@ -30,6 +32,7 @@ const COLLAPSED_KEY = "omx.sidebar.collapsed";
 
 export function Sidebar() {
   const { goHome, goRest, torqueEnabled, enableTorque } = useJointControl();
+  const { robots } = useRobots();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(COLLAPSED_KEY) === "1";
@@ -73,7 +76,7 @@ export function Sidebar() {
       </div>
 
       {/* 네비게이션 */}
-      <nav className="flex-1 py-4 space-y-1 px-2">
+      <nav className="flex-1 py-4 space-y-1 px-2 overflow-y-auto">
         {navItems.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
@@ -94,6 +97,46 @@ export function Sidebar() {
             {!collapsed && <span>{label}</span>}
           </NavLink>
         ))}
+
+        {/* Robots 섹션 — robots.yaml SSOT 자동 enumeration.
+            multi_robot_phase2_frontend.md §2 결정 5 (Focus Robot = Navigation). */}
+        {robots.length > 0 && (
+          <div className="pt-3">
+            {!collapsed && (
+              <p className="px-3 pb-1 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                Robots
+              </p>
+            )}
+            {robots.map((r) => (
+              <NavLink
+                key={r.id}
+                to={`/robots/${r.id}`}
+                title={collapsed ? r.id : undefined}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center rounded-md py-2 text-sm transition-colors",
+                    collapsed ? "justify-center px-2" : "gap-3 px-3",
+                    isActive
+                      ? "bg-accent text-accent-foreground font-medium"
+                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                  )
+                }
+              >
+                <Bot
+                  className={cn(
+                    "h-4 w-4 shrink-0",
+                    !r.enabled && "opacity-40",
+                  )}
+                />
+                {!collapsed && (
+                  <span className={cn(!r.enabled && "opacity-60")}>
+                    {r.id}
+                  </span>
+                )}
+              </NavLink>
+            ))}
+          </div>
+        )}
       </nav>
 
       {/* 전역 로봇 컨트롤 */}

@@ -1,17 +1,22 @@
-/* 컨테이너 투명 */
+/* 컨테이너 투명. dockview root 는 mouse/focus event 받아야 internal state 정상 (cleanup handshake 포함).
+   wrapper div 에서는 pointer-events-none 박지 말 것 — 빈 영역 click 통과는
+   .dv-dockview / .dv-groupview / .dv-watermark 의 pointer-events:none 로 처리. */
 .workspace-dockview .dv-dockview {
   background: transparent !important;
+  pointer-events: none;
 }
 
-/* 빈 영역 워터마크 숨김 */
+/* 빈 영역 워터마크 숨김 + click 통과 */
 .workspace-dockview .dv-watermark {
   display: none !important;
+  pointer-events: none;
 }
 
-/* 도킹 영역 투명 */
+/* 도킹 영역 투명 + click 통과 (panel 없을 때 빈 dock 클릭이 3D 씬으로 가게) */
 .workspace-dockview .dv-groupview {
   background: transparent !important;
   border: none !important;
+  pointer-events: none;
 }
 
 /* 플로팅 패널 — 그림자만 */

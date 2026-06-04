@@ -7,7 +7,7 @@
  * 첫 프로토타입: task name 은 사용자가 URL 로 명시. backend 의 task registry
  * 자동 enumeration 은 별도 endpoint 추가 자리 (Slice C 이후).
  */
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { DockviewReact, type DockviewReadyEvent } from "dockview";
 import { RotateCcw } from "lucide-react";
@@ -113,8 +113,6 @@ export function TasksPage() {
     window.location.reload();
   }, [layoutKey]);
 
-  const dockviewKey = useMemo(() => layoutKey, [layoutKey]);
-
   if (error) {
     return (
       <div className="p-6 text-red-400 font-mono">/tasks 응답 실패: {error}</div>
@@ -143,9 +141,8 @@ export function TasksPage() {
         <RobotSceneContainer focusId={null} />
       </div>
 
-      <div className="absolute inset-0 z-10 workspace-dockview pointer-events-none">
+      <div className="absolute inset-0 z-10 workspace-dockview">
         <DockviewReact
-          key={dockviewKey}
           className="dockview-theme-dark"
           components={PANEL_COMPONENTS}
           onReady={onReady}

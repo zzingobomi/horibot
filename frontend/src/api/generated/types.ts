@@ -35,6 +35,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/system": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Host system metrics (CPU / Mem / Zenoh peers)
+         * @description Dashboard overview source. psutil 로 CPU / Mem, ZenohSession 으로 peer
+         *     카운트. cpu_percent(interval=0.1) 는 100ms blocking — FastAPI sync handler
+         *     가 thread pool 에서 도니까 event loop 안 막음.
+         */
+        get: operations["system_metrics_system_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Registered task factories from TASK_REGISTRY
+         * @description task_node 의 TASK_REGISTRY enumerate — frontend Sidebar / TasksPage 의
+         *     enumeration source. lazy import 로 task_node 의 무거운 deps (LLM /
+         *     detector chain) 부팅 시 끌고 오지 않음.
+         */
+        get: operations["list_tasks_tasks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/robots": {
         parameters: {
             query?: never;
@@ -273,6 +317,10 @@ export interface components {
         /**
          * Heartbeat
          * @description SYSTEM_HEARTBEAT 페이로드. 노드별 1Hz.
+         *
+         *     robot_id 는 robot-scoped 노드 (motor / motion / camera / ...) 만 채움 —
+         *     global 노드 (task / gamepad / bridge) 는 None. Dashboard 가 robot_id 별
+         *     온라인 상태 구분.
          */
         Heartbeat: {
             /** Node */
@@ -284,6 +332,8 @@ export interface components {
              * @default ok
              */
             status: string;
+            /** Robot Id */
+            robot_id?: string | null;
         };
         /** IntrinsicSaveRes */
         IntrinsicSaveRes: {
@@ -338,6 +388,8 @@ export interface components {
             level: "debug" | "info" | "warning" | "error";
             /** Message */
             message: string;
+            /** Robot Id */
+            robot_id?: string | null;
         };
         /** MeshMeta */
         MeshMeta: {
@@ -806,6 +858,50 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    system_metrics_system_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    list_tasks_tasks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };

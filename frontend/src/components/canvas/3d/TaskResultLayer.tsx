@@ -1,7 +1,7 @@
 /**
  * TaskResultLayer — task step 출력값을 type 별로 자동 렌더링.
  *
- * Backend 가 `omx/task/step_result` 로 각 step 완료 시 발행하면 taskResultStore
+ * Backend 가 `horibot/task/step_result` 로 각 step 완료 시 발행하면 taskResultStore
  * 가 누적. 이 layer 가 type 문자열로 dispatch:
  *   - "Detection"  → 노란 sphere (객체 위치) + height bar
  *   - "Position3"  → 청록 marker (policy 출력 / waypoint)

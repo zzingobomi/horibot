@@ -89,7 +89,7 @@ SlotOr = Union[T, Slot[T]]
 class StepResult:
     """Step 실행 결과 — runner 가 results dict 에 저장하는 형태.
 
-    토픽 publish 시 (`omx/task/step_results`) 사용:
+    토픽 publish 시 (`horibot/task/step_result`) 사용:
         {"step_id": "...", "type": "Detection", "value": {...}}
 
     type 문자열은 frontend TaskResultLayer 가 렌더러 dispatch 에 사용.

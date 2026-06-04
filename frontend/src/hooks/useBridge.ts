@@ -61,12 +61,18 @@ export function useBridge() {
 
     // Heartbeat 구독
     const unsubHeartbeat = bridge.subscribe(Topic.SYSTEM_HEARTBEAT, (data) => {
-      const { node, status, timestamp } = data as {
+      const { node, status, timestamp, robot_id } = data as {
         node: string;
         status: string;
         timestamp: number;
+        robot_id?: string | null;
       };
-      updateNode(node, status === "ok" ? "running" : "error", timestamp);
+      updateNode(
+        node,
+        status === "ok" ? "running" : "error",
+        timestamp,
+        robot_id ?? null,
+      );
     });
 
     // 로그 구독

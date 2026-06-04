@@ -3,10 +3,14 @@
 Phase 1 (foundation) 완료 후 남은 자리. [multi_robot_architecture.md §12](multi_robot_architecture.md) 의 Phase 2 의 *frontend / UX / namespace* 슬라이스.
 
 **상태 (2026-06-04 갱신):**
-- §2 페이지 역할 — **결정 완료**. 화면 sketch + 첫 프로토타입 scope 까지 박힘. 추가 논의 X, 바로 구현.
-- §3 멀티로봇 UX — **§2 에 흡수됨**. selector / split view / focus 가 §2 결정에 의해 환원.
-- §1 namespace — **결정 완료**. §2 dependency 로 옵션 거의 자동 결정 (key prefix 필수). 프로토타입 *전* 에 mechanical migration 슬라이스.
-- §4 store — **결정 완료**. §2 / §1 dependency 로 단위 / lifecycle / 점진 전략 자동 결정. dict[robot_id] + 점진 dict 화 (codegen robot_id 처리만 코드 확인 필요).
+- §1 namespace — **결정 + 구현 완료** (Slice A). `omx/` → `horibot/{robot_id}/...`. BaseNode.r() 헬퍼 + frontend BridgeClient 자동 expand. backend ruff/pyright + frontend tsc/lint 통과. 실 hardware 검증 대기.
+- §2 페이지 역할 — **결정 + 구현 완료** (Slice B). Dashboard / Robots/`<id>` / World / Tasks/`<name>` 4-페이지 구조. Workspace3D / Motion / Calibration / PickAndPlace 페이지 흡수 → 삭제.
+- §3 멀티로봇 UX — **§2 에 흡수됨**.
+- §4 store — **부분 완료**. 자동 expand (Slice A) 로 N=1 호환 코드 동작. dict[robot_id] 화는 *충돌 자리 없어 가치 X* — Slice C 의 검증 후 자리.
+- **Slice C mechanical** — 완료. Motion / Calibration / PickAndPlace 페이지 → Panel 흡수, Dashboard §2 sketch 재작성, `/tasks` / `/system` endpoint, heartbeat 에 robot_id.
+- **Slice C reversible (남은 자리)** — Layer registry / Page Preset / ViewState store / store dict[robot_id] / fine-tune (dim/카메라/layout). 검증 *후* 만져보고 발견.
+
+**검증 가이드**: [slice_abc_verify.md](slice_abc_verify.md) 에 집에서 진행할 순차 절차.
 
 **원칙**: reversible 결정 (Layer 단위, data source 패턴, Preset 추상화 등) 은 *문서로 정교화하지 않음*. 만들고 만져보면서 발견. irreversible 만 결정문에 적음.
 
@@ -303,24 +307,27 @@ reversible 결정들 (Layer self-subscribe vs props, Preset 추상화, Layer reg
 ## §5. 작업 순서
 
 ```
-Slice A — §1 namespace migration (mechanical refactor, irreversible)
-   - omx → horibot prefix
-   - robot-scoped 키에 <robot_id> 삽입
-   - topic_map.py + topics.ts + 모든 노드 + bridge 동시 갱신
-   - 동작 검증: N=1 (omx_f_0) 환경에서 기존 기능 그대로 동작
+Slice A — §1 namespace migration                          [완료, 검증 대기]
+   - omx → horibot prefix + robot-scoped 에 {robot_id} placeholder
+   - BaseNode.r() / BridgeClient 자동 expand
    ↓
-Slice B — §2 프로토타입 (시각화 only, scope 확장 금지)
-   - robot/robots.yaml 에 가짜 SO101 entry
-   - WorldScene + <RobotLayer /> (omx_f_0, so101_0 두 URDF)
-   - /robots/<id> + /world 라우팅 + focus
-   - Page Preset / Layer registry / ViewState store / Panel 페어링 — 안 만듦
+Slice B — §2 프로토타입 (시각화 only)                      [완료, 검증 대기]
+   - robots.yaml 가짜 so101_0 + base_pose
+   - /robots endpoint + useRobots + RobotLayer + RobotsPage / WorldPage
+   - Sidebar enum + Workspace3D 흡수
    ↓
-Slice C — 만져보면서 발견 (reversible decisions 코드로 진입)
-   - Layer 추상화 필요? (Preset / Registry)
+Slice C mechanical                                          [완료, 검증 대기]
+   - Motion/Calibration/PickAndPlace 페이지 → Panel 흡수 + 페이지 삭제
+   - Tasks 페이지 + Dashboard 재작성
+   - /tasks /system endpoint, heartbeat robot_id
+   ↓
+Slice C reversible                                          [대기 — 검증 후만]
+   - Layer 추상화 (Preset / Registry)
    - Layer self-subscribe vs props
-   - Panel 모듈 구조 (Layer + Panel 같은 폴더?)
-   - ViewState store 필요?
-   - §4 store dict[robot_id] 화 시점 (충돌 체감 시점)
+   - Panel 모듈 구조
+   - ViewState store
+   - §4 store dict[robot_id] 화
+   - fine-tune (dim opacity / 카메라 default / layout)
 ```
 
 §1 (irreversible, namespace 일괄 갈아엎기) 먼저, §4 (store dict 화 점진) 는 §2 프로토타입 만지며 *불편한 자리부터*. §2 는 그 사이.
@@ -333,3 +340,47 @@ Slice C — 만져보면서 발견 (reversible decisions 코드로 진입)
 **§1 / §2 / §4 결정은 확정 — 추가 논의 X.** Slice A → B → C 순서 지킴. §4 의 codegen robot_id 처리 자리는 Slice A 시작 시 코드 확인.
 
 reversible 결정 (Layer self-subscribe vs props, Preset 추상화, Panel 모듈 구조, payload robot_id 제거 여부 등) 을 *문서로 정교화하지 않는* 것이 본 슬라이스의 핵심 원칙. 사용자 메모리 `feedback_reversible_decision_stop.md` 참조.
+
+## §6. 구현 결과 (2026-06-04)
+
+### Slice A — namespace
+- 토픽 / 서비스 key: `omx/...` → `horibot/{robot_id}/...` (robot-scoped) /
+  `horibot/<domain>/...` (task/system global)
+- `BaseNode.r(template)` 헬퍼 — placeholder 자동 expand, global 노드 / multi-robot
+  의 default fallback
+- frontend `BridgeClient` 가 subscribe/publish/callService 콜 시 자동 expand
+- `DEFAULT_ROBOT_ID` (env `VITE_DEFAULT_ROBOT_ID`, default `omx_f_0`) 가 fallback
+- MJPEG `/camera/stream` → `/robots/{robot_id}/camera/stream`
+
+### Slice B — 페이지 / multi-robot 시각화
+- `robots.yaml` 에 `base_pose: {x, y, z, yaw_deg}` 필드 추가
+- 가짜 `so101_0` entry (enabled=false, type=omx_f, base_pose.x=0.4) — 시각화만
+- `RobotConfig` / `RobotRegistry.default()` 가 enabled robot 만 카운트
+- backend `GET /robots` — list + default 반환
+- frontend `useRobots()` — module-cached fetch + `BridgeClient.setDefaultRobotId()` sync
+- `RobotModel` 일반화 (`robotType` / `basePose` / `opacity` props), z-up world 의 base_pose translation
+- `RobotLayer` — N robot 동시 마운트, focus 모드 others dim (default 0.25)
+- `RobotsPage` (`/robots/:id`) + `WorldPage` (`/world`)
+- `Sidebar` Robots 섹션 자동 enumeration
+- 기존 `Workspace3D` 페이지 → `RobotsPage` 에 dockview 인프라 흡수 (layout key
+  `workspace3d.<id>` 로 robot 별 분리)
+
+### Slice C mechanical — panel 흡수 / 새 페이지 / 메트릭
+- `MotionPanel` ← Motion 페이지 Tabs
+- `CalibrationActionsPanel` ← IntrinsicTab + HandEyeTab Tabs (기존 CalibrationPanel = 조회 전용 유지)
+- `TasksPage` (`/tasks/:name`) ← PickAndPlace 의 rename + multi-robot focus=null
+- `Dashboard` 재작성 — §2 sketch (Robots Online + System metrics)
+- 삭제: `Motion.tsx` / `Calibration.tsx` / `PickAndPlace.tsx` / `Workspace3D.tsx`
+- backend `GET /tasks` — `TASK_REGISTRY.keys()` lazy enumerate
+- backend `GET /system` — psutil CPU/Mem + zenoh peers (`session.info.routers_zid/peers_zid`)
+- frontend `useTasks()` / `useSystemMetrics()` (5초 polling)
+- Heartbeat / LogMessage schema 에 `robot_id: str | None` 추가, BaseNode 자동 채움
+- systemStore 에 `nodesByRobot: Record<robotId|"global", Record<nodeName, NodeInfo>>` 추가, Dashboard 가 robot 별 motor heartbeat 로 OK/No-Heartbeat 구분
+
+### 검증 통과 (코드 정합성)
+- backend: `uv run ruff check .` ✓ / `uv run pyright` ✓ (0 errors)
+- frontend: `pnpm exec tsc -b` ✓ / `pnpm lint` ✓
+- codegen: `pnpm gen:types` ✓ (topics 13 / binary 1 / services 39)
+
+### 실 hardware / dev 서버 검증 — 대기 중
+순차 절차: [slice_abc_verify.md](slice_abc_verify.md).

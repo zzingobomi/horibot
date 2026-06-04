@@ -1,16 +1,11 @@
 /**
- * /robots/:id — focus mode. multi_robot_phase2_frontend.md §2 sketch:
- * WorldScene (focus on robot) + 기존 panel (Robot State / Scene Controls /
- * Calibration / Point Cloud) dockview.
+ * /tasks/:name — multi_robot_phase2_frontend.md §2 sketch.
  *
- * (이전 Workspace3D 페이지의 dockview 인프라가 여기로 흡수됨 — 같은 N=1
- * default focus 가정의 중복 자리였음.)
+ * task 자체가 robot 을 포함 (selector 없음). focus=null = WorldPage 형태의
+ * multi-robot 시각화 + task control panel (prompt / progress / camera).
  *
- * Layout 은 robot 별로 localStorage 분리 (`workspace3d.<id>`) — focus 마다
- * 사용자가 다르게 정렬할 수 있게. 만져보고 불필요하면 단일 키로 통합.
- *
- * 첫 프로토타입 scope — Page Preset / Layer registry / ViewState store /
- * 명령 권한 같은 추상화는 안 만듦. 만져보고 발견.
+ * 첫 프로토타입: task name 은 사용자가 URL 로 명시. backend 의 task registry
+ * 자동 enumeration 은 별도 endpoint 추가 자리 (Slice C 이후).
  */
 import { useCallback, useMemo, useRef } from "react";
 import { useParams } from "react-router-dom";
@@ -28,7 +23,7 @@ import {
   resetWorkspaceLayout,
   saveLayout,
 } from "@/lib/workspaceLayout";
-import { useRobots } from "@/hooks/useRobots";
+import { useTasks } from "@/hooks/useTasks";
 
 type PanelSpec = {
   id: string;
@@ -39,19 +34,17 @@ type PanelSpec = {
 };
 
 const PANELS: PanelSpec[] = [
+  { id: "prompt", component: "prompt", title: "Prompt", width: 280, height: 240 },
+  { id: "task-progress", component: "taskProgress", title: "Task Progress", width: 280, height: 200 },
+  { id: "camera-feed", component: "cameraFeed", title: "Camera Feed", width: 320, height: 240 },
   { id: "robot-state", component: "robotState", title: "Robot State", width: 260, height: 270 },
-  { id: "motion", component: "motion", title: "Motion", width: 320, height: 360 },
-  { id: "scene-controls", component: "sceneControls", title: "Scene Controls", width: 260, height: 300 },
-  { id: "calibration", component: "calibration", title: "Calibration", width: 260, height: 260 },
-  { id: "calibration-actions", component: "calibrationActions", title: "Calibration Actions", width: 320, height: 360 },
-  { id: "point-cloud", component: "pointCloud", title: "Point Cloud", width: 260, height: 240 },
 ];
 
-export function RobotsPage() {
-  const { id = "" } = useParams<{ id: string }>();
-  const { robots, loading, error } = useRobots();
+export function TasksPage() {
+  const { name = "pick_and_place" } = useParams<{ name: string }>();
+  const { tasks, loading, error } = useTasks();
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const layoutKey = `workspace3d.${id}`;
+  const layoutKey = `tasks.${name}`;
 
   const addDefaultLayout = useCallback(
     (event: DockviewReadyEvent) => {
@@ -120,25 +113,21 @@ export function RobotsPage() {
     window.location.reload();
   }, [layoutKey]);
 
-  // dockview 의 onReady 가 key 바뀌면 새로 호출되도록 — robot 전환 시 layout
-  // 도 새 로드. key 안 바꾸면 같은 layout 유지.
   const dockviewKey = useMemo(() => layoutKey, [layoutKey]);
 
   if (error) {
     return (
-      <div className="p-6 text-red-400 font-mono">/robots 응답 실패: {error}</div>
+      <div className="p-6 text-red-400 font-mono">/tasks 응답 실패: {error}</div>
     );
   }
   if (loading) {
-    return <div className="p-6 text-zinc-400 font-mono">robots.yaml 로드 중...</div>;
+    return <div className="p-6 text-zinc-400 font-mono">tasks 로드 중...</div>;
   }
-
-  const found = robots.find((r) => r.id === id);
-  if (!found) {
+  if (!tasks.includes(name)) {
     return (
       <div className="p-6 text-zinc-400 font-mono">
-        robot id <span className="text-red-400">{id}</span> 없음. 등록된 robot:{" "}
-        {robots.map((r) => r.id).join(", ") || "(없음)"}
+        task <span className="text-red-400">{name}</span> 없음. 등록된 task:{" "}
+        {tasks.join(", ") || "(없음)"}
       </div>
     );
   }
@@ -149,8 +138,9 @@ export function RobotsPage() {
       className="relative w-full h-full overflow-hidden bg-[#080c12]"
       style={{ fontFamily: "'JetBrains Mono', 'Fira Code', monospace" }}
     >
+      {/* task 는 multi-robot — focusId=null (World overview). */}
       <div className="absolute inset-0 z-0">
-        <RobotSceneContainer focusId={id} />
+        <RobotSceneContainer focusId={null} />
       </div>
 
       <div className="absolute inset-0 z-10 workspace-dockview pointer-events-none">
@@ -162,14 +152,10 @@ export function RobotsPage() {
         />
       </div>
 
-      {/* 우상단: robot 메타 + layout reset */}
       <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
         <div className="px-3 py-2 rounded bg-zinc-900/80 border border-zinc-700/60 text-zinc-300 text-xs font-mono pointer-events-none">
-          <div className="text-zinc-100 font-semibold">{found.id}</div>
-          <div className="text-zinc-500">type: {found.type}</div>
-          <div className={found.enabled ? "text-green-400" : "text-yellow-400"}>
-            {found.enabled ? "enabled" : "viz-only"}
-          </div>
+          <div className="text-zinc-100 font-semibold">{name}</div>
+          <div className="text-zinc-500">task</div>
         </div>
         <button
           onClick={handleReset}
@@ -183,3 +169,4 @@ export function RobotsPage() {
     </div>
   );
 }
+

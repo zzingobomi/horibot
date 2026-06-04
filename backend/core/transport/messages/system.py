@@ -17,11 +17,17 @@ from typing import Literal
 
 
 class Heartbeat(StrictModel):
-    """SYSTEM_HEARTBEAT 페이로드. 노드별 1Hz."""
+    """SYSTEM_HEARTBEAT 페이로드. 노드별 1Hz.
+
+    robot_id 는 robot-scoped 노드 (motor / motion / camera / ...) 만 채움 —
+    global 노드 (task / gamepad / bridge) 는 None. Dashboard 가 robot_id 별
+    온라인 상태 구분.
+    """
 
     node: str
     timestamp: float
     status: str = "ok"
+    robot_id: str | None = None
 
 
 class LogMessage(StrictModel):
@@ -31,3 +37,4 @@ class LogMessage(StrictModel):
     timestamp: float
     level: Literal["debug", "info", "warning", "error"]
     message: str
+    robot_id: str | None = None

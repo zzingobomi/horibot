@@ -2,29 +2,25 @@ import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
   Gamepad2,
-  Camera,
-  Cpu,
   Settings,
   Home,
   Moon,
   Power,
-  Hand,
   PanelLeftClose,
   PanelLeftOpen,
   Bot,
   Globe,
+  ListChecks,
 } from "lucide-react";
 import { ConnectionStatus } from "@/components/common/ConnectionStatus";
 import { cn } from "@/lib/utils";
 import { useJointControl } from "@/hooks/useJointControl";
 import { useRobots } from "@/hooks/useRobots";
+import { useTasks } from "@/hooks/useTasks";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: Gamepad2 },
-  { to: "/motion", label: "Motion", icon: Cpu },
-  { to: "/calibration", label: "Calibration", icon: Camera },
   { to: "/world", label: "World", icon: Globe },
-  { to: "/pick-and-place", label: "Pick & Place", icon: Hand },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -33,6 +29,7 @@ const COLLAPSED_KEY = "omx.sidebar.collapsed";
 export function Sidebar() {
   const { goHome, goRest, torqueEnabled, enableTorque } = useJointControl();
   const { robots } = useRobots();
+  const { tasks } = useTasks();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(COLLAPSED_KEY) === "1";
@@ -133,6 +130,37 @@ export function Sidebar() {
                     {r.id}
                   </span>
                 )}
+              </NavLink>
+            ))}
+          </div>
+        )}
+
+        {/* Tasks 섹션 — frontend 의 KNOWN_TASKS hardcoded enumeration.
+            backend task registry 자동 fetch 는 별도 endpoint 자리. */}
+        {tasks.length > 0 && (
+          <div className="pt-3">
+            {!collapsed && (
+              <p className="px-3 pb-1 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                Tasks
+              </p>
+            )}
+            {tasks.map((name) => (
+              <NavLink
+                key={name}
+                to={`/tasks/${name}`}
+                title={collapsed ? name : undefined}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center rounded-md py-2 text-sm transition-colors",
+                    collapsed ? "justify-center px-2" : "gap-3 px-3",
+                    isActive
+                      ? "bg-accent text-accent-foreground font-medium"
+                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                  )
+                }
+              >
+                <ListChecks className="h-4 w-4 shrink-0" />
+                {!collapsed && <span>{name}</span>}
               </NavLink>
             ))}
           </div>

@@ -89,6 +89,47 @@ app.include_router(calibration_router)
 # enumeration 에 사용. robots.yaml 변경 시 backend 재시작 후 자동 반영.
 
 
+@app.get("/system", summary="Host system metrics (CPU / Mem / Zenoh peers)")
+def system_metrics() -> dict:
+    """Dashboard overview source. psutil 로 CPU / Mem, ZenohSession 으로 peer
+    카운트. cpu_percent(interval=0.1) 는 100ms blocking — FastAPI sync handler
+    가 thread pool 에서 도니까 event loop 안 막음.
+    """
+    import psutil
+
+    cpu_pct = psutil.cpu_percent(interval=0.1)
+    vm = psutil.virtual_memory()
+
+    routers = 0
+    peers = 0
+    try:
+        info = ZenohSession.get().info
+        routers = sum(1 for _ in info.routers_zid())
+        peers = sum(1 for _ in info.peers_zid())
+    except Exception as e:
+        logger.warning("zenoh peer info 조회 실패: %s", e)
+
+    return {
+        "cpu_pct": round(cpu_pct, 1),
+        "mem_used_mb": round(vm.used / (1024 * 1024), 1),
+        "mem_total_mb": round(vm.total / (1024 * 1024), 1),
+        "mem_pct": round(vm.percent, 1),
+        "zenoh_routers": routers,
+        "zenoh_peers": peers,
+    }
+
+
+@app.get("/tasks", summary="Registered task factories from TASK_REGISTRY")
+def list_tasks() -> dict:
+    """task_node 의 TASK_REGISTRY enumerate — frontend Sidebar / TasksPage 의
+    enumeration source. lazy import 로 task_node 의 무거운 deps (LLM /
+    detector chain) 부팅 시 끌고 오지 않음.
+    """
+    from nodes.task_node import TASK_REGISTRY
+
+    return {"tasks": sorted(TASK_REGISTRY.keys())}
+
+
 @app.get("/robots", summary="Registered robots from robots.yaml")
 def list_robots() -> dict:
     from core.robot.robot_registry import RobotRegistry

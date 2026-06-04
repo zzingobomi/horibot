@@ -1,7 +1,7 @@
 /**
  * Task step result 누적 store.
  *
- * Backend `omx/task/step_result` 토픽을 받아 step.id → payload 매핑으로 보관.
+ * Backend `horibot/task/step_result` 토픽을 받아 step.id → payload 매핑으로 보관.
  * TaskResultLayer 가 이 store 를 읽어 type 별 (Detection / Position3 / Pose6 / ...)
  * 자동 렌더링. 새 task tree 가 들어오면 누적 결과 클리어 (useBridge 가 호출).
  *

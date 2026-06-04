@@ -363,6 +363,7 @@ class BaseNode:
                     node=self.node_name,
                     timestamp=time.time(),
                     status="ok",
+                    robot_id=self.robot_id,
                 ),
             )
             time.sleep(1.0)
@@ -379,6 +380,7 @@ class BaseNode:
                 timestamp=time.time(),
                 level=level,  # type: ignore[arg-type]
                 message=msg,
+                robot_id=self.robot_id,
             ),
         )
         getattr(logger, level, logger.info)(f"[{self.node_name}] {msg}")

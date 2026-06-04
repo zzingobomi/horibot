@@ -198,8 +198,9 @@ def all_referenced_models() -> set[type[BaseModel]]:
 def _attr_name_by_value(cls: type) -> dict[str, str]:
     """Topic / Service 클래스의 attribute name reverse-lookup.
 
-    `Topic.MOTOR_STATE_JOINT = "omx/motor/state/joint"` 같은 형태에서
-    `{"omx/motor/state/joint": "MOTOR_STATE_JOINT"}` 추출.
+    `Topic.MOTOR_STATE_JOINT = "horibot/{robot_id}/motor/state/joint"` 같은
+    형태에서 `{"horibot/{robot_id}/motor/state/joint": "MOTOR_STATE_JOINT"}`
+    추출. robot-scoped template 도 그대로 key — frontend 가 expand.
     """
     return {
         v: k

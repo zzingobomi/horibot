@@ -15,7 +15,7 @@ import {
 import { ConnectionStatus } from "@/components/common/ConnectionStatus";
 import { cn } from "@/lib/utils";
 import { useJointControl } from "@/hooks/useJointControl";
-import { useRobots } from "@/hooks/useRobots";
+import { useRobots, type RobotCapability } from "@/hooks/useRobots";
 import { useTasks } from "@/hooks/useTasks";
 
 const navItems = [
@@ -23,6 +23,13 @@ const navItems = [
   { to: "/world", label: "World", icon: Globe },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
+
+// 단일 source — backend RobotCapability Literal 과 sync.
+const CAPABILITY_LABELS: Record<RobotCapability, string> = {
+  move: "Move",
+  calibrate: "Calibrate",
+  scan: "Scan",
+};
 
 const COLLAPSED_KEY = "omx.sidebar.collapsed";
 
@@ -96,7 +103,9 @@ export function Sidebar() {
         ))}
 
         {/* Robots 섹션 — robots.yaml SSOT 자동 enumeration.
-            multi_robot_phase2_frontend.md §2 결정 5 (Focus Robot = Navigation). */}
+            multi_robot_phase2_frontend.md §2 결정 5 (Focus Robot = Navigation).
+            expanded 모드에선 robot 헤더 + capabilities sub-items, collapsed
+            모드에선 robot 1 개당 1 아이콘 (index route 가 첫 mode 로 redirect). */}
         {robots.length > 0 && (
           <div className="pt-3">
             {!collapsed && (
@@ -104,34 +113,59 @@ export function Sidebar() {
                 Robots
               </p>
             )}
-            {robots.map((r) => (
-              <NavLink
-                key={r.id}
-                to={`/robots/${r.id}`}
-                title={collapsed ? r.id : undefined}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center rounded-md py-2 text-sm transition-colors",
-                    collapsed ? "justify-center px-2" : "gap-3 px-3",
-                    isActive
-                      ? "bg-accent text-accent-foreground font-medium"
-                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                  )
-                }
-              >
-                <Bot
-                  className={cn(
-                    "h-4 w-4 shrink-0",
-                    !r.enabled && "opacity-40",
-                  )}
-                />
-                {!collapsed && (
-                  <span className={cn(!r.enabled && "opacity-60")}>
-                    {r.id}
-                  </span>
-                )}
-              </NavLink>
-            ))}
+            {robots.map((r) =>
+              collapsed ? (
+                <NavLink
+                  key={r.id}
+                  to={`/robots/${r.id}`}
+                  title={r.id}
+                  className={({ isActive }) =>
+                    cn(
+                      "flex items-center justify-center px-2 rounded-md py-2 text-sm transition-colors",
+                      isActive
+                        ? "bg-accent text-accent-foreground font-medium"
+                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                    )
+                  }
+                >
+                  <Bot
+                    className={cn("h-4 w-4 shrink-0", !r.enabled && "opacity-40")}
+                  />
+                </NavLink>
+              ) : (
+                <div key={r.id} className="mb-1">
+                  {/* robot 헤더 — 링크 아님. label + 상태만 */}
+                  <div className="flex items-center gap-3 px-3 py-1.5 text-xs text-muted-foreground">
+                    <Bot
+                      className={cn("h-4 w-4 shrink-0", !r.enabled && "opacity-40")}
+                    />
+                    <span className={cn("flex-1 truncate", !r.enabled && "opacity-60")}>
+                      {r.id}
+                    </span>
+                    {!r.enabled && (
+                      <span className="text-[10px] text-yellow-500/60">viz</span>
+                    )}
+                  </div>
+                  {/* capabilities sub-items */}
+                  {r.capabilities.map((cap) => (
+                    <NavLink
+                      key={cap}
+                      to={`/robots/${r.id}/${cap}`}
+                      className={({ isActive }) =>
+                        cn(
+                          "flex items-center gap-2 ml-7 mr-2 px-3 py-1.5 rounded-md text-sm transition-colors",
+                          isActive
+                            ? "bg-accent text-accent-foreground font-medium"
+                            : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                        )
+                      }
+                    >
+                      <span>{CAPABILITY_LABELS[cap]}</span>
+                    </NavLink>
+                  ))}
+                </div>
+              ),
+            )}
           </div>
         )}
 

@@ -8,6 +8,7 @@ robots:
   omx_f_0:
     type: omx_f
     enabled: true
+    capabilities: [move, calibrate, scan]   # D405 보유 → scan 가능. SO-101 도착 시 USB cam 으로 바뀌면 [move, calibrate] 로 변경.
     hosts:                 # Phase 2 (distributed_topology.md §3.2): hori1/2/3.
       motor: dev           # 현재 single machine — caller 아직 없음 (잠정값).
       camera: dev
@@ -27,6 +28,11 @@ robots:
   so101_0:
     type: omx_f
     enabled: false
+    # viz-only placeholder 라도 sidebar 에서 navigate 가능해야 multi-robot
+    # 시각화 (focus 전환 → others dim) 검증됨. enabled=false 라 backend 가
+    # 실제 motor/camera 노드는 안 띄움 → panel 들은 빈 데이터로 보임 (의도된 동작).
+    # 실 hardware 도착 시 enabled=true + scan 추가 (D405 양도).
+    capabilities: [move, calibrate]
     hosts:
       motor: dev
       camera: dev

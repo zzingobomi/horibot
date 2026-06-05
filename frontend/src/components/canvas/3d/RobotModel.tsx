@@ -51,6 +51,16 @@ function applyOpacity(robot: URDFRobot, opacity: number) {
   });
 }
 
+function disposeMaterials(robot: URDFRobot) {
+  robot.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const mat = mesh.material as THREE.Material | THREE.Material[];
+    if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+    else if (mat) mat.dispose();
+  });
+}
+
 export function RobotModel({
   jointAngles,
   robotType = "omx_f",
@@ -68,8 +78,23 @@ export function RobotModel({
     onTCPMatrixRef.current = onTCPMatrix;
   }, [onTCPMatrix]);
 
-  // URDF 로드 — robot_type 별로 분기, packages 매핑은 동일 (현재 모든 type 이
-  // robot/<type>/ 하위에 mesh 보유).
+  // opacity 를 ref 로 stash — URDFLoader 의 loadMeshCb 는 mesh 가 async 로 들어올
+  // 때마다 호출되는데 그 시점의 *현재* opacity 를 써야 늦게 들어오는 mesh 도
+  // dim 처리가 정확함.
+  const opacityRef = useRef(opacity);
+  useEffect(() => {
+    opacityRef.current = opacity;
+  }, [opacity]);
+
+  // URDF 로드.
+  //
+  // loadMeshCb override 이유: URDFLoader 가 URDF `<material name="X">` 을 robot
+  // 안 모든 mesh 에 같은 인스턴스로 공유시키고, 그것도 mesh 가 async 로 attach
+  // 되며 URDF.load 의 onComplete 는 그보다 먼저 fire. mesh 별로 자기 material
+  // 인스턴스 + 현재 opacity 가져가야 (a) 두 robot 의 opacity 가 서로 안 덮어쓰고
+  // (b) 늦게 들어오는 mesh 도 attach 직후부터 정확한 dim. loadMeshCb 안에서
+  // URDFLoader 의 done 호출 *후* (그 시점에 obj.material 이 채워짐) clone + set.
+  // opacity 는 ref 로 — useEffect closure 의 stale value 회피.
   useEffect(() => {
     let cancelled = false;
     const currentGroup = groupRef.current;
@@ -81,20 +106,43 @@ export function RobotModel({
     };
     loader.workingPath = `${BASE_URL}/robot/${robotType}/urdf/`;
 
+    const setMaterialOpacity = (m: THREE.Material) => {
+      const op = opacityRef.current;
+      m.transparent = op < 1.0;
+      m.opacity = op;
+      m.depthWrite = op >= 1.0;
+    };
+    loader.loadMeshCb = (path, manager, urdfDone) => {
+      loader.defaultMeshLoader(path, manager, (obj, err) => {
+        urdfDone(obj, err);
+        if (err || !obj) return;
+        const mesh = obj as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const mat = mesh.material as THREE.Material | THREE.Material[];
+        if (Array.isArray(mat)) {
+          mesh.material = mat.map((m) => {
+            const c = m.clone();
+            setMaterialOpacity(c);
+            return c;
+          });
+        } else if (mat) {
+          const c = (mat as THREE.Material).clone();
+          setMaterialOpacity(c);
+          mesh.material = c;
+        }
+      });
+    };
+
     loader.load(
       `${BASE_URL}/robot/${robotType}/urdf/${robotType}.urdf`,
       (robot: URDFRobot) => {
         if (cancelled) return;
-
         robotRef.current = robot;
         currentGroup?.add(robot);
-
         if (robot.links) {
           const names = Object.keys(robot.links).sort();
           onLinksLoaded?.(names);
         }
-
-        applyOpacity(robot, opacity);
         emitTCP(robot, onTCPMatrixRef.current);
       },
       undefined,
@@ -104,12 +152,12 @@ export function RobotModel({
     return () => {
       cancelled = true;
       if (robotRef.current && currentGroup) {
+        // cloned material dispose — robot 별로 clone 했으니 unmount 시 정리.
+        disposeMaterials(robotRef.current);
         currentGroup.remove(robotRef.current);
         robotRef.current = null;
       }
     };
-    // opacity 변경 시 reload 안 함 — 별도 effect 에서 traverse.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [robotType, onLinksLoaded]);
 
   // Joint 각도 적용

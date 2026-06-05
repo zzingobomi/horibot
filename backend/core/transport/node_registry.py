@@ -12,6 +12,10 @@ _NODE_REGISTRY: dict[str, tuple[str, str]] = {
     "detector": ("nodes.detector_node", "DetectorNode"),
     "pointcloud": ("nodes.pointcloud_node", "PointCloudNode"),
     "gamepad": ("nodes.gamepad_node", "GamepadNode"),
+    # ─── Mock variants (frontend UX 개발용, host_mock.yaml 에서 사용) ──────
+    # 실 motor/camera 대신 자리 채움 — topic/service contract 만 충족.
+    "mock_motor": ("nodes.motor_node_mock", "MockMotorNode"),
+    "mock_camera": ("nodes.camera_node_mock", "MockCameraNode"),
 }
 
 

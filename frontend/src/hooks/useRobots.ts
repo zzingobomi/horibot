@@ -1,37 +1,27 @@
 import { useEffect, useState } from "react";
 import { BASE_URL, DEFAULT_ROBOT_ID } from "@/constants";
 import { bridge } from "@/api/bridge";
+import type { components } from "@/api/generated/types";
 
-export interface RobotBasePose {
-  x: number;
-  y: number;
-  z: number;
-  yaw_deg: number;
-}
+// backend `bridge/schemas.py` 의 Pydantic 모델을 `pnpm gen:types` 로 emit 한
+// 자리에서 그대로 import — frontend 가 RobotInfo / capabilities union 을 자체
+// 선언하지 않음. 새 field / capability 추가 시 backend Pydantic + Literal
+// 한 번 갱신 → gen:types 재실행 → frontend 가 자동으로 새 모양 받음.
+export type RobotInfo = components["schemas"]["RobotInfo"];
+export type RobotBasePose = components["schemas"]["BasePoseSchema"];
+export type RobotsListResponse = components["schemas"]["RobotsListResponse"];
+export type RobotCapability = RobotInfo["capabilities"][number];
 
-export interface RobotInfo {
-  id: string;
-  type: string;
-  enabled: boolean;
-  base_pose: RobotBasePose;
-  urdf_url: string;
-}
+let cached: RobotsListResponse | null = null;
+let pending: Promise<RobotsListResponse> | null = null;
 
-interface RobotsResponse {
-  robots: RobotInfo[];
-  default: string | null;
-}
-
-let cached: RobotsResponse | null = null;
-let pending: Promise<RobotsResponse> | null = null;
-
-async function fetchRobots(): Promise<RobotsResponse> {
+async function fetchRobots(): Promise<RobotsListResponse> {
   if (cached) return cached;
   if (pending) return pending;
   pending = fetch(`${BASE_URL}/robots`)
     .then((r) => {
       if (!r.ok) throw new Error(`/robots ${r.status}`);
-      return r.json() as Promise<RobotsResponse>;
+      return r.json() as Promise<RobotsListResponse>;
     })
     .then((data) => {
       cached = data;
@@ -56,7 +46,7 @@ export function useRobots(): {
   loading: boolean;
   error: string | null;
 } {
-  const [data, setData] = useState<RobotsResponse | null>(cached);
+  const [data, setData] = useState<RobotsListResponse | null>(cached);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {

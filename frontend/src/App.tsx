@@ -3,7 +3,11 @@ import { Sidebar } from "@/components/common/Sidebar";
 import { useBridge } from "@/hooks/useBridge";
 import { Dashboard } from "@/pages/Dashboard";
 import { Settings } from "@/pages/Settings";
-import { RobotsPage } from "@/pages/RobotsPage";
+import { RobotsLayout } from "@/pages/RobotsLayout";
+import { RobotModeRedirect } from "@/pages/robotModes/RobotModeRedirect";
+import { RobotMoveMode } from "@/pages/robotModes/RobotMoveMode";
+import { RobotCalibrateMode } from "@/pages/robotModes/RobotCalibrateMode";
+import { RobotScanMode } from "@/pages/robotModes/RobotScanMode";
 import { WorldPage } from "@/pages/WorldPage";
 import { TasksPage } from "@/pages/TasksPage";
 
@@ -16,10 +20,15 @@ function AppContent() {
       <main className="flex-1 overflow-hidden">
         <Routes>
           <Route path="/" element={<Dashboard />} />
-          {/* multi_robot_phase2_frontend.md §2 — Dashboard / Robots / World /
-              Tasks 의 4-페이지 구조. Motion / Calibration / PickAndPlace 는
-              Robots / Tasks 의 panel 로 흡수됨 (Slice C). */}
-          <Route path="/robots/:id" element={<RobotsPage />} />
+          {/* /robots/:id 가 shared layout (R3F + meta), 그 안 Outlet 에 mode
+              컴포넌트가 렌더 — mode 전환 시 R3F 는 unmount 안 됨.
+              capabilities (robots.yaml) 가 sidebar sub-item / route 활성화 결정. */}
+          <Route path="/robots/:id" element={<RobotsLayout />}>
+            <Route index element={<RobotModeRedirect />} />
+            <Route path="move" element={<RobotMoveMode />} />
+            <Route path="calibrate" element={<RobotCalibrateMode />} />
+            <Route path="scan" element={<RobotScanMode />} />
+          </Route>
           <Route path="/world" element={<WorldPage />} />
           <Route path="/tasks/:name" element={<TasksPage />} />
           <Route path="/settings" element={<Settings />} />

@@ -1,0 +1,27 @@
+# Mock 모드 — 하드웨어 없이 frontend UX 검증/개발용.
+# 실행:
+#   uv run python main.py --host mock
+#
+# motor   → MockMotorNode  (cmd 수신 시 즉시 internal position 갱신, 20Hz state)
+# camera  → MockCameraNode (합성 JPEG 30fps, depth payload X)
+# 나머지 노드 (motion/task/calibration/detector/pointcloud/bridge) 는 그대로 —
+# 모두 topic 기반이라 motor/camera 만 swap 하면 동일 코드 경로로 동작.
+host_name: mock
+
+zenoh:
+  mode: peer
+  connect: []
+
+nodes:
+  - mock_motor
+  - mock_camera
+  - motion
+  - calibration
+  - task
+  - detector
+  - pointcloud
+
+bridge:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8000

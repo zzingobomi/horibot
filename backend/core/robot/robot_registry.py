@@ -43,9 +43,15 @@ MotorBackendName = Literal["dynamixel", "feetech"]
 IKSolverName = Literal["pybullet", "mujoco"]
 CameraBackendName = Literal["realsense", "opencv", "mujoco"]
 
+# Robot mode sub-route 의 sidebar / route enablement 결정 (frontend Phase 2 UX —
+# multi_robot_phase2_frontend.md). camera 가 depth 인지 RGB 인지에 따라 scan 가능
+# 여부가 달라짐 — robots.yaml capabilities 가 SSOT.
+RobotCapability = Literal["move", "calibrate", "scan"]
+
 _VALID_MOTOR_BACKENDS = frozenset(get_args(MotorBackendName))
 _VALID_IKSOLVERS = frozenset(get_args(IKSolverName))
 _VALID_CAMERA_BACKENDS = frozenset(get_args(CameraBackendName))
+_VALID_CAPABILITIES = frozenset(get_args(RobotCapability))
 
 
 @dataclass(frozen=True)
@@ -94,6 +100,7 @@ class RobotConfig:
     motor_backend: MotorBackendName
     iksolver: IKSolverName
     camera_backend: CameraBackendName
+    capabilities: tuple[RobotCapability, ...]
 
     # type-level paths — robot/<robot_type>/
     type_dir: Path
@@ -209,6 +216,22 @@ class RobotRegistry:
             camera=str(hosts_raw.get("camera", "dev")),
         )
 
+        caps_raw = entry.get("capabilities", []) or []
+        if not isinstance(caps_raw, list):
+            raise ValueError(
+                f"robot '{robot_id}' capabilities 가 list 아님 "
+                f"({type(caps_raw).__name__}). 예: capabilities: [move, calibrate, scan]"
+            )
+        caps: list[RobotCapability] = []
+        for c in caps_raw:
+            cs = str(c)
+            if cs not in _VALID_CAPABILITIES:
+                raise ValueError(
+                    f"robot '{robot_id}' 알 수 없는 capability={cs!r}. "
+                    f"가능: {sorted(_VALID_CAPABILITIES)}"
+                )
+            caps.append(cast(RobotCapability, cs))
+
         pose_raw = entry.get("base_pose", {}) or {}
         if not isinstance(pose_raw, dict):
             raise ValueError(
@@ -230,6 +253,7 @@ class RobotRegistry:
             motor_backend=cast(MotorBackendName, motor_backend),
             iksolver=cast(IKSolverName, iksolver),
             camera_backend=cast(CameraBackendName, camera_backend),
+            capabilities=tuple(caps),
             type_dir=type_dir,
             urdf_path=type_dir / "urdf" / f"{robot_type}.urdf",
             type_motors_yaml=type_dir / "motors.yaml",

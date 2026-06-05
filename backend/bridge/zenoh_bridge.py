@@ -26,6 +26,7 @@ from core.transport.zenoh_session import ZenohSession
 from core.transport.topic_map import Topic
 from bridge.calibration_router import calibration_router
 from bridge.client_stream import ConnectionManager
+from bridge.schemas import BasePoseSchema, RobotInfo, RobotsListResponse
 
 logger = logging.getLogger(__name__)
 
@@ -130,34 +131,39 @@ def list_tasks() -> dict:
     return {"tasks": sorted(TASK_REGISTRY.keys())}
 
 
-@app.get("/robots", summary="Registered robots from robots.yaml")
-def list_robots() -> dict:
+@app.get(
+    "/robots",
+    response_model=RobotsListResponse,
+    summary="Registered robots from robots.yaml",
+)
+def list_robots() -> RobotsListResponse:
     from core.robot.robot_registry import RobotRegistry
 
     reg = RobotRegistry()
-    robots = []
+    robots: list[RobotInfo] = []
     for rid in reg.list_robots():
         cfg = reg.get(rid)
         robots.append(
-            {
-                "id": cfg.robot_id,
-                "type": cfg.robot_type,
-                "enabled": cfg.enabled,
-                "base_pose": {
-                    "x": cfg.base_pose.x,
-                    "y": cfg.base_pose.y,
-                    "z": cfg.base_pose.z,
-                    "yaw_deg": cfg.base_pose.yaw_deg,
-                },
-                "urdf_url": f"/robot/{cfg.robot_type}/urdf/{cfg.robot_type}.urdf",
-            }
+            RobotInfo(
+                id=cfg.robot_id,
+                type=cfg.robot_type,
+                enabled=cfg.enabled,
+                capabilities=list(cfg.capabilities),
+                base_pose=BasePoseSchema(
+                    x=cfg.base_pose.x,
+                    y=cfg.base_pose.y,
+                    z=cfg.base_pose.z,
+                    yaw_deg=cfg.base_pose.yaw_deg,
+                ),
+                urdf_url=f"/robot/{cfg.robot_type}/urdf/{cfg.robot_type}.urdf",
+            )
         )
     # default = enabled 1개일 때만 반환. 0개 / 2개 이상이면 null.
     try:
         default_id: str | None = reg.default_robot_id()
     except RuntimeError:
         default_id = None
-    return {"robots": robots, "default": default_id}
+    return RobotsListResponse(robots=robots, default=default_id)
 
 
 # ─── OpenAPI schema export — auto from api_contract ──────

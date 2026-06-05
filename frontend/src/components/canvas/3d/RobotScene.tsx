@@ -54,6 +54,7 @@ const LEGACY_ROBOTS: RobotInfo[] = [
     id: "omx_f_0",
     type: "omx_f",
     enabled: true,
+    capabilities: ["move", "calibrate", "scan"],
     base_pose: { x: 0, y: 0, z: 0, yaw_deg: 0 },
     urdf_url: "/robot/omx_f/urdf/omx_f.urdf",
   },

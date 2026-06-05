@@ -145,6 +145,20 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * BasePoseSchema
+         * @description World frame 의 robot base pose (m + deg).
+         */
+        BasePoseSchema: {
+            /** X */
+            x: number;
+            /** Y */
+            y: number;
+            /** Z */
+            z: number;
+            /** Yaw Deg */
+            yaw_deg: number;
+        };
         /** Bbox2D */
         Bbox2D: {
             /** X1 */
@@ -772,6 +786,36 @@ export interface components {
             /** Voxel Size */
             voxel_size: number;
         };
+        /**
+         * RobotInfo
+         * @description robots.yaml 의 entry 1개를 frontend 가 받는 모양 — `RobotConfig` 의 hardware
+         *     path 들 (`type_dir`, `calibration_dir` 등) 은 제외한 frontend-exposed subset.
+         *     `capabilities` 는 sidebar mode sub-item / `/robots/:id/:mode` route 활성화 결정.
+         */
+        RobotInfo: {
+            /** Id */
+            id: string;
+            /** Type */
+            type: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Capabilities */
+            capabilities: ("move" | "calibrate" | "scan")[];
+            base_pose: components["schemas"]["BasePoseSchema"];
+            /** Urdf Url */
+            urdf_url: string;
+        };
+        /**
+         * RobotsListResponse
+         * @description `GET /robots` 응답. default 는 enabled robot 이 정확히 1개일 때만 값,
+         *     아니면 null (frontend 가 명시적 robot_id 사용하도록 강제).
+         */
+        RobotsListResponse: {
+            /** Robots */
+            robots: components["schemas"]["RobotInfo"][];
+            /** Default */
+            default: string | null;
+        };
         /** SagOffsetEntry */
         SagOffsetEntry: {
             /** Motor Id */
@@ -921,9 +965,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["RobotsListResponse"];
                 };
             };
         };

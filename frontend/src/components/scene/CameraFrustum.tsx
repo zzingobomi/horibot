@@ -1,11 +1,11 @@
 import { useMemo } from "react";
 import * as THREE from "three";
+import type { Vector3Tuple } from "three";
 import { Line } from "@react-three/drei";
-import type { IntrinsicData } from "@/types/calibration";
-import type { Vec3 } from "@/types/motion";
+import type { IntrinsicSchema } from "@/types/calibration";
 
 interface CameraFrustumProps {
-  intrinsic: IntrinsicData;
+  intrinsic: IntrinsicSchema;
   nearPlane?: number;
   farPlane?: number;
   color?: string;
@@ -33,7 +33,7 @@ export function CameraFrustum({
     const cx = K[0][2];
     const cy = K[1][2];
 
-    const rays: Vec3[] = [
+    const rays: Vector3Tuple[] = [
       [(0 - cx) / fx, (0 - cy) / fy, 1], // top-left
       [(w - cx) / fx, (0 - cy) / fy, 1], // top-right
       [(w - cx) / fx, (h - cy) / fy, 1], // bottom-right
@@ -41,13 +41,13 @@ export function CameraFrustum({
     ];
 
     const nearCorners = rays.map(
-      ([x, y, z]) => [x * nearPlane, y * nearPlane, z * nearPlane] as Vec3,
+      ([x, y, z]) => [x * nearPlane, y * nearPlane, z * nearPlane] as Vector3Tuple,
     );
     const farCorners = rays.map(
-      ([x, y, z]) => [x * farPlane, y * farPlane, z * farPlane] as Vec3,
+      ([x, y, z]) => [x * farPlane, y * farPlane, z * farPlane] as Vector3Tuple,
     );
 
-    const lines: Array<[Vec3, Vec3]> = [
+    const lines: Array<[Vector3Tuple, Vector3Tuple]> = [
       // 광축 원점 → far corners (전체 frustum 윤곽)
       [[0, 0, 0], farCorners[0]],
       [[0, 0, 0], farCorners[1]],

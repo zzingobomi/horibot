@@ -5,21 +5,21 @@
  * 연결 상태는 framework 가 보관 — `useBridgeConnected` hook.
  */
 import { create } from "zustand";
-import type { NodeInfo, NodeStatus, LogEntry } from "@/types/system";
+import type { NodeInfo, NodeStatus, LogMessage } from "@/types/system";
 
 interface SystemState {
   /** key = node_name (multi-robot 시 같은 이름 last-wins). 기존 콜사이트 호환. */
   nodes: Record<string, NodeInfo>;
   /** key = robot_id (global = "global"). inner key = node_name. */
   nodesByRobot: Record<string, Record<string, NodeInfo>>;
-  logs: LogEntry[];
+  logs: LogMessage[];
   updateNode: (
     name: string,
     status: NodeStatus,
     timestamp: number,
     robotId?: string | null,
   ) => void;
-  addLog: (log: LogEntry) => void;
+  addLog: (log: LogMessage) => void;
 }
 
 const MAX_LOGS = 200;

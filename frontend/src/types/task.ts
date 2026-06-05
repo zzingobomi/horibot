@@ -1,4 +1,4 @@
-import type { Vec3 } from "./motion";
+import type { Vector3Tuple } from "three";
 
 export type TaskStatus =
   | "idle"
@@ -43,7 +43,7 @@ export interface TaskState {
 
 export interface RunTaskRequest {
   task: string;
-  place_position?: Vec3;
+  place_position?: Vector3Tuple;
   prompt?: string;
 }
 

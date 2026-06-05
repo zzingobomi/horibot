@@ -3,9 +3,9 @@
  *
  * 토픽 / 서비스 자리 아님 — 순수 frontend UI 상태.
  */
+import type { Vector3Tuple } from "three";
 import { create } from "zustand";
 import type { SceneOptions } from "@/components/scene/Scene";
-import type { Vec3 } from "@/types/motion";
 
 export type { SceneOptions };
 
@@ -13,13 +13,13 @@ interface SceneState {
   options: SceneOptions;
   linkNames: string[];
   linkVisibility: Record<string, boolean>;
-  tcpPos: Vec3 | null;
+  tcpPos: Vector3Tuple | null;
 
   toggleOption: (key: keyof SceneOptions) => void;
   setLinkNames: (names: string[]) => void;
   toggleLink: (name: string) => void;
   toggleAllLinks: () => void;
-  setTcpPos: (pos: Vec3 | null) => void;
+  setTcpPos: (pos: Vector3Tuple | null) => void;
 }
 
 export const useSceneStore = create<SceneState>((set, get) => ({

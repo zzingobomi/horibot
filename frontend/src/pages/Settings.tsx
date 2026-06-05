@@ -115,7 +115,7 @@ export function Settings() {
                   className={
                     log.level === "error"
                       ? "text-red-400"
-                      : log.level === "warn"
+                      : log.level === "warning"
                         ? "text-yellow-400"
                         : "text-foreground"
                   }

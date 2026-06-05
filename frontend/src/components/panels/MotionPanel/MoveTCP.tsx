@@ -3,7 +3,7 @@ import { ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useService } from "@/framework";
 import { ServiceKey } from "@/constants/topics";
-import type { Vec3 } from "@/types/motion";
+import type { Vector3Tuple } from "three";
 
 const STEPS = [0.001, 0.005, 0.01] as const;
 type Step = (typeof STEPS)[number];
@@ -24,7 +24,7 @@ export function MoveTCPControl() {
   const tcpPose = tcpSvc.data;
 
   const [step, setStep] = useState<Step>(0.005);
-  const [pos, setPos] = useState<Vec3>([0, 0, 0]);
+  const [pos, setPos] = useState<Vector3Tuple>([0, 0, 0]);
 
   // 서버 TCP → 로컬 pos 동기 (optimistic update rollback 자리 보존).
   useEffect(() => {
@@ -38,7 +38,7 @@ export function MoveTCPControl() {
   const doStep = useCallback(
     async (axis: Axis, direction: 1 | -1) => {
       const prev = pos;
-      const next: Vec3 = [...pos];
+      const next: Vector3Tuple = [...pos];
       next[AXIS_INDEX[axis]] += step * direction;
       setPos(next);
       const res = await moveTCP.call({ position: next });

@@ -47,3 +47,51 @@ class RobotsListResponse(BaseModel):
 
     robots: list[RobotInfo]
     default: str | None
+
+
+class SystemMetrics(BaseModel):
+    """`GET /system` 응답. psutil + zenoh peer info — Dashboard overview source."""
+
+    cpu_pct: float
+    mem_used_mb: float
+    mem_total_mb: float
+    mem_pct: float
+    zenoh_routers: int
+    zenoh_peers: int
+
+
+class TasksResponse(BaseModel):
+    """`GET /tasks` 응답 — task_node.TASK_REGISTRY enumeration."""
+
+    tasks: list[str]
+
+
+class IntrinsicSchema(BaseModel):
+    """카메라 intrinsic 응답 형식 — `loader.to_json` 의 intrinsic 키 내용."""
+
+    camera_matrix: list[list[float]]  # 3x3
+    dist_coeffs: list[list[float]]  # 1xN
+    image_size: list[int] | None = None  # [w, h]
+
+
+class HandEyeSchema(BaseModel):
+    """Hand-Eye 응답 — 카메라 ↔ EE 변환 R/t."""
+
+    R: list[list[float]]  # 3x3
+    t: list[list[float]]  # 3x1
+
+
+class JointOffsetSchema(BaseModel):
+    """단일 joint offset 항목."""
+
+    motor_id: int
+    offset_rad: float
+
+
+class CalibrationResults(BaseModel):
+    """`GET /calibration/results` 응답. npz 없으면 해당 필드 생략, joint_offsets 는
+    항상 포함 (없으면 빈 리스트)."""
+
+    intrinsic: IntrinsicSchema | None = None
+    hand_eye: HandEyeSchema | None = None
+    joint_offsets: list[JointOffsetSchema] = []

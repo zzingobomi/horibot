@@ -6,13 +6,13 @@ import { Progress } from "@/components/ui/progress";
 import { useService, useTopic } from "@/framework";
 import { ServiceKey, Topic } from "@/constants/topics";
 import { mmToMVec3, mToMmVec3 } from "@/lib/robot/utils";
-import type { Vec3 } from "@/types/motion";
+import type { Vector3Tuple } from "three";
 
 const AXES = ["X", "Y", "Z"] as const;
 
 interface WaypointRow {
   id: number;
-  pos: Vec3; // mm
+  pos: Vector3Tuple; // mm
 }
 
 let _nextId = 1;
@@ -126,7 +126,7 @@ export function MovePControl() {
                     setRows((prev) =>
                       prev.map((r) => {
                         if (r.id !== row.id) return r;
-                        const next: Vec3 = [...r.pos];
+                        const next: Vector3Tuple = [...r.pos];
                         next[i] = num;
                         return { ...r, pos: next };
                       }),
@@ -171,7 +171,7 @@ export function MovePControl() {
             ...prev,
             {
               id: _nextId++,
-              pos: [...(prev[prev.length - 1]?.pos ?? [0, 0, 0])] as Vec3,
+              pos: [...(prev[prev.length - 1]?.pos ?? [0, 0, 0])] as Vector3Tuple,
             },
           ])
         }

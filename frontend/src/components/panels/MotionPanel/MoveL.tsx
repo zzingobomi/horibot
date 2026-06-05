@@ -7,7 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { useService, useTopic } from "@/framework";
 import { ServiceKey, Topic } from "@/constants/topics";
 import { mmToMVec3, mToMmVec3 } from "@/lib/robot/utils";
-import type { Vec3 } from "@/types/motion";
+import type { Vector3Tuple } from "three";
 
 const AXES = ["X", "Y", "Z"] as const;
 
@@ -17,7 +17,7 @@ export function MoveLControl() {
   const stop = useService(ServiceKey.MOTION_STOP);
   const traj = useTopic(Topic.MOTION_STATE_TRAJ);
 
-  const [targetMm, setTargetMm] = useState<Vec3>([0, 0, 0]);
+  const [targetMm, setTargetMm] = useState<Vector3Tuple>([0, 0, 0]);
   const [duration, setDuration] = useState(3.0);
   const [error, setError] = useState<string | null>(null);
 
@@ -77,7 +77,7 @@ export function MoveLControl() {
                   const num = parseFloat(e.target.value);
                   if (!isNaN(num))
                     setTargetMm((prev) => {
-                      const next: Vec3 = [...prev];
+                      const next: Vector3Tuple = [...prev];
                       next[i] = num;
                       return next;
                     });

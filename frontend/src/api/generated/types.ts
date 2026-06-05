@@ -13,18 +13,13 @@ export interface paths {
         };
         /**
          * Get Calibration Results
-         * @description Returns available calibration data as JSON.
+         * @description active robot 의 calibration .npz 들을 모아 JSON 으로 반환.
          *
-         *     Response shape:
-         *     {
-         *         "intrinsic": { ... },
-         *         "hand_eye":  { ... },
-         *         "joint_offsets": [{"motor_id": int, "offset_rad": float}, ...]
-         *     }
+         *     Hand-Eye / Intrinsic 은 npz 가 없으면 필드 생략. joint_offsets 는 항상 포함
+         *     (없으면 빈 리스트). 분산 모드에서도 PC 가 git 에 있는 같은 파일을 보므로
+         *     프론트엔드는 mount 시 이 엔드포인트 한 번 fetch 로 fresh 한 상태를 받음.
          *
-         *     Hand-Eye/Intrinsic은 .npz가 없으면 필드 생략. joint_offsets는 항상 포함
-         *     (없으면 빈 리스트). 분산 모드에서도 PC가 git에 있는 같은 파일을 보므로
-         *     프론트엔드는 mount 시 이 엔드포인트 한 번 fetch로 fresh한 상태를 받음.
+         *     not-ready (intrinsic & hand_eye 둘 다 누락) 시 400 — 응답 schema 와 별도.
          */
         get: operations["get_calibration_results_calibration_results_get"];
         put?: never;
@@ -191,6 +186,20 @@ export interface components {
             preview: string;
         };
         /**
+         * CalibrationResults
+         * @description `GET /calibration/results` 응답. npz 없으면 해당 필드 생략, joint_offsets 는
+         *     항상 포함 (없으면 빈 리스트).
+         */
+        CalibrationResults: {
+            intrinsic?: components["schemas"]["IntrinsicSchema"] | null;
+            hand_eye?: components["schemas"]["HandEyeSchema"] | null;
+            /**
+             * Joint Offsets
+             * @default []
+             */
+            joint_offsets: components["schemas"]["JointOffsetSchema"][];
+        };
+        /**
          * CameraStatus
          * @description CAMERA_STATE_STATUS publish 페이로드. 연결/해제 시점 + 카메라 메타.
          *
@@ -261,6 +270,16 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HandEyeSchema
+         * @description Hand-Eye 응답 — 카메라 ↔ EE 변환 R/t.
+         */
+        HandEyeSchema: {
+            /** R */
+            R: number[][];
+            /** T */
+            t: number[][];
         };
         /**
          * HandeyeCaptureRes
@@ -361,6 +380,18 @@ export interface components {
             captured_count: number;
         };
         /**
+         * IntrinsicSchema
+         * @description 카메라 intrinsic 응답 형식 — `loader.to_json` 의 intrinsic 키 내용.
+         */
+        IntrinsicSchema: {
+            /** Camera Matrix */
+            camera_matrix: number[][];
+            /** Dist Coeffs */
+            dist_coeffs: number[][];
+            /** Image Size */
+            image_size?: number[] | null;
+        };
+        /**
          * JointDegree
          * @description 모터 id 와 목표 각도 (degrees).
          */
@@ -372,6 +403,16 @@ export interface components {
         };
         /** JointOffsetEntry */
         JointOffsetEntry: {
+            /** Motor Id */
+            motor_id: number;
+            /** Offset Rad */
+            offset_rad: number;
+        };
+        /**
+         * JointOffsetSchema
+         * @description 단일 joint offset 항목.
+         */
+        JointOffsetSchema: {
             /** Motor Id */
             motor_id: number;
             /** Offset Rad */
@@ -838,12 +879,38 @@ export interface components {
             num_frames: number;
         };
         /**
+         * SystemMetrics
+         * @description `GET /system` 응답. psutil + zenoh peer info — Dashboard overview source.
+         */
+        SystemMetrics: {
+            /** Cpu Pct */
+            cpu_pct: number;
+            /** Mem Used Mb */
+            mem_used_mb: number;
+            /** Mem Total Mb */
+            mem_total_mb: number;
+            /** Mem Pct */
+            mem_pct: number;
+            /** Zenoh Routers */
+            zenoh_routers: number;
+            /** Zenoh Peers */
+            zenoh_peers: number;
+        };
+        /**
          * TaskStepIdReq
          * @description step_id 만 받는 디버거 명령 공통 입력.
          */
         TaskStepIdReq: {
             /** Step Id */
             step_id: string;
+        };
+        /**
+         * TasksResponse
+         * @description `GET /tasks` 응답 — task_node.TASK_REGISTRY enumeration.
+         */
+        TasksResponse: {
+            /** Tasks */
+            tasks: string[];
         };
         /**
          * TrajStatus
@@ -901,8 +968,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["CalibrationResults"];
                 };
+            };
+            /** @description Calibration data is not ready */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -921,9 +995,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SystemMetrics"];
                 };
             };
         };
@@ -943,9 +1015,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["TasksResponse"];
                 };
             };
         };

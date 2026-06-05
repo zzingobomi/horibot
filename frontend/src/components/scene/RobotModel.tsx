@@ -4,13 +4,7 @@ import URDFLoader from "urdf-loader";
 import type { URDFRobot } from "urdf-loader";
 import { BASE_URL } from "@/constants";
 import { TCP_LINK_NAME, JOINT_CONFIGS } from "@/lib/robot/config";
-
-export interface RobotBasePose {
-  x: number;
-  y: number;
-  z: number;
-  yaw_deg: number;
-}
+import type { RobotBasePose } from "@/types/robot";
 
 interface URDFRobotProps {
   jointAngles: number[];

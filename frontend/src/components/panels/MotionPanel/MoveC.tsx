@@ -6,7 +6,7 @@ import { Progress } from "@/components/ui/progress";
 import { useService, useTopic } from "@/framework";
 import { ServiceKey, Topic } from "@/constants/topics";
 import { mmToMVec3, mToMmVec3 } from "@/lib/robot/utils";
-import type { Vec3 } from "@/types/motion";
+import type { Vector3Tuple } from "three";
 
 type PointKey = "via" | "end";
 
@@ -23,7 +23,7 @@ export function MoveCControl() {
   const stop = useService(ServiceKey.MOTION_STOP);
   const traj = useTopic(Topic.MOTION_STATE_TRAJ);
 
-  const [points, setPoints] = useState<Record<PointKey, Vec3>>({
+  const [points, setPoints] = useState<Record<PointKey, Vector3Tuple>>({
     via: [0, 0, 0],
     end: [0, 0, 0],
   });
@@ -109,7 +109,7 @@ export function MoveCControl() {
                     const num = parseFloat(e.target.value);
                     if (!isNaN(num))
                       setPoints((prev) => {
-                        const next: Vec3 = [...prev[key]];
+                        const next: Vector3Tuple = [...prev[key]];
                         next[i] = num;
                         return { ...prev, [key]: next };
                       });

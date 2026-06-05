@@ -5,6 +5,3 @@
 import type { components } from "@/api/generated/types";
 
 export type Joint = components["schemas"]["MotorJoint"];
-export type JointState = components["schemas"]["MotorJointState"];
-export type JointCmd = components["schemas"]["MotorCmdJoint"];
-export type MotorConfig = components["schemas"]["MotorConfigItem"];

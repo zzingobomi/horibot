@@ -20,7 +20,8 @@
  */
 import { Link } from "react-router-dom";
 import { Bot, Activity, Camera, Cpu, MemoryStick, Network } from "lucide-react";
-import { useSystemStore } from "@/store/systemStore";
+import { useBridgeConnected } from "@/framework";
+import { useSystemStore } from "@/domain/stores/system";
 import { useRobots } from "@/hooks/useRobots";
 import { useSystemMetrics } from "@/hooks/useSystemMetrics";
 
@@ -33,7 +34,7 @@ function isLive(timestamp: number | undefined): boolean {
 
 export function Dashboard() {
   const { robots } = useRobots();
-  const bridgeConnected = useSystemStore((s) => s.bridgeConnected);
+  const bridgeConnected = useBridgeConnected();
   const nodesByRobot = useSystemStore((s) => s.nodesByRobot);
   const { metrics } = useSystemMetrics();
 

@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Cloud, Camera, Trash2, Hammer, RefreshCw } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
-import { usePointCloudStore } from "@/store/pointCloudStore";
-import { PanelShell } from "@/components/canvas/ui/PanelShell";
-import { Section } from "@/components/canvas/ui/Section";
-import { ToggleRow } from "@/components/canvas/ui/ToggleRow";
+import { usePointCloudStore } from "@/domain/stores/pointCloud";
+import { PanelShell } from "@/components/shared/PanelShell";
+import { Section } from "@/components/shared/Section";
+import { ToggleRow } from "@/components/shared/ToggleRow";
 
 const VOXEL_PRESETS = [0.003, 0.005, 0.008];
 const BUILD_VOXEL_PRESETS = [0.001, 0.002, 0.003];

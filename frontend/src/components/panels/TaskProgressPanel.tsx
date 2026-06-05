@@ -13,9 +13,18 @@ import {
   ChevronDown,
 } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
-import { PanelShell } from "@/components/canvas/ui/PanelShell";
-import { useTask } from "@/hooks/useTask";
-import type { StepNode, StepStatus, TaskState, TaskStatus } from "@/types/task";
+import { PanelShell } from "@/components/shared/PanelShell";
+import { useService, useTopic } from "@/framework";
+import { ServiceKey, Topic } from "@/constants/topics";
+import {
+  defaultTaskState,
+  defaultTaskTree,
+  type StepNode,
+  type StepStatus,
+  type TaskState,
+  type TaskStatus,
+  type TaskTree,
+} from "@/types/task";
 
 const STATUS_TEXT: Record<TaskStatus, string> = {
   idle: "IDLE",
@@ -42,26 +51,20 @@ interface ContextMenu {
 }
 
 export function TaskProgressPanel(props: IDockviewPanelProps<object>) {
-  const {
-    taskState,
-    taskTree,
-    syncStatus,
-    stop,
-    resume,
-    step,
-    runTo,
-    toggleBreakpoint,
-  } = useTask();
-
-  useEffect(() => {
-    syncStatus();
-  }, [syncStatus]);
+  const taskState =
+    (useTopic(Topic.TASK_STATE) as TaskState | null) ?? defaultTaskState;
+  const taskTree =
+    (useTopic(Topic.TASK_TREE) as TaskTree | null) ?? defaultTaskTree;
+  const stopSvc = useService(ServiceKey.TASK_STOP);
+  const resumeSvc = useService(ServiceKey.TASK_RESUME);
+  const stepSvc = useService(ServiceKey.TASK_STEP);
+  const runToSvc = useService(ServiceKey.TASK_RUN_TO);
+  const toggleBpSvc = useService(ServiceKey.TASK_TOGGLE_BREAKPOINT);
 
   const isPaused = taskState.status === "paused";
   const isActive =
     taskState.status === "running" || taskState.status === "paused";
 
-  // 클릭으로 펼친 step 들 — 디테일 (type / params) 표시
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [menu, setMenu] = useState<ContextMenu | null>(null);
 
@@ -74,13 +77,11 @@ export function TaskProgressPanel(props: IDockviewPanelProps<object>) {
     });
   }, []);
 
-  // breakpoints set 으로 변환 — 잦은 lookup
   const breakpointSet = useMemo(
     () => new Set(taskState.breakpoints),
     [taskState.breakpoints],
   );
 
-  // 컨텍스트 메뉴 외부 클릭/Esc 로 닫기
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null);
@@ -103,18 +104,6 @@ export function TaskProgressPanel(props: IDockviewPanelProps<object>) {
     [],
   );
 
-  const onMenuRunTo = useCallback(() => {
-    if (!menu) return;
-    runTo(menu.stepId);
-    setMenu(null);
-  }, [menu, runTo]);
-
-  const onMenuToggleBp = useCallback(() => {
-    if (!menu) return;
-    toggleBreakpoint(menu.stepId);
-    setMenu(null);
-  }, [menu, toggleBreakpoint]);
-
   return (
     <PanelShell
       icon={<ListChecks className="w-3.5 h-3.5" />}
@@ -122,13 +111,10 @@ export function TaskProgressPanel(props: IDockviewPanelProps<object>) {
       panelId={props.api.id}
       api={props.api}
     >
-      {/* 상단: 상태 + 컨트롤 바 */}
       <div className="px-3 py-2 border-b border-zinc-800/60 flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <span
-            className={`w-1.5 h-1.5 rounded-full ${
-              STATUS_DOT[taskState.status]
-            }`}
+            className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[taskState.status]}`}
           />
           <span className="font-mono text-[10px] font-bold tracking-wider text-zinc-300">
             {STATUS_TEXT[taskState.status]}
@@ -144,28 +130,27 @@ export function TaskProgressPanel(props: IDockviewPanelProps<object>) {
           <ControlBtn
             label={isPaused ? "Continue" : "Run"}
             icon={<Play className="w-3 h-3" />}
-            onClick={() => resume()}
+            onClick={() => void resumeSvc.call({})}
             disabled={!isPaused}
             color="emerald"
           />
           <ControlBtn
             label="Step"
             icon={<StepForward className="w-3 h-3" />}
-            onClick={() => step()}
+            onClick={() => void stepSvc.call({})}
             disabled={!isPaused}
             color="amber"
           />
           <ControlBtn
             label="Stop"
             icon={<Square className="w-3 h-3" />}
-            onClick={() => stop()}
+            onClick={() => void stopSvc.call({})}
             disabled={!isActive}
             color="red"
           />
         </div>
       </div>
 
-      {/* step 트리 — ForEach / Try 등 nested children 도 재귀 렌더 */}
       <div className="py-1.5">
         {taskTree.steps.length === 0 ? (
           <p className="px-3 py-4 font-mono text-[10px] text-zinc-600 italic">
@@ -182,13 +167,12 @@ export function TaskProgressPanel(props: IDockviewPanelProps<object>) {
               breakpointSet={breakpointSet}
               onToggleExpand={toggleExpand}
               onContextMenu={handleContextMenu}
-              onToggleBreakpoint={toggleBreakpoint}
+              onToggleBreakpoint={(id) => void toggleBpSvc.call({ step_id: id })}
             />
           ))
         )}
       </div>
 
-      {/* 에러 표시 */}
       {taskState.error && (
         <div className="px-3 py-2 border-t border-red-900/40 bg-red-950/20">
           <p className="text-[9px] font-mono uppercase tracking-widest text-red-500 mb-1">
@@ -200,9 +184,6 @@ export function TaskProgressPanel(props: IDockviewPanelProps<object>) {
         </div>
       )}
 
-      {/* 컨텍스트 메뉴 — dockview 패널이 transform 으로 위치 잡아서
-          position:fixed 의 containing block 이 패널 박스가 됨. Portal 로
-          document.body 에 직접 렌더해야 viewport 좌표 기준으로 동작. */}
       {menu &&
         createPortal(
           <div
@@ -212,7 +193,10 @@ export function TaskProgressPanel(props: IDockviewPanelProps<object>) {
           >
             <MenuItem
               label="Run to here"
-              onClick={onMenuRunTo}
+              onClick={() => {
+                void runToSvc.call({ step_id: menu.stepId });
+                setMenu(null);
+              }}
               disabled={!isPaused}
             />
             <MenuItem
@@ -221,7 +205,10 @@ export function TaskProgressPanel(props: IDockviewPanelProps<object>) {
                   ? "Remove breakpoint"
                   : "Add breakpoint"
               }
-              onClick={onMenuToggleBp}
+              onClick={() => {
+                void toggleBpSvc.call({ step_id: menu.stepId });
+                setMenu(null);
+              }}
             />
           </div>,
           document.body,
@@ -240,22 +227,13 @@ interface ControlBtnProps {
   color: "emerald" | "amber" | "red";
 }
 
-const CTRL_COLOR: Record<
-  ControlBtnProps["color"],
-  string
-> = {
+const CTRL_COLOR: Record<ControlBtnProps["color"], string> = {
   emerald: "bg-emerald-600 hover:bg-emerald-500",
   amber: "bg-amber-600 hover:bg-amber-500",
   red: "bg-red-700 hover:bg-red-600",
 };
 
-function ControlBtn({
-  label,
-  icon,
-  onClick,
-  disabled,
-  color,
-}: ControlBtnProps) {
+function ControlBtn({ label, icon, onClick, disabled, color }: ControlBtnProps) {
   return (
     <button
       onClick={onClick}
@@ -279,7 +257,6 @@ interface StepRowProps {
   onToggleBreakpoint: (id: string) => void;
 }
 
-// 디테일 표시에서 제외할 step 필드 — 행 자체에 이미 표시되거나 메타.
 const HIDDEN_PARAM_KEYS = new Set(["id", "type", "label", "children"]);
 
 function formatParamValue(v: unknown): string {
@@ -287,7 +264,6 @@ function formatParamValue(v: unknown): string {
   if (v === undefined) return "—";
   if (typeof v === "string") return v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
-  // object / array → compact JSON
   try {
     return JSON.stringify(v);
   } catch {
@@ -315,18 +291,13 @@ function StepRow({
   const children = node.children;
   const hasChildren = Array.isArray(children) && children.length > 0;
 
-  const bg = isCurrent
-    ? "bg-amber-900/20"
-    : "hover:bg-zinc-900/40";
+  const bg = isCurrent ? "bg-amber-900/20" : "hover:bg-zinc-900/40";
 
-  // 디테일 표시용 params — type/label/id/children 제외, 정의된 순서 유지.
   const paramEntries = useMemo(
-    () =>
-      Object.entries(node).filter(([k]) => !HIDDEN_PARAM_KEYS.has(k)),
+    () => Object.entries(node).filter(([k]) => !HIDDEN_PARAM_KEYS.has(k)),
     [node],
   );
 
-  // depth 별 indent — ForEach/Try children 시각화.
   const indentPx = depth * 14;
 
   return (
@@ -339,7 +310,6 @@ function StepRow({
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
       >
-        {/* breakpoint gutter — 호버 시 옅은 점 prefill, 토글 시 빨강 채움 */}
         <button
           ref={gutterRef}
           onClick={(e) => {
@@ -356,7 +326,6 @@ function StepRow({
           ) : null}
         </button>
 
-        {/* expand chevron — 디테일 토글. children 의 펼침/접힘과 무관 (children 은 항상 보임) */}
         {isExpanded ? (
           <ChevronDown className="w-3 h-3 text-zinc-600 shrink-0" />
         ) : (
@@ -385,7 +354,6 @@ function StepRow({
         </span>
       </div>
 
-      {/* 디테일 — type + params. 들여쓰기로 행 아래에. */}
       {isExpanded && (
         <div
           className="px-2 pb-1.5 bg-zinc-950/40 border-y border-zinc-800/40"
@@ -406,7 +374,6 @@ function StepRow({
         </div>
       )}
 
-      {/* children — ForEach / Try 의 자식 step 들. 재귀 렌더 + 한 단계 들여쓰기 */}
       {hasChildren &&
         children!.map((child) => (
           <StepRow
@@ -438,7 +405,6 @@ function StatusIcon({
   if (status === "failed") return <XIcon className={`${cls} text-red-500`} />;
   if (status === "running")
     return <Loader2 className={`${cls} text-amber-400 animate-spin`} />;
-  // pending — 현재 위치(PAUSED 대기)면 강조, 아니면 옅게
   return (
     <Circle
       className={`${cls} ${isCurrent ? "text-amber-300" : "text-zinc-700"}`}

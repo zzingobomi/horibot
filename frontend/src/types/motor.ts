@@ -1,27 +1,10 @@
-export interface Joint {
-  id: number;
-  name: string;
-  position: number; // raw value (0~4095)
-  degree: number; // 각도 (0~360)
-  velocity: number;
-  torque: number;
-}
+/**
+ * Motor 도메인 type — backend pydantic (`backend/core/transport/messages/motor.py`)
+ * 의 schema 를 `gen:types` 결과에서 직접 alias. drift 0.
+ */
+import type { components } from "@/api/generated/types";
 
-export interface JointState {
-  timestamp: number;
-  joints: Joint[];
-}
-
-export interface JointCmd {
-  id: number;
-  position: number; // raw value
-}
-
-export interface MotorConfig {
-  id: number;
-  name: string;
-  model: string;
-  mode: string;
-  home: number;
-  limit: { min: number; max: number };
-}
+export type Joint = components["schemas"]["MotorJoint"];
+export type JointState = components["schemas"]["MotorJointState"];
+export type JointCmd = components["schemas"]["MotorCmdJoint"];
+export type MotorConfig = components["schemas"]["MotorConfigItem"];

@@ -15,7 +15,7 @@ import { RotateCcw } from "lucide-react";
 import {
   PANEL_COMPONENTS,
   type PanelComponentKey,
-} from "@/components/canvas/dockview/panelComponents";
+} from "@/components/panels/registry";
 import {
   PANEL_HEADER_HEIGHT,
   loadCollapsed,

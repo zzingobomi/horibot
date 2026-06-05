@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import { Sidebar } from "@/components/common/Sidebar";
-import { useBridge } from "@/hooks/useBridge";
+import { Sidebar } from "@/components/shared/Sidebar";
+import { useFrameworkBootstrap } from "@/framework";
+import "@/domain/handlers"; // 토픽 비즈니스 등록 — module-top side-effect
 import { Dashboard } from "@/pages/Dashboard";
 import { Settings } from "@/pages/Settings";
 import { RobotsLayout } from "@/pages/RobotsLayout";
@@ -12,7 +13,7 @@ import { WorldPage } from "@/pages/WorldPage";
 import { TasksPage } from "@/pages/TasksPage";
 
 function AppContent() {
-  useBridge();
+  useFrameworkBootstrap();
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">

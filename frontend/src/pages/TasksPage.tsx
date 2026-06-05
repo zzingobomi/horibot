@@ -11,11 +11,11 @@ import { useCallback, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { DockviewReact, type DockviewReadyEvent } from "dockview";
 import { RotateCcw } from "lucide-react";
-import { RobotSceneContainer } from "@/components/canvas/RobotSceneContainer";
+import { RobotSceneContainer } from "@/components/scene/Container";
 import {
   PANEL_COMPONENTS,
   type PanelComponentKey,
-} from "@/components/canvas/dockview/panelComponents";
+} from "@/components/panels/registry";
 import {
   PANEL_HEADER_HEIGHT,
   loadCollapsed,

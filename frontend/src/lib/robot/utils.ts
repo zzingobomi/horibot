@@ -18,10 +18,12 @@ export function formatDeg(deg: number): number {
   return Math.round(deg * 10) / 10;
 }
 
-export function mmToMVec3(v: Vec3): Vec3 {
+// input 은 backend wire (`number[]`) 도 받게 widening — wire ↔ ui Vec3 narrowing
+// 자리. output 은 Vec3 (three.js / drei prop 자리 호환).
+export function mmToMVec3(v: ArrayLike<number>): Vec3 {
   return [v[0] * MM_TO_M, v[1] * MM_TO_M, v[2] * MM_TO_M];
 }
 
-export function mToMmVec3(v: Vec3): Vec3 {
+export function mToMmVec3(v: ArrayLike<number>): Vec3 {
   return [v[0] * M_TO_MM, v[1] * M_TO_MM, v[2] * M_TO_MM];
 }

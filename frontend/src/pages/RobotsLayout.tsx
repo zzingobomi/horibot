@@ -9,7 +9,7 @@
  * 기반 mode 분리, multi_robot_phase2_frontend.md §2 보완) 에 맞춰 분리.
  */
 import { Outlet, useParams } from "react-router-dom";
-import { RobotSceneContainer } from "@/components/canvas/RobotSceneContainer";
+import { RobotSceneContainer } from "@/components/scene/Container";
 import { useRobots } from "@/hooks/useRobots";
 
 export function RobotsLayout() {

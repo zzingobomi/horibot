@@ -1,78 +1,34 @@
-import { BASE_URL } from "@/constants";
-import { useCallback, useEffect, useState } from "react";
-import { useRobotStore } from "@/store/robotStore";
+import { useResource } from "@/framework";
+import type { CalibrationResults } from "@/types/calibration";
 
-export interface IntrinsicData {
-  camera_matrix: number[][]; // 3x3
-  dist_coeffs: number[][]; // 1xN
-  image_size?: number[]; // [w, h]
-}
-
-export interface HandEyeData {
-  R: number[][]; // 3x3 rotation matrix
-  t: number[][]; // 3x1 translation [m]
-  available_keys: string[];
-}
-
-export interface JointOffsetEntry {
-  motor_id: number;
-  offset_rad: number;
-}
-
-export interface CalibrationResults {
-  intrinsic?: IntrinsicData;
-  hand_eye?: HandEyeData;
-  joint_offsets?: JointOffsetEntry[];
-  intrinsic_error?: string;
-  hand_eye_error?: string;
-}
-
-export interface CalibrationStatus {
-  intrinsic: boolean;
-  hand_eye: boolean;
+/**
+ * Hand-Eye/Intrinsic/joint_offsets 결과 — backend `/calibration/results` fetch.
+ *
+ * `useResource` module cache 가 cross-component sync — 다른 panel 도 동일 path
+ * 호출하면 같은 응답 공유. COMMIT 후 호출자가 `refetch()` 호출 → 모든 사용처
+ * 동시 갱신.
+ */
+export function useCalibrationResults() {
+  const { data, loading, error, refetch } =
+    useResource<CalibrationResults>("/calibration/results");
+  return { results: data, loading, error, refetch };
 }
 
 /**
- * Hand-Eye/Intrinsic/joint_offsets 결과를 HTTP로 fetch.
+ * jointOffsets 만 motor_id → rad map 으로 derived. URDF 시각화 자리.
  *
- * 분산 모드에서도 PC가 git 추적되는 같은 파일을 보므로 mount 시 한 번 fetch로
- * fresh 보장. COMMIT 후 호출자가 refetch() 호출하면 store에도 즉시 반영
- * (URDF가 백엔드와 동기). Zenoh 토픽 폐기됨.
+ *   const offsets = useJointOffsetsRad();
+ *   robot.setJointValue(name, base_rad + (offsets[id] ?? 0));
  */
-export function useCalibrationResults() {
-  const [results, setResults] = useState<CalibrationResults | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const setJointOffsets = useRobotStore((s) => s.setJointOffsets);
-
-  const fetchResults = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const res = await fetch(`${BASE_URL}/calibration/results`);
-      if (!res.ok) {
-        const err = await res.json().catch(() => null);
-        throw new Error(err?.error || `HTTP ${res.status}`);
-      }
-      const data = (await res.json()) as CalibrationResults;
-      setResults(data);
-
-      // joint_offsets는 store로 푸시 → URDF가 백엔드와 즉시 동기.
-      const map: Record<number, number> = {};
-      for (const e of data.joint_offsets ?? []) map[e.motor_id] = e.offset_rad;
-      setJointOffsets(map);
-    } catch (e) {
-      setResults(null);
-      setError(e instanceof Error ? e.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  }, [setJointOffsets]);
-
-  useEffect(() => {
-    fetchResults();
-  }, [fetchResults]);
-
-  return { results, loading, error, refetch: fetchResults };
+export function useJointOffsetsRad(): Record<number, number> {
+  const { data } = useResource<CalibrationResults, Record<number, number>>(
+    "/calibration/results",
+    {
+      select: (d) =>
+        Object.fromEntries(
+          (d.joint_offsets ?? []).map((e) => [e.motor_id, e.offset_rad]),
+        ),
+    },
+  );
+  return data ?? {};
 }

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Camera } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
-import { PanelShell } from "@/components/canvas/ui/PanelShell";
-import { CameraFeed } from "@/components/camera/CameraFeed";
-import { useCameraStore } from "@/store/cameraStore";
-import { useDetectorStore } from "@/store/detectorStore";
+import { useTopic } from "@/framework";
+import { Topic } from "@/constants/topics";
+import { useDetectorOverride } from "@/domain/stores/detector";
+import { PanelShell } from "@/components/shared/PanelShell";
+import { CameraFeed } from "@/components/shared/CameraFeed";
 
 /**
  * Grounded detection bbox 오버레이 (이미지 px → 표시 px 스케일링).
@@ -20,8 +21,10 @@ function GroundedBboxOverlay({
   displayWidth: number;
   displayHeight: number;
 }) {
-  const result = useDetectorStore((s) => s.groundedResult);
-  if (!result || frameWidth <= 0 || frameHeight <= 0) return null;
+  const result = useTopic(Topic.PERCEPTION_GROUNDED_STATE);
+  const maskBefore = useDetectorOverride((s) => s.maskBefore);
+  if (!result || result.timestamp <= maskBefore) return null;
+  if (frameWidth <= 0 || frameHeight <= 0) return null;
 
   // object-contain 기준 letterbox 계산
   const frameRatio = frameWidth / frameHeight;
@@ -85,7 +88,7 @@ function GroundedBboxOverlay({
 }
 
 export function CameraFeedPanel(props: IDockviewPanelProps<object>) {
-  const status = useCameraStore((s) => s.status);
+  const status = useTopic(Topic.CAMERA_STATE_STATUS);
   const containerRef = useRef<HTMLDivElement>(null);
   const [displaySize, setDisplaySize] = useState({ width: 0, height: 0 });
 

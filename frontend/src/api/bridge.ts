@@ -6,6 +6,9 @@ import type {
   ServiceMap,
   TopicPayloadMap,
 } from "@/api/generated/contract";
+// 응답 자동 cache 위해 framework store 직접 import (transport ↔ framework
+// circular: top-level 사용 X, callService 런타임 안에서만 호출 → safe).
+import { useFrameworkStore } from "@/framework/store";
 
 // robot-scoped template (`horibot/{robot_id}/...`) 자동 expand. multi_robot_
 // phase2_frontend.md §4 결정 3 — N=1 호환 코드. Slice C 에서 focus robot
@@ -74,6 +77,14 @@ class BridgeClient {
 
   setDefaultRobotId(robotId: string): void {
     this.defaultRobotId = robotId;
+  }
+
+  /**
+   * 외부 자리 (framework hooks) 에서 직접 expand 가 필요할 때. robotId 미지정
+   * = 현재 defaultRobotId. global key ({robot_id} placeholder 없음) 은 그대로.
+   */
+  expand(key: string, robotId?: string): string {
+    return expandTopicKey(key, robotId ?? this.defaultRobotId);
   }
 
   private _expand(key: string): string {
@@ -245,26 +256,42 @@ class BridgeClient {
   callService<K extends keyof ServiceMap>(
     key: K,
     data: ServiceMap[K]["req"],
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; robotId?: string },
   ): Promise<ServiceResponse<ServiceMap[K]["res"]>>;
   callService(
     key: string,
     data: Record<string, unknown>,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; robotId?: string },
   ): Promise<ServiceResponse<Record<string, unknown>>>;
   callService(
     key: string,
     data: unknown,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; robotId?: string },
   ): Promise<ServiceResponse<unknown>> {
     const timeoutMs = options?.timeoutMs ?? 5000;
-    const expanded = this._expand(key);
+    const expanded = this.expand(key, options?.robotId);
+    // pending mark — 사용처 useService(key).pending 즉시 reactive
+    const prev = useFrameworkStore.getState().serviceData[expanded];
+    useFrameworkStore.getState().setServiceData(expanded, {
+      success: prev?.success ?? false,
+      message: prev?.message ?? "",
+      data: prev?.data ?? null,
+      timestamp: prev?.timestamp ?? 0,
+      pending: true,
+    });
     return new Promise((resolve) => {
       const request_id = makeRequestId();
-      this.pendingServices.set(
-        request_id,
-        resolve as ServiceResolver,
-      );
+      const cacheAndResolve: ServiceResolver = (res) => {
+        useFrameworkStore.getState().setServiceData(expanded, {
+          success: res.success,
+          message: res.message,
+          data: res.data,
+          timestamp: Date.now(),
+          pending: false,
+        });
+        resolve(res);
+      };
+      this.pendingServices.set(request_id, cacheAndResolve);
       this._send({
         type: WsMsgType.Service,
         key: expanded,
@@ -276,10 +303,10 @@ class BridgeClient {
       setTimeout(() => {
         if (this.pendingServices.has(request_id)) {
           this.pendingServices.delete(request_id);
-          resolve({
+          cacheAndResolve({
             success: false,
             message: "서비스 응답 타임아웃",
-            data: {} as unknown,
+            data: {} as unknown as Record<string, unknown>,
           });
         }
       }, timeoutMs);

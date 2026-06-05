@@ -4,7 +4,7 @@
  *
  * 첫 프로토타입 scope — Panel 없음 / Layer toggle bar 없음. focus=null 만.
  */
-import { RobotSceneContainer } from "@/components/canvas/RobotSceneContainer";
+import { RobotSceneContainer } from "@/components/scene/Container";
 
 export function WorldPage() {
   return (

@@ -42,7 +42,9 @@ GRIPPER_CLOSE_RAW = 1800
 
 class MockMotorNode(BaseNode):
     def __init__(self, robot_id: str | None = None):
-        super().__init__("mock_motor_node", robot_id=robot_id)
+        # heartbeat node name = real motor_node 와 동일 — frontend 가 mock/real
+        # 무관 동일 lookup 가능 (CLAUDE.md "mock 노드는 contract 만 충족" 정합).
+        super().__init__("motor_node", robot_id=robot_id)
 
         _port, self.motor_cfgs = load_motor_config(robot_id)
         # 초기 raw position = motors.yaml home (URDF 의 home pose 에 자연스럽게 매칭)

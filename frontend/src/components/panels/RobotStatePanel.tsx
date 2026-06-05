@@ -1,18 +1,23 @@
 import { useMemo } from "react";
 import { Activity } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
-import { useRobotStore } from "@/store/robotStore";
-import { useSceneStore } from "@/store/sceneStore";
-import { PanelShell } from "@/components/canvas/ui/PanelShell";
-import { Section } from "@/components/canvas/ui/Section";
+import { useTopic } from "@/framework";
+import { Topic } from "@/constants/topics";
+import { useJointOffsetsRad } from "@/hooks/useCalibrationResults";
+import { useSceneStore } from "@/domain/stores/scene";
+import { PanelShell } from "@/components/shared/PanelShell";
+import { Section } from "@/components/shared/Section";
+import type { Joint } from "@/types/motor";
+
+const EMPTY_JOINTS: Joint[] = [];
 
 export function RobotStatePanel(props: IDockviewPanelProps<object>) {
-  const joints = useRobotStore((s) => s.joints);
-  const jointOffsetsRad = useRobotStore((s) => s.jointOffsetsRad);
+  const joints = useTopic(Topic.MOTOR_STATE_JOINT)?.joints ?? EMPTY_JOINTS;
+  const jointOffsetsRad = useJointOffsetsRad();
   const tcpPos = useSceneStore((s) => s.tcpPos);
 
   const jointAngles = useMemo(() => {
-    if (!joints?.length) return Array(5).fill(0) as number[];
+    if (!joints.length) return Array(5).fill(0) as number[];
     return joints
       .filter((j) => j.id >= 1 && j.id <= 5)
       .sort((a, b) => a.id - b.id)
@@ -21,8 +26,8 @@ export function RobotStatePanel(props: IDockviewPanelProps<object>) {
           j.degree !== undefined
             ? (j.degree * Math.PI) / 180
             : j.position !== undefined
-            ? ((j.position - 2048) / 4095) * 2 * Math.PI
-            : 0;
+              ? ((j.position - 2048) / 4095) * 2 * Math.PI
+              : 0;
         return baseRad + (jointOffsetsRad[j.id] ?? 0);
       });
   }, [joints, jointOffsetsRad]);

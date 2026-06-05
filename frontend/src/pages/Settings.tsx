@@ -1,39 +1,21 @@
-import { useState } from "react";
-import { bridge } from "@/api/bridge";
-import { useRobotStore } from "@/store/robotStore";
-import { useSystemStore } from "@/store/systemStore";
+import { useService } from "@/framework";
+import { useSystemStore } from "@/domain/stores/system";
 import { Button } from "@/components/ui/button";
 import { ServiceKey } from "@/constants/topics";
-import type { MotorConfig } from "@/types/motor";
 
 export function Settings() {
   const nodes = useSystemStore((s) => s.nodes);
   const logs = useSystemStore((s) => s.logs);
-  const configs = useRobotStore((s) => s.configs);
-  const setConfigs = useRobotStore((s) => s.setConfigs);
+  const cfgSvc = useService(ServiceKey.MOTOR_GET_CONFIG);
+  const rebootSvc = useService(ServiceKey.MOTOR_REBOOT);
+  const configs = cfgSvc.data?.motors ?? [];
 
-  const [loading, setLoading] = useState(false);
-
-  const handleGetConfig = async () => {
-    setLoading(true);
-    const res = await bridge.callService(ServiceKey.MOTOR_GET_CONFIG, {});
-    setLoading(false);
-    if (res.success && res.data?.motors) {
-      setConfigs(res.data.motors as MotorConfig[]); // 추가
-    }
-  };
-
-  const handleReboot = async (id?: number) => {
-    setLoading(true);
-    await bridge.callService(ServiceKey.MOTOR_REBOOT, id ? { id } : {});
-    setLoading(false);
-  };
+  const busy = cfgSvc.pending || rebootSvc.pending;
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
       <h1 className="text-lg font-semibold">Settings</h1>
 
-      {/* Node Status */}
       <section className="rounded-lg border bg-card p-4 flex flex-col gap-3">
         <h2 className="text-sm font-semibold">Node Status</h2>
         <div className="flex flex-col gap-2">
@@ -51,8 +33,8 @@ export function Settings() {
                       status === "running"
                         ? "bg-green-500"
                         : status === "error"
-                        ? "bg-red-500"
-                        : "bg-gray-400"
+                          ? "bg-red-500"
+                          : "bg-gray-400"
                     }`}
                   />
                   <span className="text-sm font-mono">{name}</span>
@@ -66,15 +48,14 @@ export function Settings() {
         </div>
       </section>
 
-      {/* Motor Config */}
       <section className="rounded-lg border bg-card p-4 flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">Motor Config</h2>
           <Button
             size="sm"
             variant="outline"
-            onClick={handleGetConfig}
-            disabled={loading}
+            onClick={() => void cfgSvc.call({})}
+            disabled={busy}
           >
             Refresh
           </Button>
@@ -99,8 +80,8 @@ export function Settings() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => handleReboot(cfg.id)}
-                  disabled={loading}
+                  onClick={() => void rebootSvc.call({ id: cfg.id })}
+                  disabled={busy}
                 >
                   Reboot
                 </Button>
@@ -112,14 +93,13 @@ export function Settings() {
         <Button
           variant="destructive"
           size="sm"
-          onClick={() => handleReboot()}
-          disabled={loading}
+          onClick={() => void rebootSvc.call({})}
+          disabled={busy}
         >
           Reboot All
         </Button>
       </section>
 
-      {/* System Log */}
       <section className="rounded-lg border bg-card p-4 flex flex-col gap-3">
         <h2 className="text-sm font-semibold">System Log</h2>
         <div className="h-48 overflow-y-auto rounded-md bg-muted p-3 text-xs font-mono space-y-1">
@@ -136,8 +116,8 @@ export function Settings() {
                     log.level === "error"
                       ? "text-red-400"
                       : log.level === "warn"
-                      ? "text-yellow-400"
-                      : "text-foreground"
+                        ? "text-yellow-400"
+                        : "text-foreground"
                   }
                 >
                   [{log.node}] {log.message}

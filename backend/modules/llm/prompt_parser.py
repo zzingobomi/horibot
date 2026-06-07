@@ -69,9 +69,14 @@ def _ensure_loaded() -> bool:
                 "LLM 모델 로드 시작: %s (device=%s)", _MODEL_ID, _device
             )
             _tokenizer = AutoTokenizer.from_pretrained(_MODEL_ID)
+            # low_cpu_mem_usage=False 강제 — transformers 4.56 default(True) 의
+            # meta-init path 에서 Qwen tied weight (embed_tokens ↔ lm_head) 가
+            # 가끔 meta 인 채 남아 .to(device) / dispatch_model 단계에서
+            # "Cannot copy out of meta tensor" 터짐. 1.5B 면 메모리 부담 없음.
             _model = AutoModelForCausalLM.from_pretrained(
                 _MODEL_ID,
                 dtype=torch.float16 if _device == "cuda" else torch.float32,
+                low_cpu_mem_usage=False,
             ).to(_device)  # type: ignore[arg-type]
             logger.info("LLM 모델 로드 완료")
             return True

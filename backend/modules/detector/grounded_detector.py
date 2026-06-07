@@ -74,7 +74,8 @@ class GroundedDetector:
             )
             self._processor = AutoProcessor.from_pretrained(self._model_id)
             self._model = AutoModelForZeroShotObjectDetection.from_pretrained(
-                self._model_id
+                self._model_id,
+                low_cpu_mem_usage=False,
             ).to(self._device)
             logger.info("Grounding DINO 로드 완료")
 

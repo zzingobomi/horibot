@@ -25,6 +25,7 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 - [multi_robot_phase2_frontend.md](docs/multi_robot_phase2_frontend.md) — Phase 2 의 namespace + frontend / UX 결정문 + 구현 결과 (§6, Slice A/B/C-mechanical 완료)
 - [slice_abc_verify.md](docs/slice_abc_verify.md) — Slice A/B/C 실 hardware + dev 서버 검증 순차 가이드
 - [distributed_topology.md](docs/distributed_topology.md) — Phase 2 분산 토폴로지 + 카메라 배치 design (잠정) — `hori1/2/3` Pi 3대 + so101 D405 양도, `robots.yaml` host 필드 확장 후보
+- [multi_robot_cross_calibration.md](docs/multi_robot_cross_calibration.md) — 두 robot base 사이 transform 캘 (6번째 종) design + hand-measure fallback + so101 도착 후 follow-up
 - [roadmap.md](docs/roadmap.md) — 진행 중/예정 작업
 
 ## 자주 쓰는 명령어

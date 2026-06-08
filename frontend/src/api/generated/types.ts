@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-    "/calibration/results": {
+    "/robots/{robot_id}/calibration/results": {
         parameters: {
             query?: never;
             header?: never;
@@ -13,15 +13,15 @@ export interface paths {
         };
         /**
          * Get Calibration Results
-         * @description active robot 의 calibration .npz 들을 모아 JSON 으로 반환.
+         * @description robot 의 calibration .npz 들을 모아 JSON 으로 반환.
          *
          *     Hand-Eye / Intrinsic 은 npz 가 없으면 필드 생략. joint_offsets 는 항상 포함
          *     (없으면 빈 리스트). 분산 모드에서도 PC 가 git 에 있는 같은 파일을 보므로
          *     프론트엔드는 mount 시 이 엔드포인트 한 번 fetch 로 fresh 한 상태를 받음.
          *
-         *     not-ready (intrinsic & hand_eye 둘 다 누락) 시 400 — 응답 schema 와 별도.
+         *     not-ready (intrinsic & hand_eye 둘 다 누락) 시 400.
          */
-        get: operations["get_calibration_results_calibration_results_get"];
+        get: operations["get_calibration_results_robots__robot_id__calibration_results_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -953,11 +953,13 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    get_calibration_results_calibration_results_get: {
+    get_calibration_results_robots__robot_id__calibration_results_get: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                robot_id: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -977,6 +979,22 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Robot not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
             };
         };
     };

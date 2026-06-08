@@ -1,4 +1,4 @@
-# 단일 머신
+# 단일 머신 풀스택 (개발). PC 한 대가 모든 hardware + system 서비스 다.
 # 실행:
 #   uv run python main.py --host dev
 host_name: dev
@@ -8,10 +8,15 @@ zenoh:
   # 단일 프로세스라 사실상 자기 자신만 peer. 분산 안 함.
   connect: []
 
-nodes:
+robots:
+  - omx_f_0
+
+robot_nodes:
   - motor
-  - camera
   - motion
+  - camera
+
+system_nodes:
   - calibration
   - task
   - detector

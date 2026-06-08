@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useParams } from "react-router-dom";
 import { Activity } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
 import { useTopic } from "@/framework";
@@ -12,8 +13,9 @@ import type { Joint } from "@/types/motor";
 const EMPTY_JOINTS: Joint[] = [];
 
 export function RobotStatePanel(props: IDockviewPanelProps<object>) {
+  const { id: robotId = "" } = useParams<{ id: string }>();
   const joints = useTopic(Topic.MOTOR_STATE_JOINT)?.joints ?? EMPTY_JOINTS;
-  const jointOffsetsRad = useJointOffsetsRad();
+  const jointOffsetsRad = useJointOffsetsRad(robotId);
   const tcpPos = useSceneStore((s) => s.tcpPos);
 
   const jointAngles = useMemo(() => {

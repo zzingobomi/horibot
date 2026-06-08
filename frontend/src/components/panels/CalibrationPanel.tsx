@@ -1,5 +1,6 @@
 import { Camera, Loader2, RefreshCw } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
+import { useParams } from "react-router-dom";
 import { useCalibrationResults } from "@/hooks/useCalibrationResults";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { PanelShell } from "@/components/shared/PanelShell";
@@ -7,7 +8,8 @@ import { Section } from "@/components/shared/Section";
 import { MatrixTable } from "@/components/shared/MatrixTable";
 
 export function CalibrationPanel(props: IDockviewPanelProps<object>) {
-  const { results, loading, error, refetch } = useCalibrationResults();
+  const { id: robotId = "" } = useParams<{ id: string }>();
+  const { results, loading, error, refetch } = useCalibrationResults(robotId);
 
   return (
     <PanelShell

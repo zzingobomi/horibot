@@ -9,6 +9,7 @@ import open3d as o3d
 from core.transport.base_node import BaseNode
 from core.common import GRIPPER_ID
 from core.cache.joint_state_cache import JointStateCache
+from core.robot.robot_registry import RobotRegistry
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.camera import CameraSetDepthStreamReq, CameraSetDepthStreamRes
 from core.transport.messages.pointcloud import (
@@ -30,9 +31,9 @@ from core.transport.messages.pointcloud import (
     PointcloudState,
     ScanMeta,
 )
-from core.transport.topic_map import Service, Topic
+from core.transport.topic_map import Service, Topic, topic_for
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
-from modules.motor.motor_config import load_motor_config
+from modules.motor.motor_config import MotorConfig, load_motor_config
 from modules.pointcloud import scan_capture, scan_io, tsdf_builder
 
 logger = logging.getLogger(__name__)
@@ -43,81 +44,96 @@ IDLE_SLEEP = 0.1
 DEPTH_TRUNC = 1.0  # m
 
 
-class PointCloudNode(BaseNode):
-    def __init__(self, robot_id: str | None = None) -> None:
-        super().__init__("pointcloud_node", robot_id=robot_id)
-        self._cfg_lock = threading.Lock()
-        self._enabled = False
-        self._voxel_size = DEFAULT_VOXEL_SIZE
+class _RobotState:
+    """robot 별 PointCloud 상태."""
 
-        self._frame_lock = threading.Lock()
-        self._latest_frame: DepthFrame | None = None
+    def __init__(self, arm_cfgs: list[MotorConfig]) -> None:
+        self.arm_cfgs = arm_cfgs
+        self.cfg_lock = threading.Lock()
+        self.frame_lock = threading.Lock()
+        self.capture_lock = threading.Lock()
+        self.enabled = False
+        self.voxel_size = DEFAULT_VOXEL_SIZE
+        self.latest_frame: DepthFrame | None = None
+
+
+class PointCloudNode(BaseNode):
+    """SYSTEM 노드 — robot 무관 한 인스턴스. robot 별 dict[robot_id] state."""
+
+    def __init__(self) -> None:
+        super().__init__("pointcloud_node", robot_id=None)
+        self._registry = RobotRegistry()
+        self._enabled_robot_ids: list[str] = [
+            c.robot_id for c in self._registry.enabled_robots()
+        ]
+        self._states: dict[str, _RobotState] = {}
+        for rid in self._enabled_robot_ids:
+            _, motor_cfgs = load_motor_config(rid)
+            arm_cfgs = [m for m in motor_cfgs if m.id != GRIPPER_ID]
+            self._states[rid] = _RobotState(arm_cfgs)
+
+        self._cache = JointStateCache()
 
         self._stream_thread: threading.Thread | None = None
 
-        # ─── capture/build 공용 락 (동시 capture/build 직렬화) ───
-        self._capture_lock = threading.Lock()
-
-        # ─── arm config + motor state cache ───
-        _, motor_cfgs = load_motor_config(robot_id)
-        self._arm_cfgs = [m for m in motor_cfgs if m.id != GRIPPER_ID]
-        self._cache = JointStateCache()
-
     def start(self) -> None:
-        # configure
-        self.create_service(
-            self.r(Service.POINTCLOUD_CONFIGURE),
-            PointcloudConfigureReq,
-            PointcloudConfigureRes,
-            self._srv_configure,
-        )
-        # capture
-        self.create_service(
-            self.r(Service.POINTCLOUD_NEW_SESSION),
-            PointcloudNewSessionReq,
-            PointcloudNewSessionRes,
-            self._srv_new_session,
-        )
-        self.create_service(
-            self.r(Service.POINTCLOUD_CAPTURE),
-            PointcloudCaptureReq,
-            PointcloudCaptureRes,
-            self._srv_capture,
-        )
-        self.create_service(
-            self.r(Service.POINTCLOUD_LIST_SESSIONS),
-            EmptyData,
-            PointcloudListSessionsRes,
-            self._srv_list_sessions,
-        )
-        self.create_service(
-            self.r(Service.POINTCLOUD_LIST_SCANS),
-            PointcloudListScansReq,
-            PointcloudListScansRes,
-            self._srv_list_scans,
-        )
-        self.create_service(
-            self.r(Service.POINTCLOUD_DELETE_SCAN),
-            PointcloudDeleteScanReq,
-            PointcloudDeleteScanRes,
-            self._srv_delete_scan,
-        )
-        # TSDF
-        self.create_service(
-            self.r(Service.POINTCLOUD_BUILD_MESH),
-            PointcloudBuildMeshReq,
-            PointcloudBuildMeshRes,
-            self._srv_build_mesh,
-        )
-        self.create_service(
-            self.r(Service.POINTCLOUD_LIST_MESHES),
-            EmptyData,
-            PointcloudListMeshesRes,
-            self._srv_list_meshes,
-        )
-        # depth frame subscriber
-        self.create_raw_subscriber(
-            self.r(Topic.CAMERA_DEPTH_FRAME), self._on_depth_frame)
+        for rid in self._enabled_robot_ids:
+            # configure
+            self.create_service(
+                topic_for(Service.POINTCLOUD_CONFIGURE, rid),
+                PointcloudConfigureReq,
+                PointcloudConfigureRes,
+                lambda req, _rid=rid: self._srv_configure(req, _rid),
+            )
+            # capture
+            self.create_service(
+                topic_for(Service.POINTCLOUD_NEW_SESSION, rid),
+                PointcloudNewSessionReq,
+                PointcloudNewSessionRes,
+                lambda req, _rid=rid: self._srv_new_session(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.POINTCLOUD_CAPTURE, rid),
+                PointcloudCaptureReq,
+                PointcloudCaptureRes,
+                lambda req, _rid=rid: self._srv_capture(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.POINTCLOUD_LIST_SESSIONS, rid),
+                EmptyData,
+                PointcloudListSessionsRes,
+                lambda req, _rid=rid: self._srv_list_sessions(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.POINTCLOUD_LIST_SCANS, rid),
+                PointcloudListScansReq,
+                PointcloudListScansRes,
+                lambda req, _rid=rid: self._srv_list_scans(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.POINTCLOUD_DELETE_SCAN, rid),
+                PointcloudDeleteScanReq,
+                PointcloudDeleteScanRes,
+                lambda req, _rid=rid: self._srv_delete_scan(req, _rid),
+            )
+            # TSDF
+            self.create_service(
+                topic_for(Service.POINTCLOUD_BUILD_MESH, rid),
+                PointcloudBuildMeshReq,
+                PointcloudBuildMeshRes,
+                lambda req, _rid=rid: self._srv_build_mesh(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.POINTCLOUD_LIST_MESHES, rid),
+                EmptyData,
+                PointcloudListMeshesRes,
+                lambda req, _rid=rid: self._srv_list_meshes(req, _rid),
+            )
+            # depth frame subscriber
+            self.create_raw_subscriber(
+                topic_for(Topic.CAMERA_DEPTH_FRAME, rid),
+                lambda payload, _rid=rid: self._on_depth_frame(_rid, payload),
+            )
 
         super().start()
         self._cache.subscribe(self)
@@ -128,24 +144,31 @@ class PointCloudNode(BaseNode):
             daemon=True,
         )
         self._stream_thread.start()
-        self._publish_state()
+        for rid in self._enabled_robot_ids:
+            self._publish_state(rid)
+
+        logger.info(
+            "PointCloudNode 시작 (robots=%s)", self._enabled_robot_ids
+        )
 
     # ─── Subscriber ──────────────────────────────────────────
 
-    def _on_depth_frame(self, payload: bytes) -> None:
+    def _on_depth_frame(self, robot_id: str, payload: bytes) -> None:
         try:
             frame = decode_depth_frame(payload)
         except Exception as e:
-            logger.warning(f"depth_frame 디코드 실패: {e}")
+            logger.warning(f"depth_frame[{robot_id}] 디코드 실패: {e}")
             return
-        with self._frame_lock:
-            self._latest_frame = frame
+        st = self._states[robot_id]
+        with st.frame_lock:
+            st.latest_frame = frame
 
     # ─── Service: configure ──────────────────────────────────
 
     def _srv_configure(
-        self, req: ServiceRequest[PointcloudConfigureReq]
+        self, req: ServiceRequest[PointcloudConfigureReq], robot_id: str
     ) -> ServiceResponse[PointcloudConfigureRes]:
+        st = self._states[robot_id]
         data = req.data
 
         if data.voxel_size is not None:
@@ -153,13 +176,13 @@ class PointCloudNode(BaseNode):
                 return ServiceResponse(
                     success=False, message="voxel_size > 0 필요", data=None
                 )
-            with self._cfg_lock:
-                self._voxel_size = data.voxel_size
+            with st.cfg_lock:
+                st.voxel_size = data.voxel_size
 
         if data.enabled is not None:
             target = data.enabled
             res = self.call_service(
-                self.r(Service.CAMERA_SET_DEPTH_STREAM),
+                topic_for(Service.CAMERA_SET_DEPTH_STREAM, robot_id),
                 CameraSetDepthStreamReq(enabled=target),
                 CameraSetDepthStreamRes,
             )
@@ -169,35 +192,36 @@ class PointCloudNode(BaseNode):
                     message=f"카메라 depth 스트림 전환 실패: {res.message}",
                     data=None,
                 )
-            with self._cfg_lock:
-                self._enabled = target
+            with st.cfg_lock:
+                st.enabled = target
             if not target:
-                with self._frame_lock:
-                    self._latest_frame = None
+                with st.frame_lock:
+                    st.latest_frame = None
 
-        with self._cfg_lock:
+        with st.cfg_lock:
             state = PointcloudConfigureRes(
-                enabled=self._enabled,
-                voxel_size=self._voxel_size,
+                enabled=st.enabled,
+                voxel_size=st.voxel_size,
             )
-        self._publish_state()
+        self._publish_state(robot_id)
         return ServiceResponse(success=True, message="ok", data=state)
 
-    def _publish_state(self) -> None:
-        with self._cfg_lock:
+    def _publish_state(self, robot_id: str) -> None:
+        st = self._states[robot_id]
+        with st.cfg_lock:
             self.publish(
-                self.r(Topic.POINTCLOUD_STATE),
+                topic_for(Topic.POINTCLOUD_STATE, robot_id),
                 PointcloudState(
                     timestamp=time.time(),
-                    enabled=self._enabled,
-                    voxel_size=self._voxel_size,
+                    enabled=st.enabled,
+                    voxel_size=st.voxel_size,
                 ),
             )
 
     # ─── Service: capture ────────────────────────────────────
 
     def _srv_new_session(
-        self, req: ServiceRequest[PointcloudNewSessionReq]
+        self, req: ServiceRequest[PointcloudNewSessionReq], robot_id: str
     ) -> ServiceResponse[PointcloudNewSessionRes]:
         sid_raw = req.data.session_id.strip()
         try:
@@ -209,7 +233,7 @@ class PointCloudNode(BaseNode):
         except ValueError as e:
             return ServiceResponse(success=False, message=str(e), data=None)
 
-        sdir = scan_io.session_dir(sid)
+        sdir = scan_io.session_dir(robot_id, sid)
         sdir.mkdir(parents=True, exist_ok=True)
         return ServiceResponse(
             success=True,
@@ -218,9 +242,10 @@ class PointCloudNode(BaseNode):
         )
 
     def _srv_capture(
-        self, req: ServiceRequest[PointcloudCaptureReq]
+        self, req: ServiceRequest[PointcloudCaptureReq], robot_id: str
     ) -> ServiceResponse[PointcloudCaptureRes]:
-        if not self._capture_lock.acquire(blocking=False):
+        st = self._states[robot_id]
+        if not st.capture_lock.acquire(blocking=False):
             return ServiceResponse(
                 success=False,
                 message="다른 capture/build 진행 중",
@@ -237,8 +262,8 @@ class PointCloudNode(BaseNode):
                 else scan_capture.N_FRAMES_DEFAULT
             )
 
-            with self._cfg_lock:
-                enabled = self._enabled
+            with st.cfg_lock:
+                enabled = st.enabled
             if not enabled:
                 return ServiceResponse(
                     success=False,
@@ -247,8 +272,8 @@ class PointCloudNode(BaseNode):
                 )
 
             def _get_frame() -> DepthFrame | None:
-                with self._frame_lock:
-                    return self._latest_frame
+                with st.frame_lock:
+                    return st.latest_frame
 
             try:
                 frames = scan_capture.gather_frames(_get_frame, n=num_frames)
@@ -258,17 +283,19 @@ class PointCloudNode(BaseNode):
             depth_z16 = scan_capture.consensus_depth(frames)
             color_bgr = scan_capture.consensus_color(frames)
 
-            raw_dict = self._cache.get_raw_motor_positions(self._arm_cfgs)
+            raw_dict = self._cache.get_raw_motor_positions(
+                st.arm_cfgs, robot_id=robot_id
+            )
             if raw_dict is None:
                 return ServiceResponse(
                     success=False,
                     message="motor state 없음 — motor 노드 확인",
                     data=None,
                 )
-            arm_motor_ids = [cfg.id for cfg in self._arm_cfgs]
+            arm_motor_ids = [cfg.id for cfg in st.arm_cfgs]
             raw_positions = [raw_dict[mid] for mid in arm_motor_ids]
 
-            sdir = scan_io.session_dir(sid)
+            sdir = scan_io.session_dir(robot_id, sid)
             sdir.mkdir(parents=True, exist_ok=True)
             scan_id = scan_io.allocate_scan_id(sdir)
             scan_path = scan_io.scan_path_for_id(sdir, scan_id)
@@ -276,6 +303,7 @@ class PointCloudNode(BaseNode):
             f0 = frames[0]
             scan_io.save_scan(
                 scan_path,
+                robot_id=robot_id,
                 scan_id=scan_id,
                 color_bgr=color_bgr,
                 depth_z16=depth_z16,
@@ -301,28 +329,30 @@ class PointCloudNode(BaseNode):
                 ),
             )
         except Exception as e:
-            logger.exception("capture 실패")
+            logger.exception("[%s] capture 실패", robot_id)
             return ServiceResponse(success=False, message=str(e), data=None)
         finally:
-            self._capture_lock.release()
+            st.capture_lock.release()
 
     def _srv_list_sessions(
-        self, _req: ServiceRequest[EmptyData]
+        self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[PointcloudListSessionsRes]:
         return ServiceResponse(
             success=True,
             message="ok",
-            data=PointcloudListSessionsRes(sessions=scan_io.list_session_ids()),
+            data=PointcloudListSessionsRes(
+                sessions=scan_io.list_session_ids(robot_id)
+            ),
         )
 
     def _srv_list_scans(
-        self, req: ServiceRequest[PointcloudListScansReq]
+        self, req: ServiceRequest[PointcloudListScansReq], robot_id: str
     ) -> ServiceResponse[PointcloudListScansRes]:
         try:
             sid = scan_io.validate_session_id(req.data.session_id)
         except ValueError as e:
             return ServiceResponse(success=False, message=str(e), data=None)
-        sdir = scan_io.session_dir(sid)
+        sdir = scan_io.session_dir(robot_id, sid)
         scans: list[ScanMeta] = []
         for p in scan_io.list_scans(sdir):
             try:
@@ -336,7 +366,7 @@ class PointCloudNode(BaseNode):
         )
 
     def _srv_delete_scan(
-        self, req: ServiceRequest[PointcloudDeleteScanReq]
+        self, req: ServiceRequest[PointcloudDeleteScanReq], robot_id: str
     ) -> ServiceResponse[PointcloudDeleteScanRes]:
         try:
             sid = scan_io.validate_session_id(req.data.session_id)
@@ -347,7 +377,7 @@ class PointCloudNode(BaseNode):
             return ServiceResponse(
                 success=False, message="scan_id 필요", data=None
             )
-        sdir = scan_io.session_dir(sid)
+        sdir = scan_io.session_dir(robot_id, sid)
         ok = scan_io.delete_scan(sdir, scan_id)
         if not ok:
             return ServiceResponse(
@@ -364,9 +394,10 @@ class PointCloudNode(BaseNode):
     # ─── Service: TSDF build ─────────────────────────────────
 
     def _srv_build_mesh(
-        self, req: ServiceRequest[PointcloudBuildMeshReq]
+        self, req: ServiceRequest[PointcloudBuildMeshReq], robot_id: str
     ) -> ServiceResponse[PointcloudBuildMeshRes]:
-        if not self._capture_lock.acquire(blocking=False):
+        st = self._states[robot_id]
+        if not st.capture_lock.acquire(blocking=False):
             return ServiceResponse(
                 success=False,
                 message="다른 capture/build 진행 중",
@@ -378,7 +409,7 @@ class PointCloudNode(BaseNode):
             except ValueError as e:
                 return ServiceResponse(success=False, message=str(e), data=None)
 
-            sdir = scan_io.session_dir(sid)
+            sdir = scan_io.session_dir(robot_id, sid)
             npz_paths = scan_io.list_scans(sdir)
             if len(npz_paths) < tsdf_builder.MIN_SCANS:
                 return ServiceResponse(
@@ -391,13 +422,14 @@ class PointCloudNode(BaseNode):
                 )
 
             scans = [scan_io.load_scan(p) for p in npz_paths]
-            out_path = scan_io.meshes_dir() / f"mesh_{sid}.ply"
+            out_path = scan_io.meshes_dir(robot_id) / f"mesh_{sid}.ply"
 
             t0 = time.time()
             result = tsdf_builder.build_mesh(
                 scans,
-                self._arm_cfgs,
+                st.arm_cfgs,
                 out_path,
+                robot_id=robot_id,
                 voxel_size=(
                     req.data.voxel_size
                     if req.data.voxel_size is not None
@@ -438,17 +470,18 @@ class PointCloudNode(BaseNode):
                 ),
             )
         except Exception as e:
-            logger.exception("build_mesh 실패")
+            logger.exception("[%s] build_mesh 실패", robot_id)
             return ServiceResponse(success=False, message=str(e), data=None)
         finally:
-            self._capture_lock.release()
+            st.capture_lock.release()
 
     def _srv_list_meshes(
-        self, _req: ServiceRequest[EmptyData]
+        self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[PointcloudListMeshesRes]:
-        scan_io.meshes_dir().mkdir(parents=True, exist_ok=True)
+        meshes_dir = scan_io.meshes_dir(robot_id)
+        meshes_dir.mkdir(parents=True, exist_ok=True)
         meshes: list[MeshMeta] = []
-        for p in sorted(scan_io.meshes_dir().glob("mesh_*.ply")):
+        for p in sorted(meshes_dir.glob("mesh_*.ply")):
             try:
                 stat = p.stat()
                 sid = p.stem[len("mesh_"):]
@@ -466,44 +499,56 @@ class PointCloudNode(BaseNode):
             data=PointcloudListMeshesRes(meshes=meshes),
         )
 
-    # ─── Stream Loop (라이브 PC) ─────────────────────────────
+    # ─── Stream Loop (라이브 PC) — 모든 enabled robot ────────
 
     def _stream_loop(self) -> None:
         period = 1.0 / TARGET_FPS
-        last_processed_ts = 0.0
+        last_processed_ts: dict[str, float] = {
+            rid: 0.0 for rid in self._enabled_robot_ids
+        }
 
         while self._running:
-            with self._cfg_lock:
-                enabled = self._enabled
-                voxel = self._voxel_size
+            any_processed = False
+            for rid in self._enabled_robot_ids:
+                st = self._states[rid]
+                with st.cfg_lock:
+                    enabled = st.enabled
+                    voxel = st.voxel_size
 
-            if not enabled:
+                if not enabled:
+                    continue
+
+                with st.frame_lock:
+                    frame = st.latest_frame
+
+                if frame is None or frame.timestamp <= last_processed_ts[rid]:
+                    continue
+
+                t0 = time.time()
+                try:
+                    payload = self._build_payload(frame, voxel)
+                except Exception as e:
+                    logger.warning(f"[{rid}] 포인트클라우드 생성 실패: {e}")
+                    continue
+
+                try:
+                    self.session.put(
+                        topic_for(Topic.POINTCLOUD_STREAM, rid), payload
+                    )
+                    last_processed_ts[rid] = frame.timestamp
+                    any_processed = True
+                except Exception as e:
+                    logger.warning(f"[{rid}] 포인트클라우드 발행 실패: {e}")
+
+                # robot 간 fairness 위해 한 robot 처리 후 다음으로
+                elapsed = time.time() - t0
+                if elapsed > period:
+                    break
+
+            if not any_processed:
                 time.sleep(IDLE_SLEEP)
-                continue
-
-            with self._frame_lock:
-                frame = self._latest_frame
-
-            if frame is None or frame.timestamp <= last_processed_ts:
-                time.sleep(IDLE_SLEEP)
-                continue
-
-            t0 = time.time()
-            try:
-                payload = self._build_payload(frame, voxel)
-            except Exception as e:
-                logger.warning(f"포인트클라우드 생성 실패: {e}")
-                time.sleep(IDLE_SLEEP)
-                continue
-
-            try:
-                self.session.put(self.r(Topic.POINTCLOUD_STREAM), payload)
-                last_processed_ts = frame.timestamp
-            except Exception as e:
-                logger.warning(f"포인트클라우드 발행 실패: {e}")
-
-            elapsed = time.time() - t0
-            time.sleep(max(0.0, period - elapsed))
+            else:
+                time.sleep(max(0.0, period / max(1, len(self._enabled_robot_ids))))
 
     # ─── Cloud build (라이브) ────────────────────────────────
 

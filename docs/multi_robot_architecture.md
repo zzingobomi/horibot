@@ -677,22 +677,20 @@ robots:
   omx_f_0:
     type: omx_f
     enabled: true
-    hosts:                        # distributed_topology.md §4 — robot 자원이 두 머신에 흩어짐
-      motor: dev                  # motor/motion node 가 도는 host (Phase 2: hori3)
-      camera: dev                 # camera node 가 도는 host (Phase 2: hori2)
+    capabilities: [move, calibrate, scan]
     motor_backend: dynamixel      # dynamixel | feetech — RobotRegistry.get_motor_backend() 분기
     iksolver: pybullet            # pybullet | mujoco — get_iksolver() 분기
     camera_backend: realsense     # realsense | opencv | mujoco — get_camera_capture() 분기
+    base_pose: {x: 0.0, y: 0.0, z: 0.0, yaw_deg: 0.0}
 
   so101_6dof_0:
     type: so101_6dof
     enabled: false                # SO-101 도착 전까지 false
-    hosts:
-      motor: hori3
-      camera: hori2
+    capabilities: [move, calibrate, scan]
     motor_backend: feetech
     iksolver: pybullet
     camera_backend: realsense
+    base_pose: {x: 0.4, y: 0.0, z: 0.0, yaw_deg: 0.0}
 
 # Phase 2+ — Coordination 영역
 cooperation:
@@ -700,7 +698,7 @@ cooperation:
     - [omx_f_0, so101_6dof_0]     # robot-to-robot extrinsic 적용 pair
 ```
 
-instance-specific 한 hardware 세부 (motor port / baud 등) 는 `robot/instances/<robot_id>/instance.yaml` 로 분리 — robots.yaml 은 *registry* 역할만 (어떤 robot 이 어떤 type / backend 조합으로 enabled 인지).
+robots.yaml entry 는 **robot 정체성만** — type / backend 조합 / capabilities / base_pose. deployment (어느 머신에서 노드 띄울지) 는 host config 의 `nodes:` 가 책임 (distributed_topology.md §4 결정). instance-specific 한 hardware 세부 (motor port / baud 등) 는 `robot/instances/<robot_id>/instance.yaml` 로 분리.
 
 ### 4.4 Validation rules
 

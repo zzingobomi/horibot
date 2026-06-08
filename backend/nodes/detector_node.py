@@ -8,6 +8,7 @@ from core.common import GRIPPER_ID
 from core.transport.base_node import BaseNode
 from core.cache.frame_cache import FrameCache
 from core.cache.joint_state_cache import JointStateCache
+from core.robot.robot_registry import RobotRegistry
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.camera import CameraSetDepthStreamReq, CameraSetDepthStreamRes
 from core.transport.messages.detector import (
@@ -19,8 +20,8 @@ from core.transport.messages.detector import (
     YoloDetection,
 )
 from core.transport.messages.motion import MotionTcpPose
-from core.transport.topic_map import Service, Topic
-from modules.calibration.loader import load_calibration
+from core.transport.topic_map import Service, Topic, topic_for
+from modules.calibration.loader import CalibrationData, load_calibration
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
 from modules.detector.grounded_detector import GroundedDetector
 from modules.detector.yolo_detector import YoloDetector
@@ -38,52 +39,76 @@ DEPTH_WAIT_TIMEOUT = 5.0  # s
 
 
 class DetectorNode(BaseNode):
-    def __init__(self, robot_id: str | None = None) -> None:
-        super().__init__("detector_node", robot_id=robot_id)
+    """SYSTEM 노드 — robot 무관 한 인스턴스로 multi-robot dispatch.
 
-        self._frame_cache = FrameCache()
-        _, self._motor_cfgs = load_motor_config(robot_id)
-        self._arm_cfgs: list[MotorConfig] = [
-            m for m in self._motor_cfgs if m.id != GRIPPER_ID
+    YOLO / Grounding DINO 모델은 1번 로드, robot 별 캘리브레이션 / motor cfg /
+    depth frame 만 `dict[robot_id]` 로 분리. service handler 가 robot_id 받아
+    dispatch.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("detector_node", robot_id=None)
+
+        self._registry = RobotRegistry()
+        self._enabled_robot_ids: list[str] = [
+            c.robot_id for c in self._registry.enabled_robots()
         ]
-        self._joint_cache = JointStateCache()
 
-        self._calib = load_calibration()
-        if not self._calib.is_ready():
-            logger.warning(
-                "DetectorNode: 캘리브레이션 미완료 (intrinsic=%s, hand_eye=%s)",
-                self._calib.intrinsic is not None,
-                self._calib.hand_eye is not None,
-            )
-
+        # 모델 1번만 로드 (multi-robot 공유)
         self._detector = YoloDetector()
         self._grounded = GroundedDetector()
+
+        # 공유 cache
+        self._frame_cache = FrameCache()
+        self._joint_cache = JointStateCache()
+
+        # robot 별 상태
+        self._arm_cfgs_by_robot: dict[str, list[MotorConfig]] = {}
+        self._calibs_by_robot: dict[str, CalibrationData] = {}
+        for rid in self._enabled_robot_ids:
+            _, motor_cfgs = load_motor_config(rid)
+            self._arm_cfgs_by_robot[rid] = [
+                m for m in motor_cfgs if m.id != GRIPPER_ID
+            ]
+            calib = load_calibration(rid)
+            self._calibs_by_robot[rid] = calib
+            if not calib.is_ready():
+                logger.warning(
+                    "DetectorNode[%s]: 캘리브레이션 미완료 (intrinsic=%s, hand_eye=%s)",
+                    rid,
+                    calib.intrinsic is not None,
+                    calib.hand_eye is not None,
+                )
+
+        # robot 별 depth frame 캐시
+        self._depth_lock = threading.Lock()
+        self._latest_depth_by_robot: dict[str, DepthFrame] = {}
+
         self._detection_thread: threading.Thread | None = None
         self._grounded_preload_thread: threading.Thread | None = None
 
-        # ─── depth frame 캐시 (grounded_detect 전용) ───
-        self._depth_lock = threading.Lock()
-        self._latest_depth_frame: DepthFrame | None = None
-
     def start(self) -> None:
         self._joint_cache.subscribe(self)
-        self._frame_cache.subscribe(self)
 
-        self.create_raw_subscriber(
-            self.r(Topic.CAMERA_DEPTH_FRAME), self._on_depth_frame
-        )
-        self.create_service(
-            self.r(Service.DETECT_SERVICE),
-            EmptyData,
-            DetectResult,
-            self._handle_detect,
-        )
-        self.create_service(
-            self.r(Service.PERCEPTION_GROUNDED_DETECT),
-            GroundedDetectReq,
-            GroundedDetectionResult,
-            self._handle_grounded_detect,
-        )
+        # robot 별 service / subscriber 등록
+        for rid in self._enabled_robot_ids:
+            self._frame_cache.subscribe(self, robot_id=rid)
+            self.create_raw_subscriber(
+                topic_for(Topic.CAMERA_DEPTH_FRAME, rid),
+                lambda payload, _rid=rid: self._on_depth_frame(_rid, payload),
+            )
+            self.create_service(
+                topic_for(Service.DETECT_SERVICE, rid),
+                EmptyData,
+                DetectResult,
+                lambda req, _rid=rid: self._handle_detect(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.PERCEPTION_GROUNDED_DETECT, rid),
+                GroundedDetectReq,
+                GroundedDetectionResult,
+                lambda req, _rid=rid: self._handle_grounded_detect(req, _rid),
+            )
         super().start()
 
         self._detection_thread = threading.Thread(
@@ -94,7 +119,6 @@ class DetectorNode(BaseNode):
         self._detection_thread.start()
 
         # Grounding DINO 모델 백그라운드 preload — 첫 detect 호출의 체감 지연 제거.
-        # 로드 중에 detect 호출되면 GroundedDetector 내부 lock 이 기다림.
         self._grounded_preload_thread = threading.Thread(
             target=self._preload_grounded,
             daemon=True,
@@ -102,7 +126,9 @@ class DetectorNode(BaseNode):
         )
         self._grounded_preload_thread.start()
 
-        logger.info("DetectorNode 시작")
+        logger.info(
+            "DetectorNode 시작 (robots=%s)", self._enabled_robot_ids
+        )
 
     def _preload_grounded(self) -> None:
         try:
@@ -112,52 +138,54 @@ class DetectorNode(BaseNode):
 
     # ─── Subscribers ─────────────────────────────────────────
 
-    def _on_depth_frame(self, payload: bytes) -> None:
+    def _on_depth_frame(self, robot_id: str, payload: bytes) -> None:
         try:
             frame = decode_depth_frame(payload)
         except Exception as e:
-            logger.warning("depth_frame 디코드 실패: %s", e)
+            logger.warning("depth_frame[%s] 디코드 실패: %s", robot_id, e)
             return
         with self._depth_lock:
-            self._latest_depth_frame = frame
+            self._latest_depth_by_robot[robot_id] = frame
 
-    # ─── Detection loop (YOLO 라이브 5fps) ──────────────────
+    # ─── Detection loop (YOLO 라이브 5fps) — 모든 enabled robot ──
 
     def _detection_loop(self) -> None:
         while self._running:
-            try:
-                ret, frame = self._frame_cache.get_frame()
-                if ret and frame is not None:
+            for rid in self._enabled_robot_ids:
+                try:
+                    ret, frame = self._frame_cache.get_frame(robot_id=rid)
+                    if not ret or frame is None:
+                        continue
                     raw_results = self._detector.raw_detect(frame)
-                    # raw_detect dict ({"class","bbox","conf"}) → typed
                     detections = [
                         YoloDetection.model_validate(d) for d in raw_results
                     ]
                     self.publish(
-                        self.r(Topic.DETECTOR_STATE),
+                        topic_for(Topic.DETECTOR_STATE, rid),
                         DetectorState(
                             timestamp=time.time(),
                             detections=detections,
                         ),
                     )
-            except Exception as e:
-                logger.debug("detection loop 오류: %s", e)
+                except Exception as e:
+                    logger.debug("detection loop[%s] 오류: %s", rid, e)
             time.sleep(DETECTION_INTERVAL)
 
-    # ─── Service: YOLO + plane Z=0 (기존) ───────────────────
+    # ─── Service: YOLO + plane Z=0 ──────────────────────────
 
     def _handle_detect(
-        self, _req: ServiceRequest[EmptyData]
+        self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[DetectResult]:
-        if not self._calib.is_ready():
+        calib = self._calibs_by_robot[robot_id]
+        if not calib.is_ready():
             return ServiceResponse(
                 success=False, message="캘리브레이션 미완료", data=None
             )
-        assert self._calib.intrinsic is not None
-        assert self._calib.hand_eye is not None
+        assert calib.intrinsic is not None
+        assert calib.hand_eye is not None
 
         # ── 카메라 프레임 취득 ────────────────────
-        ret, frame = self._frame_cache.get_frame()
+        ret, frame = self._frame_cache.get_frame(robot_id=robot_id)
         if not ret or frame is None:
             return ServiceResponse(
                 success=False, message="카메라 프레임 취득 실패", data=None
@@ -171,11 +199,11 @@ class DetectorNode(BaseNode):
             )
 
         cx, cy = result
-        logger.info("감지: centroid (%.1f, %.1f)", cx, cy)
+        logger.info("[%s] 감지: centroid (%.1f, %.1f)", robot_id, cx, cy)
 
         # ── image → 정규화 좌표 ───────────────────
-        camera_matrix = self._calib.intrinsic.camera_matrix
-        dist_coeffs = self._calib.intrinsic.dist_coeffs
+        camera_matrix = calib.intrinsic.camera_matrix
+        dist_coeffs = calib.intrinsic.dist_coeffs
 
         pt = np.array([[[cx, cy]]], dtype=np.float32)
         pt_undistorted = cv2.undistortPoints(pt, camera_matrix, dist_coeffs)
@@ -184,7 +212,9 @@ class DetectorNode(BaseNode):
 
         # ── FK: get_tcp → R_be, t_be ──────────────
         res = self.call_service(
-            self.r(Service.MOTION_GET_TCP), EmptyData(), MotionTcpPose
+            topic_for(Service.MOTION_GET_TCP, robot_id),
+            EmptyData(),
+            MotionTcpPose,
         )
         if not res.success or res.data is None:
             return ServiceResponse(
@@ -195,8 +225,8 @@ class DetectorNode(BaseNode):
         t_be = np.array(res.data.position)
 
         # ── hand-eye 행렬 ─────────────────────────
-        R_ce = self._calib.hand_eye.R  # camera → end-effector
-        t_ce = self._calib.hand_eye.t.flatten()
+        R_ce = calib.hand_eye.R  # camera → end-effector
+        t_ce = calib.hand_eye.t.flatten()
 
         # ── base frame Z=0 조건으로 Z_cam 역산 ───
         R_total = R_be @ R_ce
@@ -216,14 +246,16 @@ class DetectorNode(BaseNode):
                 data=None,
             )
 
-        logger.info("Z_cam 역산: %.3fm", Z_cam)
+        logger.info("[%s] Z_cam 역산: %.3fm", robot_id, Z_cam)
 
         # ── camera frame → base frame ─────────────
         obj_in_cam = np.array([xn * Z_cam, yn * Z_cam, Z_cam])
         obj_in_ee = R_ce @ obj_in_cam + t_ce
         obj_in_base = R_be @ obj_in_ee + t_be
 
-        logger.info("감지 완료: base=(%.3f, %.3f, %.3f)", *obj_in_base)
+        logger.info(
+            "[%s] 감지 완료: base=(%.3f, %.3f, %.3f)", robot_id, *obj_in_base
+        )
 
         return ServiceResponse(
             success=True,
@@ -234,7 +266,7 @@ class DetectorNode(BaseNode):
     # ─── Service: Grounding DINO + depth median ─────────────
 
     def _handle_grounded_detect(
-        self, req: ServiceRequest[GroundedDetectReq]
+        self, req: ServiceRequest[GroundedDetectReq], robot_id: str
     ) -> ServiceResponse[GroundedDetectionResult]:
         prompt = req.data.prompt.strip()
         if not prompt:
@@ -242,22 +274,23 @@ class DetectorNode(BaseNode):
                 success=False, message="prompt 필요", data=None
             )
 
-        if not self._calib.is_ready():
+        calib = self._calibs_by_robot[robot_id]
+        if not calib.is_ready():
             return ServiceResponse(
                 success=False, message="캘리브레이션 미완료", data=None
             )
-        assert self._calib.hand_eye is not None
+        assert calib.hand_eye is not None
 
         # ── depth stream 확보 (on-demand) ────────────────
         need_enable = True
         with self._depth_lock:
-            f = self._latest_depth_frame
+            f = self._latest_depth_by_robot.get(robot_id)
             if f is not None and (time.time() - f.timestamp) < DEPTH_FRESH_THRESHOLD:
                 need_enable = False
 
         if need_enable:
             res = self.call_service(
-                self.r(Service.CAMERA_SET_DEPTH_STREAM),
+                topic_for(Service.CAMERA_SET_DEPTH_STREAM, robot_id),
                 CameraSetDepthStreamReq(enabled=True),
                 CameraSetDepthStreamRes,
             )
@@ -271,13 +304,13 @@ class DetectorNode(BaseNode):
             deadline = time.time() + DEPTH_WAIT_TIMEOUT
             while time.time() < deadline:
                 with self._depth_lock:
-                    f = self._latest_depth_frame
+                    f = self._latest_depth_by_robot.get(robot_id)
                     if f is not None and (time.time() - f.timestamp) < 0.5:
                         break
                 time.sleep(0.05)
 
         with self._depth_lock:
-            depth_frame = self._latest_depth_frame
+            depth_frame = self._latest_depth_by_robot.get(robot_id)
         if depth_frame is None:
             return ServiceResponse(
                 success=False,
@@ -336,7 +369,9 @@ class DetectorNode(BaseNode):
 
         # ── TCP pose ────────────────────────────────────
         res = self.call_service(
-            self.r(Service.MOTION_GET_TCP), EmptyData(), MotionTcpPose
+            topic_for(Service.MOTION_GET_TCP, robot_id),
+            EmptyData(),
+            MotionTcpPose,
         )
         if not res.success or res.data is None:
             return ServiceResponse(
@@ -347,18 +382,14 @@ class DetectorNode(BaseNode):
         t_be = np.array(res.data.position)
 
         # ── hand_eye → base 좌표 ────────────────────────
-        R_ce = self._calib.hand_eye.R
-        t_ce = self._calib.hand_eye.t.flatten()
+        R_ce = calib.hand_eye.R
+        t_ce = calib.hand_eye.t.flatten()
 
         obj_in_ee = R_ce @ obj_in_cam + t_ce
         obj_in_base = R_be @ obj_in_ee + t_be
 
         # ── 책상 base_z + height 추정 ────────────────────
         # bbox 외곽 ring 의 모든 valid 픽셀을 base 프레임으로 unproject 후 z 통계.
-        # camera 광축 방향 depth 차이가 아닌 base.z 평면을 직접 추정 → 카메라가
-        # 책상에 수직이 아니거나 객체가 화면 가장자리에 있어도 편향되지 않음.
-        # PAD 는 bbox 크기 비례 — 멀어 bbox 가 작아져도 ring 이 객체 가까운 책상
-        # 영역을 잡게 함 (고정 PAD=30 이면 멀리서 책상 영역이 더 멀어져 height 과대 추정).
         bbox_w = ix2 - ix1
         bbox_h = iy2 - iy1
         pad = max(15, min(80, int(min(bbox_w, bbox_h) * 0.5)))
@@ -368,7 +399,6 @@ class DetectorNode(BaseNode):
         ex2 = min(w, ix2 + pad)
         ey2 = min(h, iy2 + pad)
         ext_roi = depth_frame.depth_z16[ey1:ey2, ex1:ex2].copy()
-        # bbox 내부 mask out (객체 픽셀 제거)
         ext_roi[(iy1 - ey1):(iy2 - ey1), (ix1 - ex1):(ix2 - ex1)] = 0
 
         vs_local, us_local = np.nonzero(ext_roi)
@@ -385,8 +415,6 @@ class DetectorNode(BaseNode):
             pts_ee_ring = pts_cam_ring @ R_ce.T + t_ce
             pts_base_ring = pts_ee_ring @ R_be.T + t_be
 
-            # ring 에 객체 가장자리가 섞이면 base z 가 위쪽으로 튐.
-            # percentile 25 = 진짜 책상 픽셀 쪽에 편향 (lower z = floor).
             floor_z = float(np.percentile(pts_base_ring[:, 2], 25))
             height = max(0.0, float(obj_in_base[2]) - floor_z)
         else:
@@ -396,30 +424,30 @@ class DetectorNode(BaseNode):
         base_z = floor_z
 
         logger.info(
-            "grounded_detect '%s' score=%.3f bbox=(%.0f,%.0f,%.0f,%.0f) "
+            "[%s] grounded_detect '%s' score=%.3f bbox=(%.0f,%.0f,%.0f,%.0f) "
             "Z_cam=%.3fm base=(%.3f, %.3f, %.3f) floor_z=%.3f h=%.3f pad=%d",
-            prompt, score, x1, y1, x2, y2, Z_cam,
+            robot_id, prompt, score, x1, y1, x2, y2, Z_cam,
             *obj_in_base, floor_z, height, pad,
         )
 
         result = GroundedDetectionResult(
             prompt=prompt,
-            position=obj_in_base.tolist(),  # 객체 윗면 base xyz
+            position=obj_in_base.tolist(),
             bbox2d=Bbox2D(
                 x1=float(x1), y1=float(y1), x2=float(x2), y2=float(y2)
             ),
             confidence=score,
             base_z=base_z,
             height=height,
-            timestamp=time.time() * 1000.0,  # ms (frontend Date.now() 호환)
+            timestamp=time.time() * 1000.0,
         )
 
-        # 호출자 무관하게 카메라 feed / 3D 마커에 자동 표시되도록 토픽 broadcast.
-        # (self-play / pick_and_place GroundedDetectStep 등 backend 호출도 시각화됨)
         try:
-            self.publish(self.r(Topic.PERCEPTION_GROUNDED_STATE), result)
+            self.publish(
+                topic_for(Topic.PERCEPTION_GROUNDED_STATE, robot_id), result
+            )
         except Exception as exc:
-            logger.warning("grounded_state publish 실패: %s", exc)
+            logger.warning("[%s] grounded_state publish 실패: %s", robot_id, exc)
 
         return ServiceResponse(success=True, message="ok", data=result)
 

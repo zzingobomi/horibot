@@ -9,9 +9,6 @@ robots:
     type: omx_f
     enabled: true
     capabilities: [move, calibrate, scan]   # D405 보유 → scan 가능. SO-101 도착 시 USB cam 으로 바뀌면 [move, calibrate] 로 변경.
-    hosts:                 # Phase 2 (distributed_topology.md §3.2): hori1/2/3.
-      motor: dev           # 현재 single machine — caller 아직 없음 (잠정값).
-      camera: dev
     motor_backend: dynamixel
     iksolver: pybullet
     camera_backend: realsense    # Phase 2 (distributed_topology.md §1): omx_f → opencv (UVC)
@@ -33,9 +30,6 @@ robots:
     # 실제 motor/camera 노드는 안 띄움 → panel 들은 빈 데이터로 보임 (의도된 동작).
     # 실 hardware 도착 시 enabled=true + scan 추가 (D405 양도).
     capabilities: [move, calibrate]
-    hosts:
-      motor: dev
-      camera: dev
     motor_backend: dynamixel
     iksolver: pybullet
     camera_backend: realsense

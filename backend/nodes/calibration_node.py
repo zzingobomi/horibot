@@ -3,6 +3,7 @@ import threading
 import time
 import cv2
 import numpy as np
+from dataclasses import dataclass
 from pathlib import Path
 
 from core.transport.base_node import BaseNode
@@ -27,11 +28,11 @@ from core.transport.messages.calibration import (
     LinkOffsetEntry,
     SagOffsetEntry,
 )
-from core.transport.topic_map import Service, Topic
+from core.transport.topic_map import Service, Topic, topic_for
 from core.cache.frame_cache import FrameCache
 from core.cache.joint_state_cache import JointStateCache
 from core.common import GRIPPER_ID
-from modules.motor.motor_config import load_motor_config
+from modules.motor.motor_config import MotorConfig, load_motor_config
 from modules.camera.stream import frame_to_base64
 from modules.calibration.intrinsic import CHECKERBOARD, IntrinsicCalibration
 from modules.calibration.hand_eye import HandEyeCalibration, Pose
@@ -39,131 +40,168 @@ from modules.calibration import next_pose_planner
 from modules.calibration import thresholds as calib_thresholds
 from modules.calibration.link_offsets import LinkOffsets
 from modules.calibration.pose_estimator import PoseEstimator
-from modules.kinematics.solver import PybulletSolver
+from modules.kinematics.corrected import CorrectedIKSolver
 
 logger = logging.getLogger(__name__)
 
 
-def _save_dir() -> Path:
-    return RobotRegistry().default().calibration_dir
+def _save_dir(robot_id: str) -> Path:
+    return RobotRegistry().get(robot_id).calibration_dir
 
 
-def _handeye_poses_path() -> Path:
-    return _save_dir() / "handeye_poses.npz"
+def _handeye_poses_path(robot_id: str) -> Path:
+    return _save_dir(robot_id) / "handeye_poses.npz"
+
 
 PREVIEW_INTERVAL = 0.2  # 5Hz
 
 
+@dataclass
+class _RobotState:
+    """robot 별 캘리브레이션 상태."""
+
+    arm_cfgs: list[MotorConfig]
+    intrinsic: IntrinsicCalibration
+    hand_eye: HandEyeCalibration
+    solver: CorrectedIKSolver
+    last_compute: dict | None = None
+    preview_enabled: bool = False
+
+
 class CalibrationNode(BaseNode):
-    def __init__(self, robot_id: str | None = None) -> None:
-        super().__init__("calibration_node", robot_id=robot_id)
+    """SYSTEM 노드 — robot 무관 한 인스턴스. robot 별 dict[robot_id] state."""
+
+    def __init__(self) -> None:
+        super().__init__("calibration_node", robot_id=None)
+
+        self._registry = RobotRegistry()
+        self._enabled_robot_ids: list[str] = [
+            c.robot_id for c in self._registry.enabled_robots()
+        ]
+
+        # pose_estimator 는 stateless — robot 무관 한 인스턴스.
+        self.pose_estimator = PoseEstimator()
 
         self._frame_cache = FrameCache()
-        self.intrinsic = IntrinsicCalibration()
-        self.hand_eye = HandEyeCalibration()
-        self.pose_estimator = PoseEstimator()
-        self.solver = PybulletSolver()
-
-        _, motor_cfgs = load_motor_config(robot_id)
-        self._arm_cfgs = [m for m in motor_cfgs if m.id != GRIPPER_ID]
         self._cache = JointStateCache()
-        self._cache.subscribe(self)
-        self._frame_cache.subscribe(self)
 
-        path = _save_dir() / "intrinsic.npz"
-        loaded = self.intrinsic.load(path)
+        # robot 별 상태
+        self._states: dict[str, _RobotState] = {}
+        for rid in self._enabled_robot_ids:
+            _, motor_cfgs = load_motor_config(rid)
+            arm_cfgs = [m for m in motor_cfgs if m.id != GRIPPER_ID]
+            intrinsic = IntrinsicCalibration()
+            hand_eye = HandEyeCalibration()
+            solver = self._registry.get_iksolver(rid)
+            assert isinstance(solver, CorrectedIKSolver)
 
-        if loaded:
-            logger.info(f"Intrinsic 로드 완료: {path}")
-        else:
-            logger.warning("Intrinsic 파일 없음")
+            path = _save_dir(rid) / "intrinsic.npz"
+            loaded = intrinsic.load(path)
+            if loaded:
+                logger.info("[%s] Intrinsic 로드 완료: %s", rid, path)
+            else:
+                logger.warning("[%s] Intrinsic 파일 없음", rid)
 
-        self._last_compute: dict | None = None
-        self._preview_enabled = False
+            self._states[rid] = _RobotState(
+                arm_cfgs=arm_cfgs,
+                intrinsic=intrinsic,
+                hand_eye=hand_eye,
+                solver=solver,
+            )
+
         self._preview_thread: threading.Thread | None = None
 
-        # 내부 캘리브레이션
-        self.create_service(
-            self.r(Service.CALIB_CAPTURE),
-            CalibCaptureReq,
-            CalibCaptureRes,
-            self._srv_capture,
-        )
-        self.create_service(
-            self.r(Service.CALIB_INTRINSIC_START),
-            EmptyData,
-            EmptyData,
-            self._srv_intrinsic_start,
-        )
-        self.create_service(
-            self.r(Service.CALIB_INTRINSIC_SAVE),
-            EmptyData,
-            IntrinsicSaveRes,
-            self._srv_intrinsic_save,
-        )
-
-        # Hand-Eye 캘리브레이션
-        self.create_service(
-            self.r(Service.CALIB_HANDEYE_CAPTURE),
-            EmptyData,
-            HandeyeCaptureRes,
-            self._srv_handeye_capture,
-        )
-        self.create_service(
-            self.r(Service.CALIB_HANDEYE_RESET),
-            EmptyData,
-            HandeyeResetRes,
-            self._srv_handeye_reset,
-        )
-        # COMPUTE / THRESHOLDS 는 free-form dict 응답 (typed 면제 — typed_messaging.md
-        # §마이그레이션 사유: 동적 dict 정확 모델링 어려움). legacy create_service form.
-        self.create_service(
-            self.r(Service.CALIB_HANDEYE_COMPUTE), self._srv_handeye_compute
-        )
-        self.create_service(
-            self.r(Service.CALIB_HANDEYE_COMMIT),
-            EmptyData,
-            HandeyeCommitRes,
-            self._srv_handeye_commit,
-        )
-        self.create_service(
-            self.r(Service.CALIB_HANDEYE_LIST_POSES),
-            EmptyData,
-            HandeyeListPosesRes,
-            self._srv_handeye_list_poses,
-        )
-        self.create_service(
-            self.r(Service.CALIB_HANDEYE_PREVIEW_ENABLE),
-            HandeyePreviewEnableReq,
-            HandeyePreviewEnableRes,
-            self._srv_handeye_preview_enable,
-        )
-        self.create_service(
-            self.r(Service.CALIB_HANDEYE_THRESHOLDS), self._srv_handeye_thresholds
-        )
-
     def start(self) -> None:
+        for rid in self._enabled_robot_ids:
+            self._frame_cache.subscribe(self, robot_id=rid)
+            # 내부 캘리브레이션
+            self.create_service(
+                topic_for(Service.CALIB_CAPTURE, rid),
+                CalibCaptureReq,
+                CalibCaptureRes,
+                lambda req, _rid=rid: self._srv_capture(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.CALIB_INTRINSIC_START, rid),
+                EmptyData,
+                EmptyData,
+                lambda req, _rid=rid: self._srv_intrinsic_start(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.CALIB_INTRINSIC_SAVE, rid),
+                EmptyData,
+                IntrinsicSaveRes,
+                lambda req, _rid=rid: self._srv_intrinsic_save(req, _rid),
+            )
+            # Hand-Eye 캘리브레이션
+            self.create_service(
+                topic_for(Service.CALIB_HANDEYE_CAPTURE, rid),
+                EmptyData,
+                HandeyeCaptureRes,
+                lambda req, _rid=rid: self._srv_handeye_capture(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.CALIB_HANDEYE_RESET, rid),
+                EmptyData,
+                HandeyeResetRes,
+                lambda req, _rid=rid: self._srv_handeye_reset(req, _rid),
+            )
+            # legacy dict — typed 면제 (free-form). robot_id closure.
+            self.create_service(
+                topic_for(Service.CALIB_HANDEYE_COMPUTE, rid),
+                lambda req, _rid=rid: self._srv_handeye_compute(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.CALIB_HANDEYE_COMMIT, rid),
+                EmptyData,
+                HandeyeCommitRes,
+                lambda req, _rid=rid: self._srv_handeye_commit(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.CALIB_HANDEYE_LIST_POSES, rid),
+                EmptyData,
+                HandeyeListPosesRes,
+                lambda req, _rid=rid: self._srv_handeye_list_poses(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.CALIB_HANDEYE_PREVIEW_ENABLE, rid),
+                HandeyePreviewEnableReq,
+                HandeyePreviewEnableRes,
+                lambda req, _rid=rid: self._srv_handeye_preview_enable(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.CALIB_HANDEYE_THRESHOLDS, rid),
+                lambda req, _rid=rid: self._srv_handeye_thresholds(req, _rid),
+            )
+
         super().start()
+        self._cache.subscribe(self)
         self._preview_thread = threading.Thread(
             target=self._preview_loop,
             daemon=True,
             name="calib-preview",
         )
         self._preview_thread.start()
-        # joint_offsets 분산 전파는 git 추적이 담당 (모든 머신 같은 commit).
-        # 프론트엔드는 mount 시 /calibration/results로 HTTP fetch.
-        loaded = self.hand_eye.load_poses(_handeye_poses_path())
-        if loaded > 0:
-            logger.info(f"이전 Hand-Eye 포즈 {loaded}개 복원됨")
+
+        # 이전 hand-eye poses 복원
+        for rid, st in self._states.items():
+            loaded = st.hand_eye.load_poses(_handeye_poses_path(rid))
+            if loaded > 0:
+                logger.info("[%s] 이전 Hand-Eye 포즈 %d개 복원됨", rid, loaded)
+
+        logger.info(
+            "CalibrationNode 시작 (robots=%s)", self._enabled_robot_ids
+        )
 
     # ─── 이미지 캡처 ─────────────────────────────────────────
 
     def _srv_capture(
-        self, req: ServiceRequest[CalibCaptureReq]
+        self, req: ServiceRequest[CalibCaptureReq], robot_id: str
     ) -> ServiceResponse[CalibCaptureRes]:
+        st = self._states[robot_id]
         mode = req.data.mode
 
-        ret, frame = self._frame_cache.get_frame()
+        ret, frame = self._frame_cache.get_frame(robot_id=robot_id)
         if not ret or frame is None:
             return ServiceResponse(
                 success=False,
@@ -172,14 +210,14 @@ class CalibrationNode(BaseNode):
             )
 
         if mode == "intrinsic":
-            detected, vis = self.intrinsic.capture(frame)
+            detected, vis = st.intrinsic.capture(frame)
             b64 = frame_to_base64(vis)
             return ServiceResponse(
                 success=True,
                 message="체커보드 감지됨" if detected else "체커보드 미감지",
                 data=CalibCaptureRes(
                     detected=detected,
-                    captured_count=len(self.intrinsic.obj_points),
+                    captured_count=len(st.intrinsic.obj_points),
                     preview=b64,
                 ),
             )
@@ -191,18 +229,19 @@ class CalibrationNode(BaseNode):
     # ─── 내부 캘리브레이션 ────────────────────────────────────
 
     def _srv_intrinsic_start(
-        self, _req: ServiceRequest[EmptyData]
+        self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[EmptyData]:
-        self.intrinsic.reset()
+        self._states[robot_id].intrinsic.reset()
         return ServiceResponse(
             success=True, message="내부 캘리브레이션 초기화됨", data=EmptyData()
         )
 
     def _srv_intrinsic_save(
-        self, _req: ServiceRequest[EmptyData]
+        self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[IntrinsicSaveRes]:
-        width = self._frame_cache.width()
-        height = self._frame_cache.height()
+        st = self._states[robot_id]
+        width = self._frame_cache.width(robot_id=robot_id)
+        height = self._frame_cache.height(robot_id=robot_id)
         if width is None or height is None:
             return ServiceResponse(
                 success=False,
@@ -210,17 +249,17 @@ class CalibrationNode(BaseNode):
                 data=None,
             )
         image_size = (width, height)
-        result = self.intrinsic.calibrate(image_size)
+        result = st.intrinsic.calibrate(image_size)
 
         if result is None:
             return ServiceResponse(
                 success=False,
-                message=f"캘리브레이션 실패 (캡처 수: {len(self.intrinsic.obj_points)})",
+                message=f"캘리브레이션 실패 (캡처 수: {len(st.intrinsic.obj_points)})",
                 data=None,
             )
 
-        path = _save_dir() / "intrinsic.npz"
-        self.intrinsic.save(path)
+        path = _save_dir(robot_id) / "intrinsic.npz"
+        st.intrinsic.save(path)
 
         return ServiceResponse(
             success=True,
@@ -236,51 +275,52 @@ class CalibrationNode(BaseNode):
     # ─── Hand-Eye 캘리브레이션 ────────────────────────────────
 
     def _srv_handeye_capture(
-        self, _req: ServiceRequest[EmptyData]
+        self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[HandeyeCaptureRes]:
-        if self.intrinsic.result is None:
+        st = self._states[robot_id]
+        if st.intrinsic.result is None:
             return ServiceResponse(
                 success=False,
                 message="내부 캘리브레이션 결과가 필요합니다",
                 data=None,
             )
 
-        # raw motor — 시점 독립 ground truth. URDF rad / FK는 COMPUTE 시점에 계산.
-        raw_positions = self._cache.get_raw_motor_positions(self._arm_cfgs)
+        raw_positions = self._cache.get_raw_motor_positions(
+            st.arm_cfgs, robot_id=robot_id
+        )
         if raw_positions is None:
             return ServiceResponse(
                 success=False, message="관절 상태 수신 전", data=None
             )
 
-        # 카메라 캡처 + 체커보드 검출
-        ret, frame = self._frame_cache.get_frame()
+        ret, frame = self._frame_cache.get_frame(robot_id=robot_id)
         if not ret or frame is None:
             return ServiceResponse(
                 success=False, message="카메라 프레임 읽기 실패", data=None
             )
 
-        detected, _ = self.intrinsic.capture(frame)
+        detected, _ = st.intrinsic.capture(frame)
         if not detected:
             return ServiceResponse(
                 success=False,
                 message="체커보드 미감지",
                 data=HandeyeCaptureRes(
-                    detected=False, pose_count=len(self.hand_eye.poses)
+                    detected=False, pose_count=len(st.hand_eye.poses)
                 ),
             )
 
         pose = self.pose_estimator.estimate(
-            obj_points=self.intrinsic.obj_points[-1],
-            img_points=self.intrinsic.img_points[-1],
-            camera_matrix=self.intrinsic.result.camera_matrix,
-            dist_coeffs=self.intrinsic.result.dist_coeffs,
+            obj_points=st.intrinsic.obj_points[-1],
+            img_points=st.intrinsic.img_points[-1],
+            camera_matrix=st.intrinsic.result.camera_matrix,
+            dist_coeffs=st.intrinsic.result.dist_coeffs,
         )
         if pose is None:
             return ServiceResponse(
                 success=False, message="포즈 추정 실패", data=None
             )
 
-        self.hand_eye.add_pose(
+        st.hand_eye.add_pose(
             Pose(
                 raw_motor_positions=raw_positions,
                 R_target2cam=pose.R,
@@ -288,33 +328,32 @@ class CalibrationNode(BaseNode):
             )
         )
 
-        self._last_compute = None  # 새 포즈 추가 시 이전 계산 결과 무효화
+        st.last_compute = None
         try:
-            self.hand_eye.save_poses(_handeye_poses_path())
+            st.hand_eye.save_poses(_handeye_poses_path(robot_id))
         except Exception as e:
-            logger.warning("포즈 디스크 저장 실패 (메모리에는 남음): %s", e)
+            logger.warning("[%s] 포즈 디스크 저장 실패: %s", robot_id, e)
 
-        # 캡처 응답에는 추천 포함 X — 추천은 [계산] 응답에서만. 사용자 흐름:
-        # 캡처 → 계산 → 피드백+추천 → 이동 → 캡처 → 계산 → ... → 커밋.
         return ServiceResponse(
             success=True,
-            message=f"포즈 기록됨 ({len(self.hand_eye.poses)}개) — [계산]을 눌러 진척 확인",
+            message=f"포즈 기록됨 ({len(st.hand_eye.poses)}개) — [계산]을 눌러 진척 확인",
             data=HandeyeCaptureRes(
-                detected=True, pose_count=len(self.hand_eye.poses)
+                detected=True, pose_count=len(st.hand_eye.poses)
             ),
         )
 
     def _srv_handeye_reset(
-        self, _req: ServiceRequest[EmptyData]
+        self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[HandeyeResetRes]:
-        self.hand_eye.reset()
-        self._last_compute = None
-        # 디스크 파일도 삭제 — "처음부터 다시" 의도와 일치.
-        if _handeye_poses_path().exists():
+        st = self._states[robot_id]
+        st.hand_eye.reset()
+        st.last_compute = None
+        poses_path = _handeye_poses_path(robot_id)
+        if poses_path.exists():
             try:
-                _handeye_poses_path().unlink()
+                poses_path.unlink()
             except OSError as e:
-                logger.warning("포즈 파일 삭제 실패: %s", e)
+                logger.warning("[%s] 포즈 파일 삭제 실패: %s", robot_id, e)
         return ServiceResponse(
             success=True,
             message="Hand-Eye 누적 포즈 초기화됨",
@@ -322,37 +361,31 @@ class CalibrationNode(BaseNode):
         )
 
     def _srv_handeye_list_poses(
-        self, _req: ServiceRequest[EmptyData]
+        self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[HandeyeListPosesRes]:
-        # *현재 offset*으로 변환된 표시용 joint_angles_rad 포함
+        st = self._states[robot_id]
         poses = [
             HandeyePoseMeta.model_validate(m)
-            for m in self.hand_eye.list_poses_meta(self._arm_cfgs)
+            for m in st.hand_eye.list_poses_meta(st.arm_cfgs)
         ]
         return ServiceResponse(
             success=True,
             message="ok",
             data=HandeyeListPosesRes(
-                poses=poses, pose_count=len(self.hand_eye.poses)
+                poses=poses, pose_count=len(st.hand_eye.poses)
             ),
         )
 
-    def _srv_handeye_compute(self, req: dict) -> dict:
-        arm_motor_ids = [cfg.id for cfg in self._arm_cfgs]
-        joint_limits = self.solver.joint_limits(len(arm_motor_ids))
-        # mode 옵션:
-        #   "physical_sag" (기본, 43 DOF) — extended + 자세 의존 sag (k_J2, k_J3).
-        #       σ_rot ~0.65°/σ_t ~7.9mm 달성 (lumped mass + 모멘트 암 sag 모델로 검증).
-        #       lumped mass 가정이라 URDF의 D405 카메라 mass 누락에도 robust.
-        #   "extended" (41 DOF) — link_trans/link_rot 풀고 sag X. σ_rot ~1.3°/σ_t ~9mm.
-        #       사용자가 sag 모델 회귀 진단 필요할 때.
-        #   "standard" (11 DOF) — joint_offset만. 더 옛 회귀.
+    def _srv_handeye_compute(self, req: dict, robot_id: str) -> dict:
+        st = self._states[robot_id]
+        arm_motor_ids = [cfg.id for cfg in st.arm_cfgs]
+        joint_limits = st.solver.joint_limits(len(arm_motor_ids))
         mode = str(req.get("mode", "physical_sag")).lower()
         use_physical_sag = mode == "physical_sag"
         use_extended_ba = mode in ("physical_sag", "extended")
-        diag = self.hand_eye.compute_with_diagnostics(
-            fk_fn=self.solver.fk_to_matrix,
-            arm_motor_cfgs=self._arm_cfgs,
+        diag = st.hand_eye.compute_with_diagnostics(
+            fk_fn=st.solver.fk_to_matrix,
+            arm_motor_cfgs=st.arm_cfgs,
             joint_limits_rad=joint_limits,
             use_extended_ba=use_extended_ba,
             use_physical_sag=use_physical_sag,
@@ -360,14 +393,11 @@ class CalibrationNode(BaseNode):
         if diag is None:
             return {
                 "success": False,
-                "message": f"Hand-Eye 실패 (포즈 수: {len(self.hand_eye.poses)})",
+                "message": f"Hand-Eye 실패 (포즈 수: {len(st.hand_eye.poses)})",
                 "data": {},
             }
-        self._last_compute = diag
-        # 사용자 흐름: 캡처 → [계산] → 피드백+후보리스트 → [이동] → [캡처] → ...
-        # 후보 리스트를 응답에 묶어 round-trip 줄임. 사용자는 다음 [계산] 전까지
-        # 이 리스트로만 [이동]함 — 캡처해도 자동 재계산/갱신 X (의도된 페이스).
-        diag["recommendations"] = self._compute_recommendations()
+        st.last_compute = diag
+        diag["recommendations"] = self._compute_recommendations(robot_id)
         return {
             "success": True,
             "message": f"compute 완료 (poses={diag['pose_count']})",
@@ -375,50 +405,44 @@ class CalibrationNode(BaseNode):
         }
 
     def _srv_handeye_commit(
-        self, _req: ServiceRequest[EmptyData]
+        self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[HandeyeCommitRes]:
-        if self._last_compute is None or self.hand_eye.result is None:
+        st = self._states[robot_id]
+        if st.last_compute is None or st.hand_eye.result is None:
             return ServiceResponse(
                 success=False, message="먼저 COMPUTE를 실행하세요", data=None
             )
 
-        # 1) hand_eye.npz — 카메라↔그리퍼 외부 보정
-        hand_eye_path = _save_dir() / "hand_eye.npz"
-        self.hand_eye.save(hand_eye_path)
+        # 1) hand_eye.npz
+        hand_eye_path = _save_dir(robot_id) / "hand_eye.npz"
+        st.hand_eye.save(hand_eye_path)
 
-        # 2) joint_offsets.npz — BA가 추정한 delta offset을 cumulative 합산해 디스크 저장 +
-        # PC 메모리 (JointCoordinates) 즉시 갱신. 다른 머신 적용은 git pull + 재시작.
+        # 2) joint_offsets.npz
         applied: dict[int, float] = {}
         offset_msg = ""
-        if self._last_compute.get("joint_offset_estimated"):
-            delta_list = self._last_compute.get("joint_offset_delta", [])
+        if st.last_compute.get("joint_offset_estimated"):
+            delta_list = st.last_compute.get("joint_offset_delta", [])
             delta_by_id = {
                 int(e["motor_id"]): float(e["offset_rad"]) for e in delta_list
             }
             applied = JointCoordinates().commit_offsets(
-                delta_by_id, method=self.hand_eye.result.method,
+                delta_by_id,
+                method=st.hand_eye.result.method,
+                robot_id=robot_id,
             )
             applied_deg = {
                 i: round(float(np.degrees(v)), 3) for i, v in applied.items()
             }
             offset_msg = f" + joint_offsets 갱신 (cumulative, deg={applied_deg})"
-            logger.info("joint_offsets 즉시 적용: %s", applied_deg)
+            logger.info("[%s] joint_offsets 즉시 적용: %s", robot_id, applied_deg)
 
-        # 3) link_offsets.npz — 확장 BA가 추정한 link origin 보정을 *overwrite*.
-        # BA의 link_t는 original URDF 기준 absolute total 값 (delta 아님). 따라서
-        # disk를 cumulative 가산이 아니라 그대로 덮어씀.
-        # (이력: 과거 cumulative 가산이었음 → BA가 absolute 출력하는데 매 commit마다
-        #  누적 손상 발생. 2026-05-28 발견, overwrite로 fix. docs/accuracy_squeeze_plan.md §1.6).
-        # PybulletSolver는 URDF를 부팅 시 1회 로드라 메모리 자동 갱신 X
-        # → 적용은 다음 부팅 (patched URDF 자동 재생성). 사용자가 백엔드 재시작 필요.
-        # diag dict의 키는 "link_trans_delta"/"link_rot_delta"로 남아있지만 실제로는
-        # absolute 값. 프론트엔드 호환 위해 키명은 유지 (TODO: 향후 *_absolute로 rename).
+        # 3) link_offsets.npz
         link_msg = ""
         link_applied_meta: list[dict] = []
         restart_required = False
-        if self._last_compute.get("link_offset_estimated"):
-            trans_list = self._last_compute.get("link_trans_delta", [])
-            rot_list = self._last_compute.get("link_rot_delta", [])
+        if st.last_compute.get("link_offset_estimated"):
+            trans_list = st.last_compute.get("link_trans_delta", [])
+            rot_list = st.last_compute.get("link_rot_delta", [])
             new_link = LinkOffsets(
                 trans={
                     int(e["motor_id"]): np.array(
@@ -434,7 +458,9 @@ class CalibrationNode(BaseNode):
                 },
             )
             link_applied = LinkCoordinates().commit_offsets(
-                new_link, method=self.hand_eye.result.method,
+                new_link,
+                method=st.hand_eye.result.method,
+                robot_id=robot_id,
             )
             n_joints = len(link_applied.trans)
             link_msg = (
@@ -450,17 +476,15 @@ class CalibrationNode(BaseNode):
             ]
             restart_required = True
             logger.info(
-                "link_offsets 디스크 적용 (overwrite, 재시작 필요): n=%d", n_joints
+                "[%s] link_offsets 디스크 적용 (overwrite, 재시작 필요): n=%d",
+                robot_id, n_joints,
             )
 
-        # 4) sag_offsets.npz — 물리 sag BA가 추정한 k_J2, k_J3 *overwrite*.
-        # link_offsets와 같은 이유로 absolute total 값을 그대로 덮어씀 (cumulative 금지).
-        # PybulletSolver의 sag 캐시는 매 FK/IK 호출마다 메모리에서 읽으므로 PC는
-        # 즉시 반영 (solver._reload_sag_cache 호출). 다른 머신은 git pull + 재시작.
+        # 4) sag_offsets.npz
         sag_msg = ""
         sag_applied_meta: list[dict] = []
-        if self._last_compute.get("sag_offset_estimated"):
-            sag_delta_list = self._last_compute.get("sag_offset_delta", [])
+        if st.last_compute.get("sag_offset_estimated"):
+            sag_delta_list = st.last_compute.get("sag_offset_delta", [])
             new_sag = SagOffsets(
                 k_rad_per_m={
                     int(e["motor_id"]): float(e["k_rad_per_m"])
@@ -468,10 +492,11 @@ class CalibrationNode(BaseNode):
                 },
             )
             sag_applied = SagCoordinates().commit_offsets(
-                new_sag, method=self.hand_eye.result.method,
+                new_sag,
+                method=st.hand_eye.result.method,
+                robot_id=robot_id,
             )
-            # PC 메모리의 PybulletSolver 캐시도 즉시 갱신 (재시작 X)
-            self.solver._reload_sag_cache()
+            st.solver._reload_sag_cache()
             sag_applied_meta = [
                 {
                     "motor_id": int(jid),
@@ -482,7 +507,8 @@ class CalibrationNode(BaseNode):
             n_sag = len(sag_applied.k_rad_per_m)
             sag_msg = f" + sag_offsets 갱신 (overwrite, n={n_sag}, 즉시 적용)"
             logger.info(
-                "sag_offsets 즉시 적용: %s",
+                "[%s] sag_offsets 즉시 적용: %s",
+                robot_id,
                 {m["motor_id"]: round(m["k_rad_per_m"], 5)
                  for m in sag_applied_meta},
             )
@@ -492,22 +518,22 @@ class CalibrationNode(BaseNode):
             message=f"저장 완료: {hand_eye_path}{offset_msg}{link_msg}{sag_msg}",
             data=HandeyeCommitRes(
                 path=str(hand_eye_path),
-                method=self.hand_eye.result.method,
-                joint_offsets_applied=self._last_compute.get(
+                method=st.hand_eye.result.method,
+                joint_offsets_applied=st.last_compute.get(
                     "joint_offset_estimated", False
                 ),
                 joint_offsets=[
                     JointOffsetEntry(motor_id=int(mid), offset_rad=float(off))
                     for mid, off in sorted(applied.items())
                 ],
-                link_offsets_applied=self._last_compute.get(
+                link_offsets_applied=st.last_compute.get(
                     "link_offset_estimated", False
                 ),
                 link_offsets=[
                     LinkOffsetEntry.model_validate(m)
                     for m in link_applied_meta
                 ],
-                sag_offsets_applied=self._last_compute.get(
+                sag_offsets_applied=st.last_compute.get(
                     "sag_offset_estimated", False
                 ),
                 sag_offsets=[
@@ -518,8 +544,8 @@ class CalibrationNode(BaseNode):
             ),
         )
 
-    def _srv_handeye_thresholds(self, req: dict) -> dict:
-        """legacy dict — thresholds.as_dict() free-form, typed 면제 (§마이그레이션 사유)."""
+    def _srv_handeye_thresholds(self, req: dict, _robot_id: str) -> dict:
+        """legacy dict — thresholds.as_dict() free-form. robot 무관 — 모든 robot 동일 threshold."""
         return {
             "success": True,
             "message": "ok",
@@ -527,27 +553,22 @@ class CalibrationNode(BaseNode):
         }
 
     # ─── 다음 자세 후보 리스트 산출 ────────────────────────────
-    def _compute_recommendations(self) -> list[dict]:
-        """next_pose_planner.recommend_many()를 호출해 dict 리스트로 직렬화.
-
-        planner는 직전 _srv_handeye_compute 결과(self._last_compute)의 BA 잔차를
-        주 신호로 사용. last_compute 없으면 (이 함수는 compute 직후에만 호출되니
-        사실상 항상 있음) 분포 기반만 채움.
-
-        모터 상태 수신 전이면 빈 리스트 반환.
-        """
-        current = self._cache.get_joint_angles_rad(self._arm_cfgs)
+    def _compute_recommendations(self, robot_id: str) -> list[dict]:
+        st = self._states[robot_id]
+        current = self._cache.get_joint_angles_rad(
+            st.arm_cfgs, robot_id=robot_id
+        )
         if current is None:
             return []
-        arm_motor_ids = [cfg.id for cfg in self._arm_cfgs]
-        joint_limits = self.solver.joint_limits(len(arm_motor_ids))
+        arm_motor_ids = [cfg.id for cfg in st.arm_cfgs]
+        joint_limits = st.solver.joint_limits(len(arm_motor_ids))
         ja_at_compute = (
-            self._last_compute.get("joint_angles_per_pose")
-            if self._last_compute
+            st.last_compute.get("joint_angles_per_pose")
+            if st.last_compute
             else None
         )
         recs = next_pose_planner.recommend_many(
-            last_compute=self._last_compute,
+            last_compute=st.last_compute,
             joint_angles_per_pose_at_compute=ja_at_compute,
             current_joint_angles_rad=list(current),
             arm_motor_ids=arm_motor_ids,
@@ -556,10 +577,10 @@ class CalibrationNode(BaseNode):
         return [next_pose_planner.to_dict(r) for r in recs]
 
     def _srv_handeye_preview_enable(
-        self, req: ServiceRequest[HandeyePreviewEnableReq]
+        self, req: ServiceRequest[HandeyePreviewEnableReq], robot_id: str
     ) -> ServiceResponse[HandeyePreviewEnableRes]:
         enabled = req.data.enabled
-        self._preview_enabled = enabled
+        self._states[robot_id].preview_enabled = enabled
         return ServiceResponse(
             success=True,
             message=f"preview {'enabled' if enabled else 'disabled'}",
@@ -567,76 +588,72 @@ class CalibrationNode(BaseNode):
         )
 
     def _preview_loop(self) -> None:
-        # SB는 조명/블러에 강함. preview는 속도 우선이라 EXHAUSTIVE/ACCURACY 미사용.
         flags = cv2.CALIB_CB_NORMALIZE_IMAGE
         while self._running:
-            if not self._preview_enabled:
-                time.sleep(PREVIEW_INTERVAL)
-                continue
-
-            try:
-                ret, frame = self._frame_cache.get_frame()
-                if not ret or frame is None:
-                    self.publish(
-                        self.r(Topic.CALIB_HANDEYE_PREVIEW),
-                        {
-                            "timestamp": time.time(),
-                            "detected": False,
-                            "reason": "no_frame",
-                        },
-                    )
-                    time.sleep(PREVIEW_INTERVAL)
+            for rid, st in self._states.items():
+                if not st.preview_enabled:
                     continue
 
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                h, w = gray.shape[:2]
-                found, corners = cv2.findChessboardCornersSB(
-                    gray, CHECKERBOARD, flags=flags
-                )
+                try:
+                    ret, frame = self._frame_cache.get_frame(robot_id=rid)
+                    if not ret or frame is None:
+                        self.publish(
+                            topic_for(Topic.CALIB_HANDEYE_PREVIEW, rid),
+                            {
+                                "timestamp": time.time(),
+                                "detected": False,
+                                "reason": "no_frame",
+                            },
+                        )
+                        continue
 
-                payload: dict = {
-                    "timestamp": time.time(),
-                    "detected": bool(found),
-                    "image_size": [int(w), int(h)],
-                }
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    h, w = gray.shape[:2]
+                    found, corners = cv2.findChessboardCornersSB(
+                        gray, CHECKERBOARD, flags=flags
+                    )
 
-                if found and corners is not None:
-                    pts = corners.reshape(-1, 2)
-                    payload["corners"] = pts.tolist()
-                    xs, ys = pts[:, 0], pts[:, 1]
-                    bbox_w = float(xs.max() - xs.min())
-                    bbox_h = float(ys.max() - ys.min())
-                    payload["bbox"] = [
-                        float(xs.min()),
-                        float(ys.min()),
-                        bbox_w,
-                        bbox_h,
-                    ]
-                    payload["coverage_ratio"] = (
-                        bbox_w * bbox_h) / float(w * h)
+                    payload: dict = {
+                        "timestamp": time.time(),
+                        "detected": bool(found),
+                        "image_size": [int(w), int(h)],
+                    }
 
-                    # tilt: 보드 평면과 카메라 이미지 평면 사이 각도.
-                    # R_target2cam의 board Z축이 카메라 Z축과 얼마나 평행한가로 측정.
-                    if self.intrinsic.result is not None:
-                        try:
-                            ok, rvec, _tvec = cv2.solvePnP(
-                                self.intrinsic._objp_template,
-                                corners,
-                                self.intrinsic.result.camera_matrix,
-                                self.intrinsic.result.dist_coeffs,
-                                flags=cv2.SOLVEPNP_ITERATIVE,
-                            )
-                            R, _ = cv2.Rodrigues(rvec)
-                            # R[2,2] = board Z축의 카메라 Z성분.
-                            # |R[2,2]|=1 → 보드 평면이 이미지 평면과 평행 → tilt 0°
-                            cos_v = float(np.clip(abs(R[2, 2]), 0.0, 1.0))
-                            payload["tilt_deg"] = float(
-                                np.degrees(np.arccos(cos_v)))
-                        except cv2.error:
-                            pass
+                    if found and corners is not None:
+                        pts = corners.reshape(-1, 2)
+                        payload["corners"] = pts.tolist()
+                        xs, ys = pts[:, 0], pts[:, 1]
+                        bbox_w = float(xs.max() - xs.min())
+                        bbox_h = float(ys.max() - ys.min())
+                        payload["bbox"] = [
+                            float(xs.min()),
+                            float(ys.min()),
+                            bbox_w,
+                            bbox_h,
+                        ]
+                        payload["coverage_ratio"] = (
+                            bbox_w * bbox_h) / float(w * h)
 
-                self.publish(self.r(Topic.CALIB_HANDEYE_PREVIEW), payload)
-            except Exception as e:
-                logger.debug("preview loop 오류: %s", e)
+                        if st.intrinsic.result is not None:
+                            try:
+                                ok, rvec, _tvec = cv2.solvePnP(
+                                    st.intrinsic._objp_template,
+                                    corners,
+                                    st.intrinsic.result.camera_matrix,
+                                    st.intrinsic.result.dist_coeffs,
+                                    flags=cv2.SOLVEPNP_ITERATIVE,
+                                )
+                                R, _ = cv2.Rodrigues(rvec)
+                                cos_v = float(np.clip(abs(R[2, 2]), 0.0, 1.0))
+                                payload["tilt_deg"] = float(
+                                    np.degrees(np.arccos(cos_v)))
+                            except cv2.error:
+                                pass
+
+                    self.publish(
+                        topic_for(Topic.CALIB_HANDEYE_PREVIEW, rid), payload
+                    )
+                except Exception as e:
+                    logger.debug("[%s] preview loop 오류: %s", rid, e)
 
             time.sleep(PREVIEW_INTERVAL)

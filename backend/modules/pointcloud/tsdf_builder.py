@@ -32,7 +32,6 @@ import open3d as o3d
 from core.coords.joint_coordinates import JointCoordinates
 from modules.calibration.loader import load_calibration
 from modules.motor.motor_config import MotorConfig
-from modules.kinematics.solver import PybulletSolver
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +65,7 @@ def build_mesh(
     arm_cfgs: list[MotorConfig],
     out_path: Path,
     *,
+    robot_id: str,
     voxel_size: float = DEFAULT_VOXEL_SIZE,
     sdf_trunc: float = DEFAULT_SDF_TRUNC,
     depth_trunc: float = DEFAULT_DEPTH_TRUNC,
@@ -77,7 +77,7 @@ def build_mesh(
             f"scan {MIN_SCANS}개 이상 필요. 현재: {len(scans)}"
         )
 
-    calib = load_calibration()
+    calib = load_calibration(robot_id)
     if calib.hand_eye is None:
         raise RuntimeError("hand_eye.npz 없음 — 캘리브 먼저 진행")
 
@@ -85,7 +85,12 @@ def build_mesh(
     T_ee_cam[:3, :3] = calib.hand_eye.R
     T_ee_cam[:3, 3] = calib.hand_eye.t.reshape(3)
 
-    solver = PybulletSolver()
+    from core.robot.robot_registry import RobotRegistry
+    from modules.kinematics.corrected import CorrectedIKSolver
+
+    solver_obj = RobotRegistry().get_iksolver(robot_id)
+    assert isinstance(solver_obj, CorrectedIKSolver)
+    solver = solver_obj
     coords = JointCoordinates()
 
     cfg_by_id = {cfg.id: cfg for cfg in arm_cfgs}
@@ -106,7 +111,7 @@ def build_mesh(
                 raise RuntimeError(
                     f"scan #{idx} motor id {mid}가 현재 arm_cfgs에 없음"
                 )
-            arm_rad.append(coords.motor_to_urdf(int(raw), cfg))
+            arm_rad.append(coords.motor_to_urdf(int(raw), cfg, robot_id=robot_id))
 
         R_be, t_be = solver.fk_to_matrix(arm_rad)
         T_base_ee = np.eye(4)

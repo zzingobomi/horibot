@@ -67,11 +67,11 @@ uv run --no-sync python main.py --host pi_camera
 
 호스트 config 파일들 ([backend/config/](backend/config/)):
 
-- `host_dev.yaml` — 단일 머신 풀스택 (motor/camera/motion/calibration/task/detector/pointcloud + 브릿지; gamepad는 미포함)
-- `host_mock.yaml` — 단일 머신, 하드웨어 없이 frontend UX 검증 (`mock_motor` / `mock_camera` + 나머지 노드 그대로)
-- `host_pc.yaml` — 분산 PC (calibration/task/detector/pointcloud + 브릿지; motor/motion/camera 없음)
-- `host_pi_motor.yaml` — 분산 모터 Pi (motor/motion)
-- `host_pi_camera.yaml` — 분산 카메라 Pi (camera)
+- `host_dev.yaml` — 단일 머신 풀스택 (robots=[omx_f_0], robot_nodes=[motor/motion/camera], system_nodes=[calibration/task/detector/pointcloud] + 브릿지)
+- `host_mock.yaml` — 단일 머신, 하드웨어 없이 frontend UX 검증 (robot_nodes=[mock_motor/mock_camera/motion] + system_nodes 그대로)
+- `host_pc.yaml` — 분산 PC (USB 직결 robot 없음: robots=[], robot_nodes=[], system_nodes=[calibration/task/detector/pointcloud] + 브릿지)
+- `host_pi_motor.yaml` — 분산 모터 Pi (robots=[omx_f_0], robot_nodes=[motor/motion])
+- `host_pi_camera.yaml` — 분산 카메라 Pi (robots=[omx_f_0], robot_nodes=[camera])
 
 분산 모터 컨트롤러는 OpenRB-150이며 USB CDC-ACM(`/dev/ttyACM*`), 기본 포트는 Windows `COM6` / Linux `/dev/ttyACM0` ([robot/instances/omx_f_0/instance.yaml](robot/instances/omx_f_0/instance.yaml) — type-level 모터 spec 은 [robot/omx_f/motors.yaml](robot/omx_f/motors.yaml)). 자세한 사양은 [docs/hardware.md](docs/hardware.md).
 

@@ -69,22 +69,6 @@ class BasePose:
 
 
 @dataclass(frozen=True)
-class HostMap:
-    """robot 자원이 분산된 머신 매핑.
-
-    Phase 2 (distributed_topology.md §3.2) 에선 한 robot 이 두 머신에 흩어짐
-    (예: so101 motor=hori3 / camera=hori2). 1 필드 (`host: str`) 로 표현 불가 →
-    motor / camera 별로 분리.
-
-    값 자체는 아직 caller 가 없어서 무영향 — Phase 2 진입 시 coordinator /
-    Zenoh routing 결정 시 reference.
-    """
-
-    motor: str
-    camera: str
-
-
-@dataclass(frozen=True)
 class RobotConfig:
     """robot instance 1개의 모든 path / 설정.
 
@@ -95,7 +79,7 @@ class RobotConfig:
     robot_id: str
     robot_type: str
     enabled: bool
-    hosts: HostMap
+    is_default: bool
     base_pose: BasePose
     motor_backend: MotorBackendName
     iksolver: IKSolverName
@@ -170,6 +154,13 @@ class RobotRegistry:
             cfg = self._build_config(str(robot_id), entry)
             self._robots[str(robot_id)] = cfg
 
+        explicit_defaults = [c.robot_id for c in self._robots.values() if c.is_default]
+        if len(explicit_defaults) > 1:
+            raise ValueError(
+                f"robots.yaml: 'default: true' 가 두 개 이상 — {explicit_defaults}. "
+                "정확히 한 robot 에만 명시 (또는 안 적으면 첫 enabled robot 자동)."
+            )
+
         logger.info(
             "RobotRegistry load 완료: %d robot — %s",
             len(self._robots),
@@ -205,17 +196,6 @@ class RobotRegistry:
         if camera_backend not in _VALID_CAMERA_BACKENDS:
             raise ValueError(f"robot '{robot_id}' camera_backend={camera_backend!r} 미지원. 가능: {sorted(_VALID_CAMERA_BACKENDS)}")
 
-        hosts_raw = entry.get("hosts", {})
-        if not isinstance(hosts_raw, dict):
-            raise ValueError(
-                f"robot '{robot_id}' hosts 가 dict 아님 ({type(hosts_raw).__name__}). "
-                "예: hosts: {motor: dev, camera: dev}"
-            )
-        hosts = HostMap(
-            motor=str(hosts_raw.get("motor", "dev")),
-            camera=str(hosts_raw.get("camera", "dev")),
-        )
-
         caps_raw = entry.get("capabilities", []) or []
         if not isinstance(caps_raw, list):
             raise ValueError(
@@ -248,7 +228,7 @@ class RobotRegistry:
             robot_id=robot_id,
             robot_type=robot_type,
             enabled=bool(entry.get("enabled", True)),
-            hosts=hosts,
+            is_default=bool(entry.get("default", False)),
             base_pose=base_pose,
             motor_backend=cast(MotorBackendName, motor_backend),
             iksolver=cast(IKSolverName, iksolver),
@@ -286,17 +266,23 @@ class RobotRegistry:
         return self.default().robot_id
 
     def default(self) -> RobotConfig:
-        """enabled robot 이 1개일 때만 그것 반환 (N=1 single-active 환경).
+        """string-entry fallback 용 default robot.
 
-        N>=2 enabled 면 RuntimeError. 명시적 robot_id 사용 강제. enabled=false
-        인 robot (예: multi_robot_phase2_frontend.md §2 의 가짜 so101_0 시각화
-        entry) 은 count 에 안 들어감.
+        정책:
+          - `default: true` 명시된 robot 이 정확히 1 → 그것
+          - 명시 0 → 첫 enabled robot (robots.yaml entry 순서)
+          - 명시 2 이상 → ValueError (이미 _load 가 부팅 시 잡음)
+
+        호출 시점에 enabled 0 이면 RuntimeError. host config 의 string entry
+        가 의미를 가지려면 적어도 한 robot 이 enabled 여야 함.
         """
+        explicit = [c for c in self._robots.values() if c.is_default]
+        if len(explicit) == 1:
+            return explicit[0]
         enabled = self.enabled_robots()
-        if len(enabled) != 1:
+        if not enabled:
             raise RuntimeError(
-                f"default() 는 enabled=1 일 때만 — 현재 enabled {len(enabled)} "
-                f"(전체 {len(self._robots)}). 명시적 robot_id 로 get() 사용."
+                "default robot 없음 — robots.yaml 에 enabled=true 인 robot 이 0개."
             )
         return enabled[0]
 

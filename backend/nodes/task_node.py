@@ -3,6 +3,7 @@ import threading
 from typing import Callable
 
 from core.transport.base_node import BaseNode
+from core.robot.robot_registry import RobotRegistry
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.task import TaskStepIdReq
 from core.transport.topic_map import Service, Topic
@@ -36,18 +37,26 @@ TASK_REGISTRY: dict[str, Callable[[dict], Task]] = {
 
 
 class TaskNode(BaseNode):
-    def __init__(self, robot_id: str | None = None) -> None:
-        # task 는 global — robot_id 무관. self.r() 가 robot-scoped service
-        # 호출 시 default fallback (N=1).
-        super().__init__("task_node", robot_id=robot_id)
+    """SYSTEM 노드 — multi-robot orchestration.
 
-        _, self._motor_cfgs = load_motor_config(robot_id)
+    Phase 2 의 Step DSL `robot_id` field (multi_robot_walkthrough §8 F) 도입
+    전까지는 default robot 의 arm_cfgs / calibration 만 사용 (transition).
+    step 안에서 어느 robot 의 motion / detector 호출할지 결정하는 자리는
+    Step DSL 변경과 묶임.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("task_node", robot_id=None)
+
+        # transition — Step DSL robot_id field 도입 전까지 default robot 만.
+        default_rid = RobotRegistry().default().robot_id
+        _, self._motor_cfgs = load_motor_config(default_rid)
         self._arm_cfgs: list[MotorConfig] = [
             m for m in self._motor_cfgs if m.id != GRIPPER_ID
         ]
         self._joint_cache = JointStateCache()
 
-        calib = load_calibration()
+        calib = load_calibration(default_rid)
         if not calib.is_ready():
             logger.warning(
                 "TaskNode: 캘리브레이션 미완료 — DetectStep 사용 불가 "

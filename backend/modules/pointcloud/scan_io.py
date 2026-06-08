@@ -20,17 +20,16 @@ import numpy as np
 from core.robot.robot_registry import RobotRegistry
 
 
-def _scans_dir() -> Path:
-    return RobotRegistry().default().scans_dir
+def _scans_dir(robot_id: str) -> Path:
+    return RobotRegistry().get(robot_id).scans_dir
 
 
-def meshes_dir() -> Path:
-    """TSDF mesh output dir (per-instance). robot_id 도입 시 인자 추가."""
-    return RobotRegistry().default().meshes_dir
+def meshes_dir(robot_id: str) -> Path:
+    return RobotRegistry().get(robot_id).meshes_dir
 
 
-def _calib_dir() -> Path:
-    return RobotRegistry().default().calibration_dir
+def _calib_dir(robot_id: str) -> Path:
+    return RobotRegistry().get(robot_id).calibration_dir
 
 
 def robot_root() -> Path:
@@ -51,15 +50,16 @@ def make_default_session_id() -> str:
     return time.strftime("session_%Y%m%d_%H%M%S")
 
 
-def session_dir(sid: str) -> Path:
-    return _scans_dir() / validate_session_id(sid)
+def session_dir(robot_id: str, sid: str) -> Path:
+    return _scans_dir(robot_id) / validate_session_id(sid)
 
 
-def list_session_ids() -> list[str]:
-    if not _scans_dir().exists():
+def list_session_ids(robot_id: str) -> list[str]:
+    scans = _scans_dir(robot_id)
+    if not scans.exists():
         return []
     return sorted(
-        p.name for p in _scans_dir().iterdir() if p.is_dir() and _SESSION_RE.match(p.name)
+        p.name for p in scans.iterdir() if p.is_dir() and _SESSION_RE.match(p.name)
     )
 
 
@@ -121,14 +121,15 @@ def list_scans(sdir: Path) -> list[Path]:
 # ─── 캘 메타 (mtime 묶음) ──────────────────────────────────────────
 
 
-def calib_meta_dict() -> dict:
+def calib_meta_dict(robot_id: str) -> dict:
     """robot/calibration/*.npz의 mtime 묶음. build 시점에 캘 변경 감지용."""
+    calib = _calib_dir(robot_id)
     paths = {
-        "joint_offsets_mtime": _calib_dir() / "joint_offsets.npz",
-        "link_offsets_mtime": _calib_dir() / "link_offsets.npz",
-        "sag_offsets_mtime": _calib_dir() / "sag_offsets.npz",
-        "hand_eye_mtime": _calib_dir() / "hand_eye.npz",
-        "intrinsic_mtime": _calib_dir() / "intrinsic.npz",
+        "joint_offsets_mtime": calib / "joint_offsets.npz",
+        "link_offsets_mtime": calib / "link_offsets.npz",
+        "sag_offsets_mtime": calib / "sag_offsets.npz",
+        "hand_eye_mtime": calib / "hand_eye.npz",
+        "intrinsic_mtime": calib / "intrinsic.npz",
     }
     return {k: (p.stat().st_mtime if p.exists() else 0.0) for k, p in paths.items()}
 
@@ -139,6 +140,7 @@ def calib_meta_dict() -> dict:
 def save_scan(
     scan_path: Path,
     *,
+    robot_id: str,
     scan_id: int,
     color_bgr: np.ndarray,
     depth_z16: np.ndarray,
@@ -167,7 +169,7 @@ def save_scan(
         depth_scale=np.float64(depth_scale),
         raw_motor_positions=np.asarray(raw_motor_positions, dtype=np.int32),
         arm_motor_ids=np.asarray(arm_motor_ids, dtype=np.int32),
-        calib_meta=json.dumps(calib_meta_dict()),
+        calib_meta=json.dumps(calib_meta_dict(robot_id)),
         timestamp=np.float64(time.time()),
         num_frames=np.int32(num_frames),
     )

@@ -15,7 +15,7 @@ Phase 2 (SO-101 도착 후) 분산 토폴로지 + 카메라 배치 design 결정
 | 순 | 항목 | 절 | 영향 범위 | 상태 |
 |---|---|---|---|---|
 | 1 | Literal 타입 도입 | [§5](#5-타입-안전성--study-todo) | 0 (순수 타입 강화) | ✅ done |
-| 2 | `robots.yaml` `hosts: {motor, camera}` 스키마 분리 | [§4](#4-robotsyaml-host-필드-표현-한계-미해결) | 0 (값은 `dev` 그대로, 어차피 안 읽힘) | ✅ done |
+| 2 | ~~`robots.yaml` `hosts: {motor, camera}` 스키마 분리~~ → **rollback: hosts 필드 제거** | [§4](#4-robotsyaml-host-필드--제거-결정) | 0 (어차피 안 읽히던 자리) | ✅ done (rollback) |
 | 3 | `FrameCache` `dict[robot_id]` 화 | [§8](#8-cache-류-robot_id-차원-도입-마무리--framecache) | 0 (default 인자, 사용처 무영향) | ✅ done |
 | 4 | `dynamixel/` 폴더 leftover 정리 | [§7](#7-protocoladapter-패턴-적용-범위) | S (import 처 갱신) | ✅ done |
 | 5 | Protocol 네이밍 통일 + camera 폴더 분리 | [§6](#6-protocol-네이밍-통일--mini-refactor) | M (rename + 파일 이동 + import 처) | ✅ done |
@@ -30,7 +30,7 @@ Phase 2 (SO-101 도착 후) 분산 토폴로지 + 카메라 배치 design 결정
 | 호스트 네이밍 `hori1/2/3` | [§2](#2-호스트-네이밍--역할-bind-폐기) | Pi 1대 추가 셋업 |
 | 노드 분배 (PC + 3 Pi) | [§3](#3-노드-분배안-잠정) | 위 둘 다 |
 
-위 3개 완료 후 §4 의 `hosts:` 값을 `hori*` 로 갱신.
+위 3개 완료 후 §3 의 분배안을 **host config (`host_hori*.yaml`) 의 `nodes:` 리스트** 로 박는다. robots.yaml 은 robot 정체성만 보유 — deployment 정보 안 들어감 (§4 결정).
 
 ---
 
@@ -73,7 +73,7 @@ Phase 2 에선 머신 4대 + 로봇 2대 + 카메라 2종 + 모터 backend 2종 
 |---|---|
 | 머신 식별 | `host_name` (host config 의 첫 줄) |
 | 그 머신이 무엇을 띄울지 | `nodes:` 리스트 (host config) — **single source of truth** |
-| 어느 로봇의 자원인지 | (미정 — §4 참조) |
+| 어느 로봇의 자원인지 | host config 의 `nodes:` entry 가 `robot_id` 까지 명시 (§4 결정) |
 
 ## 3. 노드 분배안 (잠정)
 
@@ -105,41 +105,88 @@ Phase 2 에선 머신 4대 + 로봇 2대 + 카메라 2종 + 모터 backend 2종 
 - hori3 의 so101 6DOF IK 100Hz + feetech 모터 통신 동시 부담
 - so101 자원이 hori2/hori3 에 흩어진 상태에서 ICP / TSDF (PC) 의 motor state 동기화 latency
 
-## 4. robots.yaml `host` 필드 표현 한계 (미해결)
+## 4. robots.yaml `host` 필드 — 제거 결정
 
-### 4.1 문제
+### 4.1 문제 (원래 자리)
 
-현재 [robot_registry.py:51](../backend/core/robot/robot_registry.py#L51) 의 `RobotConfig.host: str` 1개 필드는 motor/motion 만 가리킴 ([multi_robot_architecture.md:680](multi_robot_architecture.md#L680)). 본 문서의 3.2 분배는 **한 로봇이 두 머신에 흩어짐** — so101 motor=hori3, so101 camera=hori2. 1 필드로 표현 불가.
+Phase 1 에 깎아둔 `RobotConfig.hosts: HostMap{motor, camera}` 필드는 **한 robot 이 어느 머신에서 도는가** 를 robots.yaml entry 안에 박으려는 자리였음. 본 문서의 §3.2 분배 (so101 motor=hori3, camera=hori2 처럼 한 robot 이 두 머신에 흩어짐) 를 표현하려고 motor/camera 별로 분리해놨다.
 
-### 4.2 후보
+### 4.2 검토 끝에 hosts 자리 자체를 제거
 
-**옵션 A — robots.yaml 확장 (필드 분리):**
+검토 결론: **robots.yaml 에 deployment 정보가 들어가지 않는 게 맞다**. 이유:
+
+**(a) robots.yaml 의 책임 = robot 정체성, deployment 는 다른 차원**
+
+| 항목 | 종류 |
+|---|---|
+| type / capabilities / motor_backend / iksolver / camera_backend | 정체성 (robot 그 자체) |
+| base_pose | 정체성 (world frame 의 물리적 사실) |
+| ~~hosts~~ | deployment (옮길 수 있는 배치 결정) |
+
+robot 의 motor 노드를 hori3 → hori1 으로 옮겨도 같은 robot 이고 calibration 그대로 따라옴. "어디 사느냐" 는 정체성 아님.
+
+**(b) "어느 robot 이 어디서 도냐?" 의 두 차원**
+
+- **Intent** ("어디서 떠야 하나?") — config 가 답
+- **Actual** ("지금 어디서 떠 있나?") — **runtime state 차원**. Zenoh peer list / heartbeat / 모니터링 대시보드가 답
+
+(a) (hosts SSOT) 의 장점이라고 들이밀어진 "한 곳에서 보임" 시나리오는 사실 actual 질문 — 그건 모니터링 영역이지 config 가 답할 자리 아님. 결국 (a) 의 정당화는 "정체성에 host 포함" 하나로 줄어드는데, 그건 (b) 의 정체성/deployment 분리 원칙에 어긋남.
+
+**(c) host config 가 이미 SSOT — 두 자리 SSOT 만들지 않음**
+
+robot-agnostic 노드 (bridge / task / detector / pointcloud / calibration / gamepad) 는 어차피 robots.yaml 에 못 들어감 → host config 가 책임. robot-scoped 노드 (motor / camera) 만 robots.yaml hosts 가 책임지면 SSOT 가 두 군데로 갈라짐. 같은 종류 정보 (어느 머신에서 뭐 띄울지) 가 두 SSOT 에 흩어지는 게 더 비일관.
+
+**(d) 변경 빈도 차원**
+
+robot 정체성 (calibration / base_pose) 은 새 robot 추가 시에만 바뀜 — 드뭄. deployment (USB hub 배선, hori2 pyrealsense build 깨짐, 부하 분산) 는 더 자주 바뀜. 한 파일에 묶으면 git history 도 섞임.
+
+### 4.3 결론
+
+**host config 의 `nodes:` 리스트가 deployment SSOT**. Phase 2 multi-robot 분산 시 host config 의 nodes entry 가 robot_id 까지 명시:
 
 ```yaml
-robots:
-  omx_f_0:
-    hosts:
-      motor: hori1
-      camera: hori1
-  so101_6dof_0:
-    hosts:
-      motor: hori3
-      camera: hori2
+# host_hori3.yaml
+host_name: hori3
+nodes:
+  - {type: motor, robot_id: so101_6dof_0}
+  - {type: motion, robot_id: so101_6dof_0}
+
+# host_hori1.yaml
+host_name: hori1
+nodes:
+  - {type: motor, robot_id: omx_f_0}
+  - {type: motion, robot_id: omx_f_0}
+  - {type: camera, robot_id: omx_f_0}
+
+# host_pc.yaml — robot-agnostic 노드와 같은 SSOT
+host_name: pc
+nodes:
+  - bridge
+  - task
+  - detector
+  - pointcloud
+  - calibration
 ```
 
-**옵션 B — host config 에 역방향 매핑:**
+robots.yaml entry 는 type / base_pose / capabilities / *_backend 만 들고 deployment 정보 안 가짐.
 
-```yaml
-# host_hori2.yaml
-host_name: hori2
-nodes: [camera]
-robots:
-  camera: [so101_6dof_0]   # 이 host 의 camera 노드가 담당할 로봇
-```
+### 4.4 적용 (이미 완료)
 
-### 4.3 추천
+- [robots.yaml](../robot/robots.yaml) — 두 entry 의 `hosts:` 블록 제거
+- [robot_registry.py](../backend/core/robot/robot_registry.py) — `HostMap` dataclass + `RobotConfig.hosts` 필드 + 파싱 로직 제거
+- [main.py](../backend/main.py) + host config 5개 — `robots:` / `robot_nodes:` / `system_nodes:` schema 로 전환. ROBOT scope (motor/motion/camera) 는 `robots × robot_nodes` 데카르트곱 인스턴스, SYSTEM scope (detector/pointcloud/calibration/task/gamepad) 는 한 인스턴스 + 내부 dispatch
+- [node_registry.py](../backend/core/transport/node_registry.py) — `NodeScope.ROBOT / SYSTEM` enum + `NodeSpec` 으로 노드 분류 SSOT
 
-**옵션 A**. robots.yaml 이 robot 의 single source of truth ([multi_robot_architecture.md §4.3](multi_robot_architecture.md#43-robotsyaml-top-level-registry)) 인 일관성. host config 는 "이 머신이 어떤 종류의 노드 켤지" 만 적고, "어느 로봇 자원인지" 는 robots.yaml 한 곳. Phase 2 진입 시 확정.
+### 4.5 노드 ownership taxonomy
+
+`hosts` 제거 후속 작업으로 노드 분류 명확화:
+
+| Node | Scope | 이유 |
+|---|---|---|
+| motor / motion / camera | **ROBOT** | hardware 직결 (USB). 한 프로세스가 두 머신 USB 못 잡음 → robot 마다 인스턴스 필연 |
+| detector / pointcloud / calibration / task / gamepad | **SYSTEM** | 알고리즘 / orchestration / UI. 한 인스턴스 + `dict[robot_id]` dispatch. YOLO / Open3D 모델 메모리 1번 |
+
+이전 *"모든 노드 robot-scoped 인스턴스"* 가정은 outdated. 자세한 진행 상황은 [multi_robot_walkthrough.md §8](multi_robot_walkthrough.md) 표.
 
 ## 5. 타입 안전성 — study TODO
 
@@ -276,7 +323,7 @@ camera/
 - **❌ 분리 불필요 (4)** — 그대로
 - **✅ 정리 완료 (1)** — ~~`dynamixel/`~~ 폴더 삭제. `motor_config.py` 는 `motor/` 으로 (Dynamixel 비종속 = generic motor metadata), `driver.py` 는 `motor/adapters/dynamixel_driver.py` 로 (Dynamixel-specific 저수준은 backend adapter 옆)
 
-## 8. Cache 류 robot_id 차원 도입 마무리 — `FrameCache`
+## 8. Cache 류 robot_id 차원 도입 — 완료
 
 ### 8.1 현황
 
@@ -288,23 +335,14 @@ camera/
 | [`SagCoordinates`](../backend/core/coords/sag_coordinates.py) | ✅ done |
 | [`ToolCoordinates`](../backend/core/coords/tool_coordinates.py) | ✅ done |
 | [`RobotRegistry`](../backend/core/robot/robot_registry.py) | ✅ done (factory per-robot 캐시) |
-| **[`FrameCache`](../backend/core/cache/frame_cache.py)** | ⚠️ **Phase 2 todo** — 한 카메라 1대 가정 |
+| [`FrameCache`](../backend/core/cache/frame_cache.py) | ✅ **done** (commit `2270eba` 와 묶어서) — 토픽 namespace 정정 시 같이 마이그레이션 |
 
-### 8.2 FrameCache 변경 안
+### 8.2 FrameCache 모양 (참고)
 
-현재:
-```python
-self._latest_jpeg: bytes | None = None       # 단일 state
-self._latest_status: dict = {}
-
-def subscribe(self, node): ...
-def get_frame(self) -> tuple[bool, np.ndarray | None]: ...
-```
-
-Phase 2:
 ```python
 self._latest_jpeg_by_robot: dict[str, bytes] = {}
-self._latest_status_by_robot: dict[str, dict] = {}
+self._latest_status_by_robot: dict[str, CameraStatus] = {}
+self._subscribed_robots: set[str] = set()
 
 def subscribe(self, node, robot_id: str | None = None): ...    # robot 별 토픽 구독
 def get_frame(self, robot_id: str | None = None) -> tuple[bool, np.ndarray | None]: ...
@@ -312,9 +350,9 @@ def get_frame(self, robot_id: str | None = None) -> tuple[bool, np.ndarray | Non
 
 `JointStateCache` 와 같은 패턴 — `dict[robot_id]` 화 + 모든 method 에 `robot_id` 인자 (None 이면 default).
 
-### 8.3 트리거
+### 8.3 트리거 (완료된 히스토리)
 
-토픽 namespace 정정 (`omx/camera/stream/raw` → `<robot_id>/camera/stream/raw`) 과 묶어서 처리. multi_robot_architecture.md §12 Phase 2 의 #7 (토픽 namespace 정정) 과 자연스러운 동일 commit.
+토픽 namespace 정정 (`omx/camera/stream/raw` → `horibot/{robot_id}/camera/stream/raw`) 과 묶어서 commit `2270eba` 에서 처리. `JointStateCache` 와 동형 `dict[robot_id]` 패턴 적용.
 
 ## 9. 관련 문서
 

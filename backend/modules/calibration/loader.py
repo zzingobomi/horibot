@@ -8,13 +8,8 @@ from core.robot.robot_registry import RobotRegistry
 logger = logging.getLogger(__name__)
 
 
-def _calib_dir() -> Path:
-    """active robot 의 calibration dir.
-
-    Phase 1 single-robot: RobotRegistry().default(). robot_id 차원 도입 시
-    `load_calibration(robot_id)` signature 변경.
-    """
-    return RobotRegistry().default().calibration_dir
+def _calib_dir(robot_id: str) -> Path:
+    return RobotRegistry().get(robot_id).calibration_dir
 
 
 @dataclass
@@ -39,10 +34,11 @@ class CalibrationData:
         return self.intrinsic is not None and self.hand_eye is not None
 
 
-def load_calibration() -> CalibrationData:
+def load_calibration(robot_id: str) -> CalibrationData:
+    calib_dir = _calib_dir(robot_id)
     return CalibrationData(
-        intrinsic=_load_intrinsic(_calib_dir() / "intrinsic.npz"),
-        hand_eye=_load_hand_eye(_calib_dir() / "hand_eye.npz"),
+        intrinsic=_load_intrinsic(calib_dir / "intrinsic.npz"),
+        hand_eye=_load_hand_eye(calib_dir / "hand_eye.npz"),
     )
 
 

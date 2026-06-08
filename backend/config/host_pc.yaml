@@ -1,4 +1,5 @@
-# 분산 모드에서 PC 역할 — heavy 연산 + 브릿지.
+# 분산 모드에서 PC 역할 — heavy compute + bridge.
+# USB 직결 robot 없음 (robots: []). system 서비스만 띄움.
 # 실행:
 #   uv sync
 #   uv run --no-sync python main.py --host pc
@@ -6,7 +7,7 @@ host_name: pc
 
 zenoh:
   mode: peer
-  # 같은 LAN + 멀티캐스트 정상이면 Pi 두 대 자동 발견.
+  # 같은 LAN + 멀티캐스트 정상이면 Pi 자동 발견.
   # 안 잡히면 endpoint 명시:
   connect: []
   # - "tcp/192.168.0.101:7447"  # pi-motor
@@ -15,7 +16,11 @@ zenoh:
   # listen:
   #   - "tcp/0.0.0.0:7447"
 
-nodes:
+# USB 직결 robot 없음 — system 노드만
+robots: []
+robot_nodes: []
+
+system_nodes:
   - calibration
   - task
   - detector

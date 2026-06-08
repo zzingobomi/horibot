@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useParams } from "react-router-dom";
 import { CameraFeed } from "@/components/shared/CameraFeed";
 import { Button } from "@/components/ui/button";
 import { CalibJointBar } from "./JointBar";
@@ -48,7 +49,8 @@ export function HandEyeTab() {
   const [status, setStatus] = useState("");
 
   // COMMIT 직후 호출해 calibration_results를 fresh로 fetch + jointOffsets store 갱신.
-  const { refetch: refetchCalibrationResults } = useCalibrationResults();
+  const { id: robotId = "" } = useParams<{ id: string }>();
+  const { refetch: refetchCalibrationResults } = useCalibrationResults(robotId);
 
   // checkerboard preview
   useEffect(() => {

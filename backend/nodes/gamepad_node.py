@@ -80,16 +80,23 @@ class ButtonRepeater:
 
 
 class GamepadNode(BaseNode):
-    def __init__(self, robot_id: str | None = None) -> None:
-        # gamepad 는 global UI — robot-scoped service 호출 시 self.r() default
-        # fallback (N=1). multi-robot 시 어떤 robot 을 조작할지 결정 필요.
-        super().__init__("gamepad_node", robot_id=robot_id)
+    """SYSTEM 노드 — robot 무관 UI. transition: default robot 만 조작.
+
+    multi-robot 시 어떤 robot 조작할지는 frontend UI 결정 후 service 호출 시
+    명시 (별도 자리, Step DSL robot_id 와 결 같음).
+    """
+
+    def __init__(self) -> None:
+        super().__init__("gamepad_node", robot_id=None)
 
         self._driver = GamepadDriver()
         self._torque_on = True
         self._last_connected: bool = False
 
-        _, self._motor_cfgs = load_motor_config(robot_id)
+        from core.robot.robot_registry import RobotRegistry
+
+        default_rid = RobotRegistry().default().robot_id
+        _, self._motor_cfgs = load_motor_config(default_rid)
         self._arm_cfgs = [m for m in self._motor_cfgs if m.id != GRIPPER_ID]
         self._tcp_position: list[float] | None = None
         self._gripper_open = False

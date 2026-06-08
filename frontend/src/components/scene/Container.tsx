@@ -19,9 +19,16 @@ interface RobotSceneContainerProps {
 }
 
 export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) {
-  const { results } = useCalibrationResults();
+  const { robots, defaultId } = useRobots();
+  const effectiveFocus: string | null =
+    focusId === undefined ? defaultId : focusId;
+  // calibration / jointOffsets 는 robot-scoped — focus 가 null (WorldPage) 인
+  // 경우 default robot 의 캘 보여줌 (transition; multi-robot WorldPage 시
+  // 어떻게 표현할지는 별도 자리).
+  const calibRobotId = effectiveFocus ?? defaultId ?? "";
+  const { results } = useCalibrationResults(calibRobotId);
   const joints = useTopic(Topic.MOTOR_STATE_JOINT)?.joints ?? EMPTY_JOINTS;
-  const jointOffsetsRad = useJointOffsetsRad();
+  const jointOffsetsRad = useJointOffsetsRad(calibRobotId);
 
   const jointAngles = useMemo<number[]>(() => {
     if (!joints.length) return [0, 0, 0, 0, 0, 0];
@@ -44,10 +51,6 @@ export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) 
   const linkVisibility = useSceneStore((s) => s.linkVisibility);
   const setLinkNames = useSceneStore((s) => s.setLinkNames);
   const setTcpPos = useSceneStore((s) => s.setTcpPos);
-
-  const { robots, defaultId } = useRobots();
-  const effectiveFocus: string | null =
-    focusId === undefined ? defaultId : focusId;
 
   // focus robot 의 base_pose 로 OrbitControls target. WorldPage(null) = 중심.
   const cameraTarget = useMemo<[number, number, number]>(() => {

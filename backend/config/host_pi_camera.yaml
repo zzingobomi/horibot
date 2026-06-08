@@ -1,4 +1,4 @@
-# 카메라 Pi (192.168.0.102).
+# 카메라 Pi (192.168.0.102). omx_f_0 의 camera (D405 USB 직결).
 #
 # 시작 예:
 #   # pyrealsense2는 사전에 소스 빌드해서 별도 설치
@@ -16,8 +16,13 @@ zenoh:
   # listen:
   #   - "tcp/0.0.0.0:7447"
 
-nodes:
+robots:
+  - omx_f_0
+
+robot_nodes:
   - camera
+
+system_nodes: []
 
 bridge:
   enabled: false

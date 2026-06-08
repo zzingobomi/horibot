@@ -493,36 +493,58 @@ ROS 2 multi-robot namespace 표준 + Zenoh wildcard subscribe 와 자연.
 
 ## 8. Phase 2 (SO-101 도착 시) 남은 작업 — follow-up 가이드
 
-Phase 1 에서 deferred 된 작업들. **N=1 환경에선 변화 0** 이라 미뤘음.
-SO-101 실 도착 후 dual-arm 시나리오 따라 짤 때 처음 실 검증.
+Phase 1 에서 deferred 된 작업들. 노드 ownership taxonomy + multi-robot dispatch 인프라가 다 미리 완성됨 (D / E / G / H / main.py yaml schema / FrameCache dict[robot_id] / Detector/PointCloud/Calibration SYSTEM 화). SO-101 도착 시점에는 hardware 의존 자리 (A / B / C / I) 와 Step DSL robot_id (F) 만 남음.
+
+### Node ownership taxonomy (2026-06-08 결정)
+
+분산 architecture 에서 노드를 두 범주로 분류:
+
+| Node | Scope | 이유 |
+|---|---|---|
+| motor / motion / camera | **ROBOT** | hardware 직결 (USB). 한 프로세스가 두 머신 USB 못 잡음 → robot 마다 인스턴스 필연 |
+| detector / pointcloud / calibration / task / gamepad | **SYSTEM** | 알고리즘 / orchestration / UI. 한 인스턴스가 `dict[robot_id]` 로 multi-robot dispatch — YOLO / Open3D 모델 메모리 1번 |
+| bridge | — | 노드 아님 (main.py `bridge.enabled` 별도) |
+
+`core/transport/node_registry.py` 의 `NodeSpec(module, cls_name, scope)` 가 SSOT. main.py 가 host config 의 `robots:` / `robot_nodes:` / `system_nodes:` 보고 검증 + 인스턴스화:
+- ROBOT scope: `robots × robot_nodes` 데카르트곱 인스턴스
+- SYSTEM scope: 한 인스턴스, 내부에서 `enabled_robots()` loop 으로 robot 별 service 등록
+
+이전 walkthrough 의 *"모든 노드가 robot-scoped 인스턴스"* 가정은 outdated.
 
 ### 8.1 작업 단위별 영향 받는 파일 / 핵심 변경
 
-| 작업 | 영향 받는 파일 | 핵심 변경 | 어떻게 follow |
-|---|---|---|---|
-| **A. FeetechBackend adapter** | `modules/motor/adapters/feetech_backend.py` (신규) | `DynamixelBackend` 와 같은 패턴 — Protocol 만족 + STS3215/3250 model 별 분기 | DynamixelBackend 와 side-by-side diff |
-| **B. SO-101 URDF + calibration** | `robot/so101_6dof/urdf/` (신규) + `robot/instances/so101_6dof_0/calibration/*.npz` | URDF 배치 + 캘 절차 돌려 npz 생성 | so101_6dof_plan.md §6.2 |
-| **C. robots.yaml entry** | `robot/robots.yaml` (1줄 추가) | `so101_6dof_0` entry + `enabled: true` | yaml diff 만 보면 됨 |
-| **D. 토픽 namespace rename** | `core/topic_map.py` + `frontend/src/constants/topics.ts` + 모든 publish/subscribe caller | `omx/*` → `omx_f_0/*` + `system/*` 분리. Topic key 가 함수형 (`Topic.motor_state_joint(robot_id)`) 가능 | topic_map.py 전후 diff |
-| **E. Motion node robot_id dispatch** | `nodes/motion_node.py` + `modules/kinematics/motion_commands.py` + `trajectory_runner.py` | service handler 가 payload 의 robot_id 보고 분기. per-robot TrajectoryRunner 생성 | motion_node.py diff + 새 sequence diagram |
-| **F. Step DSL robot_id field** | `modules/task/{step.py, steps.py, recipes.py}` | Step base 에 `robot_id` field + primitives 갱신 (옵션 a explicit) | step_dsl.md 와 같이 typed Slot pattern 유지 |
-| **G. Pydantic typed payload 적용** | `core/messages/{motion, motor, camera, task}.py` (신규) + service handler 시그니처 | dict → Pydantic BaseModel migration. service 부터 점진 | core/messages/base.py 이미 깔린 패턴 따라 |
-| **H. Bridge /openapi.json + /schemas** | `bridge/zenoh_bridge.py` | FastAPI 가 OpenAPI auto emit + frontend codegen 활성화 | FastAPI tutorial 표준 패턴 |
-| **I. Robot-to-Robot extrinsic 캘** | `robot/extrinsics/` + 새 캘 절차 | 두 robot 의 base frame 변환 (§9.2 의 3 방법 중) | multi_robot_architecture.md §9.2 |
-| **J. Coordinator layer (Phase 3)** | `modules/coordination/` (신규 폴더) | Workspace conflict / SyncBarrier / Handoff | §10 — Phase 2 끝 후 |
+| 작업 | 상태 | 영향 받는 파일 | 핵심 변경 | 어떻게 follow |
+|---|---|---|---|---|
+| **A. FeetechBackend adapter** | ⏳ pending (so101 의존) | `modules/motor/adapters/feetech_backend.py` (신규) | `DynamixelBackend` 와 같은 패턴 — Protocol 만족 + STS3215/3250 model 별 분기 | DynamixelBackend 와 side-by-side diff |
+| **B. SO-101 URDF + calibration** | ⏳ pending (hardware 의존) | `robot/so101_6dof/urdf/` (신규) + `robot/instances/so101_6dof_0/calibration/*.npz` | URDF 배치 + 캘 절차 돌려 npz 생성 | so101_6dof_plan.md §6.2 |
+| **C. robots.yaml entry** | ⏳ pending (so101 enabled 시점) | `robot/robots.yaml` (1줄 추가) | `so101_6dof_0` entry + `enabled: true` | yaml diff 만 보면 됨 |
+| **D. 토픽 namespace rename** | ✅ **done** (commit `2270eba`) | `core/topic_map.py` + 모든 publish/subscribe caller | `horibot/{robot_id}/...` template + `BaseNode.r()` helper + `topic_for()`. 자세한 결정문은 [multi_robot_phase2_frontend.md §1](multi_robot_phase2_frontend.md) | topic_map.py 보면 끝 |
+| **+ FrameCache `dict[robot_id]`** | ✅ **done** (commit `2270eba`) | `core/cache/frame_cache.py` | `_latest_jpeg_by_robot: dict[str, bytes]` + per-robot subscribe. `JointStateCache` 와 동형 | frame_cache.py 보면 끝 |
+| **+ Node taxonomy + SYSTEM 화** | ✅ **done** (이번 세션) | `core/transport/node_registry.py` + DetectorNode / PointCloudNode / CalibrationNode / TaskNode / GamepadNode | `NodeScope.ROBOT / SYSTEM` enum + `NodeSpec`. system 노드 한 인스턴스 + `dict[robot_id]` dispatch + `enabled_robots()` loop service 등록 | node_registry.py + 각 system 노드 `__init__` |
+| **+ main.py host config schema** | ✅ **done** (이번 세션) | `backend/main.py` + host config 5개 | `robots:` / `robot_nodes:` / `system_nodes:` 분리 + scope 검증 + `robots × robot_nodes` 데카르트곱 인스턴스 + system_nodes 1번씩 | main.py + host_dev/mock/pc/pi_motor/pi_camera.yaml |
+| **+ load_calibration(robot_id) + scan_io robot_id** | ✅ **done** (이번 세션) | `modules/calibration/loader.py` + `modules/pointcloud/scan_io.py` + `modules/pointcloud/tsdf_builder.py` | robot_id 인자 강제. caller 다 명시화 | 각 모듈 시그니처 |
+| **+ bridge `/robots/{id}/calibration/results`** | ✅ **done** (이번 세션) | `bridge/calibration_router.py` + frontend `useCalibrationResults(robotId)` | endpoint path 에 robot_id + 4 frontend caller (Container / HandEyeTab / RobotStatePanel / CalibrationPanel) 갱신 | router 파일 + hook 시그니처 |
+| **E. Motion node robot_id dispatch** | ✅ **done** (commit `2270eba` 가 인스턴스화 모델 도입; 같은 머신 multi-instance 는 main.py 데카르트곱이 자연 처리) | `nodes/motion_node.py` | `MotionNode(robot_id=...)` 인스턴스 단위 — main.py 가 robots × robot_nodes 데카르트곱으로 multi-instance 인스턴스화 | main.py + motion_node.py |
+| **F. Step DSL robot_id field** | ⏳ pending (task multi-robot 운영 시) | `modules/task/{step.py, steps.py, recipes.py}` | Step base 에 `robot_id` field + primitives 갱신 (옵션 a explicit) | step_dsl.md 와 같이 typed Slot pattern 유지. TaskNode / GamepadNode 는 transition (default robot) 으로 SYSTEM 화 — Step.robot_id 도입 시 자연 multi-robot |
+| **G. Pydantic typed payload 적용** | ✅ **done** (commits `0008cfd` / `e97278c` / `08037f8` / `645d3ae`) | `core/transport/messages/{motor, camera, motion, ...}` + service handler 시그니처 | dict → Pydantic BaseModel migration 완료 | messages/ 폴더 + service handler 시그니처 |
+| **H. Bridge `/openapi.json` + `/schemas`** | ✅ **done** (commit `648d37f`) | `bridge/zenoh_bridge.py` + `frontend/src/api/generated/` | FastAPI auto-emit + frontend `pnpm gen:types` 활성화 | `frontend/src/api/generated/contract.ts` |
+| **I. Robot-to-Robot extrinsic 캘** | ⏳ pending (so101 도착 후) | `robot/extrinsics/` + 새 캘 절차 | 두 robot 의 base frame 변환 (§9.2 의 3 방법 중) | multi_robot_architecture.md §9.2, multi_robot_cross_calibration.md |
+| **J. Coordinator layer (Phase 3)** | ⏳ pending (Phase 2 끝 후) | `modules/coordination/` (신규 폴더) | Workspace conflict / SyncBarrier / Handoff | §10 — Phase 2 끝 후 |
 
 ### 8.2 진행 순서 추천 (의존성 그래프)
+
+> **현재 상태** (2026-06-08): D / G / H + main.py dict entry + FrameCache `dict[robot_id]` 가 hardware 무관 토대로 미리 완료. 남은 작업은 hardware 의존 (A / B / I) 또는 multi-robot 운영 시점에 검증 (E partial / F) 또는 Phase 3 (J). so101 enable=true 시점부터 plug-and-play 에 가까움.
 
 ```mermaid
 graph TB
     A["A. FeetechBackend adapter"]
     B["B. SO-101 URDF + calibration"]
     C["C. robots.yaml entry"]
-    D["D. 토픽 namespace rename"]
-    E["E. Motion node dispatch"]
+    D["D. 토픽 namespace rename ✅"]
+    E["E. Motion node dispatch 🟡"]
     F["F. Step DSL robot_id"]
-    G["G. Pydantic payload 적용"]
-    H["H. Bridge openapi"]
+    G["G. Pydantic payload 적용 ✅"]
+    H["H. Bridge openapi ✅"]
     I["I. Robot-to-Robot 캘"]
     J["J. Coordinator"]
 
@@ -540,11 +562,13 @@ graph TB
 
     style SWAP fill:#2a4a2a,color:#fff
     style DUAL fill:#3a3a5a,color:#fff
+    style D fill:#2a4a2a,color:#fff
+    style G fill:#2a4a2a,color:#fff
+    style H fill:#2a4a2a,color:#fff
 ```
 
 - **A + B + C** → SO-101 단독 SWAP 운영 가능 (omx 끄고 so101 켜기)
-- **+ D + E + F** → dual-arm 동시 운영 가능 (각자 motion)
-- **+ G + H** → typed payload 안전성
+- **+ E (이미 partial) + F** → dual-arm 동시 운영 가능 (각자 motion)
 - **+ I + J** → 공조 (handoff / bimanual)
 
 ### 8.3 다음 세션이 코드 follow 하기 — 각 작업의 학습 포인트

@@ -1,5 +1,4 @@
-# 모터 Pi (192.168.0.101).
-# 모터 제어 + 모션 계획
+# 모터 Pi (192.168.0.101). omx_f_0 의 motor + motion (100Hz 제어 같은 머신).
 #
 # 시작 예:
 #   uv sync --no-default-groups --group pi-motor
@@ -17,9 +16,14 @@ zenoh:
   # listen:
   #   - "tcp/0.0.0.0:7447"
 
-nodes:
+robots:
+  - omx_f_0
+
+robot_nodes:
   - motor
   - motion
+
+system_nodes: []
 
 bridge:
   enabled: false

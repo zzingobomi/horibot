@@ -51,8 +51,8 @@ LLM 로드 실패 후에도 Grounding DINO 는 1-2초 뒤 정상 로드됨. 즉 
 
 코드상 두 백그라운드 preload 스레드가 노드 start 시 동시 출발:
 
-- [task_node.py:116-120](../backend/nodes/task_node.py#L116-L120) — `prompt-parser-preload` thread → `prompt_parser.preload()` → `AutoModelForCausalLM.from_pretrained(...).to(device)`
-- [detector_node.py:122-127](../backend/nodes/detector_node.py#L122-L127) — `grounded-preload` thread → `GroundedDetector.preload()` → `AutoModelForZeroShotObjectDetection.from_pretrained(...).to(device)`
+- [task_node.py:116-120](../backend/nodes/application/task_node.py#L116-L120) — `prompt-parser-preload` thread → `prompt_parser.preload()` → `AutoModelForCausalLM.from_pretrained(...).to(device)`
+- [detector_node.py:122-127](../backend/nodes/application/detector_node.py#L122-L127) — `grounded-preload` thread → `GroundedDetector.preload()` → `AutoModelForZeroShotObjectDetection.from_pretrained(...).to(device)`
 
 ### 메커니즘
 
@@ -140,7 +140,7 @@ prompt_parser / grounded_detector 둘 다 `with LOAD_LOCK:` 안에서 `from_pret
 
 ### Option B (선호): 단일 preload coordinator
 
-[main.py](../backend/main.py) 에 백그라운드 thread 하나만 띄워 두 preload 를 **순차** 호출. [task_node.py:116](../backend/nodes/task_node.py#L116) / [detector_node.py:122](../backend/nodes/detector_node.py#L122) 의 `_preload_*` thread 삭제.
+[main.py](../backend/main.py) 에 백그라운드 thread 하나만 띄워 두 preload 를 **순차** 호출. [task_node.py:116](../backend/nodes/application/task_node.py#L116) / [detector_node.py:122](../backend/nodes/application/detector_node.py#L122) 의 `_preload_*` thread 삭제.
 
 ```python
 # main.py 노드들 start() 후

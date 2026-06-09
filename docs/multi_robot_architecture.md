@@ -599,7 +599,7 @@ class MultiRobotMotionExecutor:
 
 **기존 코드와의 mapping:**
 
-| 현재 ([backend/nodes/motion_node.py](../backend/nodes/motion_node.py)) | 새 위치 |
+| 현재 ([backend/nodes/device/motion_node.py](../backend/nodes/device/motion_node.py)) | 새 위치 |
 |---|---|
 | `MotionNode` 클래스 (Zenoh service 등록 + 직접 handler) | `MotionNode` 가 `MotionExecutor` wrap 만 (얇은 layer) — actual logic 은 `MultiRobotMotionExecutor` |
 | service handler `_handle_move_l` 등 | `MotionExecutor.move_l(req: MoveLRequest)` |

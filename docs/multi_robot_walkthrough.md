@@ -354,9 +354,9 @@ graph TB
 - [modules/calibration/loader.py](../backend/modules/calibration/loader.py) — `_calib_dir()` 함수
 - [modules/motor/motor_config.py](../backend/modules/motor/motor_config.py) — `load_motor_config(robot_id)` split load
 - [modules/pointcloud/scan_io.py](../backend/modules/pointcloud/scan_io.py) — `_scans_dir()` / `meshes_dir()` / `_calib_dir()`
-- [nodes/calibration_node.py](../backend/nodes/calibration_node.py) — `_save_dir()` / `_handeye_poses_path()`
-- [nodes/pointcloud_node.py](../backend/nodes/pointcloud_node.py) — `scan_io.meshes_dir()` / `scan_io.robot_root()`
-- [nodes/motor_node.py](../backend/nodes/motor_node.py) — `DynamixelBackend` 사용
+- [nodes/application/calibration_node.py](../backend/nodes/application/calibration_node.py) — `_save_dir()` / `_handeye_poses_path()`
+- [nodes/application/pointcloud_node.py](../backend/nodes/application/pointcloud_node.py) — `scan_io.meshes_dir()` / `scan_io.robot_root()`
+- [nodes/device/motor_node.py](../backend/nodes/device/motor_node.py) — `DynamixelBackend` 사용
 
 ---
 
@@ -499,15 +499,15 @@ Phase 1 에서 deferred 된 작업들. 노드 ownership taxonomy + multi-robot d
 
 분산 architecture 에서 노드를 두 범주로 분류:
 
-| Node | Scope | 이유 |
+| Node | Layer | 이유 |
 |---|---|---|
-| motor / motion / camera | **ROBOT** | hardware 직결 (USB). 한 프로세스가 두 머신 USB 못 잡음 → robot 마다 인스턴스 필연 |
-| detector / pointcloud / calibration / task / gamepad | **SYSTEM** | 알고리즘 / orchestration / UI. 한 인스턴스가 `dict[robot_id]` 로 multi-robot dispatch — YOLO / Open3D 모델 메모리 1번 |
+| motor / motion / camera | **Device** | vendor-shipped (UR Control Box 등가물). hardware 직결 (USB). 한 프로세스가 두 머신 USB 못 잡음 → robot 마다 인스턴스 필연 |
+| detector / pointcloud / calibration / task / gamepad | **Application** | robot driver 위 algorithm / orchestration / UI. 한 인스턴스가 `dict[robot_id]` 로 multi-robot dispatch — YOLO / Open3D 모델 메모리 1번 |
 | bridge | — | 노드 아님 (main.py `bridge.enabled` 별도) |
 
-`core/transport/node_registry.py` 의 `NodeSpec(module, cls_name, scope)` 가 SSOT. main.py 가 host config 의 `robots:` / `robot_nodes:` / `system_nodes:` 보고 검증 + 인스턴스화:
-- ROBOT scope: `robots × robot_nodes` 데카르트곱 인스턴스
-- SYSTEM scope: 한 인스턴스, 내부에서 `enabled_robots()` loop 으로 robot 별 service 등록
+layer 판정은 클래스 계층이 SSOT — `DeviceNode` / `ApplicationNode` 상속. [node_registry.py](../backend/core/transport/node_registry.py) 는 `NodeSpec(module, cls_name)` 만 lazy-import 위해 보유, layer metadata 없음. main.py 가 host config 의 `robots:` / `device_nodes:` / `application_nodes:` 보고 `issubclass` 로 위치 검증 + 인스턴스화:
+- Device: `robots × device_nodes` 데카르트곱 인스턴스
+- Application: 한 인스턴스, 내부에서 `enabled_robots()` loop 으로 robot 별 service 등록
 
 이전 walkthrough 의 *"모든 노드가 robot-scoped 인스턴스"* 가정은 outdated.
 
@@ -520,11 +520,11 @@ Phase 1 에서 deferred 된 작업들. 노드 ownership taxonomy + multi-robot d
 | **C. robots.yaml entry** | ⏳ pending (so101 enabled 시점) | `robot/robots.yaml` (1줄 추가) | `so101_6dof_0` entry + `enabled: true` | yaml diff 만 보면 됨 |
 | **D. 토픽 namespace rename** | ✅ **done** (commit `2270eba`) | `core/topic_map.py` + 모든 publish/subscribe caller | `horibot/{robot_id}/...` template + `BaseNode.r()` helper + `topic_for()`. 자세한 결정문은 [multi_robot_phase2_frontend.md §1](multi_robot_phase2_frontend.md) | topic_map.py 보면 끝 |
 | **+ FrameCache `dict[robot_id]`** | ✅ **done** (commit `2270eba`) | `core/cache/frame_cache.py` | `_latest_jpeg_by_robot: dict[str, bytes]` + per-robot subscribe. `JointStateCache` 와 동형 | frame_cache.py 보면 끝 |
-| **+ Node taxonomy + SYSTEM 화** | ✅ **done** (이번 세션) | `core/transport/node_registry.py` + DetectorNode / PointCloudNode / CalibrationNode / TaskNode / GamepadNode | `NodeScope.ROBOT / SYSTEM` enum + `NodeSpec`. system 노드 한 인스턴스 + `dict[robot_id]` dispatch + `enabled_robots()` loop service 등록 | node_registry.py + 각 system 노드 `__init__` |
-| **+ main.py host config schema** | ✅ **done** (이번 세션) | `backend/main.py` + host config 5개 | `robots:` / `robot_nodes:` / `system_nodes:` 분리 + scope 검증 + `robots × robot_nodes` 데카르트곱 인스턴스 + system_nodes 1번씩 | main.py + host_dev/mock/pc/pi_motor/pi_camera.yaml |
+| **+ Node taxonomy (Device / Application 2-layer)** | ✅ **done** | `core/transport/{device_node,application_node,node_registry}.py` + `nodes/device/` + `nodes/application/` 폴더 split | `DeviceNode` / `ApplicationNode` base 도입 — vendor-shipped vs application layer 명시. Application 노드 한 인스턴스 + `dict[robot_id]` dispatch + `enabled_robots()` loop service 등록. layer 판정은 `issubclass` SSOT, `NodeSpec` 은 lazy-import 컨테이너만 | device_node.py / application_node.py + 각 application 노드 `__init__` |
+| **+ main.py host config schema** | ✅ **done** | `backend/main.py` + host config 5개 | `robots:` / `device_nodes:` / `application_nodes:` 분리 + `issubclass` 위치 검증 + `robots × device_nodes` 데카르트곱 인스턴스 + application_nodes 1번씩 | main.py + host_dev/mock/pc/pi_motor/pi_camera.yaml |
 | **+ load_calibration(robot_id) + scan_io robot_id** | ✅ **done** (이번 세션) | `modules/calibration/loader.py` + `modules/pointcloud/scan_io.py` + `modules/pointcloud/tsdf_builder.py` | robot_id 인자 강제. caller 다 명시화 | 각 모듈 시그니처 |
 | **+ bridge `/robots/{id}/calibration/results`** | ✅ **done** (이번 세션) | `bridge/calibration_router.py` + frontend `useCalibrationResults(robotId)` | endpoint path 에 robot_id + 4 frontend caller (Container / HandEyeTab / RobotStatePanel / CalibrationPanel) 갱신 | router 파일 + hook 시그니처 |
-| **E. Motion node robot_id dispatch** | ✅ **done** (commit `2270eba` 가 인스턴스화 모델 도입; 같은 머신 multi-instance 는 main.py 데카르트곱이 자연 처리) | `nodes/motion_node.py` | `MotionNode(robot_id=...)` 인스턴스 단위 — main.py 가 robots × robot_nodes 데카르트곱으로 multi-instance 인스턴스화 | main.py + motion_node.py |
+| **E. Motion node robot_id dispatch** | ✅ **done** (commit `2270eba` 가 인스턴스화 모델 도입; 같은 머신 multi-instance 는 main.py 데카르트곱이 자연 처리) | `nodes/device/motion_node.py` | `MotionNode(robot_id=...)` 인스턴스 단위 — main.py 가 robots × device_nodes 데카르트곱으로 multi-instance 인스턴스화 | main.py + motion_node.py |
 | **F. Step DSL robot_id field** | ⏳ pending (task multi-robot 운영 시) | `modules/task/{step.py, steps.py, recipes.py}` | Step base 에 `robot_id` field + primitives 갱신 (옵션 a explicit) | step_dsl.md 와 같이 typed Slot pattern 유지. TaskNode / GamepadNode 는 transition (default robot) 으로 SYSTEM 화 — Step.robot_id 도입 시 자연 multi-robot |
 | **G. Pydantic typed payload 적용** | ✅ **done** (commits `0008cfd` / `e97278c` / `08037f8` / `645d3ae`) | `core/transport/messages/{motor, camera, motion, ...}` + service handler 시그니처 | dict → Pydantic BaseModel migration 완료 | messages/ 폴더 + service handler 시그니처 |
 | **H. Bridge `/openapi.json` + `/schemas`** | ✅ **done** (commit `648d37f`) | `bridge/zenoh_bridge.py` + `frontend/src/api/generated/` | FastAPI auto-emit + frontend `pnpm gen:types` 활성화 | `frontend/src/api/generated/contract.ts` |
@@ -599,7 +599,7 @@ graph TB
 
 #### E. Motion node robot_id dispatch
 
-**볼 파일**: `nodes/motion_node.py` (가장 큰 diff). `motion_commands.py` /
+**볼 파일**: `nodes/device/motion_node.py` (가장 큰 diff). `motion_commands.py` /
 `trajectory_runner.py` (보조).
 
 **주목**:

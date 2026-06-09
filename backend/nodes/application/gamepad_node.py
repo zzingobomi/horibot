@@ -14,7 +14,7 @@ import threading
 import logging
 
 from core.common import GRIPPER_ID
-from core.transport.base_node import BaseNode
+from core.transport.application_node import ApplicationNode
 from core.transport.topic_map import Service
 from core.transport.messages.base import EmptyData
 from core.transport.messages.motion import (
@@ -79,23 +79,21 @@ class ButtonRepeater:
         return False
 
 
-class GamepadNode(BaseNode):
-    """SYSTEM 노드 — robot 무관 UI. transition: default robot 만 조작.
+class GamepadNode(ApplicationNode):
+    """Application 노드 — robot 무관 UI. transition: default robot 만 조작.
 
     multi-robot 시 어떤 robot 조작할지는 frontend UI 결정 후 service 호출 시
     명시 (별도 자리, Step DSL robot_id 와 결 같음).
     """
 
     def __init__(self) -> None:
-        super().__init__("gamepad_node", robot_id=None)
+        super().__init__("gamepad_node")
 
         self._driver = GamepadDriver()
         self._torque_on = True
         self._last_connected: bool = False
 
-        from core.robot.robot_registry import RobotRegistry
-
-        default_rid = RobotRegistry().default().robot_id
+        default_rid = self._registry.default().robot_id
         _, self._motor_cfgs = load_motor_config(default_rid)
         self._arm_cfgs = [m for m in self._motor_cfgs if m.id != GRIPPER_ID]
         self._tcp_position: list[float] | None = None

@@ -2,7 +2,7 @@ import logging
 import threading
 import time
 
-from core.transport.base_node import BaseNode
+from core.transport.device_node import DeviceNode
 from core.transport.messages.base import ServiceRequest, ServiceResponse
 from core.transport.messages.camera import (
     CameraSetDepthStreamReq,
@@ -22,8 +22,8 @@ DEPTH_FPS = 8
 DEPTH_IDLE_SLEEP = 0.1
 
 
-class CameraNode(BaseNode):
-    def __init__(self, robot_id: str | None = None):
+class CameraNode(DeviceNode):
+    def __init__(self, robot_id: str):
         super().__init__("camera_node", robot_id=robot_id)
         self.camera = RobotRegistry().get_camera_capture(robot_id)
         self._stream_thread: threading.Thread | None = None

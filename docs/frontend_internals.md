@@ -52,7 +52,7 @@
 
 ### 단계별 수도코드
 
-**(a) backend publish** — [motor_node.py](../backend/nodes/motor_node.py)
+**(a) backend publish** — [motor_node.py](../backend/nodes/device/motor_node.py)
 ```python
 # 20Hz loop 안
 state = MotorJointState(timestamp=now, joints=[MotorJoint(...) for ... ])

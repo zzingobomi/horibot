@@ -19,10 +19,10 @@ zenoh:
 robots:
   - omx_f_0
 
-robot_nodes:
+device_nodes:
   - camera
 
-system_nodes: []
+application_nodes: []
 
 bridge:
   enabled: false

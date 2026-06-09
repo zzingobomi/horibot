@@ -53,7 +53,7 @@ Phase 2 (SO-101 도착 후) 분산 토폴로지 + 카메라 배치 design 결정
 
 **파이프라인 영향:**
 - omx_f 의 detector: `Z=0` 평면 제약 기반 → 그대로 동작 (depth 불필요)
-- omx_f 의 pointcloud / TSDF: **불가** (depth 없음). [pointcloud_node.py](../backend/nodes/pointcloud_node.py) 는 so101 D405 만 구독
+- omx_f 의 pointcloud / TSDF: **불가** (depth 없음). [pointcloud_node.py](../backend/nodes/application/pointcloud_node.py) 는 so101 D405 만 구독
 - `CameraCapture` Protocol ([multi_robot_architecture.md §3.4](multi_robot_architecture.md#34-cameracapture-protocol)) 의 `OpenCVCapture` adapter Phase 2 실 도입
 
 ## 2. 호스트 네이밍 — 역할-bind 폐기
@@ -174,17 +174,17 @@ robots.yaml entry 는 type / base_pose / capabilities / *_backend 만 들고 dep
 
 - [robots.yaml](../robot/robots.yaml) — 두 entry 의 `hosts:` 블록 제거
 - [robot_registry.py](../backend/core/robot/robot_registry.py) — `HostMap` dataclass + `RobotConfig.hosts` 필드 + 파싱 로직 제거
-- [main.py](../backend/main.py) + host config 5개 — `robots:` / `robot_nodes:` / `system_nodes:` schema 로 전환. ROBOT scope (motor/motion/camera) 는 `robots × robot_nodes` 데카르트곱 인스턴스, SYSTEM scope (detector/pointcloud/calibration/task/gamepad) 는 한 인스턴스 + 내부 dispatch
-- [node_registry.py](../backend/core/transport/node_registry.py) — `NodeScope.ROBOT / SYSTEM` enum + `NodeSpec` 으로 노드 분류 SSOT
+- [main.py](../backend/main.py) + host config 5개 — `robots:` / `device_nodes:` / `application_nodes:` schema 로 전환. Device (motor/motion/camera) 는 `robots × device_nodes` 데카르트곱 인스턴스, Application (detector/pointcloud/calibration/task/gamepad) 는 한 인스턴스 + 내부 dispatch
+- [node_registry.py](../backend/core/transport/node_registry.py) — `(module, cls_name)` 두 string 만 들고 있는 lazy-import 컨테이너. layer 판정은 `issubclass(cls, DeviceNode/ApplicationNode)` 가 SSOT
 
 ### 4.5 노드 ownership taxonomy
 
 `hosts` 제거 후속 작업으로 노드 분류 명확화:
 
-| Node | Scope | 이유 |
+| Node | Layer | 이유 |
 |---|---|---|
-| motor / motion / camera | **ROBOT** | hardware 직결 (USB). 한 프로세스가 두 머신 USB 못 잡음 → robot 마다 인스턴스 필연 |
-| detector / pointcloud / calibration / task / gamepad | **SYSTEM** | 알고리즘 / orchestration / UI. 한 인스턴스 + `dict[robot_id]` dispatch. YOLO / Open3D 모델 메모리 1번 |
+| motor / motion / camera | **Device** | vendor-shipped (UR Control Box 등가물). hardware 직결 (USB). 한 프로세스가 두 머신 USB 못 잡음 → robot 마다 인스턴스 필연 |
+| detector / pointcloud / calibration / task / gamepad | **Application** | robot driver 위 algorithm / orchestration / UI. 한 인스턴스 + `dict[robot_id]` dispatch. YOLO / Open3D 모델 메모리 1번 |
 
 이전 *"모든 노드 robot-scoped 인스턴스"* 가정은 outdated. 자세한 진행 상황은 [multi_robot_walkthrough.md §8](multi_robot_walkthrough.md) 표.
 

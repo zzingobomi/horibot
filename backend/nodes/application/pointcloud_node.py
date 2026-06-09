@@ -6,10 +6,9 @@ import time
 import numpy as np
 import open3d as o3d
 
-from core.transport.base_node import BaseNode
+from core.transport.application_node import ApplicationNode
 from core.common import GRIPPER_ID
 from core.cache.joint_state_cache import JointStateCache
-from core.robot.robot_registry import RobotRegistry
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.camera import CameraSetDepthStreamReq, CameraSetDepthStreamRes
 from core.transport.messages.pointcloud import (
@@ -57,17 +56,13 @@ class _RobotState:
         self.latest_frame: DepthFrame | None = None
 
 
-class PointCloudNode(BaseNode):
-    """SYSTEM 노드 — robot 무관 한 인스턴스. robot 별 dict[robot_id] state."""
+class PointCloudNode(ApplicationNode):
+    """Application 노드 — robot 무관 한 인스턴스. robot 별 dict[robot_id] state."""
 
     def __init__(self) -> None:
-        super().__init__("pointcloud_node", robot_id=None)
-        self._registry = RobotRegistry()
-        self._enabled_robot_ids: list[str] = [
-            c.robot_id for c in self._registry.enabled_robots()
-        ]
+        super().__init__("pointcloud_node")
         self._states: dict[str, _RobotState] = {}
-        for rid in self._enabled_robot_ids:
+        for rid in self.enabled_robot_ids:
             _, motor_cfgs = load_motor_config(rid)
             arm_cfgs = [m for m in motor_cfgs if m.id != GRIPPER_ID]
             self._states[rid] = _RobotState(arm_cfgs)
@@ -77,7 +72,7 @@ class PointCloudNode(BaseNode):
         self._stream_thread: threading.Thread | None = None
 
     def start(self) -> None:
-        for rid in self._enabled_robot_ids:
+        for rid in self.enabled_robot_ids:
             # configure
             self.create_service(
                 topic_for(Service.POINTCLOUD_CONFIGURE, rid),
@@ -144,11 +139,11 @@ class PointCloudNode(BaseNode):
             daemon=True,
         )
         self._stream_thread.start()
-        for rid in self._enabled_robot_ids:
+        for rid in self.enabled_robot_ids:
             self._publish_state(rid)
 
         logger.info(
-            "PointCloudNode 시작 (robots=%s)", self._enabled_robot_ids
+            "PointCloudNode 시작 (robots=%s)", self.enabled_robot_ids
         )
 
     # ─── Subscriber ──────────────────────────────────────────
@@ -504,12 +499,12 @@ class PointCloudNode(BaseNode):
     def _stream_loop(self) -> None:
         period = 1.0 / TARGET_FPS
         last_processed_ts: dict[str, float] = {
-            rid: 0.0 for rid in self._enabled_robot_ids
+            rid: 0.0 for rid in self.enabled_robot_ids
         }
 
         while self._running:
             any_processed = False
-            for rid in self._enabled_robot_ids:
+            for rid in self.enabled_robot_ids:
                 st = self._states[rid]
                 with st.cfg_lock:
                     enabled = st.enabled
@@ -548,7 +543,7 @@ class PointCloudNode(BaseNode):
             if not any_processed:
                 time.sleep(IDLE_SLEEP)
             else:
-                time.sleep(max(0.0, period / max(1, len(self._enabled_robot_ids))))
+                time.sleep(max(0.0, period / max(1, len(self.enabled_robot_ids))))
 
     # ─── Cloud build (라이브) ────────────────────────────────
 

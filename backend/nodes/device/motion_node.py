@@ -2,7 +2,7 @@ import time
 import logging
 import numpy as np
 
-from core.transport.base_node import BaseNode
+from core.transport.device_node import DeviceNode
 from core.transport.topic_map import Service, Topic
 from core.coords.joint_coordinates import JointCoordinates
 from core.cache.joint_state_cache import JointStateCache
@@ -50,8 +50,8 @@ logger = logging.getLogger(__name__)
 # - 별도 산출물 tool_offset.npz 신설로 정리 (이 commit).
 
 
-class MotionNode(BaseNode):
-    def __init__(self, robot_id: str | None = None):
+class MotionNode(DeviceNode):
+    def __init__(self, robot_id: str):
         super().__init__("motion_node", robot_id=robot_id)
 
         _, self._motor_cfgs = load_motor_config(robot_id)

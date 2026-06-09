@@ -1,4 +1,4 @@
-# 단일 머신 풀스택 (개발). PC 한 대가 모든 hardware + system 서비스 다.
+# 단일 머신 풀스택 (개발). PC 한 대가 모든 device + application 노드 다.
 # 실행:
 #   uv run python main.py --host dev
 host_name: dev
@@ -11,12 +11,12 @@ zenoh:
 robots:
   - omx_f_0
 
-robot_nodes:
+device_nodes:
   - motor
   - motion
   - camera
 
-system_nodes:
+application_nodes:
   - calibration
   - task
   - detector

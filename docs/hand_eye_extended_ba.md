@@ -497,7 +497,7 @@ return {
 
 ## 8. 백엔드 통합 — CalibrationNode 핸들러
 
-[calibration_node.py](../backend/nodes/calibration_node.py)는 Zenoh 서비스
+[calibration_node.py](../backend/nodes/application/calibration_node.py)는 Zenoh 서비스
 핸들러를 들고 있다. compute / commit 둘 다 수정.
 
 ### 8a. import + commit 핸들러에서 LinkCoordinates 사용
@@ -1302,7 +1302,7 @@ commanded ≈ actual - sag(actual)
 | link_offsets    | PyBullet URDF 로드 시점                        | **필요** (URDF 한 번만 로드) |
 | **sag_offsets** | **매 FK/IK 호출 시 메모리에서 읽음**           | **X**                        |
 
-[calibration_node.py:\_srv_handeye_commit](backend/nodes/calibration_node.py)에서 COMMIT 시 `solver._reload_sag_cache()` 호출 — 다음 FK/IK부터 자동 반영. 다른
+[calibration_node.py:\_srv_handeye_commit](backend/nodes/application/calibration_node.py)에서 COMMIT 시 `solver._reload_sag_cache()` 호출 — 다음 FK/IK부터 자동 반영. 다른
 머신은 git pull + 재시작 (joint/link와 동일).
 
 ### 16.8. 검증 한계 — 캡처 자세 범위 안 OK, 밖 미검증

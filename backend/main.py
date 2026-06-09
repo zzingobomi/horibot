@@ -9,13 +9,14 @@ from typing import Any
 
 import yaml
 
-from core.transport.zenoh_session import ZenohSession
+from core.transport.application_node import ApplicationNode
+from core.transport.device_node import DeviceNode
 from core.transport.node_registry import (
-    NodeScope,
     create_node,
-    get_spec,
+    get_class,
     known_nodes,
 )
+from core.transport.zenoh_session import ZenohSession
 
 
 logging.basicConfig(
@@ -74,17 +75,17 @@ def main():
     cfg = _load_config(_resolve_config_path(args.host))
     host_name = cfg.get("host_name", "?")
     robots: list[str] = list(cfg.get("robots", []))
-    robot_node_names: list[str] = list(cfg.get("robot_nodes", []))
-    system_node_names: list[str] = list(cfg.get("system_nodes", []))
+    device_node_names: list[str] = list(cfg.get("device_nodes", []))
+    application_node_names: list[str] = list(cfg.get("application_nodes", []))
     bridge_cfg: dict[str, Any] = cfg.get("bridge", {}) or {}
 
     logger.info("=== Horibot 시작 (host=%s) ===", host_name)
     logger.info(
-        "robots=%s  robot_nodes=%s  system_nodes=%s",
-        robots, robot_node_names, system_node_names,
+        "robots=%s  device_nodes=%s  application_nodes=%s",
+        robots, device_node_names, application_node_names,
     )
 
-    # ─── 검증: robots.yaml 존재 + scope 위치 ────────────────────
+    # ─── 검증: robots.yaml 존재 + layer 위치 ───────────────────
     from core.robot.robot_registry import RobotRegistry
 
     registry = RobotRegistry()
@@ -95,60 +96,60 @@ def main():
                 f"등록된: {registry.list_robots()}"
             )
 
-    for name in robot_node_names:
+    for name in device_node_names:
         if name not in known_nodes():
             raise ValueError(
                 f"알 수 없는 노드 '{name}'. 등록: {known_nodes()}"
             )
-        if get_spec(name).scope != NodeScope.ROBOT:
+        if not issubclass(get_class(name), DeviceNode):
             raise ValueError(
-                f"'{name}' 은 ROBOT scope 아님. system_nodes 로 옮겨야 함."
+                f"'{name}' 은 DeviceNode 아님. application_nodes 로 옮겨야 함."
             )
 
-    for name in system_node_names:
+    for name in application_node_names:
         if name not in known_nodes():
             raise ValueError(
                 f"알 수 없는 노드 '{name}'. 등록: {known_nodes()}"
             )
-        if get_spec(name).scope != NodeScope.SYSTEM:
+        if not issubclass(get_class(name), ApplicationNode):
             raise ValueError(
-                f"'{name}' 은 SYSTEM scope 아님. robot_nodes 로 옮겨야 함."
+                f"'{name}' 은 ApplicationNode 아님. device_nodes 로 옮겨야 함."
             )
 
-    # robot_nodes 가 있는데 robots 가 비어있으면 인스턴스 0개 — 잘못된 config
-    if robot_node_names and not robots:
+    # device_nodes 가 있는데 robots 가 비어있으면 인스턴스 0개 — 잘못된 config
+    if device_node_names and not robots:
         raise ValueError(
-            "host config 의 robot_nodes 가 있는데 robots 가 비어있음. "
-            "robot-scoped 노드 띄우려면 robots 명시 필요."
+            "host config 의 device_nodes 가 있는데 robots 가 비어있음. "
+            "device 노드 띄우려면 robots 명시 필요."
         )
 
     # ─── Zenoh 세션 초기화 ────────────────────────────────────
     ZenohSession.init(cfg.get("zenoh"))
 
     # ─── D405 intrinsic seed (camera 노드 robot 마다) ──────────
-    if "camera" in robot_node_names:
+    if "camera" in device_node_names:
         from modules.camera.factory_intrinsic import seed_d405_intrinsic_if_missing
         for rid in robots:
             calib_dir = registry.get(rid).calibration_dir
             seed_d405_intrinsic_if_missing(calib_dir / "intrinsic.npz")
 
     # ─── 노드 인스턴스 생성 ───────────────────────────────────
-    # ROBOT scope: robots × robot_node_names 데카르트곱 — key=(name, robot_id)
-    # SYSTEM scope: 1번씩 — key=(name, None)
+    # Device:      robots × device_node_names 데카르트곱 — key=(name, robot_id)
+    # Application: 1번씩 — key=(name, None)
     instances: dict[tuple[str, str | None], Any] = {}
-    for name in robot_node_names:
+    for name in device_node_names:
         for rid in robots:
             instances[(name, rid)] = create_node(name, robot_id=rid)
-    for name in system_node_names:
+    for name in application_node_names:
         instances[(name, None)] = create_node(name)
 
     # ─── 노드 시작 ────────────────────────────────────────────
     for (nt, rid), node in instances.items():
         node.start()
         if rid is None:
-            logger.info("노드 시작됨: %s (SYSTEM, %s)", nt, node.node_name)
+            logger.info("노드 시작됨: %s (application, %s)", nt, node.node_name)
         else:
-            logger.info("노드 시작됨: %s (robot=%s, %s)", nt, rid, node.node_name)
+            logger.info("노드 시작됨: %s (device robot=%s, %s)", nt, rid, node.node_name)
 
     # ─── 브릿지 (선택) ────────────────────────────────────────
     bridge_enabled = bool(bridge_cfg.get("enabled", False))

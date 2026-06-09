@@ -1,15 +1,13 @@
-"""노드 메타데이터 declaration + lazy import factory.
+"""노드 lazy-import factory.
 
-각 노드의 scope (ROBOT / SYSTEM) 가 declaration 으로 SSOT. main.py 가 host
-config 의 robot_nodes / system_nodes 위치 검증 + 인스턴스화 분기에 사용.
+NodeSpec 은 **순수 lazy-import 메커니즘** — `(module, cls_name)` 두 string 만
+들고 있어서 `node_registry` import 가 PC 전용 dep (ultralytics / open3d /
+pyrealsense2) 를 끌어오지 않음. 모터 Pi 가 detector / pointcloud 등록만
+보고도 import 트리 깨끗 유지.
 
-scope 정의:
-  - ROBOT  — hardware 직결 (motor / camera / motion). robot 마다 별도 인스턴스.
-             create_node(name, robot_id=...) 필수. main.py 가 robots × robot_nodes
-             데카르트곱으로 인스턴스화.
-  - SYSTEM — robot 무관 (bridge 와 별개로 task / detector / pointcloud /
-             calibration / gamepad). 한 인스턴스. 내부에서 dict[robot_id]
-             dispatch. create_node(name) — robot_id 안 받음.
+architecture 정보 (이 노드가 어느 layer 냐) 는 NodeSpec 에 없음 —
+`DeviceNode` / `ApplicationNode` 클래스 계층 자체가 SSOT. lazy import 후
+`issubclass(cls, DeviceNode)` 로 판정.
 """
 
 from __future__ import annotations
@@ -17,36 +15,33 @@ from __future__ import annotations
 import importlib
 import logging
 from dataclasses import dataclass
-from enum import Enum
+
+from core.transport.application_node import ApplicationNode
+from core.transport.base_node import BaseNode
+from core.transport.device_node import DeviceNode
 
 logger = logging.getLogger(__name__)
-
-
-class NodeScope(Enum):
-    ROBOT = "robot"
-    SYSTEM = "system"
 
 
 @dataclass(frozen=True)
 class NodeSpec:
     module: str
     cls_name: str
-    scope: NodeScope
 
 
 _NODE_REGISTRY: dict[str, NodeSpec] = {
-    # ─── ROBOT scope — hardware 직결 ──────────────────────
-    "motor":       NodeSpec("nodes.motor_node",       "MotorNode",       NodeScope.ROBOT),
-    "motion":      NodeSpec("nodes.motion_node",      "MotionNode",      NodeScope.ROBOT),
-    "camera":      NodeSpec("nodes.camera_node",      "CameraNode",      NodeScope.ROBOT),
-    "mock_motor":  NodeSpec("nodes.motor_node_mock",  "MockMotorNode",   NodeScope.ROBOT),
-    "mock_camera": NodeSpec("nodes.camera_node_mock", "MockCameraNode",  NodeScope.ROBOT),
-    # ─── SYSTEM scope — 한 인스턴스, multi-robot dispatch ───
-    "detector":    NodeSpec("nodes.detector_node",    "DetectorNode",    NodeScope.SYSTEM),
-    "pointcloud":  NodeSpec("nodes.pointcloud_node",  "PointCloudNode",  NodeScope.SYSTEM),
-    "calibration": NodeSpec("nodes.calibration_node", "CalibrationNode", NodeScope.SYSTEM),
-    "task":        NodeSpec("nodes.task_node",        "TaskNode",        NodeScope.SYSTEM),
-    "gamepad":     NodeSpec("nodes.gamepad_node",     "GamepadNode",     NodeScope.SYSTEM),
+    # ─── Device — vendor-shipped, per-robot ──────────────────
+    "motor":       NodeSpec("nodes.device.motor_node",       "MotorNode"),
+    "motion":      NodeSpec("nodes.device.motion_node",      "MotionNode"),
+    "camera":      NodeSpec("nodes.device.camera_node",      "CameraNode"),
+    "mock_motor":  NodeSpec("nodes.device.motor_node_mock",  "MockMotorNode"),
+    "mock_camera": NodeSpec("nodes.device.camera_node_mock", "MockCameraNode"),
+    # ─── Application — robot driver 위 algorithm layer ──────
+    "detector":    NodeSpec("nodes.application.detector_node",    "DetectorNode"),
+    "pointcloud":  NodeSpec("nodes.application.pointcloud_node",  "PointCloudNode"),
+    "calibration": NodeSpec("nodes.application.calibration_node", "CalibrationNode"),
+    "task":        NodeSpec("nodes.application.task_node",        "TaskNode"),
+    "gamepad":     NodeSpec("nodes.application.gamepad_node",     "GamepadNode"),
 }
 
 
@@ -54,28 +49,31 @@ def known_nodes() -> list[str]:
     return list(_NODE_REGISTRY)
 
 
-def get_spec(name: str) -> NodeSpec:
+def get_class(name: str) -> type[BaseNode]:
+    """Lazy import 후 클래스 반환. 호출 시점에만 모듈 import — node_registry
+    import 자체는 PC 전용 dep 끌어오지 않음.
+    """
     if name not in _NODE_REGISTRY:
         raise KeyError(f"알 수 없는 노드 '{name}'. 등록된 노드: {known_nodes()}")
-    return _NODE_REGISTRY[name]
-
-
-def create_node(name: str, robot_id: str | None = None):
-    """noded factory — lazy import 로 의존성 트리 격리.
-
-    ROBOT scope: robot_id 필수. caller 가 명시.
-    SYSTEM scope: robot_id 안 받음 — 내부에서 RobotRegistry.enabled_robots() 사용.
-    """
-    spec = get_spec(name)
-    logger.debug("노드 '%s' lazy import: %s.%s (scope=%s)",
-                 name, spec.module, spec.cls_name, spec.scope.value)
+    spec = _NODE_REGISTRY[name]
+    logger.debug("노드 '%s' lazy import: %s.%s", name, spec.module, spec.cls_name)
     module = importlib.import_module(spec.module)
-    cls = getattr(module, spec.cls_name)
-    if spec.scope == NodeScope.ROBOT:
+    return getattr(module, spec.cls_name)
+
+
+def create_node(name: str, robot_id: str | None = None) -> BaseNode:
+    """노드 인스턴스 생성. 타입 계층 기반 dispatch.
+
+    `DeviceNode` 상속 → robot_id 필수 (per-robot 인스턴스).
+    `ApplicationNode` 상속 → robot_id 안 받음 (호스트당 1).
+    """
+    cls = get_class(name)
+    if issubclass(cls, DeviceNode):
         if robot_id is None:
-            raise ValueError(
-                f"노드 '{name}' 은 ROBOT scope — robot_id 필수"
-            )
+            raise ValueError(f"노드 '{name}' 은 DeviceNode — robot_id 필수")
         return cls(robot_id=robot_id)
-    # SYSTEM scope — 인자 없음
-    return cls()
+    if issubclass(cls, ApplicationNode):
+        return cls()
+    raise TypeError(
+        f"노드 '{name}' ({cls.__name__}) 는 DeviceNode/ApplicationNode 둘 다 상속 안 함"
+    )

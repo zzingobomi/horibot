@@ -239,7 +239,7 @@ TASK_PREVIEW = "omx/task/srv/preview"
 
 `TASK_TREE` 는 **bridge `_ALWAYS_SUBSCRIBE`** 에 추가 ([zenoh_bridge.py](../backend/bridge/zenoh_bridge.py#L137-L148)) — frontend 가 어느 시점에 connect 해도 latest-wins 큐를 통해 마지막 tree 수신.
 
-[task_node.py](../backend/nodes/task_node.py) 의 서비스 핸들러 — 단순한 위임 패턴:
+[task_node.py](../backend/nodes/application/task_node.py) 의 서비스 핸들러 — 단순한 위임 패턴:
 
 ```python
 def _handle_step(self, _req: dict) -> dict:
@@ -556,9 +556,9 @@ useEffect(() => {
 | TaskRunner 의 외부 API (resume/step_once/run_to/toggle_breakpoint) | [task_runner.py](../backend/modules/task/task_runner.py#L116-L160) |
 | 토픽 / 서비스 키 (백엔드) | [topic_map.py](../backend/core/transport/topic_map.py) |
 | 토픽 / 서비스 키 (프론트) | [topics.ts](../frontend/src/constants/topics.ts) |
-| Service 핸들러 (위임 패턴) | [task_node.py:_handle_step](../backend/nodes/task_node.py) |
-| Tree publish 타이밍 | [task_node.py:_handle_run](../backend/nodes/task_node.py) |
-| Preview 가드 (실행 중 거절) | [task_node.py:_handle_preview](../backend/nodes/task_node.py) |
+| Service 핸들러 (위임 패턴) | [task_node.py:_handle_step](../backend/nodes/application/task_node.py) |
+| Tree publish 타이밍 | [task_node.py:_handle_run](../backend/nodes/application/task_node.py) |
+| Preview 가드 (실행 중 거절) | [task_node.py:_handle_preview](../backend/nodes/application/task_node.py) |
 | Frontend types (`StepNode`, `TaskTree`) | [types/task.ts](../frontend/src/types/task.ts) |
 | `TASK_TREE` 구독 | [useBridge.ts](../frontend/src/hooks/useBridge.ts) |
 | 서비스 1:1 노출 hook | [useTask.ts](../frontend/src/hooks/useTask.ts) |

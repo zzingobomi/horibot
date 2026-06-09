@@ -106,7 +106,7 @@ A, B 는 perception 문제. C 는 모든 task 공통의 **TCP 프레임 정의**
   (참조: [link_coordinates.py](../backend/core/coords/link_coordinates.py),
   [sag_coordinates.py](../backend/core/coords/sag_coordinates.py))
 - `_srv_handeye_commit` 변수명 / 주석 명확화
-  ([calibration_node.py](../backend/nodes/calibration_node.py) `_srv_handeye_commit`)
+  ([calibration_node.py](../backend/nodes/application/calibration_node.py) `_srv_handeye_commit`)
 - 모듈 문서 갱신: `link_offsets.py`, `sag_offsets.py`, `hand_eye.py:compute_with_diagnostics`,
   `bundle_adjust.py:bundle_adjust_hand_eye_extended`
 - 프론트엔드 라벨 갱신 — "delta" → "절대 보정값" (참조: HandEyeResults.tsx)

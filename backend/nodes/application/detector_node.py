@@ -5,10 +5,9 @@ import cv2
 import numpy as np
 
 from core.common import GRIPPER_ID
-from core.transport.base_node import BaseNode
+from core.transport.application_node import ApplicationNode
 from core.cache.frame_cache import FrameCache
 from core.cache.joint_state_cache import JointStateCache
-from core.robot.robot_registry import RobotRegistry
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.camera import CameraSetDepthStreamReq, CameraSetDepthStreamRes
 from core.transport.messages.detector import (
@@ -38,8 +37,8 @@ DEPTH_FRESH_THRESHOLD = 1.0  # s
 DEPTH_WAIT_TIMEOUT = 5.0  # s
 
 
-class DetectorNode(BaseNode):
-    """SYSTEM 노드 — robot 무관 한 인스턴스로 multi-robot dispatch.
+class DetectorNode(ApplicationNode):
+    """Application 노드 — robot 무관 한 인스턴스로 multi-robot dispatch.
 
     YOLO / Grounding DINO 모델은 1번 로드, robot 별 캘리브레이션 / motor cfg /
     depth frame 만 `dict[robot_id]` 로 분리. service handler 가 robot_id 받아
@@ -47,12 +46,7 @@ class DetectorNode(BaseNode):
     """
 
     def __init__(self) -> None:
-        super().__init__("detector_node", robot_id=None)
-
-        self._registry = RobotRegistry()
-        self._enabled_robot_ids: list[str] = [
-            c.robot_id for c in self._registry.enabled_robots()
-        ]
+        super().__init__("detector_node")
 
         # 모델 1번만 로드 (multi-robot 공유)
         self._detector = YoloDetector()
@@ -65,7 +59,7 @@ class DetectorNode(BaseNode):
         # robot 별 상태
         self._arm_cfgs_by_robot: dict[str, list[MotorConfig]] = {}
         self._calibs_by_robot: dict[str, CalibrationData] = {}
-        for rid in self._enabled_robot_ids:
+        for rid in self.enabled_robot_ids:
             _, motor_cfgs = load_motor_config(rid)
             self._arm_cfgs_by_robot[rid] = [
                 m for m in motor_cfgs if m.id != GRIPPER_ID
@@ -91,7 +85,7 @@ class DetectorNode(BaseNode):
         self._joint_cache.subscribe(self)
 
         # robot 별 service / subscriber 등록
-        for rid in self._enabled_robot_ids:
+        for rid in self.enabled_robot_ids:
             self._frame_cache.subscribe(self, robot_id=rid)
             self.create_raw_subscriber(
                 topic_for(Topic.CAMERA_DEPTH_FRAME, rid),
@@ -127,7 +121,7 @@ class DetectorNode(BaseNode):
         self._grounded_preload_thread.start()
 
         logger.info(
-            "DetectorNode 시작 (robots=%s)", self._enabled_robot_ids
+            "DetectorNode 시작 (robots=%s)", self.enabled_robot_ids
         )
 
     def _preload_grounded(self) -> None:
@@ -151,7 +145,7 @@ class DetectorNode(BaseNode):
 
     def _detection_loop(self) -> None:
         while self._running:
-            for rid in self._enabled_robot_ids:
+            for rid in self.enabled_robot_ids:
                 try:
                     ret, frame = self._frame_cache.get_frame(robot_id=rid)
                     if not ret or frame is None:

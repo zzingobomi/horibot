@@ -65,7 +65,7 @@
 - **리스크 / 트레이드오프**:
   - NBV scoring 이 너무 단순하면 같은 자리 맴돌거나, 너무 정교하면 계산 비싸짐.
   - 워크스페이스 reach 한계 (5DOF) 로 도달 불가 자세가 많을 수 있음.
-- **의존성**: 이미 [tsdf_pipeline.md](tsdf_pipeline.md) + [pointcloud_node.py](../backend/nodes/pointcloud_node.py) 인프라 다 있음. NBV scorer 만 추가.
+- **의존성**: 이미 [tsdf_pipeline.md](tsdf_pipeline.md) + [pointcloud_node.py](../backend/nodes/application/pointcloud_node.py) 인프라 다 있음. NBV scorer 만 추가.
 
 ---
 

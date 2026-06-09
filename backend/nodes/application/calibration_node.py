@@ -6,7 +6,7 @@ import numpy as np
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.transport.base_node import BaseNode
+from core.transport.application_node import ApplicationNode
 from core.coords.joint_coordinates import JointCoordinates
 from core.coords.link_coordinates import LinkCoordinates
 from core.robot.robot_registry import RobotRegistry
@@ -68,16 +68,11 @@ class _RobotState:
     preview_enabled: bool = False
 
 
-class CalibrationNode(BaseNode):
-    """SYSTEM 노드 — robot 무관 한 인스턴스. robot 별 dict[robot_id] state."""
+class CalibrationNode(ApplicationNode):
+    """Application 노드 — robot 무관 한 인스턴스. robot 별 dict[robot_id] state."""
 
     def __init__(self) -> None:
-        super().__init__("calibration_node", robot_id=None)
-
-        self._registry = RobotRegistry()
-        self._enabled_robot_ids: list[str] = [
-            c.robot_id for c in self._registry.enabled_robots()
-        ]
+        super().__init__("calibration_node")
 
         # pose_estimator 는 stateless — robot 무관 한 인스턴스.
         self.pose_estimator = PoseEstimator()
@@ -87,7 +82,7 @@ class CalibrationNode(BaseNode):
 
         # robot 별 상태
         self._states: dict[str, _RobotState] = {}
-        for rid in self._enabled_robot_ids:
+        for rid in self.enabled_robot_ids:
             _, motor_cfgs = load_motor_config(rid)
             arm_cfgs = [m for m in motor_cfgs if m.id != GRIPPER_ID]
             intrinsic = IntrinsicCalibration()
@@ -112,7 +107,7 @@ class CalibrationNode(BaseNode):
         self._preview_thread: threading.Thread | None = None
 
     def start(self) -> None:
-        for rid in self._enabled_robot_ids:
+        for rid in self.enabled_robot_ids:
             self._frame_cache.subscribe(self, robot_id=rid)
             # 내부 캘리브레이션
             self.create_service(
@@ -190,7 +185,7 @@ class CalibrationNode(BaseNode):
                 logger.info("[%s] 이전 Hand-Eye 포즈 %d개 복원됨", rid, loaded)
 
         logger.info(
-            "CalibrationNode 시작 (robots=%s)", self._enabled_robot_ids
+            "CalibrationNode 시작 (robots=%s)", self.enabled_robot_ids
         )
 
     # ─── 이미지 캡처 ─────────────────────────────────────────

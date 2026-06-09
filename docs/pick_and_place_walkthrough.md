@@ -179,7 +179,7 @@ bridge.subscribe(Topic.PERCEPTION_GROUNDED_STATE, (data) => setGroundedResult(..
 
 ## 3. TaskNode + TASK_REGISTRY — task 이름이 factory가 되는 곳
 
-[task_node.py](backend/nodes/task_node.py)의 `_handle_run`이 받아 처리:
+[task_node.py](backend/nodes/application/task_node.py)의 `_handle_run`이 받아 처리:
 
 ```python
 def _handle_run(self, req: dict) -> dict:
@@ -192,7 +192,7 @@ def _handle_run(self, req: dict) -> dict:
     return {"success": True, "message": "ok", "data": {}}
 ```
 
-factory ([task_node.py](backend/nodes/task_node.py)):
+factory ([task_node.py](backend/nodes/application/task_node.py)):
 
 ```python
 def _factory_pick_and_place(data: dict) -> Task:
@@ -399,7 +399,7 @@ if step.action == "close" and step.verify_grasp:
 
 **잡힘 검증 (`verify_grasp`)**: Current-based Position mode 라 close 명령에 큐브가 막히면 그 자리에서 멈추고, 빈손이면 `GRIPPER_CLOSE_RAW`(1800) 까지 끝까지 닫힘. 그래서 close 직후 `Present_Position` 이 `GRIPPER_HELD_THRESHOLD`(1900) 미만이면 빈손으로 판정 → step fail → task fail. 이게 없으면 빈손이어도 step service call 은 success 라서 task 가 그대로 place 까지 가서 "성공" 으로 끝남.
 
-**그리퍼 부드러운 동작**: 이전엔 `set_goal_position`만 호출해서 *Dynamixel 기본값 = 0 = 최대 속도*로 휙 움직였음. [motor_node.py:74-87](backend/nodes/motor_node.py#L74-L87)의 `_apply_gripper_smooth_profile()`이 시작 시 한 번 `profile_velocity = 80`, `profile_acceleration = 30`을 설정 → 이후 모든 goal_position 명령에 *사다리꼴 ramp* 적용:
+**그리퍼 부드러운 동작**: 이전엔 `set_goal_position`만 호출해서 *Dynamixel 기본값 = 0 = 최대 속도*로 휙 움직였음. [motor_node.py:74-87](backend/nodes/device/motor_node.py#L74-L87)의 `_apply_gripper_smooth_profile()`이 시작 시 한 번 `profile_velocity = 80`, `profile_acceleration = 30`을 설정 → 이후 모든 goal_position 명령에 *사다리꼴 ramp* 적용:
 
 ```
 position
@@ -412,7 +412,7 @@ position
    └────────────────────────► time
 ```
 
-`profile_velocity` 단위가 0.229 rpm이라 `80 ≈ 18 rpm` → full stroke 약 1.5초. 부드럽게 잡고 부드럽게 놓음. reboot 시에도 `_srv_reboot`가 재적용 ([motor_node.py:198-203](backend/nodes/motor_node.py#L198-L203)).
+`profile_velocity` 단위가 0.229 rpm이라 `80 ≈ 18 rpm` → full stroke 약 1.5초. 부드럽게 잡고 부드럽게 놓음. reboot 시에도 `_srv_reboot`가 재적용 ([motor_node.py:198-203](backend/nodes/device/motor_node.py#L198-L203)).
 
 **WaitStep**: 진짜로 그냥 sleep. `grip_settle`(0.5s) / `release_settle`(0.3s).
 
@@ -432,7 +432,7 @@ position
 | Z 회수 | base Z=0 평면 가정 | bbox 영역 depth median (실측) |
 | 출력 | 객체 위치 | 위치 + base_z + **height** |
 
-`DetectorNode._handle_grounded_detect` ([detector_node.py:211-378](backend/nodes/detector_node.py#L211-L378))가 푸는 게 6단계.
+`DetectorNode._handle_grounded_detect` ([detector_node.py:211-378](backend/nodes/application/detector_node.py#L211-L378))가 푸는 게 6단계.
 
 ### 6.1 단계 1: depth stream 확보 (on-demand)
 
@@ -883,7 +883,7 @@ while True:
 
 ## 10. MOTOR_CMD_JOINT → 실제 모터까지
 
-`_publish_cmd(angles)`가 토픽에 publish하면 [motion_node.py:130-146](backend/nodes/motion_node.py#L130-L146)에서 rad → raw 정수 변환:
+`_publish_cmd(angles)`가 토픽에 publish하면 [motion_node.py:130-146](backend/nodes/device/motion_node.py#L130-L146)에서 rad → raw 정수 변환:
 
 ```python
 self.publish(Topic.MOTOR_CMD_JOINT, {

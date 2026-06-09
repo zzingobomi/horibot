@@ -19,11 +19,11 @@ zenoh:
 robots:
   - omx_f_0
 
-robot_nodes:
+device_nodes:
   - motor
   - motion
 
-system_nodes: []
+application_nodes: []
 
 bridge:
   enabled: false

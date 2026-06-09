@@ -12,7 +12,7 @@ import logging
 import threading
 import time
 
-from core.transport.base_node import BaseNode
+from core.transport.device_node import DeviceNode
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.motor import (
     MotorCmd,
@@ -40,8 +40,8 @@ GRIPPER_OPEN_RAW = 2600
 GRIPPER_CLOSE_RAW = 1800
 
 
-class MockMotorNode(BaseNode):
-    def __init__(self, robot_id: str | None = None):
+class MockMotorNode(DeviceNode):
+    def __init__(self, robot_id: str):
         # heartbeat node name = real motor_node 와 동일 — frontend 가 mock/real
         # 무관 동일 lookup 가능 (CLAUDE.md "mock 노드는 contract 만 충족" 정합).
         super().__init__("motor_node", robot_id=robot_id)

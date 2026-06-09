@@ -2,8 +2,7 @@ import logging
 import threading
 from typing import Callable
 
-from core.transport.base_node import BaseNode
-from core.robot.robot_registry import RobotRegistry
+from core.transport.application_node import ApplicationNode
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.task import TaskStepIdReq
 from core.transport.topic_map import Service, Topic
@@ -36,8 +35,8 @@ TASK_REGISTRY: dict[str, Callable[[dict], Task]] = {
 }
 
 
-class TaskNode(BaseNode):
-    """SYSTEM 노드 — multi-robot orchestration.
+class TaskNode(ApplicationNode):
+    """Application 노드 — multi-robot orchestration.
 
     Phase 2 의 Step DSL `robot_id` field (multi_robot_walkthrough §8 F) 도입
     전까지는 default robot 의 arm_cfgs / calibration 만 사용 (transition).
@@ -46,10 +45,10 @@ class TaskNode(BaseNode):
     """
 
     def __init__(self) -> None:
-        super().__init__("task_node", robot_id=None)
+        super().__init__("task_node")
 
         # transition — Step DSL robot_id field 도입 전까지 default robot 만.
-        default_rid = RobotRegistry().default().robot_id
+        default_rid = self._registry.default().robot_id
         _, self._motor_cfgs = load_motor_config(default_rid)
         self._arm_cfgs: list[MotorConfig] = [
             m for m in self._motor_cfgs if m.id != GRIPPER_ID

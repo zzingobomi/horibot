@@ -626,7 +626,7 @@ flowchart TB
 | [backend/modules/task/recipes.py](../backend/modules/task/recipes.py) | home() / search_and_detect() recipe 함수 |
 | [backend/modules/task/task_runner.py](../backend/modules/task/task_runner.py) | TaskRunner + _execute_one_step + 디버거 게이트 |
 | [backend/modules/task/tasks/pick_and_place.py](../backend/modules/task/tasks/pick_and_place.py) | acceptance test task |
-| [backend/nodes/task_node.py](../backend/nodes/task_node.py) | TASK_REGISTRY + Zenoh 서비스 핸들러 |
+| [backend/nodes/application/task_node.py](../backend/nodes/application/task_node.py) | TASK_REGISTRY + Zenoh 서비스 핸들러 |
 | [frontend/src/store/taskResultStore.ts](../frontend/src/store/taskResultStore.ts) | step_id → result 누적 store |
 | [frontend/src/components/canvas/3d/TaskResultLayer.tsx](../frontend/src/components/canvas/3d/TaskResultLayer.tsx) | type 별 3D 자동 렌더 |
 | [frontend/src/components/panels/TaskProgressPanel.tsx](../frontend/src/components/panels/TaskProgressPanel.tsx) | step 트리 + children 재귀 indent |

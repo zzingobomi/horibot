@@ -1,5 +1,5 @@
 # 분산 모드에서 PC 역할 — heavy compute + bridge.
-# USB 직결 robot 없음 (robots: []). system 서비스만 띄움.
+# USB 직결 robot 없음 (robots: []). application 노드만 띄움.
 # 실행:
 #   uv sync
 #   uv run --no-sync python main.py --host pc
@@ -16,11 +16,11 @@ zenoh:
   # listen:
   #   - "tcp/0.0.0.0:7447"
 
-# USB 직결 robot 없음 — system 노드만
+# USB 직결 robot 없음 — application 노드만
 robots: []
-robot_nodes: []
+device_nodes: []
 
-system_nodes:
+application_nodes:
   - calibration
   - task
   - detector

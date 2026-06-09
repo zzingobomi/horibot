@@ -4,7 +4,7 @@
 #
 # mock_motor   → MockMotorNode  (cmd 수신 시 즉시 internal position 갱신, 20Hz state)
 # mock_camera  → MockCameraNode (합성 JPEG 30fps, depth payload X)
-# system 노드 (calibration / task / detector / pointcloud) 그대로 — topic 기반이라
+# application 노드 (calibration / task / detector / pointcloud) 그대로 — topic 기반이라
 # mock motor/camera 만 swap 하면 동일 코드 경로로 동작.
 host_name: mock
 
@@ -15,12 +15,12 @@ zenoh:
 robots:
   - omx_f_0
 
-robot_nodes:
+device_nodes:
   - mock_motor
   - mock_camera
   - motion
 
-system_nodes:
+application_nodes:
   - calibration
   - task
   - detector

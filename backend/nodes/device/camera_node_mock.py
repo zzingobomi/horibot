@@ -15,7 +15,7 @@ import time
 import cv2
 import numpy as np
 
-from core.transport.base_node import BaseNode
+from core.transport.device_node import DeviceNode
 from core.transport.messages.base import ServiceRequest, ServiceResponse
 from core.transport.messages.camera import (
     CameraSetDepthStreamReq,
@@ -35,8 +35,8 @@ MOCK_FPS = float(STREAM_FPS)
 MOCK_DEPTH_SCALE = 0.001  # D405 실 hardware 와 동일 단위 (m / raw)
 
 
-class MockCameraNode(BaseNode):
-    def __init__(self, robot_id: str | None = None):
+class MockCameraNode(DeviceNode):
+    def __init__(self, robot_id: str):
         # heartbeat node name = real camera_node 와 동일 — frontend 가 mock/real
         # 무관 동일 lookup 가능 (CLAUDE.md "mock 노드는 contract 만 충족" 정합).
         super().__init__("camera_node", robot_id=robot_id)

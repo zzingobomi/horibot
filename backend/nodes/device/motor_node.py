@@ -2,7 +2,7 @@ import time
 import logging
 import threading
 
-from core.transport.base_node import BaseNode
+from core.transport.device_node import DeviceNode
 from core.transport.topic_map import Topic, Service
 from core.units import raw_to_deg
 from core.common import GRIPPER_ID
@@ -42,8 +42,8 @@ GRIPPER_PROFILE_VELOCITY = 80
 GRIPPER_PROFILE_ACCELERATION = 30
 
 
-class MotorNode(BaseNode):
-    def __init__(self, robot_id: str | None = None):
+class MotorNode(DeviceNode):
+    def __init__(self, robot_id: str):
         super().__init__("motor_node", robot_id=robot_id)
 
         port_cfg, motors = load_motor_config(robot_id)

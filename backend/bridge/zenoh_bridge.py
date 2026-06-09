@@ -140,7 +140,7 @@ def list_tasks() -> TasksResponse:
     enumeration source. lazy import 로 task_node 의 무거운 deps (LLM /
     detector chain) 부팅 시 끌고 오지 않음.
     """
-    from nodes.task_node import TASK_REGISTRY
+    from nodes.application.task_node import TASK_REGISTRY
 
     return TasksResponse(tasks=sorted(TASK_REGISTRY.keys()))
 

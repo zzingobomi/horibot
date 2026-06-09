@@ -85,3 +85,47 @@ COMPUTE / Validate 결과를 보고 어떤 조치를 취할지 판단하는 룰.
 - rms_error=0.0 — 재캘리브 잔차가 아니라 factory seed라서 0.
 
 D405의 color stream 공장 캘리브는 일반적으로 정확하므로 별도 재캘리브는 보류. UI에서 Intrinsic 탭으로 재캘 가능하지만 현재 권장하지 않음.
+
+---
+
+## 5. Calibration Board (ChArUco)
+
+Hand-Eye / Intrinsic 캡처에 사용하는 ChArUco 보드.
+
+### Pattern spec (OpenCV 입력)
+
+```yaml
+Pattern:        ChArUco
+Rows:           5
+Columns:        7
+Square Length:  25 mm     # OpenCV `squareLength` — 실측치 사용 (아래 주의)
+Marker Length:  18 mm     # OpenCV `markerLength` (≈ square × 72%)
+Dictionary:     DICT_4X4
+```
+
+내부 코너 = (5-1) × (7-1) = **24개** / pose. 마커 17개.
+
+### 물리적 사양
+
+- 보드 외곽: 200 × 150 mm (패턴 175 × 125 mm + 여백)
+- 재료: 포맥스 5T (PVC foam, white)
+- 표면: PP 유포지 + 무광코팅 (수분/조명 반사 무관)
+- 모서리: 라운드 처리 (안전, 캘 영향 0)
+
+선정 근거: OMX 5DOF 자유도 제약 + 책상 55×34cm 환경에서 "작은 보드 + 다양한 pose" 가 "큰 보드 + 적은 pose" 보다 유리. 6×8 (35 코너) 도 후보였으나 OMX 도달 영역 위주로 5×7 선택. SO-101 (6DOF) 도 같은 보드 공용 가능.
+
+### 재제작 정보
+
+- **PDF 생성**: calib.io Pattern Generator
+  - Target Type: ChArUco
+  - Board Width 200 / Height 150
+  - Rows 5 / Columns 7 / Checker Width 25
+  - Dictionary DICT_4X4 / Start Id 0
+- **합지**: 출력스토리 견적 의뢰 → 포맥스 5T 무광. 참고 단가 16,280원 + 배송비 (2026-06)
+- **견적 의뢰 시 명시**: "카메라 캘리브레이션용, square 25mm 치수 정확도 중요" (자동 fit-to-page 방지)
+
+### 사용 시 주의
+
+- **PDF 설계치(25mm) ≠ 실측치 가능** — 합지 시 인쇄 스케일 ±1% 오차 흔함
+- 받은 보드는 캘리퍼스로 square 실측 → **실측치를 OpenCV `squareLength` 에 입력** (PDF 설계치 X)
+- 실측 결과: _TBD (수령 후 측정 기록)_

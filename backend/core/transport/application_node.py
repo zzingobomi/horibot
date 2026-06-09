@@ -1,13 +1,6 @@
-"""ApplicationNode — robot driver 위에 얹는 application/algorithm layer.
+"""알고리즘이나 시나리오를 다루는 노드 베이스. device 노드 위 레이어.
 
-calibration / task / detector / pointcloud / gamepad 처럼 robot 무관한
-알고리즘/시나리오 레이어 노드 base. DeviceNode (vendor-shipped) 의 contract
-(토픽/서비스) 만 보고 동작 — 특정 hardware backend 모름.
-
-상속 의미:
-  - `robot_id` 없음 (호스트당 1 인스턴스)
-  - multi-robot dispatch 표준 — `self.enabled_robot_ids` 로 활성 robot 순회
-  - `issubclass(cls, ApplicationNode)` 가 layer 판정 SSOT
+호스트당 인스턴스 하나 — 여러 robot 다룰 땐 enabled_robot_ids 로 순회.
 """
 
 from __future__ import annotations

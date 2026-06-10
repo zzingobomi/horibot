@@ -165,12 +165,104 @@ export type NextPoseRecommendation = {
   reason: string;
   label: string;
   primary_axis: number; // 0..4
-  source: "high_residual" | "distribution";
+  source: "high_residual" | "distribution" | "geometry";
+  // backend next_pose_planner.is_pose_visible() 결과. intrinsic + hand_eye +
+  // 보드 base 추정 모두 있을 때만 의미 — 아니면 "unchecked".
+  visible?: boolean;
+  visibility_reason?: string;
+  // 명시 신호 [👎] 누를 때 사용할 anchor 식별자. source="geometry" 면 "geometry_<idx>".
+  diagnostics?: {
+    mode?: string;
+    anchor_id?: string;
+    anchor_label?: string;
+    [k: string]: unknown;
+  };
+};
+
+/**
+ * `CALIB_HANDEYE_SIGMA` topic payload — capture 후 자동 BA / 수동 COMPUTE 마다 publish.
+ * frontend σ live 디스플레이용 (작은 footer / inline 표시).
+ */
+export type HandEyeSigmaState = {
+  timestamp: number;
+  sigma_rot_deg: number | null;
+  sigma_t_mm: number | null;
+  pose_count: number;
+  ba_mode: string | null;
+  ba_converged: boolean;
+  coach_verdict: string | null;
+  joint_offset_estimated: boolean;
+  link_offset_estimated: boolean;
+  sag_offset_estimated: boolean;
+};
+
+/**
+ * `CALIB_HANDEYE_RECOMMENDATIONS` topic — 매 capture 후 자동 publish.
+ * Phase 1 (n<8 자체 자리 자취 자리) frontend 자체 자리 자취 자리 hide, Phase 2 (n>=8) 자체 자리 자취 자리 show.
+ */
+export type HandeyeRecommendationsState = {
+  timestamp: number;
+  recommendations: NextPoseRecommendation[];
+};
+
+/**
+ * `CALIB_HANDEYE_SATURATE` topic — σ 변화율 추적 saturate 인지.
+ * saturate=true & in_good=true → "sufficient, COMMIT 권장".
+ * saturate=true & in_good=false → "floor 도달, escape 시도 (BA mode / 자유 자세 / 외부 도구)".
+ */
+export type HandeyeSaturateState = {
+  timestamp: number;
+  saturate: boolean;
+  in_good: boolean;
+  reason: string;
+  sigma_history: number[];
+};
+
+/**
+ * 사용자 명시 신호 — 추천 자세 fail 기록.
+ */
+export type RecommendationFailReq = {
+  anchor_id: string;
+  category: "not_visible" | "red" | "motion_fail";
+};
+
+export type RecommendationFailRes = {
+  excluded_count: number;
+};
+
+/**
+ * Multi-start BA — random init 다중 시도 → 가장 좋은 σ.
+ * 사용자가 saturate 알림 받고 escape 자체 자리, 또는 [수동 모드 종료] 자동 트리거.
+ */
+export type MultiStartReq = {
+  n_starts?: number;
+  mode?: "standard" | "extended" | "physical_sag";
+};
+
+export type MultiStartRes = {
+  n_tried: number;
+  n_converged: number;
+  sigma_rot_deg: number | null;
+  sigma_t_mm: number | null;
+  improvement_rot_deg: number | null;
+  improvement_t_mm: number | null;
+};
+
+/**
+ * `CALIB_BACKUP_LIST` 응답 한 행 — `.history/<ts>_<tag>/meta.json` 의 picker 표시용.
+ */
+export type BackupEntry = {
+  timestamp: string;
+  tag: string;
+  sigma_rot_deg: number | null;
+  sigma_t_mm: number | null;
+  capture_count: number | null;
+  ba_mode: string | null;
 };
 
 /**
  * `CALIB_HANDEYE_THRESHOLDS` 응답 — 백엔드 thresholds.py의 단일 출처.
- * 프론트엔드는 HandEyeTab mount 시 1회 fetch.
+ * 프론트엔드는 RobotCalibrateMode 진입 시 calibrationStore.bootstrap 안에서 1회 fetch.
  */
 export type CalibThresholds = {
   sigma_rot_good_deg: number;
@@ -182,6 +274,7 @@ export type CalibThresholds = {
   outlier_abs_t_mm: number;
   outlier_removal_cap_ratio: number;
   min_poses_for_compute: number;
+  min_poses_for_trusted_sigma: number;
   recommended_poses: number;
   joint_diversity_threshold_deg: number[];
 };

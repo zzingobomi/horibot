@@ -3,7 +3,7 @@ import threading
 import time
 import cv2
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.transport.application_node import ApplicationNode
@@ -31,6 +31,10 @@ from core.transport.messages.calibration import (
     IntrinsicSaveRes,
     JointOffsetEntry,
     LinkOffsetEntry,
+    MultiStartReq,
+    MultiStartRes,
+    RecommendationFailReq,
+    RecommendationFailRes,
     SagOffsetEntry,
 )
 from core.transport.topic_map import Service, Topic, topic_for
@@ -39,9 +43,10 @@ from core.cache.joint_state_cache import JointStateCache
 from core.common import GRIPPER_ID
 from modules.motor.motor_config import MotorConfig, load_motor_config
 from modules.camera.stream import frame_to_base64
-from modules.calibration.intrinsic import CHECKERBOARD, IntrinsicCalibration
+from modules.calibration.intrinsic import IntrinsicCalibration
 from modules.calibration.hand_eye import HandEyeCalibration, Pose
 from modules.calibration import backup as calib_backup
+from modules.calibration import board as calib_board
 from modules.calibration import next_pose_planner
 from modules.calibration import thresholds as calib_thresholds
 from modules.calibration.link_offsets import LinkOffsets
@@ -84,6 +89,11 @@ class _RobotState:
     solver: CorrectedIKSolver
     last_compute: dict | None = None
     preview_enabled: bool = False
+    # 사용자 명시 신호 ([👎 안 보임] / [👎 빨강] / [👎 도달 실패]) 로 fail 표시한
+    # 추천 ID set. 다음 추천 생성 시 제외. [수동 모드 종료] / 라운드 reset 시 초기화.
+    recommendation_fail_ids: set[str] = field(default_factory=set)
+    # Saturate 인지 — σ 변화율 추적 (최근 N capture 동안 변화 거의 0 → saturate).
+    sigma_history: list[float] = field(default_factory=list)
 
 
 class CalibrationNode(ApplicationNode):
@@ -185,6 +195,20 @@ class CalibrationNode(ApplicationNode):
             self.create_service(
                 topic_for(Service.CALIB_HANDEYE_THRESHOLDS, rid),
                 lambda req, _rid=rid: self._srv_handeye_thresholds(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.CALIB_HANDEYE_RECOMMENDATION_FAIL, rid),
+                RecommendationFailReq,
+                RecommendationFailRes,
+                lambda req, _rid=rid: self._srv_handeye_recommendation_fail(
+                    req, _rid
+                ),
+            )
+            self.create_service(
+                topic_for(Service.CALIB_HANDEYE_MULTI_START, rid),
+                MultiStartReq,
+                MultiStartRes,
+                lambda req, _rid=rid: self._srv_handeye_multi_start(req, _rid),
             )
             self.create_service(
                 topic_for(Service.CALIB_BACKUP_LIST, rid),
@@ -299,6 +323,197 @@ class CalibrationNode(ApplicationNode):
 
     # ─── Hand-Eye 캘리브레이션 ────────────────────────────────
 
+    # ─── BA 실행 + 상태 stash (수동 COMPUTE / 자동 BA 공통) ───────
+    def _run_ba_and_stash(
+        self, robot_id: str, mode: str = "physical_sag"
+    ) -> dict | None:
+        """compute_with_diagnostics + joint absolute reconciliation + last_compute stash.
+
+        수동 COMPUTE (`_srv_handeye_compute`) 와 자동 BA (`_srv_handeye_capture` 끝)
+        둘 다 본 함수 호출 → 결과 일관성 + Bug A 같은 logic 분기 X.
+        """
+        st = self._states[robot_id]
+        arm_motor_ids = [cfg.id for cfg in st.arm_cfgs]
+        joint_limits = st.solver.joint_limits(len(arm_motor_ids))
+        use_physical_sag = mode == "physical_sag"
+        use_extended_ba = mode in ("physical_sag", "extended")
+        diag = st.hand_eye.compute_with_diagnostics(
+            fk_fn=st.solver.fk_to_matrix,
+            arm_motor_cfgs=st.arm_cfgs,
+            joint_limits_rad=joint_limits,
+            use_extended_ba=use_extended_ba,
+            use_physical_sag=use_physical_sag,
+        )
+        if diag is None:
+            return None
+
+        # joint absolute reconciliation — Bug A 의 fix 자리. 모든 BA 진입점이 본 함수 통과.
+        if diag.get("joint_offset_estimated"):
+            current_by_id = JointCoordinates().snapshot(robot_id=robot_id)
+            absolute_by_id: dict[int, float] = {}
+            for e in diag.get("joint_offset_delta", []):
+                mid = int(e["motor_id"])
+                delta = float(e["offset_rad"])
+                absolute_by_id[mid] = current_by_id.get(mid, 0.0) + delta
+            diag["_joint_absolute_by_id"] = absolute_by_id
+            diag["joint_offset_absolute"] = [
+                {
+                    "motor_id": mid,
+                    "offset_rad": v,
+                    "offset_deg": float(np.degrees(v)),
+                }
+                for mid, v in sorted(absolute_by_id.items())
+            ]
+
+        st.last_compute = diag
+        return diag
+
+    def _publish_saturate_state(self, robot_id: str, diag: dict) -> None:
+        """σ 변화율 추적 → saturate 인지 publish.
+
+        최근 N capture 동안 σ_rot 변화 < epsilon 이면 saturate. TSDF GOOD 안이면
+        "sufficient, COMMIT 권장" 명시. 밖이면 "floor 도달, escape (BA mode 변경 /
+        자유 자세) 시도" 명시. 사용자가 외부 도구 자리 진입 자체 자리 막음.
+        """
+        st = self._states[robot_id]
+        sigma_rot = diag.get("sigma_rot_deg")
+        sigma_t = diag.get("sigma_t_mm")
+        if sigma_rot is None or sigma_t is None:
+            return
+        st.sigma_history.append(float(sigma_rot))
+        window = 5
+        if len(st.sigma_history) > window:
+            st.sigma_history = st.sigma_history[-window:]
+
+        saturate = False
+        in_good = False
+        reason = ""
+        if len(st.sigma_history) >= window:
+            recent = st.sigma_history[-window:]
+            sigma_range = max(recent) - min(recent)
+            if sigma_range < 0.05:  # 0.05° 임계
+                saturate = True
+                in_good = (
+                    float(sigma_rot) < calib_thresholds.SIGMA_ROT_GOOD_DEG
+                    and float(sigma_t) < calib_thresholds.SIGMA_T_GOOD_MM
+                )
+                reason = (
+                    "현재 σ TSDF GOOD 임계 안 — sufficient, COMMIT 권장"
+                    if in_good
+                    else "saturate (floor 도달) — escape 시도 (BA mode 변경 / 자유 자세 / 외부 도구)"
+                )
+
+        self.publish(
+            topic_for(Topic.CALIB_HANDEYE_SATURATE, robot_id),
+            {
+                "timestamp": time.time(),
+                "saturate": saturate,
+                "in_good": in_good,
+                "reason": reason,
+                "sigma_history": list(st.sigma_history),
+            },
+        )
+
+    def _publish_recommendations(self, robot_id: str) -> None:
+        """매 capture 후 추천 자세 갱신 + publish.
+
+        backend 자체 자리 자취 자리 = 모든 capture 마다 추천 generated. frontend 자체
+        자리 자취 자리 = phase 별 hide/show.
+        """
+        try:
+            recs = self._compute_recommendations(robot_id)
+        except Exception as e:
+            logger.debug("[%s] 추천 계산 실패: %s", robot_id, e)
+            return
+        self.publish(
+            topic_for(Topic.CALIB_HANDEYE_RECOMMENDATIONS, robot_id),
+            {"timestamp": time.time(), "recommendations": recs},
+        )
+
+    def _publish_sigma_state(self, robot_id: str, diag: dict) -> None:
+        """σ live topic. 자동 BA / 수동 COMPUTE 모두 호출 → frontend 가 즉시 표시."""
+        self.publish(
+            topic_for(Topic.CALIB_HANDEYE_SIGMA, robot_id),
+            {
+                "timestamp": time.time(),
+                "sigma_rot_deg": diag.get("sigma_rot_deg"),
+                "sigma_t_mm": diag.get("sigma_t_mm"),
+                "pose_count": diag.get("pose_count", 0),
+                "ba_mode": diag.get("method"),
+                "ba_converged": diag.get("ba_converged", False),
+                "coach_verdict": diag.get("coach", {}).get("verdict"),
+                "joint_offset_estimated": diag.get(
+                    "joint_offset_estimated", False
+                ),
+                "link_offset_estimated": diag.get(
+                    "link_offset_estimated", False
+                ),
+                "sag_offset_estimated": diag.get(
+                    "sag_offset_estimated", False
+                ),
+            },
+        )
+
+    def _estimate_board_base_frame(
+        self, robot_id: str
+    ) -> np.ndarray | None:
+        """모든 capture 의 보드 pose (target2cam) → base-frame 평균.
+
+        T_target2base = T_gripper2base · T_cam2gripper(=hand_eye) · T_target2cam
+        각 capture 별 T_target2base 계산 → origin 평균 + R 평균(SVD averaging) →
+        보드 4 외곽 코너 (board frame, board.py SSOT) 를 base-frame 으로 변환.
+
+        Returns (4, 3) base-frame 보드 외곽 코너, 또는 None (포즈 없음 / hand_eye 없음).
+        """
+        st = self._states[robot_id]
+        if st.hand_eye.result is None or not st.hand_eye.poses:
+            return None
+
+        R_c2g = st.hand_eye.result.R_cam2gripper
+        t_c2g = np.asarray(st.hand_eye.result.t_cam2gripper).reshape(3)
+        T_c2g = np.eye(4)
+        T_c2g[:3, :3] = R_c2g
+        T_c2g[:3, 3] = t_c2g
+
+        coords = JointCoordinates()
+        origins: list[np.ndarray] = []
+        Rs: list[np.ndarray] = []
+        for p in st.hand_eye.poses:
+            angles: list[float] = []
+            for cfg in st.arm_cfgs:
+                raw = p.raw_motor_positions.get(cfg.id)
+                if raw is None:
+                    angles = []
+                    break
+                angles.append(coords.motor_to_urdf(int(raw), cfg, robot_id))
+            if not angles:
+                continue
+            R_g2b, t_g2b = st.solver.fk_to_matrix(angles)
+            T_g2b = np.eye(4)
+            T_g2b[:3, :3] = np.asarray(R_g2b)
+            T_g2b[:3, 3] = np.asarray(t_g2b).reshape(3)
+            T_t2c = np.eye(4)
+            T_t2c[:3, :3] = np.asarray(p.R_target2cam)
+            T_t2c[:3, 3] = np.asarray(p.t_target2cam).reshape(3)
+            T_t2b = T_g2b @ T_c2g @ T_t2c
+            origins.append(T_t2b[:3, 3])
+            Rs.append(T_t2b[:3, :3])
+
+        if not origins:
+            return None
+
+        avg_origin = np.mean(np.stack(origins), axis=0)
+        Rsum = np.sum(np.stack(Rs), axis=0)
+        U, _, Vt = np.linalg.svd(Rsum)
+        avg_R = U @ Vt
+        if np.linalg.det(avg_R) < 0:
+            Vt[-1] *= -1
+            avg_R = U @ Vt
+
+        corners_board = calib_board.board_corner_points_3d()  # (4, 3)
+        corners_base = (avg_R @ corners_board.T).T + avg_origin
+        return corners_base
+
     def _srv_handeye_capture(
         self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[HandeyeCaptureRes]:
@@ -324,19 +539,22 @@ class CalibrationNode(ApplicationNode):
                 success=False, message="카메라 프레임 읽기 실패", data=None
             )
 
-        detected, _ = st.intrinsic.capture(frame)
-        if not detected:
+        # ChArUco 검출 — intrinsic pool 안 건드림 (handeye pool 과 분리).
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        ok, ch_corners, ch_ids = calib_board.detect(gray)
+        if not ok or ch_corners is None or ch_ids is None:
             return ServiceResponse(
                 success=False,
-                message="체커보드 미감지",
+                message="ChArUco 보드 미감지",
                 data=HandeyeCaptureRes(
                     detected=False, pose_count=len(st.hand_eye.poses)
                 ),
             )
+        obj_pts, img_pts = calib_board.match_object_points(ch_corners, ch_ids)
 
         pose = self.pose_estimator.estimate(
-            obj_points=st.intrinsic.obj_points[-1],
-            img_points=st.intrinsic.img_points[-1],
+            obj_points=obj_pts,
+            img_points=img_pts,
             camera_matrix=st.intrinsic.result.camera_matrix,
             dist_coeffs=st.intrinsic.result.dist_coeffs,
         )
@@ -359,9 +577,22 @@ class CalibrationNode(ApplicationNode):
         except Exception as e:
             logger.warning("[%s] 포즈 디스크 저장 실패: %s", robot_id, e)
 
+        # 자동 BA — capture 마다 σ live + 추천 + saturate 인지 갱신. 사용자가
+        # [COMPUTE] 별도로 안 눌러도 매 capture 후 즉시 publish (재캘 거부감 0).
+        # 최소 capture 수 미만이면 skip. 실패는 warning 로그만.
+        if len(st.hand_eye.poses) >= calib_thresholds.MIN_POSES_FOR_COMPUTE:
+            try:
+                auto_diag = self._run_ba_and_stash(robot_id, mode="physical_sag")
+                if auto_diag is not None:
+                    self._publish_sigma_state(robot_id, auto_diag)
+                    self._publish_saturate_state(robot_id, auto_diag)
+                    self._publish_recommendations(robot_id)
+            except Exception as e:
+                logger.warning("[%s] 자동 BA 실패: %s", robot_id, e)
+
         return ServiceResponse(
             success=True,
-            message=f"포즈 기록됨 ({len(st.hand_eye.poses)}개) — [계산]을 눌러 진척 확인",
+            message=f"포즈 기록됨 ({len(st.hand_eye.poses)}개)",
             data=HandeyeCaptureRes(
                 detected=True, pose_count=len(st.hand_eye.poses)
             ),
@@ -373,6 +604,8 @@ class CalibrationNode(ApplicationNode):
         st = self._states[robot_id]
         st.hand_eye.reset()
         st.last_compute = None
+        st.recommendation_fail_ids.clear()
+        st.sigma_history.clear()
         poses_path = _handeye_poses_path(robot_id)
         if poses_path.exists():
             try:
@@ -402,48 +635,17 @@ class CalibrationNode(ApplicationNode):
         )
 
     def _srv_handeye_compute(self, req: dict, robot_id: str) -> dict:
-        st = self._states[robot_id]
-        arm_motor_ids = [cfg.id for cfg in st.arm_cfgs]
-        joint_limits = st.solver.joint_limits(len(arm_motor_ids))
         mode = str(req.get("mode", "physical_sag")).lower()
-        use_physical_sag = mode == "physical_sag"
-        use_extended_ba = mode in ("physical_sag", "extended")
-        diag = st.hand_eye.compute_with_diagnostics(
-            fk_fn=st.solver.fk_to_matrix,
-            arm_motor_cfgs=st.arm_cfgs,
-            joint_limits_rad=joint_limits,
-            use_extended_ba=use_extended_ba,
-            use_physical_sag=use_physical_sag,
-        )
+        diag = self._run_ba_and_stash(robot_id, mode=mode)
         if diag is None:
+            st = self._states[robot_id]
             return {
                 "success": False,
                 "message": f"Hand-Eye 실패 (포즈 수: {len(st.hand_eye.poses)})",
                 "data": {},
             }
-
-        # joint_offset 만 delta (BA contract). 현재 disk + delta = absolute 를
-        # COMPUTE 시점에 stash → COMMIT 은 그 absolute 를 그대로 overwrite.
-        # 이래야 COMMIT 두 번 누름 == idempotent (Bug A fix).
-        if diag.get("joint_offset_estimated"):
-            current_by_id = JointCoordinates().snapshot(robot_id=robot_id)
-            absolute_by_id: dict[int, float] = {}
-            for e in diag.get("joint_offset_delta", []):
-                mid = int(e["motor_id"])
-                delta = float(e["offset_rad"])
-                absolute_by_id[mid] = current_by_id.get(mid, 0.0) + delta
-            diag["_joint_absolute_by_id"] = absolute_by_id
-            diag["joint_offset_absolute"] = [
-                {
-                    "motor_id": mid,
-                    "offset_rad": v,
-                    "offset_deg": float(np.degrees(v)),
-                }
-                for mid, v in sorted(absolute_by_id.items())
-            ]
-
-        st.last_compute = diag
         diag["recommendations"] = self._compute_recommendations(robot_id)
+        self._publish_sigma_state(robot_id, diag)
         return {
             "success": True,
             "message": f"compute 완료 (poses={diag['pose_count']})",
@@ -610,6 +812,124 @@ class CalibrationNode(ApplicationNode):
             ),
         )
 
+    # ─── 명시 신호 / Multi-start ──────────────────────────────
+    def _srv_handeye_recommendation_fail(
+        self, req: ServiceRequest[RecommendationFailReq], robot_id: str
+    ) -> ServiceResponse[RecommendationFailRes]:
+        """사용자 명시 신호 — 추천 자세 fail 기록. 다음 추천 시 제외.
+
+        카테고리: not_visible / red / motion_fail. 분류 자체 자리 자취 자리 = backend
+        log 자체 자리 자취 자리 자체 자리 자취 자리 진단 자체 자리 자취 자리 — 알고리즘 자체 자리 자취 자리 자체 자리 자취 자리 모두
+        같이 자체 자리 자취 자리 fail mark.
+        """
+        st = self._states[robot_id]
+        anchor_id = req.data.anchor_id
+        category = req.data.category
+        st.recommendation_fail_ids.add(anchor_id)
+        logger.info(
+            "[%s] 추천 fail: anchor_id=%s, category=%s",
+            robot_id, anchor_id, category,
+        )
+        # 즉시 추천 갱신 publish
+        self._publish_recommendations(robot_id)
+        return ServiceResponse(
+            success=True,
+            message=f"fail 기록: {anchor_id} ({category})",
+            data=RecommendationFailRes(
+                excluded_count=len(st.recommendation_fail_ids)
+            ),
+        )
+
+    def _srv_handeye_multi_start(
+        self, _req: ServiceRequest[MultiStartReq], robot_id: str
+    ) -> ServiceResponse[MultiStartRes]:
+        """Multi-mode BA — standard / extended / physical_sag 시도 → 가장 좋은 σ.
+
+        Local minimum 자리 escape 자체 자리 — 같은 데이터로 다른 모델 가정 자체 자리
+        시도. 사용자가 saturate 알림 받고 명시 트리거 자체 자리, 또는 [수동 모드
+        종료] 시점 자체 자리 자동.
+
+        진짜 random init multi-start 자체 자리 (각 init 자체 자리 random rotation /
+        translation) 자체 자리 자취 자리 = TODO. 현재 = 3 BA mode 시도 자체 자리 자취 자리.
+        """
+        st = self._states[robot_id]
+        if len(st.hand_eye.poses) < calib_thresholds.MIN_POSES_FOR_COMPUTE:
+            return ServiceResponse(
+                success=False,
+                message=(
+                    f"포즈 수 부족 ({len(st.hand_eye.poses)} < "
+                    f"{calib_thresholds.MIN_POSES_FOR_COMPUTE})"
+                ),
+                data=None,
+            )
+
+        baseline_rot: float | None = None
+        baseline_t: float | None = None
+        if st.last_compute is not None:
+            baseline_rot = st.last_compute.get("sigma_rot_deg")
+            baseline_t = st.last_compute.get("sigma_t_mm")
+
+        modes = ["standard", "extended", "physical_sag"]
+        n_converged = 0
+        best_diag: dict | None = None
+        best_sigma = float("inf")
+
+        for mode in modes:
+            try:
+                diag = self._run_ba_and_stash(robot_id, mode=mode)
+                if diag is None:
+                    continue
+                n_converged += 1
+                sigma = diag.get("sigma_rot_deg")
+                if sigma is None:
+                    continue
+                if float(sigma) < best_sigma:
+                    best_sigma = float(sigma)
+                    best_diag = diag
+            except Exception as e:
+                logger.warning(
+                    "[%s] multi-start mode=%s 실패: %s", robot_id, mode, e
+                )
+
+        if best_diag is None:
+            return ServiceResponse(
+                success=False, message="모든 BA mode 실패", data=None
+            )
+
+        # best 결과 last_compute 자체 자리 + topic publish
+        st.last_compute = best_diag
+        self._publish_sigma_state(robot_id, best_diag)
+        self._publish_saturate_state(robot_id, best_diag)
+        self._publish_recommendations(robot_id)
+
+        best_rot = best_diag.get("sigma_rot_deg")
+        best_t = best_diag.get("sigma_t_mm")
+        improvement_rot = (
+            float(baseline_rot) - float(best_rot)
+            if baseline_rot is not None and best_rot is not None
+            else None
+        )
+        improvement_t = (
+            float(baseline_t) - float(best_t)
+            if baseline_t is not None and best_t is not None
+            else None
+        )
+        return ServiceResponse(
+            success=True,
+            message=(
+                f"multi-start: n_converged={n_converged}/{len(modes)}, "
+                f"best σ_rot={best_rot}°"
+            ),
+            data=MultiStartRes(
+                n_tried=len(modes),
+                n_converged=n_converged,
+                sigma_rot_deg=float(best_rot) if best_rot is not None else None,
+                sigma_t_mm=float(best_t) if best_t is not None else None,
+                improvement_rot_deg=improvement_rot,
+                improvement_t_mm=improvement_t,
+            ),
+        )
+
     # ─── Backup / Rollback ───────────────────────────────────
     def _srv_backup_list(
         self, _req: ServiceRequest[EmptyData], robot_id: str
@@ -684,17 +1004,58 @@ class CalibrationNode(ApplicationNode):
             return []
         arm_motor_ids = [cfg.id for cfg in st.arm_cfgs]
         joint_limits = st.solver.joint_limits(len(arm_motor_ids))
-        ja_at_compute = (
-            st.last_compute.get("joint_angles_per_pose")
-            if st.last_compute
-            else None
-        )
-        recs = next_pose_planner.recommend_many(
-            last_compute=st.last_compute,
-            joint_angles_per_pose_at_compute=ja_at_compute,
-            current_joint_angles_rad=list(current),
+
+        # 추천 = sphere shell anchor 기반 (정면 / 좌 / 우 / 위 / 아래 + IK + visibility).
+        # 필요 조건: intrinsic + hand_eye + 보드 base 추정 모두 있어야 함.
+        # 없으면 빈 리스트 (frontend 가 phase 별 hide 처리).
+        if st.intrinsic.result is None or st.hand_eye.result is None:
+            return []
+        board_corners_base = self._estimate_board_base_frame(robot_id)
+        if board_corners_base is None:
+            return []
+
+        camera_matrix = st.intrinsic.result.camera_matrix
+        dist_coeffs = st.intrinsic.result.dist_coeffs
+        w, h = st.intrinsic.result.image_size
+        R_c2g = st.hand_eye.result.R_cam2gripper
+        t_c2g = st.hand_eye.result.t_cam2gripper
+        fk_fn = st.solver.fk_to_matrix
+
+        def _check(angles: list[float]) -> tuple[bool, str]:
+            return next_pose_planner.is_pose_visible(
+                angles,
+                fk_fn=fk_fn,
+                camera_matrix=camera_matrix,
+                dist_coeffs=dist_coeffs,
+                image_size=(int(w), int(h)),
+                hand_eye_R=R_c2g,
+                hand_eye_t=t_c2g,
+                board_corners_base=board_corners_base,
+            )
+
+        # IK 함수 wrapper — IKSolver Protocol 의 ik() 시그니처 그대로.
+        def _ik(
+            target_position,
+            target_quaternion,
+            current_joint_angles,
+        ):
+            return st.solver.ik(
+                target_position, target_quaternion, current_joint_angles
+            )
+
+        # 사용자가 명시 신호 ([👎]) 로 fail 표시한 추천 ID set — 다음 추천 시 제외.
+        excluded_ids = st.recommendation_fail_ids
+
+        recs = next_pose_planner.recommend_geometry(
+            board_corners_base=board_corners_base,
+            ik_fn=_ik,
+            hand_eye_R=R_c2g,
+            hand_eye_t=t_c2g,
             arm_motor_ids=arm_motor_ids,
             joint_limits_rad=joint_limits,
+            current_joint_angles_rad=list(current),
+            visibility_check=_check,
+            excluded_ids=excluded_ids,
         )
         return [next_pose_planner.to_dict(r) for r in recs]
 
@@ -710,7 +1071,6 @@ class CalibrationNode(ApplicationNode):
         )
 
     def _preview_loop(self) -> None:
-        flags = cv2.CALIB_CB_NORMALIZE_IMAGE
         while self._running:
             for rid, st in self._states.items():
                 if not st.preview_enabled:
@@ -731,19 +1091,18 @@ class CalibrationNode(ApplicationNode):
 
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                     h, w = gray.shape[:2]
-                    found, corners = cv2.findChessboardCornersSB(
-                        gray, CHECKERBOARD, flags=flags
-                    )
+                    ok, ch_corners, ch_ids = calib_board.detect(gray)
 
                     payload: dict = {
                         "timestamp": time.time(),
-                        "detected": bool(found),
+                        "detected": bool(ok),
                         "image_size": [int(w), int(h)],
                     }
 
-                    if found and corners is not None:
-                        pts = corners.reshape(-1, 2)
+                    if ok and ch_corners is not None and ch_ids is not None:
+                        pts = ch_corners.reshape(-1, 2)
                         payload["corners"] = pts.tolist()
+                        payload["corner_count"] = int(len(ch_ids))
                         xs, ys = pts[:, 0], pts[:, 1]
                         bbox_w = float(xs.max() - xs.min())
                         bbox_h = float(ys.max() - ys.min())
@@ -754,21 +1113,31 @@ class CalibrationNode(ApplicationNode):
                             bbox_h,
                         ]
                         payload["coverage_ratio"] = (
-                            bbox_w * bbox_h) / float(w * h)
+                            bbox_w * bbox_h
+                        ) / float(w * h)
 
                         if st.intrinsic.result is not None:
                             try:
-                                ok, rvec, _tvec = cv2.solvePnP(
-                                    st.intrinsic._objp_template,
-                                    corners,
+                                obj_pts, img_pts = (
+                                    calib_board.match_object_points(
+                                        ch_corners, ch_ids
+                                    )
+                                )
+                                ok_pnp, rvec, _tvec = cv2.solvePnP(
+                                    obj_pts,
+                                    img_pts,
                                     st.intrinsic.result.camera_matrix,
                                     st.intrinsic.result.dist_coeffs,
                                     flags=cv2.SOLVEPNP_ITERATIVE,
                                 )
-                                R, _ = cv2.Rodrigues(rvec)
-                                cos_v = float(np.clip(abs(R[2, 2]), 0.0, 1.0))
-                                payload["tilt_deg"] = float(
-                                    np.degrees(np.arccos(cos_v)))
+                                if ok_pnp:
+                                    R, _ = cv2.Rodrigues(rvec)
+                                    cos_v = float(
+                                        np.clip(abs(R[2, 2]), 0.0, 1.0)
+                                    )
+                                    payload["tilt_deg"] = float(
+                                        np.degrees(np.arccos(cos_v))
+                                    )
                             except cv2.error:
                                 pass
 

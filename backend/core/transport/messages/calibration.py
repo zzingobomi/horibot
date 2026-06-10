@@ -146,6 +146,27 @@ class BackupRestoreRes(StrictModel):
     restart_required: bool  # link_offsets 복원 시 URDF patch 재적용 필요
 
 
+# ─── Topic: CALIB_HANDEYE_SIGMA ──────────────────────────────────────
+
+
+class HandeyeSigmaState(StrictModel):
+    """capture 후 자동 BA / 수동 COMPUTE 마다 publish. frontend σ live 표시.
+
+    BA 실패 / 포즈 부족 시에는 publish 안 함 (직전 σ 유지 또는 frontend 가 unknown).
+    """
+
+    timestamp: float
+    sigma_rot_deg: float | None
+    sigma_t_mm: float | None
+    pose_count: int
+    ba_mode: str | None
+    ba_converged: bool
+    coach_verdict: str | None
+    joint_offset_estimated: bool
+    link_offset_estimated: bool
+    sag_offset_estimated: bool
+
+
 # ─── Service: CALIB_HANDEYE_PREVIEW_ENABLE ───────────────────────────
 
 
@@ -155,6 +176,49 @@ class HandeyePreviewEnableReq(StrictModel):
 
 class HandeyePreviewEnableRes(StrictModel):
     enabled: bool
+
+
+# ─── Service: CALIB_HANDEYE_RECOMMENDATION_FAIL ──────────────────────
+
+
+class RecommendationFailReq(StrictModel):
+    """사용자 명시 신호 — 추천 자세 fail 기록. 다음 추천 생성 시 제외.
+
+    카테고리:
+      - "not_visible": [이동] 후 보드 화면 밖
+      - "red": 도달했고 보이지만 한 장 단위 hint 빨강 (tilt extreme / 코너 부족)
+      - "motion_fail": 도달 실패 (IK 통과했지만 motion 자체 fail)
+    """
+
+    anchor_id: str
+    category: str  # "not_visible" | "red" | "motion_fail"
+
+
+class RecommendationFailRes(StrictModel):
+    excluded_count: int
+
+
+# ─── Service: CALIB_HANDEYE_MULTI_START ──────────────────────────────
+
+
+class MultiStartReq(StrictModel):
+    """Multi-start BA 명시 트리거 — random init 다중 시도 → 가장 좋은 σ 선택.
+
+    Local minimum 자리 escape. 사용자가 saturate 알림 받고 시도, 또는
+    [수동 모드 종료] 시점 자동 트리거.
+    """
+
+    n_starts: int = 10
+    mode: str = "physical_sag"
+
+
+class MultiStartRes(StrictModel):
+    n_tried: int
+    n_converged: int
+    sigma_rot_deg: float | None
+    sigma_t_mm: float | None
+    improvement_rot_deg: float | None
+    improvement_t_mm: float | None
 
 
 # ─── Not typed (legacy dict handler 유지) ────────────────────────────

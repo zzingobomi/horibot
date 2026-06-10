@@ -19,6 +19,9 @@ export const Topic = {
   TASK_TREE: "horibot/task/tree",
   TASK_STEP_RESULT: "horibot/task/step_result",
   CALIB_HANDEYE_PREVIEW: "horibot/{robot_id}/calib/state/handeye_preview",
+  CALIB_HANDEYE_SIGMA: "horibot/{robot_id}/calib/state/handeye_sigma",
+  CALIB_HANDEYE_RECOMMENDATIONS: "horibot/{robot_id}/calib/state/handeye_recommendations",
+  CALIB_HANDEYE_SATURATE: "horibot/{robot_id}/calib/state/handeye_saturate",
   POINTCLOUD_STREAM: "horibot/{robot_id}/pointcloud/stream",
 } as const;
 export type TopicKey = (typeof Topic)[keyof typeof Topic];
@@ -41,6 +44,9 @@ export type TopicPayloadMap = {
   "horibot/task/tree": unknown;
   "horibot/task/step_result": unknown;
   "horibot/{robot_id}/calib/state/handeye_preview": unknown;
+  "horibot/{robot_id}/calib/state/handeye_sigma": components["schemas"]["HandeyeSigmaState"];
+  "horibot/{robot_id}/calib/state/handeye_recommendations": unknown;
+  "horibot/{robot_id}/calib/state/handeye_saturate": unknown;
 };
 
 export const ServiceKey = {
@@ -64,6 +70,10 @@ export const ServiceKey = {
   CALIB_HANDEYE_COMMIT: "horibot/{robot_id}/calib/srv/handeye/commit",
   CALIB_HANDEYE_LIST_POSES: "horibot/{robot_id}/calib/srv/handeye/list_poses",
   CALIB_HANDEYE_PREVIEW_ENABLE: "horibot/{robot_id}/calib/srv/handeye/preview_enable",
+  CALIB_HANDEYE_RECOMMENDATION_FAIL: "horibot/{robot_id}/calib/srv/handeye/recommendation_fail",
+  CALIB_HANDEYE_MULTI_START: "horibot/{robot_id}/calib/srv/handeye/multi_start",
+  CALIB_BACKUP_LIST: "horibot/{robot_id}/calib/srv/backup/list",
+  CALIB_BACKUP_RESTORE: "horibot/{robot_id}/calib/srv/backup/restore",
   TASK_STOP: "horibot/task/srv/stop",
   TASK_PAUSE: "horibot/task/srv/pause",
   TASK_RESUME: "horibot/task/srv/resume",
@@ -107,6 +117,10 @@ export type ServiceMap = {
   "horibot/{robot_id}/calib/srv/handeye/commit": { req: Record<string, never>; res: components["schemas"]["HandeyeCommitRes"] };
   "horibot/{robot_id}/calib/srv/handeye/list_poses": { req: Record<string, never>; res: components["schemas"]["HandeyeListPosesRes"] };
   "horibot/{robot_id}/calib/srv/handeye/preview_enable": { req: components["schemas"]["HandeyePreviewEnableReq"]; res: components["schemas"]["HandeyePreviewEnableRes"] };
+  "horibot/{robot_id}/calib/srv/handeye/recommendation_fail": { req: unknown; res: unknown };
+  "horibot/{robot_id}/calib/srv/handeye/multi_start": { req: unknown; res: unknown };
+  "horibot/{robot_id}/calib/srv/backup/list": { req: Record<string, never>; res: components["schemas"]["BackupListRes"] };
+  "horibot/{robot_id}/calib/srv/backup/restore": { req: components["schemas"]["BackupRestoreReq"]; res: components["schemas"]["BackupRestoreRes"] };
   "horibot/task/srv/stop": { req: Record<string, never>; res: Record<string, never> };
   "horibot/task/srv/pause": { req: Record<string, never>; res: Record<string, never> };
   "horibot/task/srv/resume": { req: Record<string, never>; res: Record<string, never> };

@@ -5,13 +5,19 @@ import { ServiceKey } from "@/constants/topics";
 import type { NextPoseRecommendation } from "./types";
 
 interface Props {
-  // null: 아직 한 번도 계산 안 됨 (초기 안내 표시)
-  // []  : 계산했지만 추천 후보 0개 (σ 충분히 좋거나 변주 여유 없음)
-  // [..]: 후보 N개
+  // null: 아직 한 번도 publish 안 됨 (Phase 2 진입 직후 backend 보내기 전)
+  // []  : 추천 후보 0개 (hand_eye / 보드 위치 추정 안 됨, 모든 anchor IK fail 등)
+  // [..]: 후보 N개 (sphere shell anchor — 정면 / 좌 / 우 / 위 / 아래)
   recommendations: NextPoseRecommendation[] | null;
   visited: Set<number>;
   activeIndex: number | null;
   onMoved: (index: number) => void;
+  // 사용자 명시 신호 — 추천 행의 [👎] 버튼 누름. anchor_id + 카테고리.
+  // backend 가 fail mark + 다음 추천 제외.
+  onReportFail?: (
+    anchorId: string,
+    category: "not_visible" | "red" | "motion_fail",
+  ) => Promise<void> | void;
   disabled?: boolean;
 }
 
@@ -36,6 +42,7 @@ export function NextPoseCard({
   visited,
   activeIndex,
   onMoved,
+  onReportFail,
   disabled,
 }: Props) {
   const [expanded, setExpanded] = useState<number | null>(null);
@@ -57,38 +64,33 @@ export function NextPoseCard({
     }
   };
 
-  // 초기 안내 (계산 전)
+  // Phase 2 진입 직후 backend publish 전 (보통 짧음).
   if (recommendations === null) {
     return (
-      <div className="rounded-lg border bg-card p-4 flex flex-col gap-2">
-        <h2 className="text-sm font-semibold">다음 자세 추천</h2>
-        <p className="text-xs text-muted-foreground leading-snug">
-          직접 자세 잡고 [캡처]를 몇 번 (권장 10장) 누른 뒤 [계산]을 한 번
-          누르세요. 그러면 다음 자세 후보 리스트가 여기 표시됩니다. 이후
-          [이동]→카메라 확인→[캡처]→[계산] 반복.
+      <div className="flex flex-col gap-2">
+        <p className="text-[11px] text-zinc-500 leading-snug">
+          추천 자세 계산 중...
         </p>
       </div>
     );
   }
 
-  // 계산했지만 후보 0개
+  // 추천 후보 0개 — 모든 anchor 가 IK fail / visibility fail / 사용자 명시 fail.
   if (recommendations.length === 0) {
     return (
-      <div className="rounded-lg border bg-card p-4 flex flex-col gap-2">
-        <h2 className="text-sm font-semibold">다음 자세 추천</h2>
-        <p className="text-xs text-muted-foreground leading-snug">
-          추천 후보 없음 — σ가 충분히 낮거나 변주 여유 없음. 결과 확인 후 만족
-          하면 COMMIT, 더 줄이고 싶으면 자유 캡처 후 [계산].
+      <div className="flex flex-col gap-2">
+        <p className="text-[11px] text-zinc-500 leading-snug">
+          추천 후보 없음 — 사용자 명시 fail 다수, IK 솔러블 자세 없음, 또는 σ
+          충분히 낮음. [캡처] 자유 자세 시도 또는 [COMMIT].
         </p>
       </div>
     );
   }
 
   return (
-    <div className="rounded-lg border bg-card p-3 flex flex-col gap-2 shrink-0">
+    <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between px-1">
-        <h2 className="text-sm font-semibold">다음 자세 추천</h2>
-        <span className="text-[10px] text-muted-foreground font-mono">
+        <span className="text-[10px] text-zinc-500 font-mono">
           {recommendations.length}개 후보
         </span>
       </div>
@@ -99,6 +101,10 @@ export function NextPoseCard({
           const isMoving = movingIndex === i;
           const isVisited = visited.has(i);
           const isActive = activeIndex === i;
+          // visibility gate — backend 가 보드 reproject 했을 때 화면 밖이면 false.
+          // hard filter 아님 — 사용자가 [이동] 시도 가능하되 회색으로 hint.
+          const visKnown = rec.visible !== undefined;
+          const isInvisible = visKnown && rec.visible === false;
           return (
             <li
               key={i}
@@ -106,9 +112,11 @@ export function NextPoseCard({
                 "rounded-md border text-[11px] " +
                 (isActive
                   ? "border-primary/60 bg-primary/5"
-                  : isVisited
-                    ? "border-border bg-muted/30"
-                    : "border-border bg-card")
+                  : isInvisible
+                    ? "border-border/40 bg-muted/10 opacity-60"
+                    : isVisited
+                      ? "border-border bg-muted/30"
+                      : "border-border bg-card")
               }
             >
               {/* 헤드라인 행 — 한 줄 압축 */}
@@ -123,6 +131,14 @@ export function NextPoseCard({
                   title={isExpanded ? "접기" : "펼치기"}
                 >
                   <span className="font-medium truncate">{rec.label}</span>
+                  {isInvisible && (
+                    <span
+                      className="text-amber-500 shrink-0 text-[9px] font-mono"
+                      title={rec.visibility_reason ?? "보드 안 보임"}
+                    >
+                      ⚠ 안보임
+                    </span>
+                  )}
                   {isVisited && (
                     <span
                       className="text-muted-foreground shrink-0"
@@ -146,12 +162,66 @@ export function NextPoseCard({
                 </Button>
               </div>
 
-              {/* 펼침 — reason 텍스트 + joint 5개 */}
+              {/* 펼침 — reason + joints + 명시 신호 [👎] 3종 */}
               {isExpanded && (
                 <div className="px-2 pb-2 pt-0 flex flex-col gap-1.5 border-t border-border/50">
                   <p className="text-[10.5px] text-muted-foreground leading-snug mt-1.5">
                     {rec.reason}
                   </p>
+                  {onReportFail && rec.diagnostics?.anchor_id && (
+                    <div className="flex flex-col gap-1">
+                      <p className="text-[9.5px] text-zinc-500">
+                        이 자세 별로 — 사유 알려줘 (backend 가 다음 추천 제외):
+                      </p>
+                      <div className="flex gap-1 flex-wrap">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-5 px-1.5 text-[9.5px]"
+                          onClick={() =>
+                            void onReportFail(
+                              String(rec.diagnostics?.anchor_id ?? ""),
+                              "not_visible",
+                            )
+                          }
+                          disabled={disabled}
+                          title="도달 후 보드 화면 밖"
+                        >
+                          👎 안 보임
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-5 px-1.5 text-[9.5px]"
+                          onClick={() =>
+                            void onReportFail(
+                              String(rec.diagnostics?.anchor_id ?? ""),
+                              "red",
+                            )
+                          }
+                          disabled={disabled}
+                          title="보이는데 overlay 빨강 (tilt extreme / 코너 부족)"
+                        >
+                          👎 빨강
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-5 px-1.5 text-[9.5px]"
+                          onClick={() =>
+                            void onReportFail(
+                              String(rec.diagnostics?.anchor_id ?? ""),
+                              "motion_fail",
+                            )
+                          }
+                          disabled={disabled}
+                          title="도달 실패 (motion 자체 fail)"
+                        >
+                          👎 도달 실패
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   <div className="rounded bg-muted/40 p-1.5 font-mono text-[10px] grid grid-cols-5 gap-x-2 gap-y-0.5">
                     {rec.joints.map((j, ji) => {
                       const isPrimary = ji === rec.primary_axis;

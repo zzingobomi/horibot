@@ -30,10 +30,19 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from math import degrees, radians
+from typing import Any, Callable, Sequence
+
+import cv2
+import numpy as np
+from scipy.spatial.transform import Rotation
 
 from . import joint_distribution as jd
 
 logger = logging.getLogger(__name__)
+
+
+VisibilityCheck = Callable[[list[float]], tuple[bool, str]]
+"""후보 joint angles → (visible, reason). visibility_check 인자."""
 
 # 잔차 큰 포즈를 base로 추천 자세를 만들 때 J1/J4/J5 중 어느 축을 변주할지
 # 우선순위 (hand-eye 회전 추정 영향 큰 순). 0-indexed: 3=J4, 0=J1, 4=J5.
@@ -73,6 +82,8 @@ class NextPoseRecommendation:
     primary_axis: int  # 0..4 (어느 축이 주요 변경)
     source: str  # "high_residual" | "distribution"
     diagnostics: dict = field(default_factory=dict)
+    visible: bool = True  # visibility_check 통과 여부 (기본 True — check 안 했으면 미상)
+    visibility_reason: str = "unchecked"
 
 
 def recommend_many(
@@ -82,17 +93,20 @@ def recommend_many(
     current_joint_angles_rad: list[float],
     arm_motor_ids: list[int],
     joint_limits_rad: list[tuple[float, float]],
+    visibility_check: VisibilityCheck | None = None,
 ) -> list[NextPoseRecommendation]:
-    """다음 캡처 후보 N개 반환. 빈 리스트면 추천 없음(σ 충분히 좋거나 변주 여유 없음).
+    """다음 캡처 후보 N개 반환.
 
     Args:
-        last_compute: 직전 _srv_handeye_compute 결과 dict.
-            없으면 분포 기반만 사용.
-        joint_angles_per_pose_at_compute: 직전 compute의 *해석된* joint angles
-            (URDF rad). last_compute의 per_pose_residual과 같은 순서.
-        current_joint_angles_rad: 분포 fallback의 base가 될 현재 모터 위치.
+        last_compute: 직전 compute 결과. 없으면 분포 기반만.
+        joint_angles_per_pose_at_compute: 직전 compute 의 해석된 joint angles
+            (URDF rad). last_compute 의 per_pose_residual 과 같은 순서.
+        current_joint_angles_rad: 분포 fallback 의 base 가 될 현재 모터 위치.
         arm_motor_ids: [1..5]
         joint_limits_rad: PybulletSolver.joint_limits(5)
+        visibility_check: 후보 자세에서 보드가 카메라 frame 안인지 확인 함수.
+            None 이면 visibility 표시만 "unchecked" 로 박힘. intrinsic + hand_eye +
+            board base 추정 모두 있을 때만 caller 가 제공.
     """
     n_axes = min(len(arm_motor_ids), len(joint_limits_rad), 5)
     if len(current_joint_angles_rad) < n_axes:
@@ -100,7 +114,6 @@ def recommend_many(
 
     out: list[NextPoseRecommendation] = []
 
-    # 1) 잔차 큰 포즈 기반 후보 — 우선순위 높음
     out.extend(
         _from_high_residual_many(
             last_compute=last_compute,
@@ -111,7 +124,6 @@ def recommend_many(
         )
     )
 
-    # 2) 분포 fallback — 잔차 자리 채운 뒤 남은 슬롯에만
     remaining = MAX_RECOMMENDATIONS - len(out)
     if remaining > 0:
         out.extend(
@@ -125,7 +137,77 @@ def recommend_many(
             )
         )
 
+    # visibility 마크 — 각 후보의 보드 가시성. UI 는 visible=false 후보를 회색
+    # 처리하되 사용자가 원하면 시도 가능 (gate 가 hard filter 가 아니라 hint).
+    if visibility_check is not None:
+        for rec in out:
+            rec_rad = [radians(j["degree"]) for j in rec.joints]
+            visible, reason = visibility_check(rec_rad)
+            rec.visible = visible
+            rec.visibility_reason = reason
+
     return out[:MAX_RECOMMENDATIONS]
+
+
+def is_pose_visible(
+    joint_angles_rad: list[float],
+    *,
+    fk_fn: Callable[[list[float]], tuple[Any, Any]],
+    camera_matrix: np.ndarray,
+    dist_coeffs: np.ndarray,
+    image_size: tuple[int, int],
+    hand_eye_R: np.ndarray,
+    hand_eye_t: np.ndarray,
+    board_corners_base: np.ndarray,
+    margin: float = 0.05,
+) -> tuple[bool, str]:
+    """후보 자세에서 ChArUco 보드 4 외곽 코너가 카메라 frame 의 margin 영역 안인지.
+
+    cam2base = gripper2base · cam2gripper (hand_eye) → 그 역으로 base-frame 보드
+    코너를 cam frame 으로 → cv2.projectPoints → image frame. 4 코너 모두 margin
+    안이고 모두 카메라 앞 (z > epsilon) 이면 visible.
+
+    margin: 화면 가장자리 안전 영역 비율 (0.05 = 5%). 검출 신뢰성 위해 살짝 안쪽.
+    """
+    try:
+        R_g2b, t_g2b = fk_fn(joint_angles_rad)
+    except Exception as e:
+        return False, f"FK 실패: {e}"
+
+    T_g2b = np.eye(4)
+    T_g2b[:3, :3] = np.asarray(R_g2b)
+    T_g2b[:3, 3] = np.asarray(t_g2b).reshape(3)
+    T_c2g = np.eye(4)
+    T_c2g[:3, :3] = hand_eye_R
+    T_c2g[:3, 3] = np.asarray(hand_eye_t).reshape(3)
+    T_c2b = T_g2b @ T_c2g
+    T_b2c = np.linalg.inv(T_c2b)
+
+    homo = np.hstack(
+        [board_corners_base, np.ones((board_corners_base.shape[0], 1))]
+    )
+    corners_cam = (T_b2c @ homo.T).T[:, :3]
+
+    if np.any(corners_cam[:, 2] <= 0.01):
+        return False, "보드가 카메라 뒤"
+
+    img_pts, _ = cv2.projectPoints(
+        corners_cam.reshape(-1, 1, 3),
+        np.zeros(3),
+        np.zeros(3),
+        camera_matrix,
+        dist_coeffs,
+    )
+    pts = img_pts.reshape(-1, 2)
+    w, h = image_size
+    margin_x = w * margin
+    margin_y = h * margin
+
+    if not np.all((pts[:, 0] >= margin_x) & (pts[:, 0] <= w - margin_x)):
+        return False, "좌우 화면 벗어남"
+    if not np.all((pts[:, 1] >= margin_y) & (pts[:, 1] <= h - margin_y)):
+        return False, "상하 화면 벗어남"
+    return True, "visible"
 
 
 def _from_high_residual_many(
@@ -303,6 +385,175 @@ def _from_distribution_many(
     return out
 
 
+def recommend_geometry(
+    *,
+    board_corners_base: np.ndarray,
+    ik_fn: Callable[
+        [
+            tuple[float, float, float],
+            tuple[float, float, float, float] | None,
+            Sequence[float] | None,
+        ],
+        list[float] | None,
+    ],
+    hand_eye_R: np.ndarray,
+    hand_eye_t: np.ndarray,
+    arm_motor_ids: list[int],
+    joint_limits_rad: list[tuple[float, float]],
+    current_joint_angles_rad: Sequence[float] | None = None,
+    distance_m: float = 0.25,
+    visibility_check: VisibilityCheck | None = None,
+    excluded_ids: set[str] | None = None,
+) -> list[NextPoseRecommendation]:
+    """보드 sphere shell anchor 기반 EE pose IK sampling.
+
+    Anchor 5개 (정면 / 좌측 / 우측 / 위쪽 / 아래쪽) — 보드 위 distance sphere shell.
+    각 anchor 에서 camera z 축 → board center 향함 (look-at). inv(hand_eye) 로
+    EE pose 자체 derive → IK 풀어 joint angles. fail (IK 풀림 X / joint limits 밖 /
+    visibility fail) drop.
+
+    `excluded_ids`: 사용자가 명시 신호 ([👎]) 로 fail 표시한 추천 ID. 다음 추천
+    생성 시 제외.
+    """
+    if board_corners_base.shape != (4, 3):
+        return []
+
+    board_center = board_corners_base.mean(axis=0)
+    v1 = board_corners_base[1] - board_corners_base[0]
+    v2 = board_corners_base[3] - board_corners_base[0]
+    board_normal = np.cross(v1, v2)
+    norm_n = np.linalg.norm(board_normal)
+    if norm_n < 1e-9:
+        return []
+    board_normal = board_normal / norm_n
+    if board_normal[2] < 0:
+        board_normal = -board_normal
+
+    world_up = np.array([0.0, 0.0, 1.0])
+    if abs(np.dot(board_normal, world_up)) > 0.95:
+        tangent_x = np.array([1.0, 0.0, 0.0])
+    else:
+        tangent_x = np.cross(world_up, board_normal)
+        tangent_x = tangent_x / max(np.linalg.norm(tangent_x), 1e-9)
+    tangent_y = np.cross(board_normal, tangent_x)
+    tangent_y = tangent_y / max(np.linalg.norm(tangent_y), 1e-9)
+
+    side_offset = 0.12
+    anchors: list[tuple[str, np.ndarray]] = [
+        ("정면", board_center + distance_m * board_normal),
+        (
+            "좌측",
+            board_center + distance_m * board_normal * 0.85 + side_offset * tangent_x,
+        ),
+        (
+            "우측",
+            board_center + distance_m * board_normal * 0.85 - side_offset * tangent_x,
+        ),
+        (
+            "위쪽",
+            board_center + distance_m * board_normal * 0.85 + side_offset * tangent_y,
+        ),
+        (
+            "아래쪽",
+            board_center + distance_m * board_normal * 0.85 - side_offset * tangent_y,
+        ),
+    ]
+
+    # hand_eye inverse: gripper-to-camera
+    R_g2c = hand_eye_R.T
+    t_g2c = -R_g2c @ np.asarray(hand_eye_t).reshape(3)
+
+    out: list[NextPoseRecommendation] = []
+    excluded = excluded_ids or set()
+    n_axes = min(len(arm_motor_ids), len(joint_limits_rad), 5)
+
+    for idx, (label, cam_pos) in enumerate(anchors):
+        rec_id = f"geometry_{idx}"
+        if rec_id in excluded:
+            continue
+
+        cam_z = board_center - cam_pos
+        cz_norm = np.linalg.norm(cam_z)
+        if cz_norm < 1e-9:
+            continue
+        cam_z = cam_z / cz_norm
+
+        if abs(np.dot(cam_z, world_up)) > 0.95:
+            cam_x = np.array([1.0, 0.0, 0.0])
+        else:
+            cam_x = np.cross(world_up, cam_z)
+            cam_x = cam_x / max(np.linalg.norm(cam_x), 1e-9)
+        cam_y = np.cross(cam_z, cam_x)
+        cam_y = cam_y / max(np.linalg.norm(cam_y), 1e-9)
+
+        R_cam_in_base = np.column_stack([cam_x, cam_y, cam_z])
+        R_ee_in_base = R_cam_in_base @ R_g2c
+        t_ee_in_base = R_cam_in_base @ t_g2c + cam_pos
+
+        target_pos = (
+            float(t_ee_in_base[0]),
+            float(t_ee_in_base[1]),
+            float(t_ee_in_base[2]),
+        )
+        try:
+            quat = Rotation.from_matrix(R_ee_in_base).as_quat()
+        except ValueError:
+            continue
+        target_quat = (
+            float(quat[0]),
+            float(quat[1]),
+            float(quat[2]),
+            float(quat[3]),
+        )
+
+        try:
+            joint_angles = ik_fn(target_pos, target_quat, current_joint_angles_rad)
+        except Exception as e:
+            logger.debug("[geometry] IK 실패 anchor=%s: %s", label, e)
+            joint_angles = None
+        if joint_angles is None or len(joint_angles) < n_axes:
+            continue
+
+        within_limits = all(
+            joint_limits_rad[i][0] <= joint_angles[i] <= joint_limits_rad[i][1]
+            for i in range(n_axes)
+        )
+        if not within_limits:
+            continue
+
+        visible = True
+        visibility_reason = "unchecked"
+        if visibility_check is not None:
+            visible, visibility_reason = visibility_check(
+                list(joint_angles[:n_axes])
+            )
+
+        out.append(
+            NextPoseRecommendation(
+                joints=[
+                    {"id": int(mid), "degree": float(degrees(ang))}
+                    for mid, ang in zip(arm_motor_ids[:n_axes], joint_angles[:n_axes])
+                ],
+                reason=(
+                    f"{label} — 보드 위 ~{distance_m * 100:.0f}cm sphere shell, "
+                    f"카메라 z 축 보드 향함"
+                ),
+                label=label,
+                primary_axis=0,
+                source="geometry",
+                diagnostics={
+                    "mode": "geometry",
+                    "anchor_id": rec_id,
+                    "anchor_label": label,
+                },
+                visible=visible,
+                visibility_reason=visibility_reason,
+            )
+        )
+
+    return out
+
+
 def _is_duplicate(
     candidate_rad: list[float], existing: list[NextPoseRecommendation]
 ) -> bool:
@@ -328,4 +579,6 @@ def to_dict(rec: NextPoseRecommendation) -> dict:
         "primary_axis": rec.primary_axis,
         "source": rec.source,
         "diagnostics": rec.diagnostics,
+        "visible": rec.visible,
+        "visibility_reason": rec.visibility_reason,
     }

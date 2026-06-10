@@ -732,18 +732,18 @@ class LinkCoordinates:
         with self._cache_lock:
             return LinkOffsets(trans=dict(self._offsets.trans), rot=dict(self._offsets.rot))
 
-    def commit_offsets(self, delta, method):
-        """COMMIT 시 cumulative 합산: 디스크 save + 메모리 reload."""
-        existing = link_offsets_io.load(LINK_OFFSETS_PATH)
-        merged   = link_offsets_io.merge_delta(existing, delta)
-        link_offsets_io.save(LINK_OFFSETS_PATH, merged, method=method)
+    def commit_absolute(self, offsets, method):
+        """COMMIT 시 atomic 갱신: 디스크 *overwrite* + 메모리 reload."""
+        link_offsets_io.save(LINK_OFFSETS_PATH, offsets, method=method)
         with self._cache_lock:
-            self._offsets = LinkOffsets(trans=dict(merged.trans), rot=dict(merged.rot))
+            self._offsets = LinkOffsets(trans=dict(offsets.trans), rot=dict(offsets.rot))
         return self.snapshot()
 ```
 
-`commit_offsets`는 cumulative — 매 라운드 BA가 추정한 *잔여 delta*를 디스크에 누적.
-첫 commit이 큰 값, 다음 commit은 0에 가까워야 _진짜 수렴_ 신호.
+> **2026-06-10 정정**: 이 위 § 8c 의 "cumulative" 표현은 stale.
+> `commit_absolute` 4종 (joint/link/sag/tool) 모두 overwrite contract. caller (calibration_node) 가 (현재 disk + BA delta) 를 absolute 로 변환한 후 한 번에 덮어쓴다.
+> joint 만 옛 `commit_offsets(delta)` cumulative 였던 시절은 [calibration_ux_rewrite.md §6](calibration_ux_rewrite.md) 의 Bug A (last_compute stale double-add) 노출 자리 → API 통일로 제거.
+> 진짜 수렴 신호는 "다음 라운드 BA 가 추정하는 *delta* 가 0 에 가까움" — 이건 그대로 (BA math 내부).
 
 ### 10b. PybulletSolver 수정
 

@@ -10,7 +10,12 @@
  */
 import { useCallback, useRef } from "react";
 import { useParams } from "react-router-dom";
-import { DockviewReact, type DockviewReadyEvent } from "dockview";
+import {
+  DockviewDefaultTab,
+  DockviewReact,
+  type DockviewReadyEvent,
+  type IDockviewPanelHeaderProps,
+} from "dockview";
 import { RotateCcw } from "lucide-react";
 import {
   PANEL_COMPONENTS,
@@ -35,6 +40,14 @@ export type PanelSpec = {
 interface ModeDockviewProps {
   mode: string;
   panels: PanelSpec[];
+}
+
+/**
+ * Tab close 버튼 hide — panel close 후 다시 살리는 UI 가 없어서 (Reset layout
+ * 버튼이 fallback). 사용자 실수로 panel 잃지 않게 hideClose.
+ */
+function LockedTab(props: IDockviewPanelHeaderProps) {
+  return <DockviewDefaultTab {...props} hideClose />;
 }
 
 export function ModeDockview({ mode, panels }: ModeDockviewProps) {
@@ -121,6 +134,7 @@ export function ModeDockview({ mode, panels }: ModeDockviewProps) {
         <DockviewReact
           className="dockview-theme-dark"
           components={PANEL_COMPONENTS}
+          defaultTabComponent={LockedTab}
           onReady={onReady}
         />
       </div>

@@ -289,6 +289,12 @@ PointCloudNode (PC) — [backend/nodes/application/pointcloud_node.py](backend/n
 
 확장 BA + 물리 sag 모델로 현재 σ_rot **0.65°** / σ_t **7.94mm** ([docs/hand_eye_extended_ba.md](docs/hand_eye_extended_ba.md)). TSDF GOOD threshold(σ_rot <1°, σ_t <10mm) 안. 산출물별 코드 흐름 + COMMIT 후 어디까지 자동 반영되는지는 [docs/calibration_apply_flow.md](docs/calibration_apply_flow.md), 캘 절차/UI 사용법은 [docs/calibration_workflow.md](docs/calibration_workflow.md).
 
+**Commit API (4종 통일, 2026-06-10)** — `commit_absolute(absolute, method, robot_id)` 가 disk overwrite + memory reload. caller (calibration_node) 가 BA delta + 현재 disk 를 absolute 로 reconcile 한 후 한 번에 덮어씀 → COMMIT 두 번 누름 == idempotent (Bug A fix, [docs/calibration_ux_rewrite.md §6.2 / §7](docs/calibration_ux_rewrite.md)). 매 COMMIT 진입 시 [`backup.py`](backend/modules/calibration/backup.py) 가 현재 disk 를 `.history/<ts>_pre-commit/` 통째 snapshot — `CALIB_BACKUP_LIST` / `CALIB_BACKUP_RESTORE` 서비스로 frontend Rollback 탭 picker. `.history/` 는 git ignored.
+
+**ChArUco 검출 (2026-06-10)** — [`board.py`](backend/modules/calibration/board.py) 가 보드 spec SSOT (5×7 / 25mm / 18mm / DICT_4X4 / start_id 0). plain chessboard → ChArUco 로 전환되어 일부 가림에도 검출 살아남음. `detect()` / `match_object_points()` / `draw()` 한 진입점을 intrinsic / handeye_capture / preview_loop 가 공유.
+
+**자동 BA + σ live (2026-06-10)** — `_srv_handeye_capture` 끝에 `pose_count >= MIN_POSES_FOR_COMPUTE` 면 자동 BA → `CALIB_HANDEYE_SIGMA` topic 으로 `HandeyeSigmaState` publish. 사용자가 [COMPUTE] 별도로 안 눌러도 매 capture 후 frontend σ badge 갱신. visibility gate (`next_pose_planner.is_pose_visible`) 가 추천 후보의 보드 reproject → 화면 밖이면 `visible=false` 마크 (UI 회색 hint, hard filter 아님).
+
 ### Frontend stores & 3D 워크스페이스
 
 상태는 [frontend/src/store/](frontend/src/store/)의 Zustand store로 분리 (`robotStore`, `cameraStore`, `motionStore`, `taskStore`, `taskResultStore`, `detectorStore`, `systemStore`, `sceneStore`, `pointCloudStore`).

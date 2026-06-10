@@ -76,6 +76,10 @@ PUBLIC_TOPICS: dict[str, TopicPayload] = {
     Topic.TASK_TREE: None,
     Topic.TASK_STEP_RESULT: None,
     Topic.CALIB_HANDEYE_PREVIEW: None,
+    Topic.CALIB_HANDEYE_SIGMA: _calibration.HandeyeSigmaState,
+    # 추천 자세 + saturate state — 동적 dict (recommendations list 자체 자리, sigma_history list)
+    Topic.CALIB_HANDEYE_RECOMMENDATIONS: None,
+    Topic.CALIB_HANDEYE_SATURATE: None,
     # ── Internal (의도적 미등재) ──
     # Topic.CAMERA_DEPTH_FRAME    — pointcloud_node 만 구독 (binary)
 }
@@ -124,6 +128,14 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
     Service.CALIB_HANDEYE_PREVIEW_ENABLE: (
         _calibration.HandeyePreviewEnableReq,
         _calibration.HandeyePreviewEnableRes,
+    ),
+    Service.CALIB_HANDEYE_RECOMMENDATION_FAIL: (
+        _calibration.RecommendationFailReq,
+        _calibration.RecommendationFailRes,
+    ),
+    Service.CALIB_HANDEYE_MULTI_START: (
+        _calibration.MultiStartReq,
+        _calibration.MultiStartRes,
     ),
     Service.CALIB_BACKUP_LIST: (EmptyData, _calibration.BackupListRes),
     Service.CALIB_BACKUP_RESTORE: (

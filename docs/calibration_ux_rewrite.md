@@ -334,3 +334,43 @@ D405 intrinsic = factory seed 사용 ([calibration_workflow.md §4](calibration_
 - ✅ ChArUco 전환 필요 확정
 - ✅ 자동 backup + rollback safety net 필요 확정 (메커니즘은 O1 미결)
 - ⏸ O1-O7 다음 세션 판단
+
+## 7. 2026-06-10 실 산출물 (이번 commit 박힌 것)
+
+§ 6 까지 결정만 정리. 본 절은 실제 코드로 박힌 결과. § 6.8 의 28-item scope 와 비교용.
+
+### 7.1 Backend
+- **commit_absolute 4종 통일** ([joint/link/sag/tool_coordinates.py](../backend/core/coords/)) — 옛 `commit_offsets` (joint cumulative) / `commit_offset` (tool 단수) 제거. 4종 모두 absolute overwrite + memory reload + `reload()` 메서드 (rollback 용).
+- **calibration_node Bug A fix** — `_srv_handeye_compute` 가 BA delta + 현재 disk 로 absolute 계산해 `last_compute["_joint_absolute_by_id"]` stash. `_srv_handeye_commit` 끝에 `st.last_compute = None` invalidate → 두 번 클릭 시 "먼저 COMPUTE" 응답 → disk idempotent.
+- **shared `_run_ba_and_stash` helper** — 수동 COMPUTE / 자동 BA 동일 logic 한 자리.
+- **ChArUco 전환** ([modules/calibration/board.py](../backend/modules/calibration/board.py)) — plain chessboard → ChArUco (5×7/25/18/DICT_4X4). 보드 spec SSOT + `detect()` / `match_object_points()` / `draw()` / `board_corner_points_3d()`. `intrinsic.py` + `calibration_node._preview_loop` + `_srv_handeye_capture` 모두 본 모듈 사용. 일부 가림에도 검출 살아남음 → 사용자 자세 자유도 ↑.
+- **자동 BA + σ live publish** — `_srv_handeye_capture` 끝에 `pose_count >= MIN_POSES_FOR_COMPUTE` 면 자동 BA → `CALIB_HANDEYE_SIGMA` topic 으로 `HandeyeSigmaState` (σ_rot, σ_t, pose_count, ba_mode, coach_verdict) publish. 사용자 [COMPUTE] 안 눌러도 즉시 σ 확인 (criteria #1 핵심).
+- **visibility gate** ([next_pose_planner.is_pose_visible](../backend/modules/calibration/next_pose_planner.py)) — 후보 자세에서 FK + hand_eye + 보드 base reproject → 4 코너가 카메라 frame margin (5%) 안인지. `_compute_recommendations` 가 (intrinsic + hand_eye + `_estimate_board_base_frame()`) 모두 있을 때 visibility_check 클로저 build → recommend_many 가 `visible` / `visibility_reason` 마크. UI 가 회색 처리 (hard filter 아님).
+- **보드 base 자동 추정** — `_estimate_board_base_frame` 가 모든 capture pose 의 `target2cam` → `gripper2base · cam2gripper · target2cam = target2base` 평균 (origin 평균 + SVD R 평균). hand_eye 안정되며 같이 refine.
+- **Backup `.history/` mechanism** ([modules/calibration/backup.py](../backend/modules/calibration/backup.py)) — `snapshot(calibration_dir, tag, meta)` / `list_snapshots()` / `restore(timestamp)`. 매 COMMIT 진입 시 자동 snapshot. restore 도 직전에 "pre-restore" snapshot → undo 가능. 4종 + intrinsic + handeye_poses 한 묶음.
+- **CALIB_BACKUP_LIST / CALIB_BACKUP_RESTORE 서비스** — `BackupEntry` (timestamp, tag, σ_rot, σ_t, capture_count, ba_mode) 리스트 + restore (restart_required 표시). `restore` 후 4종 Coordinates `reload()` + hand_eye/intrinsic load + `last_compute = None`.
+
+### 7.2 Frontend
+- **NextPoseCard visibility 마크** ([NextPoseCard.tsx](../frontend/src/components/panels/CalibrationActionsPanel/NextPoseCard.tsx)) — `visible=false` 후보 회색 + opacity 0.6 + ⚠ 안보임 라벨 (`visibility_reason` tooltip). hard filter 아님 — [이동] 시도 가능.
+- **σ live badge** ([HandEyeTab.tsx](../frontend/src/components/panels/CalibrationActionsPanel/HandEyeTab.tsx)) — `CALIB_HANDEYE_SIGMA` 구독 → "Hand-Eye — Capture" 헤더 옆 inline (σ_rot ° / σ_t mm). thresholds 기반 색깔 (good/warn/bad).
+- **Rollback 탭** ([RollbackTab.tsx](../frontend/src/components/panels/CalibrationActionsPanel/RollbackTab.tsx)) — 신규. snapshot 리스트 (timestamp / tag / σ_rot / σ_t / capture_count) + restore button. `restart_required=true` 시 백엔드 재시작 안내. Calibration Actions 패널의 3번째 탭.
+- **generated/contract.ts 자동 regen** — `pnpm gen:types` 가 `CALIB_HANDEYE_SIGMA` topic + `CALIB_BACKUP_LIST/RESTORE` service + `BackupEntry/ListRes/RestoreReq/Res` + `HandeyeSigmaState` schema 자동 포함.
+
+### 7.3 Tests / 검증
+- `backend/tests/test_backup.py` — 8 unit tests (snapshot 생성 / meta / list 정렬 / garbage skip / restore roundtrip / pre-restore 자동 / missing timestamp / 정확 복원).
+- mock boot: backend 7 노드 정상 시작, no errors. frontend `pnpm lint` + `pnpm build` clean.
+
+### 7.4 § 6.8 의 28-item 대비 deferred
+- **3D viz layer (HandEyeBoardLayer)** — board pose 시각화. nice-to-have. defer.
+- **panel 8 분할** — Live / Captures / Results / Save 등 panel 단위로 분리. 현재 monolith HandEyeTab + Rollback 탭 추가로 hardware 검증 가능. defer.
+- **Intrinsic 단계 docs** — § 6.5 의 omx+D405 SKIP / USB 시 활성 정책은 코드/UI 그대로, docs 만 다음 commit.
+- 위 셋은 hardware 검증 결과 보고 다음 commit 으로 결정.
+
+### 7.5 다음 단계 — hardware 검증
+
+ChArUco 보드 + omx+D405 재캘:
+1. 첫 캡처 2-3 자유 자세 (보드 base 추정 안 됨, visibility "unchecked")
+2. n=3+ 후 자동 BA 시작 → σ live badge 표시 / visibility gate 활성
+3. 추천 후보 따라가며 capture → σ 수렴 관찰 → COMMIT
+4. **목표**: σ_rot ≤ 0.65° / σ_t ≤ 7.94mm 재현. 3-5 라운드 일관 도달.
+5. 실패 시 Rollback 탭에서 pre-commit snapshot 으로 되돌리기.

@@ -1,13 +1,27 @@
-import cv2
+"""Camera intrinsic 캘리브레이션.
+
+ChArUco 검출 via board.py — plain chessboard 시절 (`findChessboardCornersSB` +
+8×5 CHECKERBOARD 상수) 에선 보드 일부 가림 시 전체 fail → 사용자가 자세 매번
+원위치 잡아야 했음. ChArUco 는 marker 단위 검출 + sub-set 통과라 사용자 자세
+자유도 ↑ (success criteria #1: 재캘 거부감 0).
+
+obj_pts/img_pts 는 frame 마다 길이 다름 — 검출된 ChArUco 코너 수가 가변. board
+의 `matchImagePoints(charuco_corners, charuco_ids)` 가 두 list 를 같은 길이로
+맞춰 반환. cv2.calibrateCamera 가 그 가변 length list 그대로 받음.
+"""
+
+from __future__ import annotations
+
 import logging
-from pathlib import Path
-import numpy as np
 from dataclasses import dataclass
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from . import board as board_module
 
 logger = logging.getLogger(__name__)
-
-CHECKERBOARD = (8, 5)  # 내부 코너 수 (가로, 세로)
-SQUARE_SIZE = 0.025  # 체커보드 한 칸 크기 (미터)
 
 
 @dataclass
@@ -22,50 +36,42 @@ class IntrinsicResult:
 class IntrinsicCalibration:
     def __init__(self):
         self.captured_frames: list[np.ndarray] = []
-        self.obj_points: list[np.ndarray] = []
-        self.img_points: list[np.ndarray] = []
+        # ChArUco 검출 → matchImagePoints 결과 누적. 각 frame 의 길이 가변.
+        self.obj_points: list[np.ndarray] = []  # (N_i, 1, 3) float32
+        self.img_points: list[np.ndarray] = []  # (N_i, 1, 2) float32
         self.result: IntrinsicResult | None = None
-
-        # 3D 체커보드 포인트 준비
-        objp = np.zeros((CHECKERBOARD[0] * CHECKERBOARD[1], 3), np.float32)
-        objp[:, :2] = np.mgrid[0 : CHECKERBOARD[0], 0 : CHECKERBOARD[1]].T.reshape(
-            -1, 2
-        )
-        objp *= SQUARE_SIZE
-        self._objp_template = objp
 
     def capture(self, frame: np.ndarray) -> tuple[bool, np.ndarray]:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        # SB(sector-based)는 조명/블러에 강하고 sub-pixel 정확도까지 내장 → cornerSubPix 불필요.
-        # 캡처 경로는 정확도 우선이라 ACCURACY + EXHAUSTIVE까지 켬.
-        flags = (
-            cv2.CALIB_CB_NORMALIZE_IMAGE
-            | cv2.CALIB_CB_EXHAUSTIVE
-            | cv2.CALIB_CB_ACCURACY
-        )
-        ret, corners = cv2.findChessboardCornersSB(gray, CHECKERBOARD, flags=flags)
+        ok, ch_corners, ch_ids = board_module.detect(gray)
 
         vis = frame.copy()
-        if ret:
-            cv2.drawChessboardCorners(vis, CHECKERBOARD, corners, ret)
-
-            self.obj_points.append(self._objp_template.copy())
-            self.img_points.append(corners)
+        if ok and ch_corners is not None and ch_ids is not None:
+            board_module.draw(vis, ch_corners, ch_ids)
+            obj_pts, img_pts = board_module.match_object_points(
+                ch_corners, ch_ids
+            )
+            self.obj_points.append(obj_pts)
+            self.img_points.append(img_pts)
             self.captured_frames.append(frame.copy())
-            logger.info(f"체커보드 캡처 성공 ({len(self.captured_frames)}장)")
+            logger.info(
+                "ChArUco 캡처 성공 (%d장, 코너 %d개)",
+                len(self.captured_frames),
+                len(ch_ids),
+            )
 
-        return ret, vis
+        return ok, vis
 
     def calibrate(self, image_size: tuple[int, int]) -> IntrinsicResult | None:
         if len(self.obj_points) < 5:
             logger.warning(
-                f"캡처 이미지 부족: {len(self.obj_points)}장 (최소 5장 필요)"
+                "캡처 이미지 부족: %d장 (최소 5장 필요)", len(self.obj_points)
             )
             return None
 
-        # cv2.calibrateCamera 는 cameraMatrix/distCoeffs 가 None 일 때 내부 할당
-        # — opencv-python stub 은 MatLike 강제라 type: ignore 필요.
-        rms, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
+        # cv2.calibrateCamera 는 가변 길이 obj/img list 그대로 받음.
+        # opencv-python stub 은 MatLike 강제라 type: ignore.
+        rms, camera_matrix, dist_coeffs, _rvecs, _tvecs = cv2.calibrateCamera(
             self.obj_points, self.img_points, image_size, None, None  # type: ignore[arg-type,call-overload]
         )
 
@@ -76,12 +82,12 @@ class IntrinsicCalibration:
             image_size=image_size,
             captured_count=len(self.obj_points),
         )
-        logger.info(f"캘리브레이션 완료: RMS={rms:.4f}")
+        logger.info("intrinsic 캘리브 완료: RMS=%.4f", rms)
         return self.result
 
     def save(self, path: str | Path) -> bool:
         if self.result is None:
-            logger.warning("저장할 캘리브레이션 결과가 없습니다")
+            logger.warning("저장할 intrinsic 결과 없음")
             return False
 
         path = Path(path)
@@ -93,7 +99,7 @@ class IntrinsicCalibration:
             rms_error=self.result.rms_error,
             image_size=self.result.image_size,
         )
-        logger.info(f"캘리브레이션 결과 저장: {path}")
+        logger.info("intrinsic 저장: %s", path)
         return True
 
     def load(self, path: str | Path) -> IntrinsicResult | None:

@@ -141,6 +141,44 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * BackupEntry
+         * @description `.history/` 안 한 snapshot 의 picker 표시용 메타.
+         *
+         *     sigma_*\/capture_count/ba_mode 는 commit 시점에 박힘. tag 는 "pre-commit" /
+         *     "pre-restore" 등 origin 구분.
+         */
+        BackupEntry: {
+            /** Timestamp */
+            timestamp: string;
+            /** Tag */
+            tag: string;
+            /** Sigma Rot Deg */
+            sigma_rot_deg?: number | null;
+            /** Sigma T Mm */
+            sigma_t_mm?: number | null;
+            /** Capture Count */
+            capture_count?: number | null;
+            /** Ba Mode */
+            ba_mode?: string | null;
+        };
+        /** BackupListRes */
+        BackupListRes: {
+            /** Snapshots */
+            snapshots: components["schemas"]["BackupEntry"][];
+        };
+        /** BackupRestoreReq */
+        BackupRestoreReq: {
+            /** Timestamp */
+            timestamp: string;
+        };
+        /** BackupRestoreRes */
+        BackupRestoreRes: {
+            /** Restored Timestamp */
+            restored_timestamp: string;
+            /** Restart Required */
+            restart_required: boolean;
+        };
+        /**
          * BasePoseSchema
          * @description World frame 의 robot base pose (m + deg).
          */
@@ -346,6 +384,34 @@ export interface components {
         HandeyeResetRes: {
             /** Pose Count */
             pose_count: number;
+        };
+        /**
+         * HandeyeSigmaState
+         * @description capture 후 자동 BA / 수동 COMPUTE 마다 publish. frontend σ live 표시.
+         *
+         *     BA 실패 / 포즈 부족 시에는 publish 안 함 (직전 σ 유지 또는 frontend 가 unknown).
+         */
+        HandeyeSigmaState: {
+            /** Timestamp */
+            timestamp: number;
+            /** Sigma Rot Deg */
+            sigma_rot_deg: number | null;
+            /** Sigma T Mm */
+            sigma_t_mm: number | null;
+            /** Pose Count */
+            pose_count: number;
+            /** Ba Mode */
+            ba_mode: string | null;
+            /** Ba Converged */
+            ba_converged: boolean;
+            /** Coach Verdict */
+            coach_verdict: string | null;
+            /** Joint Offset Estimated */
+            joint_offset_estimated: boolean;
+            /** Link Offset Estimated */
+            link_offset_estimated: boolean;
+            /** Sag Offset Estimated */
+            sag_offset_estimated: boolean;
         };
         /**
          * Heartbeat
@@ -648,6 +714,9 @@ export interface components {
          * @description OpenAPI schema export only — auto-built from api_contract.
          */
         OpenApiSchemaRegistry: {
+            BackupListRes?: components["schemas"]["BackupListRes"] | null;
+            BackupRestoreReq?: components["schemas"]["BackupRestoreReq"] | null;
+            BackupRestoreRes?: components["schemas"]["BackupRestoreRes"] | null;
             CalibCaptureReq?: components["schemas"]["CalibCaptureReq"] | null;
             CalibCaptureRes?: components["schemas"]["CalibCaptureRes"] | null;
             CameraStatus?: components["schemas"]["CameraStatus"] | null;
@@ -661,6 +730,7 @@ export interface components {
             HandeyePreviewEnableReq?: components["schemas"]["HandeyePreviewEnableReq"] | null;
             HandeyePreviewEnableRes?: components["schemas"]["HandeyePreviewEnableRes"] | null;
             HandeyeResetRes?: components["schemas"]["HandeyeResetRes"] | null;
+            HandeyeSigmaState?: components["schemas"]["HandeyeSigmaState"] | null;
             Heartbeat?: components["schemas"]["Heartbeat"] | null;
             IntrinsicSaveRes?: components["schemas"]["IntrinsicSaveRes"] | null;
             LogMessage?: components["schemas"]["LogMessage"] | null;

@@ -17,6 +17,9 @@ class Topic:
 
     # ─── Calibration ───────────────────────────────────────
     CALIB_HANDEYE_PREVIEW = "horibot/{robot_id}/calib/state/handeye_preview"
+    CALIB_HANDEYE_SIGMA = "horibot/{robot_id}/calib/state/handeye_sigma"
+    CALIB_HANDEYE_RECOMMENDATIONS = "horibot/{robot_id}/calib/state/handeye_recommendations"
+    CALIB_HANDEYE_SATURATE = "horibot/{robot_id}/calib/state/handeye_saturate"
 
     # ─── Task ──────────────────────────────────────────────
     TASK_STATE = "horibot/task/state"
@@ -67,6 +70,8 @@ class Service:
     CALIB_HANDEYE_LIST_POSES = "horibot/{robot_id}/calib/srv/handeye/list_poses"
     CALIB_HANDEYE_PREVIEW_ENABLE = "horibot/{robot_id}/calib/srv/handeye/preview_enable"
     CALIB_HANDEYE_THRESHOLDS = "horibot/{robot_id}/calib/srv/handeye/thresholds"
+    CALIB_HANDEYE_RECOMMENDATION_FAIL = "horibot/{robot_id}/calib/srv/handeye/recommendation_fail"
+    CALIB_HANDEYE_MULTI_START = "horibot/{robot_id}/calib/srv/handeye/multi_start"
     CALIB_CAPTURE = "horibot/{robot_id}/calib/srv/capture"
     CALIB_BACKUP_LIST = "horibot/{robot_id}/calib/srv/backup/list"
     CALIB_BACKUP_RESTORE = "horibot/{robot_id}/calib/srv/backup/restore"

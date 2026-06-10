@@ -39,7 +39,19 @@ OUTLIER_ABS_T_MM: float = 15.0
 OUTLIER_REMOVAL_CAP_RATIO: float = 0.20
 
 # ─── 자세 수 / 다양성 ────────────────────────────────────────────
+# BA 의 수학적 최소. 이 시점부터 hand_eye 가 한 번 추정됨 → 보드 위치 자동 역산
+# (`_estimate_board_base_frame`) → 추천 자세 활성. n<3 단계는 사용자 자유 자세
+# (라이브 ChArUco overlay 가 시각 feedback).
 MIN_POSES_FOR_COMPUTE: int = 3
+
+# σ trust 임계 — BA 가 의미 있는 σ 를 내놓는 최소 자세 수.
+# BA 자유도: standard 9 / extended 20 / physical_sag 22. per-pose residual dof ≈ 6.
+# n=3 이면 residual 18 ≈ DOF 와 거의 동등 → BA 가 noise 까지 fit → σ 인위적으로 작아짐
+# (사용자에게 false confidence). n=8 면 residual 48 ≈ DOF × 2.2 = trust 가능 영역.
+# UI 는 n < MIN_POSES_FOR_TRUSTED_SIGMA 동안 σ 회색 + "신뢰도 낮음" 라벨.
+# 추천 활성 임계 (MIN_POSES_FOR_COMPUTE=3) 와 별개 자리 — σ 색깔 표시 전용.
+MIN_POSES_FOR_TRUSTED_SIGMA: int = 8
+
 RECOMMENDED_POSES: int = 10
 
 # 5DOF 아암 각 조인트의 std (deg) — 이 미만이면 다양성 부족.
@@ -60,6 +72,7 @@ def as_dict() -> dict:
         "outlier_abs_t_mm": OUTLIER_ABS_T_MM,
         "outlier_removal_cap_ratio": OUTLIER_REMOVAL_CAP_RATIO,
         "min_poses_for_compute": MIN_POSES_FOR_COMPUTE,
+        "min_poses_for_trusted_sigma": MIN_POSES_FOR_TRUSTED_SIGMA,
         "recommended_poses": RECOMMENDED_POSES,
         "joint_diversity_threshold_deg": list(JOINT_DIVERSITY_THRESHOLD_DEG),
     }

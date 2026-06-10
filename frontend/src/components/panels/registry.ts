@@ -2,6 +2,7 @@ import { RobotStatePanel } from "@/components/panels/RobotStatePanel";
 import { SceneControlsPanel } from "@/components/panels/SceneControlsPanel";
 import { CalibrationPanel } from "@/components/panels/CalibrationPanel";
 import { CalibrationActionsPanel } from "@/components/panels/CalibrationActionsPanel";
+import { CalibrationCapturePanel } from "@/components/panels/CalibrationCapturePanel";
 import { PointCloudPanel } from "@/components/panels/PointCloudPanel";
 import { PromptPanel } from "@/components/panels/PromptPanel";
 import { TaskProgressPanel } from "@/components/panels/TaskProgressPanel";
@@ -13,6 +14,7 @@ export const PANEL_COMPONENTS = {
   sceneControls: SceneControlsPanel,
   calibration: CalibrationPanel,
   calibrationActions: CalibrationActionsPanel,
+  calibrationCapture: CalibrationCapturePanel,
   pointCloud: PointCloudPanel,
   prompt: PromptPanel,
   taskProgress: TaskProgressPanel,

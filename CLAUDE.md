@@ -291,7 +291,9 @@ PointCloudNode (PC) — [backend/nodes/application/pointcloud_node.py](backend/n
 
 **Commit API (4종 통일, 2026-06-10)** — `commit_absolute(absolute, method, robot_id)` 가 disk overwrite + memory reload. caller (calibration_node) 가 BA delta + 현재 disk 를 absolute 로 reconcile 한 후 한 번에 덮어씀 → COMMIT 두 번 누름 == idempotent (Bug A fix, [docs/calibration_ux_rewrite.md §6.2 / §7](docs/calibration_ux_rewrite.md)). 매 COMMIT 진입 시 [`backup.py`](backend/modules/calibration/backup.py) 가 현재 disk 를 `.history/<ts>_pre-commit/` 통째 snapshot — `CALIB_BACKUP_LIST` / `CALIB_BACKUP_RESTORE` 서비스로 frontend Rollback 탭 picker. `.history/` 는 git ignored.
 
-**ChArUco 검출 (2026-06-10)** — [`board.py`](backend/modules/calibration/board.py) 가 보드 spec SSOT (5×7 / 25mm / 18mm / DICT_4X4 / start_id 0). plain chessboard → ChArUco 로 전환되어 일부 가림에도 검출 살아남음. `detect()` / `match_object_points()` / `draw()` 한 진입점을 intrinsic / handeye_capture / preview_loop 가 공유.
+**ChArUco 검출 (2026-06-10)** — [`board.py`](backend/modules/calibration/board.py) 가 보드 spec SSOT. calib.io PDF generator 입력 (`Rows=5, Columns=7`) → OpenCV `CharucoBoard.size = (squaresX=Columns=7, squaresY=Rows=5)` 컨벤션 매핑. spec: 7×5 squares / 25mm checker / 18mm marker / DICT_4X4_50 / start_id 0 / modern pattern. plain chessboard → ChArUco 로 전환되어 일부 가림에도 검출 살아남음. `detect()` / `detect_full()` (marker outline 포함, preview overlay 용) / `match_object_points()` / `draw()` 한 진입점을 intrinsic / handeye_capture / preview_loop 가 공유.
+
+**tilt SSOT (2026-06-10)** — [`thresholds.py`](backend/modules/calibration/thresholds.py) 의 `TILT_MIN_DEG=30 / TILT_MAX_DEG=70` 가 PnP 권장 범위. backend `next_pose_planner.is_pose_visible` (추천 자세 가시성 게이트) + frontend [`CheckerboardOverlay`](frontend/src/components/panels/calibration/parts/CheckerboardOverlay.tsx) (캡처 가능 임계) 가 같은 임계 공유 — 추천 따라 [이동] 한 자세가 캡처 가능 자세와 일치.
 
 **자동 BA + σ live (2026-06-10)** — `_srv_handeye_capture` 끝에 `pose_count >= MIN_POSES_FOR_COMPUTE` 면 자동 BA → `CALIB_HANDEYE_SIGMA` topic 으로 `HandeyeSigmaState` publish. 사용자가 [COMPUTE] 별도로 안 눌러도 매 capture 후 frontend σ badge 갱신. visibility gate (`next_pose_planner.is_pose_visible`) 가 추천 후보의 보드 reproject → 화면 밖이면 `visible=false` 마크 (UI 회색 hint, hard filter 아님).
 
@@ -306,7 +308,7 @@ PointCloudNode (PC) — [backend/nodes/application/pointcloud_node.py](backend/n
 | `/` | Dashboard | 시스템 운영 overview (Robots Online / System metrics) |
 | `/robots/:id` | RobotsLayout (shared) | focus mode — 한 robot 불투명, 나머지 dim. R3F + meta 만 마운트, panel 은 mode 별 Outlet |
 | `/robots/:id/move` | + RobotMoveMode | Robot State + Motion + Scene Controls |
-| `/robots/:id/calibrate` | + RobotCalibrateMode | Robot State + Calibration + Calibration Actions + Scene Controls |
+| `/robots/:id/calibrate` | + RobotCalibrateMode | Robot State (Torque/Home/Jog 흡수) + Calibration (result) + Calibration Camera + Hand-Eye + Intrinsic + Rollback + Scene Controls |
 | `/robots/:id/scan` | + RobotScanMode | Robot State + Point Cloud + Scene Controls (depth camera 있는 robot 만) |
 | `/world` | WorldPage | multi-robot overview, focus=null |
 | `/tasks/:name` | TasksPage | task multi-robot 실행 (focus=null + prompt/progress/camera panel) |

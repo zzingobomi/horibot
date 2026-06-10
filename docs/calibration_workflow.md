@@ -12,7 +12,7 @@
 2. 자세 잡기 (Move TCP / 토크 OFF 후 수동). 라이브 오버레이가 초록색이면 검출 OK.
 3. **[캡처]** — 프레임 캡처 + 체커보드 검출 + PnP + 포즈 추가. 검출 실패면 사유 표시되고 포즈 미추가.
 4. 8~10자세 반복 (자세 다양성 가이드 ↓).
-5. **Compute 카드 [COMPUTE]** — BA 모드 선택 (`physical_sag` 기본, `extended`, `standard`) + per-pose 잔차 + method 비교 출력. **파일 저장 X** (미리보기만).
+5. (자동) **σ live** — 매 [캡처] 끝에서 backend 가 자동 BA → `CALIB_HANDEYE_SIGMA` topic publish → frontend Hand-Eye 패널 상단 σ badge 자동 갱신. 사용자 별도 [COMPUTE] 안 눌러도 즉시 결과 확인. (BA 모드 변경 등 수동 [COMPUTE] 는 admin 기능, 일반 사용자 불필요)
 6. 결과 해석 (§ 결과 해석 가이드). outlier 포즈는 Capture 리스트의 휴지통(`#<id>` 클릭)으로 삭제 후 다시 COMPUTE — Pose ID는 안정 ID라 삭제해도 인덱스 시프트 없음.
 7. 만족스러우면 **Commit 카드 [COMMIT]** — `hand_eye.npz` + (BA 모드에 따라) `joint_offsets.npz` / `link_offsets.npz` / `sag_offsets.npz` 저장.
 8. (선택) **Validate 카드** — 저장된 .npz 또는 최근 COMPUTE 결과로 T_target←base 흩어짐 σ_rot/σ_t 측정.
@@ -38,7 +38,7 @@
 - **joint 4 wrist pitch** — 위아래 끄덕임
 - **joint 5 wrist roll** — 비틀기
 - 셋을 골고루 섞기. 한 축만 위주로 돌리면 TSAI 회전 추정이 부정확.
-- 체커보드는 화면 중앙 가깝게, 너무 비스듬한 각도(<30°)는 PnP 정확도 떨어짐.
+- 체커보드는 화면 중앙 가깝게. **tilt 30~70° 범위 안에서만 [캡처 가능]** ([backend/modules/calibration/thresholds.py](../backend/modules/calibration/thresholds.py) `TILT_MIN_DEG / TILT_MAX_DEG` SSOT). tilt<30° = 너무 정면 (PnP depth ambiguous), tilt>70° = edge-on (corner 픽셀 정확도 ↓).
 - 매 자세 캡처 직전 로봇 완전 정지 (모터 명령 전송 후 ~0.5s 대기).
 
 ---
@@ -95,15 +95,19 @@ Hand-Eye / Intrinsic 캡처에 사용하는 ChArUco 보드.
 ### Pattern spec (OpenCV 입력)
 
 ```yaml
+# calib.io PDF generator 입력
 Pattern:        ChArUco
 Rows:           5
 Columns:        7
-Square Length:  25 mm     # OpenCV `squareLength` — 실측치 사용 (아래 주의)
-Marker Length:  18 mm     # OpenCV `markerLength` (≈ square × 72%)
-Dictionary:     DICT_4X4
+Square Length:  25 mm
+Marker Length:  18 mm
+Dictionary:     DICT_4X4_50   # 17 markers 만 쓰지만 50 ID dict 로 충분
+Start Id:       0
 ```
 
-내부 코너 = (5-1) × (7-1) = **24개** / pose. 마커 17개.
+OpenCV `CharucoBoard.size` 컨벤션은 **`(squaresX=Columns, squaresY=Rows)`** — 즉 PDF 의 (Rows=5, Columns=7) → OpenCV `size=(7, 5)`. [board.py:35-36](../backend/modules/calibration/board.py#L35-L36) 의 `SQUARES_X=7 / SQUARES_Y=5` 가 그것. (2026-06-10: 초기 코드는 swap 되어 있었고 marker 는 검출되는데 ChArUco corner 매핑이 fail 하던 hardware 검증 시 정정.)
+
+내부 코너 = (7-1) × (5-1) = **24개** / pose. 마커 17개. modern pattern (`setLegacyPattern(False)`).
 
 ### 물리적 사양
 

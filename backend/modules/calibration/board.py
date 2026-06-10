@@ -31,9 +31,10 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# 보드 spec — calib.io ChArUco 5×7/25/18 DICT_4X4
-SQUARES_X: int = 5
-SQUARES_Y: int = 7
+# 보드 spec — calib.io ChArUco. calibration_workflow.md §5: Rows=5, Columns=7.
+# OpenCV CharucoBoard.size = (squaresX=cols, squaresY=rows) 컨벤션.
+SQUARES_X: int = 7  # Columns
+SQUARES_Y: int = 5  # Rows
 SQUARE_LENGTH_M: float = 0.025
 MARKER_LENGTH_M: float = 0.018
 ARUCO_DICT_ID: int = cv2.aruco.DICT_4X4_50
@@ -90,6 +91,24 @@ def detect(
     if ch_corners is None or ch_ids is None or len(ch_ids) < MIN_CORNERS:
         return False, None, None
     return True, ch_corners, ch_ids
+
+
+def detect_full(
+    gray: np.ndarray,
+) -> tuple[
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+]:
+    """ChArUco corner + marker 둘 다 반환 (preview overlay 용).
+
+    Returns:
+        (charuco_corners (N,1,2), charuco_ids (N,1),
+         marker_corners (M,1,4,2), marker_ids (M,1))
+        검출 안 된 자리는 None.
+    """
+    return _detector().detectBoard(gray)
 
 
 def match_object_points(

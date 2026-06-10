@@ -125,9 +125,14 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
       },
     );
 
-    // σ live — capture 마다 backend 자동 BA 결과
+    // σ live — capture 마다 backend 자동 BA 결과.
+    // computeStale 도 함께 false 로 리셋 — capture action 이 stale=true 박지만
+    // 자동 BA 응답이 도착하면 fresh σ 가 박힌 거니 [COMMIT] 활성화 자리.
     const unsubSigma = bridge.subscribe(Topic.CALIB_HANDEYE_SIGMA, (data) => {
-      set({ liveSigma: data as unknown as HandEyeSigmaState });
+      set({
+        liveSigma: data as unknown as HandEyeSigmaState,
+        computeStale: false,
+      });
     });
 
     // 추천 자세 — capture 마다 backend 자동 publish (Phase 1 자체 자리 hide, Phase 2 show).

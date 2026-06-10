@@ -59,6 +59,14 @@ RECOMMENDED_POSES: int = 10
 # J2/J3는 ee 위치 변화엔 중요하지만 hand-eye 회전 추정엔 덜 중요해 임계값을 낮춤.
 JOINT_DIVERSITY_THRESHOLD_DEG: tuple[float, ...] = (25.0, 15.0, 15.0, 25.0, 30.0)
 
+# ─── tilt 임계 ───────────────────────────────────────────────────
+# tilt = 보드 normal vs 카메라 광축 각. 0° = 카메라가 보드 정면 (depth ambiguous),
+# 90° = edge-on (corner 픽셀 정확도 ↓). docs/calibration_workflow.md §2 권장 범위.
+# next_pose_planner 의 visibility gate 와 frontend CheckerboardOverlay 의 캡처
+# 가능 임계 둘 다 본 값 사용 — SSOT.
+TILT_MIN_DEG: float = 30.0
+TILT_MAX_DEG: float = 70.0
+
 
 def as_dict() -> dict:
     """프론트엔드 service 응답용 직렬화."""
@@ -75,4 +83,6 @@ def as_dict() -> dict:
         "min_poses_for_trusted_sigma": MIN_POSES_FOR_TRUSTED_SIGMA,
         "recommended_poses": RECOMMENDED_POSES,
         "joint_diversity_threshold_deg": list(JOINT_DIVERSITY_THRESHOLD_DEG),
+        "tilt_min_deg": TILT_MIN_DEG,
+        "tilt_max_deg": TILT_MAX_DEG,
     }

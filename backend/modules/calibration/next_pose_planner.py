@@ -37,6 +37,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from . import joint_distribution as jd
+from . import thresholds
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,24 @@ def is_pose_visible(
         return False, "좌우 화면 벗어남"
     if not np.all((pts[:, 1] >= margin_y) & (pts[:, 1] <= h - margin_y)):
         return False, "상하 화면 벗어남"
+
+    # tilt gate — 추천 자세에서 보드 normal vs 카메라 광축 각이 PnP 권장
+    # 범위 (thresholds.TILT_MIN_DEG ~ TILT_MAX_DEG) 안인지. 밖이면 사용자가
+    # 그 자세로 [이동] 해도 "캡처 금지" 떨어져서 헛걸음 — 미리 회색 마크.
+    v1 = board_corners_base[1] - board_corners_base[0]
+    v2 = board_corners_base[3] - board_corners_base[0]
+    n_base = np.cross(v1, v2)
+    n_norm = np.linalg.norm(n_base)
+    if n_norm > 1e-9:
+        n_base = n_base / n_norm
+        n_cam = T_b2c[:3, :3] @ n_base
+        cos_tilt = float(np.clip(abs(n_cam[2]), 0.0, 1.0))
+        tilt_deg = float(np.degrees(np.arccos(cos_tilt)))
+        if tilt_deg < thresholds.TILT_MIN_DEG:
+            return False, f"tilt {tilt_deg:.0f}° 너무 정면"
+        if tilt_deg > thresholds.TILT_MAX_DEG:
+            return False, f"tilt {tilt_deg:.0f}° 너무 비스듬"
+
     return True, "visible"
 
 

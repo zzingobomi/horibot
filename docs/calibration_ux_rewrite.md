@@ -374,3 +374,101 @@ ChArUco 보드 + omx+D405 재캘:
 3. 추천 후보 따라가며 capture → σ 수렴 관찰 → COMMIT
 4. **목표**: σ_rot ≤ 0.65° / σ_t ≤ 7.94mm 재현. 3-5 라운드 일관 도달.
 5. 실패 시 Rollback 탭에서 pre-commit snapshot 으로 되돌리기.
+
+## 8. 2026-06-10 hardware 검증 + 추가 commit
+
+§ 7.5 의 hardware 검증 실 진행. 1 라운드 완료, criteria #1 통과. criteria #2 (재현성 3-5 라운드) 는 SO-101 도착 후 OMX → USB UVC swap 시 자연 검증으로 defer (사용자 결정).
+
+### 8.1 1 라운드 결과 (criteria #1 통과)
+
+| 지표 | 결과 | TSDF GOOD 임계 | docs floor (이전 best) |
+|---|---|---|---|
+| σ_rot | **0.37°** | <1° | 0.65° |
+| σ_t | **2.9 mm** | <10 mm | 7.94 mm |
+| n (capture 수) | 8 | — | — |
+
+**둘 다 docs floor 이하** — 첫 라운드 부터 매우 안정적. 산출물 4종 npz disk 검증:
+- `hand_eye.npz`: R det=1.000000, orthonormal err=1.48e-15, t=[-59.5, 6.7, 46.1] mm (norm 75.6 mm — D405 wrist 마운트 자리 일치)
+- `joint_offsets.npz`: J2=+6.02° / J3=+3.86° (모터 horn 조립 offset 정상 범위), 나머지 거의 0
+- `link_offsets.npz`: trans 최대 -6mm / rot ~0.09° (URDF 기하 정확 신호)
+- `sag_offsets.npz`: J2 k=0.520 / J3 k=-0.207. arm 0.3m 환산 max sag J2 8.6° / J3 3.6° — J2 가 [hand_eye_extended_ba.md §15a](hand_eye_extended_ba.md) 의 정상 범위 (2-4°) 보다 약간 큼. BA 가 다른 오차 흡수 가능성, σ floor 좋아 acceptable.
+
+### 8.2 board.py SSOT 정정 (가장 critical fix)
+
+[`board.py`](../backend/modules/calibration/board.py) 의 `SQUARES_X` / `SQUARES_Y` 가 **swap 박혀 있던 버그** 발견:
+
+- calib.io PDF generator 입력: `Rows=5, Columns=7`
+- OpenCV `CharucoBoard.size = (squaresX=Columns, squaresY=Rows)` 컨벤션
+- 즉 `size=(7, 5)` 가 정답인데 코드는 `(5, 7)` 박혀 있었음
+
+증상: hardware 캡처 시 marker 17 개 잡힘 (DICT_4X4_50 매치 OK) 인데 ChArUco corner 매핑 0 → "캡처 금지 · 미검출". 진단 위해 `board.detect()` 안에 임시 로그 (`markers=X corners=Y`) 추가 → swap 확인 → `SQUARES_X=7, SQUARES_Y=5` 로 정정.
+
+[calibration_workflow.md §5](calibration_workflow.md) 도 OpenCV 컨벤션 명시 박힘 (PDF 의 Rows/Columns 와 OpenCV size 매핑 자리).
+
+### 8.3 tilt SSOT — visibility gate 확장
+
+[`thresholds.py`](../backend/modules/calibration/thresholds.py) 에 `TILT_MIN_DEG=30 / TILT_MAX_DEG=70` 박음. 두 자리에서 공유:
+
+1. **frontend [`CheckerboardOverlay`](../frontend/src/components/panels/calibration/parts/CheckerboardOverlay.tsx)** — 라이브 [캡처 가능] 뱃지 임계
+2. **backend [`next_pose_planner.is_pose_visible`](../backend/modules/calibration/next_pose_planner.py)** — 추천 자세 visibility gate 안에 tilt 도 같이 게이트. 이전엔 보드 reproject (화면 안인지) 만 봤음 → 추천 따라 [이동] 한 자세가 tilt 너무 작아서 "캡처 금지" 떨어지는 헛걸음 발생 → **추천과 캡처 가능 임계 일치**.
+
+frontend hard-code (12°/73°) 였던 자리 → 30°/70° 로 docs SSOT 일치. Frontend 가 thresholds service 로 받아오는 자리 (next commit) 도 추가 검토.
+
+### 8.4 ChArUco 답게 overlay 재작성
+
+[`CheckerboardOverlay.tsx`](../frontend/src/components/panels/calibration/parts/CheckerboardOverlay.tsx):
+- plain chessboard 시절의 corner polyline (지그재그 선) 제거 — ChArUco 는 ID 순 반환 + 일부 missing 가능해 의미 없음
+- **marker quad outline + ID 텍스트** 추가 (`cv2.aruco.drawDetectedMarkers` 등가). [`board.detect_full()`](../backend/modules/calibration/board.py) 신규 → calibration_node `_preview_loop` 가 `markers: {corners, id}[]` 페이로드 publish → overlay 렌더.
+- ChArUco corner 점은 작게 (r=4) 유지 (검출 자리 시각화)
+
+### 8.5 panel UI 분리 (§ 7.4 defer 해소)
+
+§ 7.4 deferred 였던 monolith HandEyeTab + Rollback 탭 → **5 panel 분리**:
+
+```
+panels/calibration/
+  CalibrationPanel.tsx   # status + matrix (result)
+  CameraPanel.tsx        # live feed + ChArUco overlay
+  HandEyePanel.tsx       # capture / 자동 추천 / commit flow
+  IntrinsicPanel.tsx     # USB 카메라 swap 시나리오 전용
+  RollbackPanel.tsx      # .history snapshot picker
+  parts/
+    CheckerboardOverlay.tsx / NextPoseCard.tsx / PoseList.tsx / types.ts
+```
+
+- 폴더 컨벤션 통일: `panels/calibration/` + `panels/motion/` (모드 도메인 lowercase) / 컴포넌트 파일 PascalCase
+- Robot State 패널이 Torque / Home / Jog slider 흡수 (이전엔 카메라 overlay 자리에 floating bar 였음) — 모든 mode 에서 robot 직접 제어 일관
+- 공용 `PanelButton` 신규 — shadcn `Button` 의 light theme CSS var 누출 우회. zinc 톤 명시.
+
+### 8.6 추가 bug fix
+
+**Bug C — COMMIT button 비활성화 stale**:
+- `capture` action 끝에 `computeStale: true` 박지만 (옛 수동 [COMPUTE] design), 새 design (자동 BA + σ live) 에선 σ 응답 시 stale 도 자동 false 로 리셋되어야 함
+- [`calibration.ts (store)`](../frontend/src/domain/stores/calibration.ts) 의 `unsubSigma` 콜백이 `computeStale: false` 같이 set
+- 증상: 8장 캡처 후 σ 잘 나오는데 [COMMIT] 영원히 disabled
+
+**라벨 UX 빵꾸**:
+- "수동 모드 종료 → 자동 추천" (내부 mode 명 누출) → **"자동 추천 시작"** (사용자 동작 중심)
+- 섹션 "자동 모드 진입" → "다음"
+- "Multi-start BA..." → "계산 중..."
+
+### 8.7 남은 UX 빵꾸 (deferred)
+
+- **"추천 후보 없음" 메시지 3가지 케이스 합쳐서 표시** ([NextPoseCard.tsx](../frontend/src/components/panels/calibration/parts/NextPoseCard.tsx)) — 사용자 명시 fail / IK fail / σ 충분히 낮음 셋 모두 같은 메시지. **σ 충분히 낮음 (= COMMIT 권장) 케이스만 별도 양성 메시지** ("🎉 σ 충분 — 바로 COMMIT") 로 분리 필요. 사용자 1라운드 끝에 헷갈림.
+- **사용자 매뉴얼 자리** — "보드 한쪽 책 한 권" 으로 30° tilt 안 만들어짐 (`arcsin(30/150)≈11°`). 거의 세움 (60~80°) 또는 두꺼운 받침 (75mm+) 필요. workflow.md §2 보강 후보.
+- **frontend tilt 임계 thresholds service fetch** — 현재 frontend 가 hard-code (30/70). backend `TILT_MIN_DEG/TILT_MAX_DEG` 가 service 응답 (`thresholds.as_dict()`) 에 들어감 → frontend 받아 쓰면 진짜 SSOT. minor.
+
+### 8.8 criteria #2 (재현성) defer
+
+3-5 라운드 σ 0.37°/2.9mm 수준 재현 — 8장 재캡처 / 라운드 부담 큼. 사용자 결정으로 **SO-101 도착 후 OMX → USB UVC swap 시 자연 검증** 으로 defer. 그 시점에:
+- 보드 자세 / 카메라 마운트 변경 → 재캘 강제
+- 새 라운드 σ 가 0.37°/2.9mm 수준이면 재현성 확정
+- 후퇴하면 Rollback 탭에서 2026-06-10 22:38 snapshot 으로 복원 가능
+
+### 8.9 다음 commit 후보
+
+1. NextPoseCard "σ 충분" 분리 양성 메시지
+2. workflow.md §2 매뉴얼 보강 ("보드 거의 세워두기 / 두꺼운 받침" 안내, tilt vs 보드 자세 mental model)
+3. frontend thresholds service fetch (tilt 임계 SSOT 완전화)
+4. (deferred) 3D viz layer (HandEyeBoardLayer) — board pose 시각화
+5. (deferred) Intrinsic 단계 docs (omx+D405 SKIP / USB 시 활성 정책)

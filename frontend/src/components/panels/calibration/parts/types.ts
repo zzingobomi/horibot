@@ -2,10 +2,11 @@ export type HandEyePreview = {
   timestamp: number;
   detected: boolean;
   image_size?: [number, number];
-  corners?: [number, number][];
+  corners?: [number, number][]; // ChArUco inner corner (chessboard 교차점)
+  markers?: { corners: [number, number][]; id: number }[]; // ArUco marker quad outline + ID
   bbox?: [number, number, number, number];
   coverage_ratio?: number; // 체커보드가 화면에서 차지하는 비율 (너무 작거나 크면 PnP 부정확)
-  tilt_deg?: number; // 보드 평면 vs 이미지 평면 각도. 0°=정면(모호), 90°=edge-on. 20~65°가 좋음.
+  tilt_deg?: number; // 보드 평면 vs 이미지 평면 각도. 0°=정면(모호), 90°=edge-on. 30~70°가 좋음.
   reason?: string;
 };
 

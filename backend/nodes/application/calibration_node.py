@@ -1091,13 +1091,33 @@ class CalibrationNode(ApplicationNode):
 
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                     h, w = gray.shape[:2]
-                    ok, ch_corners, ch_ids = calib_board.detect(gray)
+                    ch_corners, ch_ids, m_corners, m_ids = (
+                        calib_board.detect_full(gray)
+                    )
+                    ok = (
+                        ch_corners is not None
+                        and ch_ids is not None
+                        and len(ch_ids) >= calib_board.MIN_CORNERS
+                    )
 
                     payload: dict = {
                         "timestamp": time.time(),
                         "detected": bool(ok),
                         "image_size": [int(w), int(h)],
                     }
+
+                    # marker outline — ChArUco 답게 검출된 마커 quad + ID 시각화.
+                    # ok 와 무관하게 marker 잡히면 publish (사용자에게 "절반은 보이는데
+                    # corner 모자란" 상황 피드백).
+                    if m_corners is not None and m_ids is not None:
+                        markers_payload = []
+                        for quad, mid in zip(m_corners, m_ids):
+                            pts = quad.reshape(-1, 2).tolist()
+                            markers_payload.append(
+                                {"corners": pts, "id": int(mid[0])}
+                            )
+                        if markers_payload:
+                            payload["markers"] = markers_payload
 
                     if ok and ch_corners is not None and ch_ids is not None:
                         pts = ch_corners.reshape(-1, 2)

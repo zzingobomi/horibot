@@ -60,3 +60,8 @@ robot/instances/*/meshes/
 # attempt jsonl + bin_offsets.json (closed-loop 학습 누적). 머신별 + 누적
 # 데이터라 푸시/공유 대상 아님. self-play 자체는 deprecated.
 robot/instances/*/logs/
+
+# ─── Calibration history (per-machine rollback backups) ────────
+# .history/<timestamp>_<tag>/ — pre-commit / pre-restore snapshot 누적.
+# PC 머신 한 곳에서만 쌓임. 분산 머신은 live npz 만 git pull 로 동기.
+robot/instances/*/calibration/.history/

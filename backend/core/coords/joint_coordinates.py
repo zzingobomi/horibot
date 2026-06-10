@@ -95,24 +95,34 @@ class JointCoordinates:
             corrected, reverse=cfg.reverse, min_raw=min_raw, max_raw=max_raw
         )
 
-    def commit_offsets(
+    def commit_absolute(
         self,
-        delta_by_id: dict[int, float],
+        absolute_by_id: dict[int, float],
         method: str,
         robot_id: str | None = None,
     ) -> dict[int, float]:
-        """COMMIT 시 atomic 갱신: 디스크 save + 메모리 reload (PC 내부 한정).
+        """COMMIT 시 atomic 갱신: 디스크 *overwrite* + 메모리 reload (PC 내부 한정).
+
+        Overwrite semantics — `absolute_by_id` 는 absolute total. cumulative 가산 X.
+        link/sag/tool 과 통일된 contract — BA 의 delta 출력은 calibration_node 가
+        진입 시점에 `current + delta = absolute` 로 reconcile 한 후 본 함수 호출.
 
         다른 머신 전파는 git pull + 재시작이 담당.
         """
         rid = self._resolve(robot_id)
         path = _joint_offsets_path(rid)
-        existing = joint_offsets_io.load(path)
-        merged = joint_offsets_io.merge_delta(existing, delta_by_id)
-        joint_offsets_io.save(path, merged, method=method)
+        joint_offsets_io.save(path, absolute_by_id, method=method)
         with self._cache_lock:
-            self._offsets_by_robot[rid] = dict(merged)
-        return dict(merged)
+            self._offsets_by_robot[rid] = dict(absolute_by_id)
+        return dict(absolute_by_id)
+
+    def reload(self, robot_id: str | None = None) -> dict[int, float]:
+        """디스크에서 다시 로드 → 메모리 갱신 (rollback 후 호출)."""
+        rid = self._resolve(robot_id)
+        loaded = joint_offsets_io.load(_joint_offsets_path(rid))
+        with self._cache_lock:
+            self._offsets_by_robot[rid] = dict(loaded)
+        return dict(loaded)
 
     def snapshot(self, robot_id: str | None = None) -> dict[int, float]:
         """현재 메모리 상태 (HTTP 응답 / 진단용)."""

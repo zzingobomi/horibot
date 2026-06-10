@@ -11,9 +11,14 @@ from core.coords.joint_coordinates import JointCoordinates
 from core.coords.link_coordinates import LinkCoordinates
 from core.robot.robot_registry import RobotRegistry
 from core.coords.sag_coordinates import SagCoordinates
+from core.coords.tool_coordinates import ToolCoordinates
 from modules.calibration.sag_offsets import SagOffsets
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.calibration import (
+    BackupEntry,
+    BackupListRes,
+    BackupRestoreReq,
+    BackupRestoreRes,
     CalibCaptureReq,
     CalibCaptureRes,
     HandeyeCaptureRes,
@@ -36,6 +41,7 @@ from modules.motor.motor_config import MotorConfig, load_motor_config
 from modules.camera.stream import frame_to_base64
 from modules.calibration.intrinsic import CHECKERBOARD, IntrinsicCalibration
 from modules.calibration.hand_eye import HandEyeCalibration, Pose
+from modules.calibration import backup as calib_backup
 from modules.calibration import next_pose_planner
 from modules.calibration import thresholds as calib_thresholds
 from modules.calibration.link_offsets import LinkOffsets
@@ -54,6 +60,18 @@ def _handeye_poses_path(robot_id: str) -> Path:
 
 
 PREVIEW_INTERVAL = 0.2  # 5Hz
+
+
+def _optional_float(v: object) -> float | None:
+    return float(v) if isinstance(v, (int, float)) else None
+
+
+def _optional_int(v: object) -> int | None:
+    return int(v) if isinstance(v, (int, float)) else None
+
+
+def _optional_str(v: object) -> str | None:
+    return str(v) if v is not None else None
 
 
 @dataclass
@@ -167,6 +185,18 @@ class CalibrationNode(ApplicationNode):
             self.create_service(
                 topic_for(Service.CALIB_HANDEYE_THRESHOLDS, rid),
                 lambda req, _rid=rid: self._srv_handeye_thresholds(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.CALIB_BACKUP_LIST, rid),
+                EmptyData,
+                BackupListRes,
+                lambda req, _rid=rid: self._srv_backup_list(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.CALIB_BACKUP_RESTORE, rid),
+                BackupRestoreReq,
+                BackupRestoreRes,
+                lambda req, _rid=rid: self._srv_backup_restore(req, _rid),
             )
 
         super().start()
@@ -391,6 +421,27 @@ class CalibrationNode(ApplicationNode):
                 "message": f"Hand-Eye 실패 (포즈 수: {len(st.hand_eye.poses)})",
                 "data": {},
             }
+
+        # joint_offset 만 delta (BA contract). 현재 disk + delta = absolute 를
+        # COMPUTE 시점에 stash → COMMIT 은 그 absolute 를 그대로 overwrite.
+        # 이래야 COMMIT 두 번 누름 == idempotent (Bug A fix).
+        if diag.get("joint_offset_estimated"):
+            current_by_id = JointCoordinates().snapshot(robot_id=robot_id)
+            absolute_by_id: dict[int, float] = {}
+            for e in diag.get("joint_offset_delta", []):
+                mid = int(e["motor_id"])
+                delta = float(e["offset_rad"])
+                absolute_by_id[mid] = current_by_id.get(mid, 0.0) + delta
+            diag["_joint_absolute_by_id"] = absolute_by_id
+            diag["joint_offset_absolute"] = [
+                {
+                    "motor_id": mid,
+                    "offset_rad": v,
+                    "offset_deg": float(np.degrees(v)),
+                }
+                for mid, v in sorted(absolute_by_id.items())
+            ]
+
         st.last_compute = diag
         diag["recommendations"] = self._compute_recommendations(robot_id)
         return {
@@ -408,30 +459,47 @@ class CalibrationNode(ApplicationNode):
                 success=False, message="먼저 COMPUTE를 실행하세요", data=None
             )
 
-        # 1) hand_eye.npz
+        # 0) pre-commit snapshot — 현재 live disk 상태 통째로 백업 → rollback picker.
+        try:
+            calib_backup.snapshot(
+                calibration_dir=_save_dir(robot_id),
+                tag="pre-commit",
+                meta={
+                    "sigma_rot_deg": st.last_compute.get("sigma_rot_deg"),
+                    "sigma_t_mm": st.last_compute.get("sigma_t_mm"),
+                    "capture_count": len(st.hand_eye.poses),
+                    "ba_mode": st.last_compute.get("method"),
+                },
+            )
+        except Exception as e:
+            logger.warning("[%s] pre-commit snapshot 실패: %s", robot_id, e)
+
+        # 1) hand_eye.npz — BA 출력이 절대값이라 overwrite contract.
         hand_eye_path = _save_dir(robot_id) / "hand_eye.npz"
         st.hand_eye.save(hand_eye_path)
 
-        # 2) joint_offsets.npz
+        # 2) joint_offsets — COMPUTE 시점 stash 한 absolute 만 사용.
+        # Bug A: 옛 commit_offsets(delta) 가 호출마다 existing + delta 누적해서
+        # COMMIT 두 번 누르면 double-add. commit_absolute(absolute) 로 통일 +
+        # 끝에서 last_compute invalidate → 두 번 클릭 == idempotent.
         applied: dict[int, float] = {}
         offset_msg = ""
         if st.last_compute.get("joint_offset_estimated"):
-            delta_list = st.last_compute.get("joint_offset_delta", [])
-            delta_by_id = {
-                int(e["motor_id"]): float(e["offset_rad"]) for e in delta_list
-            }
-            applied = JointCoordinates().commit_offsets(
-                delta_by_id,
+            absolute_by_id: dict[int, float] = (
+                st.last_compute["_joint_absolute_by_id"]
+            )
+            applied = JointCoordinates().commit_absolute(
+                absolute_by_id,
                 method=st.hand_eye.result.method,
                 robot_id=robot_id,
             )
             applied_deg = {
                 i: round(float(np.degrees(v)), 3) for i, v in applied.items()
             }
-            offset_msg = f" + joint_offsets 갱신 (cumulative, deg={applied_deg})"
+            offset_msg = f" + joint_offsets 갱신 (absolute, deg={applied_deg})"
             logger.info("[%s] joint_offsets 즉시 적용: %s", robot_id, applied_deg)
 
-        # 3) link_offsets.npz
+        # 3) link_offsets — BA 출력이 이미 absolute total.
         link_msg = ""
         link_applied_meta: list[dict] = []
         restart_required = False
@@ -452,14 +520,14 @@ class CalibrationNode(ApplicationNode):
                     for e in rot_list
                 },
             )
-            link_applied = LinkCoordinates().commit_offsets(
+            link_applied = LinkCoordinates().commit_absolute(
                 new_link,
                 method=st.hand_eye.result.method,
                 robot_id=robot_id,
             )
             n_joints = len(link_applied.trans)
             link_msg = (
-                f" + link_offsets 갱신 (overwrite, n={n_joints}, 백엔드 재시작 후 FK/IK 적용)"
+                f" + link_offsets 갱신 (absolute, n={n_joints}, 백엔드 재시작 후 FK/IK 적용)"
             )
             link_applied_meta = [
                 {
@@ -471,11 +539,11 @@ class CalibrationNode(ApplicationNode):
             ]
             restart_required = True
             logger.info(
-                "[%s] link_offsets 디스크 적용 (overwrite, 재시작 필요): n=%d",
+                "[%s] link_offsets 디스크 적용 (absolute, 재시작 필요): n=%d",
                 robot_id, n_joints,
             )
 
-        # 4) sag_offsets.npz
+        # 4) sag_offsets — BA 출력이 absolute total.
         sag_msg = ""
         sag_applied_meta: list[dict] = []
         if st.last_compute.get("sag_offset_estimated"):
@@ -486,7 +554,7 @@ class CalibrationNode(ApplicationNode):
                     for e in sag_delta_list
                 },
             )
-            sag_applied = SagCoordinates().commit_offsets(
+            sag_applied = SagCoordinates().commit_absolute(
                 new_sag,
                 method=st.hand_eye.result.method,
                 robot_id=robot_id,
@@ -500,7 +568,7 @@ class CalibrationNode(ApplicationNode):
                 for jid in sorted(sag_applied.k_rad_per_m.keys())
             ]
             n_sag = len(sag_applied.k_rad_per_m)
-            sag_msg = f" + sag_offsets 갱신 (overwrite, n={n_sag}, 즉시 적용)"
+            sag_msg = f" + sag_offsets 갱신 (absolute, n={n_sag}, 즉시 적용)"
             logger.info(
                 "[%s] sag_offsets 즉시 적용: %s",
                 robot_id,
@@ -508,34 +576,93 @@ class CalibrationNode(ApplicationNode):
                  for m in sag_applied_meta},
             )
 
+        # Response 준비 — last_compute 의 estimated 플래그를 invalidate 전에 캡처.
+        joint_estimated = st.last_compute.get("joint_offset_estimated", False)
+        link_estimated = st.last_compute.get("link_offset_estimated", False)
+        sag_estimated = st.last_compute.get("sag_offset_estimated", False)
+
+        # Bug A fix: COMMIT 끝에 invalidate. 같은 compute 로 다시 누르면
+        # "먼저 COMPUTE 를 실행하세요" 응답 → disk 누적 부작용 0.
+        st.last_compute = None
+
         return ServiceResponse(
             success=True,
             message=f"저장 완료: {hand_eye_path}{offset_msg}{link_msg}{sag_msg}",
             data=HandeyeCommitRes(
                 path=str(hand_eye_path),
                 method=st.hand_eye.result.method,
-                joint_offsets_applied=st.last_compute.get(
-                    "joint_offset_estimated", False
-                ),
+                joint_offsets_applied=joint_estimated,
                 joint_offsets=[
                     JointOffsetEntry(motor_id=int(mid), offset_rad=float(off))
                     for mid, off in sorted(applied.items())
                 ],
-                link_offsets_applied=st.last_compute.get(
-                    "link_offset_estimated", False
-                ),
+                link_offsets_applied=link_estimated,
                 link_offsets=[
                     LinkOffsetEntry.model_validate(m)
                     for m in link_applied_meta
                 ],
-                sag_offsets_applied=st.last_compute.get(
-                    "sag_offset_estimated", False
-                ),
+                sag_offsets_applied=sag_estimated,
                 sag_offsets=[
                     SagOffsetEntry.model_validate(m)
                     for m in sag_applied_meta
                 ],
                 restart_required=restart_required,
+            ),
+        )
+
+    # ─── Backup / Rollback ───────────────────────────────────
+    def _srv_backup_list(
+        self, _req: ServiceRequest[EmptyData], robot_id: str
+    ) -> ServiceResponse[BackupListRes]:
+        infos = calib_backup.list_snapshots(_save_dir(robot_id))
+        entries = [
+            BackupEntry(
+                timestamp=i.timestamp,
+                tag=i.tag,
+                sigma_rot_deg=_optional_float(i.meta.get("sigma_rot_deg")),
+                sigma_t_mm=_optional_float(i.meta.get("sigma_t_mm")),
+                capture_count=_optional_int(i.meta.get("capture_count")),
+                ba_mode=_optional_str(i.meta.get("ba_mode")),
+            )
+            for i in infos
+        ]
+        return ServiceResponse(
+            success=True,
+            message=f"snapshots={len(entries)}",
+            data=BackupListRes(snapshots=entries),
+        )
+
+    def _srv_backup_restore(
+        self, req: ServiceRequest[BackupRestoreReq], robot_id: str
+    ) -> ServiceResponse[BackupRestoreRes]:
+        try:
+            info = calib_backup.restore(_save_dir(robot_id), req.data.timestamp)
+        except FileNotFoundError as e:
+            return ServiceResponse(success=False, message=str(e), data=None)
+
+        # 메모리 reload — joint/sag/tool 은 즉시 반영. link 는 URDF patch 라 재시작 필요.
+        JointCoordinates().reload(robot_id)
+        LinkCoordinates().reload(robot_id)
+        SagCoordinates().reload(robot_id)
+        ToolCoordinates().reload(robot_id)
+        st = self._states[robot_id]
+        st.hand_eye.load(_save_dir(robot_id) / "hand_eye.npz")
+        st.intrinsic.load(_save_dir(robot_id) / "intrinsic.npz")
+        st.solver._reload_sag_cache()
+        # 안전상 compute 결과도 무효화 (옛 absolute 가 현 disk 와 맞지 않음).
+        st.last_compute = None
+
+        logger.info(
+            "[%s] calibration snapshot 복원 완료: timestamp=%s, restart_required=True",
+            robot_id, info.timestamp,
+        )
+
+        return ServiceResponse(
+            success=True,
+            message=f"snapshot {info.timestamp} 복원 완료 (URDF 재적용 위해 백엔드 재시작 필요)",
+            data=BackupRestoreRes(
+                restored_timestamp=info.timestamp,
+                restart_required=True,
             ),
         )
 

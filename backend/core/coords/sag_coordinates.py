@@ -76,7 +76,7 @@ class SagCoordinates:
         with self._cache_lock:
             return self._offsets_by_robot.get(rid, self._empty()).get_k(jid)
 
-    def commit_offsets(
+    def commit_absolute(
         self,
         offsets: SagOffsets,
         method: str,
@@ -92,5 +92,15 @@ class SagCoordinates:
         with self._cache_lock:
             self._offsets_by_robot[rid] = SagOffsets(
                 k_rad_per_m=dict(offsets.k_rad_per_m)
+            )
+        return self.snapshot(rid)
+
+    def reload(self, robot_id: str | None = None) -> SagOffsets:
+        """디스크에서 다시 로드 → 메모리 갱신 (rollback 후 호출)."""
+        rid = self._resolve(robot_id)
+        loaded = sag_offsets_io.load(_sag_offsets_path(rid))
+        with self._cache_lock:
+            self._offsets_by_robot[rid] = SagOffsets(
+                k_rad_per_m=dict(loaded.k_rad_per_m)
             )
         return self.snapshot(rid)

@@ -68,6 +68,8 @@ class Service:
     CALIB_HANDEYE_PREVIEW_ENABLE = "horibot/{robot_id}/calib/srv/handeye/preview_enable"
     CALIB_HANDEYE_THRESHOLDS = "horibot/{robot_id}/calib/srv/handeye/thresholds"
     CALIB_CAPTURE = "horibot/{robot_id}/calib/srv/capture"
+    CALIB_BACKUP_LIST = "horibot/{robot_id}/calib/srv/backup/list"
+    CALIB_BACKUP_RESTORE = "horibot/{robot_id}/calib/srv/backup/restore"
 
     # ─── Task ──────────────────────────────────────────────
     TASK_RUN = "horibot/task/srv/run"

@@ -115,6 +115,37 @@ class HandeyeCommitRes(StrictModel):
     restart_required: bool
 
 
+# ─── Service: CALIB_BACKUP_LIST / RESTORE ────────────────────────────
+
+
+class BackupEntry(StrictModel):
+    """`.history/` 안 한 snapshot 의 picker 표시용 메타.
+
+    sigma_*/capture_count/ba_mode 는 commit 시점에 박힘. tag 는 "pre-commit" /
+    "pre-restore" 등 origin 구분.
+    """
+
+    timestamp: str
+    tag: str
+    sigma_rot_deg: float | None = None
+    sigma_t_mm: float | None = None
+    capture_count: int | None = None
+    ba_mode: str | None = None
+
+
+class BackupListRes(StrictModel):
+    snapshots: list[BackupEntry]
+
+
+class BackupRestoreReq(StrictModel):
+    timestamp: str
+
+
+class BackupRestoreRes(StrictModel):
+    restored_timestamp: str
+    restart_required: bool  # link_offsets 복원 시 URDF patch 재적용 필요
+
+
 # ─── Service: CALIB_HANDEYE_PREVIEW_ENABLE ───────────────────────────
 
 

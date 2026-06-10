@@ -88,13 +88,13 @@ class ToolCoordinates:
         with self._cache_lock:
             return self._offset_by_robot.get(rid, self._empty()).rot_rad.copy()
 
-    def commit_offset(
+    def commit_absolute(
         self,
         offset: ToolOffset,
         method: str,
         robot_id: str | None = None,
     ) -> ToolOffset:
-        """COMMIT 시 atomic 갱신: 디스크 overwrite + 메모리 reload.
+        """COMMIT 시 atomic 갱신: 디스크 *overwrite* + 메모리 reload.
 
         URDF patch 안 함 → CorrectedIKSolver 재시작 불필요. 단 다른 머신은
         git pull + 재시작.
@@ -105,5 +105,16 @@ class ToolCoordinates:
             self._offset_by_robot[rid] = ToolOffset(
                 trans_m=offset.trans_m.copy(),
                 rot_rad=offset.rot_rad.copy(),
+            )
+        return self.snapshot(rid)
+
+    def reload(self, robot_id: str | None = None) -> ToolOffset:
+        """디스크에서 다시 로드 → 메모리 갱신 (rollback 후 호출)."""
+        rid = self._resolve(robot_id)
+        loaded = tool_offset_io.load(_tool_offset_path(rid))
+        with self._cache_lock:
+            self._offset_by_robot[rid] = ToolOffset(
+                trans_m=loaded.trans_m.copy(),
+                rot_rad=loaded.rot_rad.copy(),
             )
         return self.snapshot(rid)

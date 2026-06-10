@@ -36,11 +36,13 @@ Phase 2 (SO-101 도착 후) 분산 토폴로지 + 카메라 배치 design 결정
 
 ## 1. 카메라 배치 변경 — D405 양도
 
+> **현재 상태 (2026-06)**: D405 는 OMX 에 부착, SO-101 미도착. 아래 표는 **SO-101 수령 후** 적용될 swap plan. 카메라 spec 정식 정의는 [hardware.md § 카메라](hardware.md).
+
 [so101_6dof_plan.md](so101_6dof_plan.md) §5 의 LeRobot 원안 (omx D405 / so101 UVC) 과 **반대**로 결정:
 
 | 로봇 | 카메라 | 드라이버 | 변경 사유 |
 |---|---|---|---|
-| omx_f_0 | **USB UVC 카메라** | OS 표준 (`cv2.VideoCapture`) | D405 양도 — so101 의 6DOF 정밀 manipulation 에 RGBD 가 더 가치 |
+| omx_f_0 | **720P USB UVC (DFOV 120°)** | OS 표준 (`cv2.VideoCapture`) | D405 양도 — so101 의 6DOF 정밀 manipulation 에 RGBD 가 더 가치 |
 | so101_6dof_0 | **D405 (RealSense)** | `pyrealsense2` | wrist 마운트, eye-in-hand. TSDF / pointcloud 파이프라인 so101 전용 |
 
 ### 1.1 함의

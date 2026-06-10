@@ -79,7 +79,7 @@ class LinkCoordinates:
         with self._cache_lock:
             return self._offsets_by_robot.get(rid, self._empty()).get_rot(jid)
 
-    def commit_offsets(
+    def commit_absolute(
         self,
         offsets: LinkOffsets,
         method: str,
@@ -88,6 +88,8 @@ class LinkCoordinates:
         """COMMIT 시 atomic 갱신: 디스크 *overwrite* + 메모리 reload (PC 내부 한정).
 
         Overwrite semantics — `offsets` 는 absolute total 값. cumulative 가산 X.
+        URDF patch 자체는 부팅 시 1회 — link offset 갱신 후 FK/IK 반영은 PyBullet
+        재시작 필요 (caller 가 restart_required 표시).
         다른 머신 전파는 git pull + 재시작.
         """
         rid = self._resolve(robot_id)
@@ -96,5 +98,20 @@ class LinkCoordinates:
             self._offsets_by_robot[rid] = LinkOffsets(
                 trans=dict(offsets.trans),
                 rot=dict(offsets.rot),
+            )
+        return self.snapshot(rid)
+
+    def reload(self, robot_id: str | None = None) -> LinkOffsets:
+        """디스크에서 다시 로드 → 메모리 갱신 (rollback 후 호출).
+
+        주의: URDF patch 는 부팅 시점 적용이라 reload 만으로는 FK/IK 에 반영 X.
+        rollback 후 link offset 효과 보려면 PyBullet 재시작 필요.
+        """
+        rid = self._resolve(robot_id)
+        loaded = link_offsets_io.load(_link_offsets_path(rid))
+        with self._cache_lock:
+            self._offsets_by_robot[rid] = LinkOffsets(
+                trans=dict(loaded.trans),
+                rot=dict(loaded.rot),
             )
         return self.snapshot(rid)

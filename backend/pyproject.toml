@@ -18,6 +18,7 @@ dependencies = [
 dev = [
     "ruff",
     "pyright",
+    "pytest>=8.0.0",
 ]
 
 pi-motor = [
@@ -82,3 +83,7 @@ explicit = true
 [tool.ruff]
 line-length = 88
 target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

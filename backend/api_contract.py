@@ -125,6 +125,11 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
         _calibration.HandeyePreviewEnableReq,
         _calibration.HandeyePreviewEnableRes,
     ),
+    Service.CALIB_BACKUP_LIST: (EmptyData, _calibration.BackupListRes),
+    Service.CALIB_BACKUP_RESTORE: (
+        _calibration.BackupRestoreReq,
+        _calibration.BackupRestoreRes,
+    ),
     # ─ Task
     Service.TASK_STOP: (EmptyData, EmptyData),
     Service.TASK_PAUSE: (EmptyData, EmptyData),

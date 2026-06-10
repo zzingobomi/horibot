@@ -1,9 +1,9 @@
 /**
  * Calibration UI state — Hand-Eye capture / compute / commit flow 의 single source.
  *
- * 분리된 panel (CalibrationCapturePanel / CalibrationComputePanel) 들이 같은
- * state 를 읽고 같은 action 을 호출. 컴포넌트 local useState 였으면 panel 간
- * sync 가 안 됨 (capture panel 에서 [캡처] → compute panel 의 staleness 갱신 필요 등).
+ * 분리된 panel (CalibrationCameraPanel / HandEyePanel) 들이 같은 state 를 읽고
+ * 같은 action 을 호출. 컴포넌트 local useState 였으면 panel 간 sync 가 안 됨
+ * (camera 의 overlay preview ↔ hand-eye 의 capture/σ 동기화 필요 등).
  *
  * 라이프사이클: RobotCalibrateMode mount 시 `bootstrap()` 1회 호출, unmount 시
  * `dispose()`. capture/compute panel 들은 mount/unmount 와 무관 — store 가
@@ -23,7 +23,7 @@ import type {
   NextPoseRecommendation,
   PoseMeta,
   RecommendationFailReq,
-} from "@/components/panels/CalibrationActionsPanel/types";
+} from "@/components/panels/calibration/parts/types";
 
 const PREVIEW_STALE_MS = 1500;
 

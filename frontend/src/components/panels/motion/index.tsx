@@ -7,11 +7,11 @@ import type { IDockviewPanelProps } from "dockview";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PanelShell } from "@/components/shared/PanelShell";
 import { JointPanel } from "@/components/panels/JointPanel";
-import { MoveJControl } from "@/components/panels/MotionPanel/MoveJ";
-import { MoveLControl } from "@/components/panels/MotionPanel/MoveL";
-import { MoveCControl } from "@/components/panels/MotionPanel/MoveC";
-import { MovePControl } from "@/components/panels/MotionPanel/MoveP";
-import { MoveTCPControl } from "@/components/panels/MotionPanel/MoveTCP";
+import { MoveJControl } from "./MoveJ";
+import { MoveLControl } from "./MoveL";
+import { MoveCControl } from "./MoveC";
+import { MovePControl } from "./MoveP";
+import { MoveTCPControl } from "./MoveTCP";
 
 const TABS = [
   { value: "joint", label: "Joint", body: <JointPanel /> },

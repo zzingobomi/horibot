@@ -1,35 +1,34 @@
 /**
- * Calibration Capture Panel — Phase 1/2 분기.
+ * Hand-Eye calibration panel — Phase 1/2 분기.
  *
  * **Phase 1 (manualModeActive=true)**: 사용자가 8장 손으로 자유 자세 캡처.
  * 카메라 + ChArUco overlay 의 한 장 단위 hint (검출 + tilt) 만. σ / 추천 hide.
- * [수동 모드 종료] 버튼 — n>=8 enabled.
+ * [자동 추천 시작] 버튼 — n>=8 enabled.
  *
- * **Phase 2 (manualModeActive=false)**: [수동 모드 종료] 누르면 multi-start BA
+ * **Phase 2 (manualModeActive=false)**: [자동 추천 시작] 누르면 multi-start BA
  * 자동 호출 → manualModeActive=false → 추천 자세 + σ + saturate 알림 + 명시 신호
  * UI 등장. 사용자는 추천 [이동] / [캡처] / [COMMIT] 반복.
+ *
+ * 라이브 카메라는 [CalibrationCameraPanel] 이 공유 — 본 패널은 컨트롤 + 추천 + 결과만.
  */
-import { Camera } from "lucide-react";
+import { Crosshair } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
 import { useParams } from "react-router-dom";
-import { CameraFeed } from "@/components/shared/CameraFeed";
-import { Button } from "@/components/ui/button";
 import { PanelShell } from "@/components/shared/PanelShell";
+import { PanelButton } from "@/components/shared/PanelButton";
 import { Section } from "@/components/shared/Section";
-import { CalibJointBar } from "@/components/panels/CalibrationActionsPanel/JointBar";
-import { CheckerboardOverlay } from "@/components/panels/CalibrationActionsPanel/CheckerboardOverlay";
-import { NextPoseCard } from "@/components/panels/CalibrationActionsPanel/NextPoseCard";
-import { HandEyePoseList } from "@/components/panels/CalibrationActionsPanel/PoseList";
+import { NextPoseCard } from "./parts/NextPoseCard";
+import { HandEyePoseList } from "./parts/PoseList";
 import { useCalibrationStore } from "@/domain/stores/calibration";
 import { useCalibrationResults } from "@/hooks/useCalibrationResults";
 import type {
   CalibThresholds,
   HandeyeSaturateState,
   HandEyeSigmaState,
-} from "@/components/panels/CalibrationActionsPanel/types";
+} from "./parts/types";
 
 /**
- * σ live badge — Phase 2 자리 자취 자리 자체 자리 자취 자리 색깔 활성. n<trusted 면 회색.
+ * σ live badge — n<trusted 면 회색.
  */
 function LiveSigmaBadge({
   sigma,
@@ -81,7 +80,7 @@ function LiveSigmaBadge({
 
 /**
  * Saturate 알림 — σ 변화율 거의 0 → "saturate" 명시. in_good=true 면 COMMIT 권장,
- * false 면 floor 도달 escape 안내. 사용자 외부 도구 진입 자체 자리 자취 자리 막음.
+ * false 면 floor 도달 escape 안내.
  */
 function SaturateBanner({
   saturate,
@@ -99,12 +98,10 @@ function SaturateBanner({
   );
 }
 
-export function CalibrationCapturePanel(props: IDockviewPanelProps<object>) {
+export function HandEyePanel(props: IDockviewPanelProps<object>) {
   const { id: robotId = "" } = useParams<{ id: string }>();
   const { refetch: refetchCalibrationResults } = useCalibrationResults(robotId);
 
-  const preview = useCalibrationStore((s) => s.preview);
-  const previewStale = useCalibrationStore((s) => s.previewStale);
   const poses = useCalibrationStore((s) => s.poses);
   const liveSigma = useCalibrationStore((s) => s.liveSigma);
   const compute = useCalibrationStore((s) => s.compute);
@@ -147,70 +144,56 @@ export function CalibrationCapturePanel(props: IDockviewPanelProps<object>) {
 
   return (
     <PanelShell
-      icon={<Camera className="w-3.5 h-3.5" />}
-      title="Calib Capture"
+      icon={<Crosshair className="w-3.5 h-3.5" />}
+      title="Hand-Eye"
       panelId={props.api.id}
       api={props.api}
-      expandedHeight={720}
+      expandedHeight={640}
     >
-      {/* 카메라 자리 자취 자리 — 두 phase 공통 자체 자리 자취 자리 */}
-      <Section label="Camera">
-        <CameraFeed
-          className="w-full aspect-video"
-          overlay={
-            <>
-              <CalibJointBar />
-              <CheckerboardOverlay preview={preview} stale={previewStale} />
-            </>
-          }
-        />
-      </Section>
-
       {manualModeActive ? (
         // ──── Phase 1: 수동 자유 자세 캡처 ────
         <>
           <Section label={`Capture — 수동 (${poses.length}/${minManualPoses})`}>
             <div className="flex flex-col gap-2">
-              <p className="text-[11px] text-zinc-500 leading-snug">
+              <p className="text-[11px] text-zinc-500 leading-snug font-mono">
                 자세 손으로 잡고 [캡처] {minManualPoses}장. 다양하게 (J1 yaw / J4
                 pitch / J5 roll 골고루). overlay 초록일 때 캡처.
               </p>
               <div className="flex gap-2">
-                <Button
-                  size="sm"
+                <PanelButton
+                  variant="primary"
                   className="flex-1"
                   onClick={() => void captureAction()}
                   disabled={loading}
                 >
                   {loading ? "..." : "캡처"}
-                </Button>
-                <Button
-                  size="sm"
+                </PanelButton>
+                <PanelButton
                   variant="outline"
                   onClick={() => void handleReset()}
                   disabled={loading || poses.length === 0}
                 >
                   리셋
-                </Button>
+                </PanelButton>
               </div>
               <HandEyePoseList poses={poses} />
             </div>
           </Section>
 
-          <Section label="자동 모드 진입">
+          <Section label="다음">
             <div className="flex flex-col gap-2">
-              <p className="text-[11px] text-zinc-500 leading-snug">
+              <p className="text-[11px] text-zinc-500 leading-snug font-mono">
                 {canExitManual
-                  ? `${poses.length}장 누적 — 이제 자동 추천 모드 진입 가능.`
-                  : `${minManualPoses - poses.length}장 더 캡처 후 자동 추천 활성.`}
+                  ? `${poses.length}장 누적 — 다음 단계로 진행하세요.`
+                  : `${minManualPoses - poses.length}장 더 캡처해주세요.`}
               </p>
-              <Button
-                size="sm"
+              <PanelButton
+                variant="primary"
                 onClick={() => void handleExitManual()}
                 disabled={!canExitManual || loading}
               >
-                {loading ? "Multi-start BA..." : "수동 모드 종료 → 자동 추천"}
-              </Button>
+                {loading ? "계산 중..." : "자동 추천 시작"}
+              </PanelButton>
             </div>
           </Section>
         </>
@@ -243,22 +226,21 @@ export function CalibrationCapturePanel(props: IDockviewPanelProps<object>) {
           <Section label="Capture">
             <div className="flex flex-col gap-2">
               <div className="flex gap-2">
-                <Button
-                  size="sm"
+                <PanelButton
+                  variant="primary"
                   className="flex-1"
                   onClick={() => void captureAction()}
                   disabled={loading}
                 >
                   {loading ? "..." : "캡처"}
-                </Button>
-                <Button
-                  size="sm"
+                </PanelButton>
+                <PanelButton
                   variant="outline"
                   onClick={() => void handleReset()}
                   disabled={loading || poses.length === 0}
                 >
                   리셋
-                </Button>
+                </PanelButton>
               </div>
               <HandEyePoseList poses={poses} />
             </div>
@@ -266,25 +248,26 @@ export function CalibrationCapturePanel(props: IDockviewPanelProps<object>) {
 
           <Section label="Commit">
             <div className="flex flex-col gap-2">
-              <p className="text-[11px] text-zinc-500">
+              <p className="text-[11px] text-zinc-500 font-mono">
                 σ TSDF GOOD 안이면 sufficient — hand_eye.npz 에 저장.
               </p>
-              <Button
-                size="sm"
+              <PanelButton
                 variant="secondary"
                 onClick={() => void handleCommit()}
                 disabled={loading || (!compute && !liveSigma) || computeStale}
               >
                 COMMIT (저장)
-              </Button>
+              </PanelButton>
             </div>
           </Section>
         </>
       )}
 
       {status && (
-        <Section label="Status">
-          <p className="text-[11px] text-zinc-500">{status}</p>
+        <Section label="Message">
+          <p className="text-[11px] text-zinc-400 leading-snug font-mono">
+            {status}
+          </p>
         </Section>
       )}
     </PanelShell>

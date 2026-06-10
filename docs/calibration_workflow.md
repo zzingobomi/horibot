@@ -128,4 +128,4 @@ Dictionary:     DICT_4X4
 
 - **PDF 설계치(25mm) ≠ 실측치 가능** — 합지 시 인쇄 스케일 ±1% 오차 흔함
 - 받은 보드는 캘리퍼스로 square 실측 → **실측치를 OpenCV `squareLength` 에 입력** (PDF 설계치 X)
-- 실측 결과: _TBD (수령 후 측정 기록)_
+- 실측 결과 (2026-06-10, 벌니어 캘리퍼스): **25 mm** — 벌니어 정밀도 (±0.05mm) 내 PDF 설계치 일치. [board.py:37](../backend/modules/calibration/board.py#L37) `SQUARE_LENGTH_M = 0.025` 그대로 유지. (square 0.05mm 오차 → 작업거리 250mm 환산 0.5mm pose error, σ_t <10mm 목표 대비 무시 가능)

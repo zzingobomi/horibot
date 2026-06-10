@@ -29,7 +29,7 @@ export function CheckerboardOverlay({ preview, stale }: Props) {
 
   if (!preview) {
     return (
-      <div className="absolute top-2 right-2 rounded bg-black/60 px-2 py-1 font-mono text-xs text-white/70">
+      <div className="absolute top-2 right-2 rounded border border-zinc-700/60 bg-zinc-900/70 px-2 py-1 font-mono text-[11px] text-zinc-400 backdrop-blur-sm">
         검출 대기중…
       </div>
     );
@@ -43,13 +43,13 @@ export function CheckerboardOverlay({ preview, stale }: Props) {
   let badgeClass: string;
   let badgeText: string;
   if (stale) {
-    badgeClass = "bg-red-600/85";
+    badgeClass = "bg-red-500/15 border border-red-500/40 text-red-300";
     badgeText = "캡처 금지 · 신호 끊김";
   } else if (!preview.detected) {
-    badgeClass = "bg-red-600/85";
+    badgeClass = "bg-red-500/15 border border-red-500/40 text-red-300";
     badgeText = "캡처 금지 · 미검출";
   } else if (!tiltOk) {
-    badgeClass = "bg-red-600/85";
+    badgeClass = "bg-red-500/15 border border-red-500/40 text-red-300";
     const reason =
       tilt == null
         ? ""
@@ -58,7 +58,7 @@ export function CheckerboardOverlay({ preview, stale }: Props) {
         : ` · tilt ${tilt.toFixed(0)}° 너무 비스듬`;
     badgeText = `캡처 금지${reason}`;
   } else {
-    badgeClass = "bg-emerald-600/85";
+    badgeClass = "bg-emerald-500/15 border border-emerald-500/40 text-emerald-300";
     const tiltStr = tilt != null ? ` · tilt ${tilt.toFixed(0)}°` : "";
     badgeText = `캡처 가능${tiltStr}`;
   }
@@ -106,7 +106,7 @@ export function CheckerboardOverlay({ preview, stale }: Props) {
       </svg>
 
       <div
-        className={`absolute top-2 right-2 rounded px-2 py-1 font-mono text-xs text-white ${badgeClass}`}
+        className={`absolute top-2 right-2 rounded px-2 py-1 font-mono text-[11px] backdrop-blur-sm ${badgeClass}`}
       >
         {badgeText}
       </div>

@@ -9,7 +9,7 @@ from ruckig import Ruckig, InputParameter, OutputParameter, Result
 from scipy.interpolate import CubicSpline
 
 from core.transport.messages.motion import TrajStatus
-from .iksolver import Position3
+from .kinematics import Position3
 
 logger = logging.getLogger(__name__)
 

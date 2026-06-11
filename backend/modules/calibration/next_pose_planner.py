@@ -121,7 +121,7 @@ def recommend_many(
             (URDF rad). last_compute 의 per_pose_residual 과 같은 순서.
         current_joint_angles_rad: 분포 fallback 의 base 가 될 현재 모터 위치.
         arm_motor_ids: [1..5]
-        joint_limits_rad: PybulletSolver.joint_limits(5)
+        joint_limits_rad: Kinematics.joint_limits(5)
         visibility_check: 후보 자세에서 보드가 카메라 frame 안인지 확인 함수.
             None 이면 visibility 표시만 "unchecked" 로 박힘. intrinsic + hand_eye +
             board base 추정 모두 있을 때만 caller 가 제공.

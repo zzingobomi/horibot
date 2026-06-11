@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from .solver import PybulletSolver, Position3, Quaternion
+from .registry import get_default_kinematics, Position3, Quaternion
 
 
 @dataclass
@@ -12,7 +12,7 @@ class TCPPose:
 @dataclass
 class MotionModes:
     def __init__(self) -> None:
-        self._solver = PybulletSolver()
+        self._solver = get_default_kinematics()
 
     # ─── FK ────────────────────────────────────────────────────
 

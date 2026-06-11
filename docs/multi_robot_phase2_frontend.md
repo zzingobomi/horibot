@@ -15,8 +15,8 @@ Phase 1 (foundation) 완료 후 남은 자리. [multi_robot_architecture.md §12
 
 - **Phase 1 foundation** ([multi_robot_walkthrough.md](multi_robot_walkthrough.md))
   - 폴더 split: `robot/<type>/` (URDF/mesh) + `robot/instances/<id>/` (calibration / scans / logs)
-  - `RobotRegistry` ([robot/robots.yaml](../robot/robots.yaml) SSOT) → `RobotConfig` / `get_iksolver(id)` / `get_motor_backend(id)` / `get_camera_capture(id)`
-  - Protocol abstraction: `IKSolver` / `MotorBackend` / `CameraCapture`
+  - `RobotRegistry` ([robot/robots.yaml](../robot/robots.yaml) SSOT) → `RobotConfig` / `get_kinematics(id)` / `get_motor_backend(id)` / `get_camera_capture(id)`
+  - Protocol abstraction: `Kinematics` / `MotorBackend` / `CameraCapture`
   - Coordinates → `dict[robot_id]` (joint/link/sag/tool)
   - **N=1 환경에서 SO-101 도착 시 SWAP 가능** (entry + FeetechBackend adapter 추가)
 

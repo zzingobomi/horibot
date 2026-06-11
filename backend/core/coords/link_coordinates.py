@@ -5,7 +5,7 @@ state: `dict[robot_id] -> LinkOffsets`.
 
 joint_offsets 와 다른 점은 동일:
     - 값이 *2종* (link_trans (3,) m, link_rot (3,) rad rotvec) per joint
-    - 사용처가 *URDF patch* (PybulletIKSolver 부팅 시 urdf_patcher 호출에 들어감)
+    - 사용처가 *URDF patch* (PybulletKinematics 부팅 시 urdf_patcher 호출에 들어감)
     - **commit_offsets semantics: overwrite (절대값 덮어쓰기)**
       (BA 의 link_t 는 absolute total — accuracy_squeeze_plan §1.6)
 """

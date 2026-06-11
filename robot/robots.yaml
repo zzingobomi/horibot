@@ -10,7 +10,7 @@ robots:
     enabled: true
     capabilities: [move, calibrate, scan]   # D405 보유 → scan 가능. SO-101 도착 시 USB cam 으로 바뀌면 [move, calibrate] 로 변경.
     motor_backend: dynamixel
-    iksolver: pybullet
+    kinematics_backend: pybullet
     camera_backend: realsense    # Phase 2 (distributed_topology.md §1): omx_f → opencv (UVC)
     base_pose:                   # World frame 의 robot base 위치 (m, x/y/z).
       x: 0.0
@@ -31,7 +31,7 @@ robots:
     # 실 hardware 도착 시 enabled=true + scan 추가 (D405 양도).
     capabilities: [move, calibrate]
     motor_backend: dynamixel
-    iksolver: pybullet
+    kinematics_backend: pybullet
     camera_backend: realsense
     base_pose:
       x: 0.4

@@ -6,7 +6,7 @@ Hand-Eye BA는 link origin offset을 *변수*로 풀어야 하므로 매 LM iter
 
 이 모듈의 사용처:
     (a) `bundle_adjust.py`의 확장 BA — link offset 자유도와 함께 FK 평가
-    (b) PybulletSolver / urdf_patcher가 같은 URDF 상수를 공유 (single source)
+    (b) Kinematics / urdf_patcher가 같은 URDF 상수를 공유 (single source)
 
 URDF 변경 시 sync 필요:
     URDF의 모든 <joint><origin rpy/> 가 "0 0 0" 가정.  rpy 비0 joint가 추가되면

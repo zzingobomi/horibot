@@ -7,7 +7,7 @@ LinkCoordinates 와 다른 점:
     - 단일 값 (trans 3 + rot 3) — joint 별 dict 아님
     - URDF patch 안 함 — motion_node 의 cartesian service handler 가 명령/응답
       변환에만 사용
-    - 메모리 자동 갱신 (CorrectedIKSolver 재시작 불필요) — 단 분산 머신은
+    - 메모리 자동 갱신 (SagCorrectedKinematics 재시작 불필요) — 단 분산 머신은
       git pull + 재시작
 """
 
@@ -96,7 +96,7 @@ class ToolCoordinates:
     ) -> ToolOffset:
         """COMMIT 시 atomic 갱신: 디스크 *overwrite* + 메모리 reload.
 
-        URDF patch 안 함 → CorrectedIKSolver 재시작 불필요. 단 다른 머신은
+        URDF patch 안 함 → SagCorrectedKinematics 재시작 불필요. 단 다른 머신은
         git pull + 재시작.
         """
         rid = self._resolve(robot_id)

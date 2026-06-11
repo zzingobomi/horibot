@@ -130,7 +130,7 @@ for joint_el in root.findall("joint"):
 
 ### 부팅 시 흐름
 
-[backend/modules/kinematics/solver.py:52](../backend/modules/kinematics/solver.py#L52) — `PybulletSolver.__init__`:
+[backend/modules/kinematics/registry.py:52](../backend/modules/kinematics/registry.py#L52) — `Kinematics.__init__`:
 
 ```python
 link_offsets = LinkCoordinates().snapshot()
@@ -182,7 +182,7 @@ EE에 lumped mass가 있다고 가정하고 J2/J3 회전축에 걸리는 중력 
 
 #### FK: commanded → actual (sag 추가)
 
-[solver.py:139](../backend/modules/kinematics/solver.py#L139) — `_commanded_to_actual()`:
+[solver.py:139](../backend/modules/kinematics/registry.py#L139) — `_commanded_to_actual()`:
 
 ```python
 def fk(self, joint_angles):
@@ -201,7 +201,7 @@ out[2] += k[1] * tau_J3   # J3
 
 #### IK: actual → commanded (sag 빼기)
 
-[solver.py:149](../backend/modules/kinematics/solver.py#L149) — `_actual_to_commanded()`:
+[solver.py:149](../backend/modules/kinematics/registry.py#L149) — `_actual_to_commanded()`:
 
 ```python
 def ik(self, target_position, ...):
@@ -299,7 +299,7 @@ obj_in_base = R_be @ obj_in_ee + t_be
 WebSocket → MotionNode._srv_move_l(target)
    │
    ▼
-MotionCommand가 PybulletSolver.ik(target, current=encoder reading) 호출
+MotionCommand가 Kinematics.ik(target, current=encoder reading) 호출
    │
    ├─ current(encoder reading=commanded) → actual로 변환  ◄── sag (+ joint_offset은 이미 적용된 상태)
    │     ※ current는 JointStateCache.get_joint_angles_rad → motor_to_urdf 거친 값
@@ -338,7 +338,7 @@ JointStateCache._on_motor_state(raw 저장)
    └─ JointCoordinates.motor_to_urdf  ◄── joint_offset (가산)
    │
    ▼
-PybulletSolver.fk(angles)
+Kinematics.fk(angles)
    │
    ├─ commanded → actual 변환  ◄── sag (가산)
    └─ patched URDF로 PyBullet FK  ◄── link_offset
@@ -381,6 +381,6 @@ DetectorNode._handle_detect()
   - `joint_offsets 적용: {1: 0.012, ...}` ([joint_coordinates.py:57](../backend/core/coords/joint_coordinates.py#L57))
   - `link_offsets 적용: N joints` ([link_coordinates.py:54](../backend/core/coords/link_coordinates.py#L54))
   - `sag_offsets 적용: J2=..., J3=...` ([sag_coordinates.py:57](../backend/core/coords/sag_coordinates.py#L57))
-  - `patched URDF 로드: .../omx_f.urdf` ([solver.py:57](../backend/modules/kinematics/solver.py#L57))
+  - `patched URDF 로드: .../omx_f.urdf` ([solver.py:57](../backend/modules/kinematics/registry.py#L57))
 - `JointStateCache.get_joint_angles_rad_uncorrected()`로 offset 적용 *전* 값도 볼 수 있다 (캘 진단용)
 - sag만 disable하고 싶으면 `sag_offsets.npz`를 지우거나 빈 값으로 commit. `_sag_enabled = False`가 되면 fk/ik가 no-op

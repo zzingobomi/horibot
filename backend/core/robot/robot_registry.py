@@ -40,7 +40,7 @@ RESERVED_TOPIC_DOMAINS = frozenset(
 # Valid backend / solver 이름 — yaml typo 부팅 시 fail-fast.
 # 새 backend 추가 시 여기에 + factory 분기 추가 (pyright 가 두 곳 동기화 검사).
 MotorBackendName = Literal["dynamixel", "feetech"]
-IKSolverName = Literal["pybullet", "mujoco"]
+KinematicsBackendName = Literal["pybullet", "mujoco"]
 CameraBackendName = Literal["realsense", "opencv", "mujoco"]
 
 # Robot mode sub-route 의 sidebar / route enablement 결정 (frontend Phase 2 UX —
@@ -49,7 +49,7 @@ CameraBackendName = Literal["realsense", "opencv", "mujoco"]
 RobotCapability = Literal["move", "calibrate", "scan"]
 
 _VALID_MOTOR_BACKENDS = frozenset(get_args(MotorBackendName))
-_VALID_IKSOLVERS = frozenset(get_args(IKSolverName))
+_VALID_KINEMATICS_BACKENDS = frozenset(get_args(KinematicsBackendName))
 _VALID_CAMERA_BACKENDS = frozenset(get_args(CameraBackendName))
 _VALID_CAPABILITIES = frozenset(get_args(RobotCapability))
 
@@ -82,7 +82,7 @@ class RobotConfig:
     is_default: bool
     base_pose: BasePose
     motor_backend: MotorBackendName
-    iksolver: IKSolverName
+    kinematics_backend: KinematicsBackendName
     camera_backend: CameraBackendName
     capabilities: tuple[RobotCapability, ...]
 
@@ -123,7 +123,7 @@ class RobotRegistry:
             return
         self._initialized = True
         self._robots: dict[str, RobotConfig] = {}
-        self._iksolvers: dict[str, object] = {}  # IKSolver — lazy import 회피
+        self._kinematics: dict[str, object] = {}  # Kinematics — lazy import 회피
         self._motor_backends: dict[str, object] = {}  # MotorBackend
         self._camera_captures: dict[str, object] = {}  # CameraCapture
         self._factory_lock = threading.Lock()
@@ -189,9 +189,9 @@ class RobotRegistry:
         motor_backend = str(entry.get("motor_backend", "dynamixel"))
         if motor_backend not in _VALID_MOTOR_BACKENDS:
             raise ValueError(f"robot '{robot_id}' motor_backend={motor_backend!r} 미지원. 가능: {sorted(_VALID_MOTOR_BACKENDS)}")
-        iksolver = str(entry.get("iksolver", "pybullet"))
-        if iksolver not in _VALID_IKSOLVERS:
-            raise ValueError(f"robot '{robot_id}' iksolver={iksolver!r} 미지원. 가능: {sorted(_VALID_IKSOLVERS)}")
+        kinematics_backend = str(entry.get("kinematics_backend", "pybullet"))
+        if kinematics_backend not in _VALID_KINEMATICS_BACKENDS:
+            raise ValueError(f"robot '{robot_id}' kinematics_backend={kinematics_backend!r} 미지원. 가능: {sorted(_VALID_KINEMATICS_BACKENDS)}")
         camera_backend = str(entry.get("camera_backend", "realsense"))
         if camera_backend not in _VALID_CAMERA_BACKENDS:
             raise ValueError(f"robot '{robot_id}' camera_backend={camera_backend!r} 미지원. 가능: {sorted(_VALID_CAMERA_BACKENDS)}")
@@ -231,7 +231,7 @@ class RobotRegistry:
             is_default=bool(entry.get("default", False)),
             base_pose=base_pose,
             motor_backend=cast(MotorBackendName, motor_backend),
-            iksolver=cast(IKSolverName, iksolver),
+            kinematics_backend=cast(KinematicsBackendName, kinematics_backend),
             camera_backend=cast(CameraBackendName, camera_backend),
             capabilities=tuple(caps),
             type_dir=type_dir,
@@ -299,28 +299,28 @@ class RobotRegistry:
                 cache[rid] = builder(rid)
             return cache[rid]
 
-    def get_iksolver(self, robot_id: str | None = None):
-        """cfg.iksolver = "pybullet" → CorrectedIKSolver(PybulletIKSolver(urdf), ...) / "mujoco" 미구현."""
-        return self._get_or_build(self._iksolvers, robot_id, self._build_iksolver)
+    def get_kinematics(self, robot_id: str | None = None):
+        """cfg.kinematics_backend = "pybullet" → SagCorrectedKinematics(PybulletKinematics(urdf), ...) / "mujoco" 미구현."""
+        return self._get_or_build(self._kinematics, robot_id, self._build_kinematics)
 
-    def _build_iksolver(self, robot_id: str):
+    def _build_kinematics(self, robot_id: str):
         # Lazy import — RobotRegistry 가 kinematics 모듈에 의존 X
         from core.coords.link_coordinates import LinkCoordinates
         from core.coords.sag_coordinates import SagCoordinates
-        from modules.kinematics.adapters.pybullet_solver import PybulletIKSolver
-        from modules.kinematics.corrected import CorrectedIKSolver
+        from modules.kinematics.adapters.pybullet_kinematics import PybulletKinematics
+        from modules.kinematics.adapters.sag_corrected import SagCorrectedKinematics
 
         cfg = self.get(robot_id)
-        if cfg.iksolver == "pybullet":
-            inner = PybulletIKSolver(cfg.urdf_path)
-            return CorrectedIKSolver(
+        if cfg.kinematics_backend == "pybullet":
+            inner = PybulletKinematics(cfg.urdf_path)
+            return SagCorrectedKinematics(
                 inner, LinkCoordinates(), SagCoordinates()
             )
-        if cfg.iksolver == "mujoco":
+        if cfg.kinematics_backend == "mujoco":
             raise NotImplementedError(
-                f"mujoco IKSolver — Phase 2+ (robot_id={robot_id})"
+                f"mujoco Kinematics — Phase 2+ (robot_id={robot_id})"
             )
-        raise ValueError(f"unknown iksolver: {cfg.iksolver!r} (robot_id={robot_id})")
+        raise ValueError(f"unknown kinematics_backend: {cfg.kinematics_backend!r} (robot_id={robot_id})")
 
     def get_motor_backend(self, robot_id: str | None = None):
         """cfg.motor_backend = "dynamixel" → DynamixelBackend(port, motors) / "feetech" 미구현."""

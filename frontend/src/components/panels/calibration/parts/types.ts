@@ -132,7 +132,7 @@ export type LinkRotDelta = {
  *
  * 현재 J2, J3에만 적용 (DIY 5축에서 중력 부하 가장 큰 두 joint).
  * COMMIT 시 sag_offsets.npz에 cumulative 합산 — PC 메모리 즉시 갱신
- * (PybulletSolver 재시작 X), 다른 머신은 git pull + 재시작.
+ * (Kinematics 재시작 X), 다른 머신은 git pull + 재시작.
  */
 export type SagOffsetDelta = {
   motor_id: number;

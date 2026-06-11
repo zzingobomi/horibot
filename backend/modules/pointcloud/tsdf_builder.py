@@ -3,7 +3,7 @@
 흐름:
   1. scan별 (rgbd, intrinsic, T_base_cam_init) 준비
      - raw_motor_positions → JointCoordinates.motor_to_urdf → arm rad
-     - PybulletSolver.fk_to_matrix(arm_rad) → (R, t) — sag+link 적용된 actual ee
+     - Kinematics.fk_to_matrix(arm_rad) → (R, t) — sag+link 적용된 actual ee
      - T_base_cam_init = T_base_ee · T_ee_cam (hand_eye)
   2. depth bilateral filter (edge 보존 + stereo 노이즈 ↓)
   3. RGBD → PointCloud (cam frame) + normal 추정 (point-to-plane ICP 필수)
@@ -86,10 +86,10 @@ def build_mesh(
     T_ee_cam[:3, 3] = calib.hand_eye.t.reshape(3)
 
     from core.robot.robot_registry import RobotRegistry
-    from modules.kinematics.corrected import CorrectedIKSolver
+    from modules.kinematics.adapters.sag_corrected import SagCorrectedKinematics
 
-    solver_obj = RobotRegistry().get_iksolver(robot_id)
-    assert isinstance(solver_obj, CorrectedIKSolver)
+    solver_obj = RobotRegistry().get_kinematics(robot_id)
+    assert isinstance(solver_obj, SagCorrectedKinematics)
     solver = solver_obj
     coords = JointCoordinates()
 

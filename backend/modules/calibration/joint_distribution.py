@@ -60,7 +60,7 @@ def analyze(
         joint_angles_per_pose: 각 캡처 자세의 [J1, J2, J3, J4, J5, ...] (rad).
             joint_offset 적용 *후* 값 (= URDF rad).
         arm_motor_ids: 5DOF arm 모터 ID 리스트 (예: [1,2,3,4,5]).
-        joint_limits_rad: PybulletSolver에서 가져온 (lower, upper) tuple 리스트.
+        joint_limits_rad: Kinematics에서 가져온 (lower, upper) tuple 리스트.
             arm_motor_ids와 같은 순서/길이.
 
     캡처 0개여도 동작 — std=0, suggested_deg는 모터 limit 양 끝에서 결정.

@@ -9,7 +9,7 @@ from core.cache.joint_state_cache import JointStateCache
 from core.coords.tool_coordinates import ToolCoordinates
 from modules.motor.motor_config import load_motor_layout
 from modules.kinematics.motion_modes import MotionModes
-from modules.kinematics.solver import PybulletSolver
+from modules.kinematics.registry import get_default_kinematics
 from modules.kinematics.trajectory_runner import TrajectoryRunner
 from modules.kinematics.motion_commands import (
     MotionCommand,
@@ -118,7 +118,7 @@ class MotionNode(DeviceNode):
         tool_ee = ToolCoordinates().trans_m()
         if not np.any(tool_ee):
             return np.zeros(3, dtype=np.float64)
-        R_be, _ = PybulletSolver().fk_to_matrix(angles)
+        R_be, _ = get_default_kinematics().fk_to_matrix(angles)
         return np.asarray(R_be) @ np.asarray(tool_ee)
 
     def _cartesian_handler_factory(self, cmd: MotionCommand):

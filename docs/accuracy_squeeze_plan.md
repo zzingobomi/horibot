@@ -196,7 +196,7 @@ joint angle 상관 모두 \|corr\|<0.3. BA 가 이미 다 짜냈다는 의미.
     - sag 보정
     - hand_eye matrix
     ↓
-PybulletSolver.fk(q) = 물리모델 예측 EE 위치
+Kinematics.fk(q) = 물리모델 예측 EE 위치
     ↓
 + learned_residual(q)   ← 신규 (residual.npz)
     ↓
@@ -204,7 +204,7 @@ PybulletSolver.fk(q) = 물리모델 예측 EE 위치
 
 학습 phase (오프라인):
   - 자세 200~500개 캡처
-  - 잔차 = (카메라가 본 실제) - (PybulletSolver.fk 예측)
+  - 잔차 = (카메라가 본 실제) - (Kinematics.fk 예측)
   - smooth regressor (GP / 작은 NN / RBF) 로 q-space 보간
   - residual.npz 로 저장
 IK 도 역방향으로 합성
@@ -278,7 +278,7 @@ OMX_F 정확도 문제는 셋 다 아님 → RL 부적합.
 | hand_eye | Detector + Frontend PC layer | ✓ |
 | joint_offset | raw↔rad 변환 양쪽 | ✓ |
 | link_offset | URDF patch (PyBullet 로드) | ✓ |
-| sag_offset | PybulletSolver fk/ik 양방향 | J2/J3 만 |
+| sag_offset | Kinematics fk/ik 양방향 | J2/J3 만 |
 
 위에 더 들어갈 후보들. **효과 큰 × 비용 작은** 순:
 

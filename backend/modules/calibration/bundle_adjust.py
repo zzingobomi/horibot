@@ -106,7 +106,7 @@ def bundle_adjust_hand_eye(
         값이면 BA가 추정하는 건 delta offset). FK는 매 iteration에서 재계산.
     R/t_target2cam : PnP에서 얻은 체커보드 포즈.
     X_init : cv2.calibrateHandEye seed.
-    fk_fn  : PybulletSolver.fk_to_matrix 래핑.
+    fk_fn  : Kinematics.fk_to_matrix 래핑.
     estimate_joint_offsets : False면 11→6 DOF (offset 0 고정). 회귀 테스트용.
 
     반환

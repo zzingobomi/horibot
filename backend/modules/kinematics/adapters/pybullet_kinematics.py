@@ -1,4 +1,4 @@
-"""PyBullet 기반 IKSolver adapter — ideal URDF 기구학 only.
+"""PyBullet 기반 Kinematics adapter — ideal URDF 기구학 only.
 
 multi_robot_architecture.md §3.1 참조.
 
@@ -8,11 +8,8 @@ multi_robot_architecture.md §3.1 참조.
 - thread-safe (`_sim_lock`)
 
 책임 외 (외부 layer 가 적용):
-- sag 보정 → `modules.kinematics.corrected.CorrectedIKSolver` (Decorator)
+- sag 보정 → `modules.kinematics.adapters.sag_corrected.SagCorrectedKinematics`
 - joint_offset → `core.coords.joint_coordinates.JointCoordinates` (raw↔rad 변환 시)
-
-기존 [solver.py](../solver.py) 의 `PybulletSolver` 에서 sag 관련 코드 제거 + singleton
-제거 (per-robot 인스턴스 가능하게).
 """
 
 from __future__ import annotations
@@ -27,7 +24,7 @@ import pybullet as p
 
 from core.coords.link_coordinates import LinkCoordinates
 from core.coords.urdf_patcher import write_patched_urdf
-from modules.kinematics.iksolver import (
+from modules.kinematics.kinematics import (
     Position3,
     Quaternion,
     RotMatrix3x3,
@@ -44,11 +41,11 @@ IK_POS_ERROR_LIMIT = 0.01
 # 의 운동학 SSOT 인 URDF 자체에서 표준화됨). 새 robot type 추가 시 URDF 에
 # `<link name="tcp"/>` 를 fixed joint child 로 박아두면 frontend / backend
 # 양쪽이 추가 config 없이 동작. 부팅 시 PyBullet 가 못 찾으면 즉시 fail-fast.
-EE_LINK_NAME = "tcp"
+TCP_LINK_NAME = "tcp"
 
 
-class PybulletIKSolver:
-    """PyBullet 기반 IKSolver. ideal URDF 기구학 only (sag 없음)."""
+class PybulletKinematics:
+    """PyBullet 기반 Kinematics. ideal URDF 기구학 only (sag 없음)."""
 
     def __init__(self, urdf_path: str | Path):
         """patched URDF 생성 후 PyBullet DIRECT 모드로 로드.
@@ -92,21 +89,21 @@ class PybulletIKSolver:
                 self._lower_limits.append(float(lower))
                 self._upper_limits.append(float(upper))
                 self._joint_ranges.append(float(upper - lower))
-            if link_name == EE_LINK_NAME:
+            if link_name == TCP_LINK_NAME:
                 self._ee_index = i
 
         if self._ee_index == -1:
-            raise RuntimeError(f"{EE_LINK_NAME} not found in URDF")
+            raise RuntimeError(f"{TCP_LINK_NAME} not found in URDF")
 
-    # ─── IKSolver Protocol ─────────────────────────────────────
+    # ─── Kinematics Protocol ────────────────────────────────────
 
     @property
     def dof(self) -> int:
         return len(self._joint_indices)
 
     @property
-    def ee_link_name(self) -> str:
-        return EE_LINK_NAME
+    def tcp_link_name(self) -> str:
+        return TCP_LINK_NAME
 
     def fk(
         self, joint_angles: Sequence[float]

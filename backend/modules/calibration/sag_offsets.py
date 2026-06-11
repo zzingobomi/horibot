@@ -1,7 +1,7 @@
 """Sag offset 캘리브레이션 파일 I/O.
 
 Hand-Eye BA가 추정한 *자세 의존 중력 처짐* 보정 k (rad/(m·g_unit))를 저장/로드.
-런타임의 SagCoordinates가 부팅 시 로드해 PybulletSolver의 FK/IK 호출에서 sag 적용
+런타임의 SagCoordinates가 부팅 시 로드해 Kinematics의 FK/IK 호출에서 sag 적용
 (`apply_gravity_sag` 참고).
 
 현재 모델은 J2, J3에만 sag (DIY 5축에서 중력 부하 가장 큰 두 joint).

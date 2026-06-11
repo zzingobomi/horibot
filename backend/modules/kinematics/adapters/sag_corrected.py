@@ -1,16 +1,13 @@
-"""CorrectedIKSolver — sag 보정을 inner IKSolver 의 fk 출력 / ik 입력에 적용.
+"""SagCorrectedKinematics — sag 보정을 inner Kinematics 의 fk 출력 / ik 입력에 적용.
 
 multi_robot_architecture.md §3.2 참조.
 
-Decorator pattern — inner 가 PybulletIKSolver / MujocoIKSolver 어느 쪽이든 sag
+좌표계 어댑터 — inner 가 PybulletKinematics / MujocoKinematics 어느 쪽이든 sag
 보정은 한 번만 작성 + 양쪽 다 적용. inner 가 *ideal* URDF 기구학이라 unit test
 용이 (sag 끄고 inner 만으로 검증 가능).
 
 link_offset 은 inner 의 URDF patch 로 이미 처리됨 — 여기서는 sag (J2/J3 자세 의존
 중력 처짐) 만 wrap.
-
-기존 `PybulletSolver` 에 박혀있던 sag 코드 ([solver.py](solver.py) 의 _commanded_to_actual /
-_actual_to_commanded / _reload_sag_cache) 를 이 클래스로 분리.
 """
 
 from __future__ import annotations
@@ -27,8 +24,8 @@ from modules.kinematics.fk_chain import (
     actual_to_commanded,
     apply_gravity_sag,
 )
-from modules.kinematics.iksolver import (
-    IKSolver,
+from modules.kinematics.kinematics import (
+    Kinematics,
     Position3,
     Quaternion,
     RotMatrix3x3,
@@ -42,8 +39,8 @@ _SAG_JOINT_IDS: list[int] = [2, 3]
 _ARM_DOF: int = 5
 
 
-class CorrectedIKSolver:
-    """sag 보정 wrapper. inner `IKSolver` Protocol 그대로 만족.
+class SagCorrectedKinematics:
+    """sag 보정 wrapper. inner `Kinematics` Protocol 그대로 만족.
 
     - fk: inner.fk(commanded → actual via sag)
     - ik: inner.ik(target, current → actual via sag); 결과를 actual → commanded
@@ -51,7 +48,7 @@ class CorrectedIKSolver:
 
     def __init__(
         self,
-        inner: IKSolver,
+        inner: Kinematics,
         link_coords: LinkCoordinates,
         sag_coords: SagCoordinates,
     ):
@@ -61,15 +58,15 @@ class CorrectedIKSolver:
         self._cache_lock = threading.Lock()
         self._reload_caches()
 
-    # ─── IKSolver Protocol ─────────────────────────────────────
+    # ─── Kinematics Protocol ────────────────────────────────────
 
     @property
     def dof(self) -> int:
         return self._inner.dof
 
     @property
-    def ee_link_name(self) -> str:
-        return self._inner.ee_link_name
+    def tcp_link_name(self) -> str:
+        return self._inner.tcp_link_name
 
     def fk(
         self, joint_angles: Sequence[float]
@@ -140,7 +137,7 @@ class CorrectedIKSolver:
                     f"J{jid}={k:+.5f}"
                     for jid, k in zip(_SAG_JOINT_IDS, self._sag_k_array)
                 )
-                logger.info(f"CorrectedIKSolver sag 적용: {ks}")
+                logger.info(f"SagCorrectedKinematics sag 적용: {ks}")
 
     def _commanded_to_actual(self, joint_angles: list[float]) -> list[float]:
         """모터 encoder reading(commanded) → 실제 link end 의 URDF angle (actual)."""
@@ -169,7 +166,3 @@ class CorrectedIKSolver:
                 self._link_rot_array,
             )
             return list(commanded) + list(joint_angles[_ARM_DOF:])
-
-    # 호환: 기존 코드가 호출하던 `_reload_sag_cache` 이름 alias
-    def _reload_sag_cache(self) -> None:
-        self._reload_caches()

@@ -6,7 +6,7 @@ state: `dict[robot_id] -> SagOffsets`.
 
 joint_offsets / link_offsets 와 다른 점:
     - 값이 *scalar k* per joint (rad/(m·g_unit), lumped mass 가정)
-    - 사용처가 *FK/IK 호출 시 angle 보정* — CorrectedIKSolver 가 fk/ik 메서드에서
+    - 사용처가 *FK/IK 호출 시 angle 보정* — SagCorrectedKinematics 가 fk/ik 메서드에서
       `apply_gravity_sag(angles, k_array)` 로 입력 angle 을 sag 적용 후 inner 호출.
     - PyBullet URDF 재로드 불필요 (link_offsets 와 달리) — commit 후 메모리 캐시만
       갱신하면 다음 FK/IK 호출부터 자동 반영. 단 분산 머신은 git pull + 재시작.
@@ -84,7 +84,7 @@ class SagCoordinates:
     ) -> SagOffsets:
         """COMMIT 시 atomic 갱신: 디스크 *overwrite* + 메모리 reload (PC 내부 한정).
 
-        Overwrite semantics. CorrectedIKSolver 재시작 불필요 — 다음 fk/ik 호출이
+        Overwrite semantics. SagCorrectedKinematics 재시작 불필요 — 다음 fk/ik 호출이
         snapshot() 으로 읽으면 자동 반영. 단 분산 머신은 git pull + 재시작.
         """
         rid = self._resolve(robot_id)

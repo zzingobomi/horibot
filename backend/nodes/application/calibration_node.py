@@ -49,7 +49,7 @@ from modules.calibration import board as calib_board
 from modules.calibration import next_pose_planner
 from modules.calibration import thresholds as calib_thresholds
 from modules.calibration.link_offsets import LinkOffsets
-from modules.kinematics.corrected import CorrectedIKSolver
+from modules.kinematics.adapters.sag_corrected import SagCorrectedKinematics
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ class _RobotState:
     arm_cfgs: list[MotorConfig]
     intrinsic: IntrinsicCalibration
     hand_eye: HandEyeCalibration
-    solver: CorrectedIKSolver
+    solver: SagCorrectedKinematics
     last_compute: dict | None = None
     preview_enabled: bool = False
     # 사용자 명시 신호 ([👎 안 보임] / [👎 빨강] / [👎 도달 실패]) 로 fail 표시한
@@ -109,8 +109,8 @@ class CalibrationNode(ApplicationNode):
             arm_cfgs = load_motor_layout(rid).arm
             intrinsic = IntrinsicCalibration()
             hand_eye = HandEyeCalibration()
-            solver = self._registry.get_iksolver(rid)
-            assert isinstance(solver, CorrectedIKSolver)
+            solver = self._registry.get_kinematics(rid)
+            assert isinstance(solver, SagCorrectedKinematics)
 
             path = _save_dir(rid) / "intrinsic.npz"
             loaded = intrinsic.load(path)
@@ -792,7 +792,7 @@ class CalibrationNode(ApplicationNode):
                 method=st.hand_eye.result.method,
                 robot_id=robot_id,
             )
-            st.solver._reload_sag_cache()
+            st.solver._reload_caches()
             sag_applied_meta = [
                 {
                     "motor_id": int(jid),
@@ -999,7 +999,7 @@ class CalibrationNode(ApplicationNode):
         st = self._states[robot_id]
         st.hand_eye.load(_save_dir(robot_id) / "hand_eye.npz")
         st.intrinsic.load(_save_dir(robot_id) / "intrinsic.npz")
-        st.solver._reload_sag_cache()
+        st.solver._reload_caches()
         # 안전상 compute 결과도 무효화 (옛 absolute 가 현 disk 와 맞지 않음).
         st.last_compute = None
 
@@ -1081,7 +1081,7 @@ class CalibrationNode(ApplicationNode):
                 board_corners_base=board_corners_base,
             )
 
-        # IK 함수 wrapper — IKSolver Protocol 의 ik() 시그니처 그대로.
+        # IK 함수 wrapper — Kinematics Protocol 의 ik() 시그니처 그대로.
         def _ik(
             target_position,
             target_quaternion,

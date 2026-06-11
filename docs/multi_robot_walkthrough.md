@@ -34,14 +34,14 @@ URDF_PATH          = Path(__file__).parents[3] / "robot" / "urdf" / "omx_f" / "o
 
 # Hardware 가 곳곳에 박힘
 from modules.motor.adapters.dynamixel_driver import DynamixelDriver
-solver = PybulletSolver()   # singleton, sag 코드도 안에 박힘
+solver = get_default_kinematics()   # singleton, sag 코드도 안에 박힘
 driver = DynamixelDriver(port, motors)
 ```
 
 문제:
 - robot 추가 → 모든 hardcoded path 수정
 - "PyBullet → MuJoCo" / "Dynamixel → Feetech" swap 불가
-- sag / link_offset / 캘 적용이 한 클래스 (`PybulletSolver`) 안에 다 박힘 → 재사용성 0
+- sag / link_offset / 캘 적용이 한 클래스 (`Kinematics`) 안에 다 박힘 → 재사용성 0
 
 ### After (N-robot 가정 + Protocol/Adapter)
 
@@ -63,11 +63,11 @@ robot/
 ```python
 # 모든 path 가 RobotRegistry 경유
 cfg = RobotRegistry().default()     # → RobotConfig (모든 path)
-solver = RobotRegistry().get_iksolver()   # → CorrectedIKSolver
+solver = RobotRegistry().get_kinematics()   # → SagCorrectedKinematics
 backend = RobotRegistry().get_motor_backend()  # → DynamixelBackend
 
 # Protocol 만 의존 — adapter swap 가능
-def some_func(solver: IKSolver):  # PybulletIKSolver / MujocoIKSolver 다 OK
+def some_func(solver: Kinematics):  # PybulletKinematics / MujocoIKSolver 다 OK
     pos, quat = solver.fk(joints)
 ```
 
@@ -84,10 +84,10 @@ def some_func(solver: IKSolver):  # PybulletIKSolver / MujocoIKSolver 다 OK
 graph TB
     A[robots.yaml] -->|load| B[RobotRegistry]
     B -->|"get(robot_id)"| C[RobotConfig]
-    B -->|"get_iksolver(robot_id)"| D[IKSolver Protocol]
+    B -->|"get_kinematics(robot_id)"| D[Kinematics Protocol]
     B -->|"get_motor_backend(robot_id)"| E[MotorBackend Protocol]
-    D -->|impl| F[CorrectedIKSolver Decorator]
-    F -->|wraps| G[PybulletIKSolver Adapter]
+    D -->|impl| F[SagCorrectedKinematics Decorator]
+    F -->|wraps| G[PybulletKinematics Adapter]
     E -->|impl| H[DynamixelBackend Adapter]
     I[Coordinates Singleton] -->|"dict[robot_id]"| J[per-robot Offsets]
 ```
@@ -95,9 +95,9 @@ graph TB
 | 컨셉 | 코드 위치 | 역할 |
 |---|---|---|
 | **`robots.yaml`** | [robot/robots.yaml](../robot/robots.yaml) | 모든 robot instance 선언. registry 의 source of truth |
-| **`RobotRegistry`** | [core/robot_registry.py](../backend/core/robot/robot_registry.py) | yaml 싱글톤 + `RobotConfig` 조립 + factory (`get_iksolver` / `get_motor_backend`) |
+| **`RobotRegistry`** | [core/robot_registry.py](../backend/core/robot/robot_registry.py) | yaml 싱글톤 + `RobotConfig` 조립 + factory (`get_kinematics` / `get_motor_backend`) |
 | **`RobotConfig`** | 같은 파일 | frozen dataclass — robot 1개의 모든 path / 설정 |
-| **`IKSolver` Protocol** | [modules/kinematics/iksolver.py](../backend/modules/kinematics/iksolver.py) | fk / ik / fk_to_matrix / joint_limits 의 통합 인터페이스 |
+| **`Kinematics` Protocol** | [modules/kinematics/kinematics.py](../backend/modules/kinematics/kinematics.py) | fk / ik / fk_to_matrix / joint_limits 의 통합 인터페이스 |
 | **`MotorBackend` Protocol** | [modules/motor/backend.py](../backend/modules/motor/backend.py) | Dynamixel / Feetech SDK 의 통합 인터페이스 |
 | **`CameraCapture`** | [modules/camera/capture.py](../backend/modules/camera/capture.py) | Protocol — RealSense / MuJoCo / USB 카메라의 통합 인터페이스. 구현체는 [adapters/realsense_capture.py](../backend/modules/camera/adapters/realsense_capture.py) (`RealsenseCapture`), raw SDK wrap 은 [adapters/realsense_driver.py](../backend/modules/camera/adapters/realsense_driver.py) (`RealsenseDriver`) |
 
@@ -105,14 +105,14 @@ graph TB
 
 ## 2. 클래스 다이어그램
 
-### 2.1 IKSolver 체인 (가장 중요)
+### 2.1 Kinematics 체인 (가장 중요)
 
 ```mermaid
 classDiagram
-    class IKSolver {
+    class Kinematics {
         <<Protocol>>
         +dof int
-        +ee_link_name str
+        +tcp_link_name str
         +fk(joints) tuple
         +ik(pos, quat, seed) list
         +fk_to_matrix(joints) tuple
@@ -120,7 +120,7 @@ classDiagram
         +self_collision(joints) bool
     }
 
-    class PybulletIKSolver {
+    class PybulletKinematics {
         +urdf_path Path
         -_sim_lock Lock
         -_robot int
@@ -128,9 +128,9 @@ classDiagram
         -_ee_index int
     }
 
-    class CorrectedIKSolver {
+    class SagCorrectedKinematics {
         <<Decorator>>
-        -_inner IKSolver
+        -_inner Kinematics
         -_sag_k_array ndarray
         -_link_trans_array ndarray
         -_sag_enabled bool
@@ -141,10 +141,10 @@ classDiagram
         +mjcf_path Path
     }
 
-    IKSolver <|.. PybulletIKSolver
-    IKSolver <|.. CorrectedIKSolver
-    IKSolver <|.. MujocoIKSolver
-    CorrectedIKSolver --> IKSolver : wraps inner
+    Kinematics <|.. PybulletKinematics
+    Kinematics <|.. SagCorrectedKinematics
+    Kinematics <|.. MujocoIKSolver
+    SagCorrectedKinematics --> Kinematics : wraps inner
 ```
 
 **호출 순서** (`solver.fk(joints)` 호출 시):
@@ -153,9 +153,9 @@ classDiagram
 sequenceDiagram
     autonumber
     participant Caller
-    participant CIS as CorrectedIKSolver
+    participant CIS as SagCorrectedKinematics
     participant Sag as SagCoordinates
-    participant PIS as PybulletIKSolver
+    participant PIS as PybulletKinematics
     participant Bullet as PyBullet
 
     Caller->>CIS: fk(joints_commanded)
@@ -213,14 +213,14 @@ classDiagram
     class RobotRegistry {
         <<Singleton>>
         -_robots dict
-        -_iksolvers dict
+        -_kinematics dict
         -_motor_backends dict
         +list_robots() list
         +get(robot_id) RobotConfig
         +enabled_robots() list
         +default() RobotConfig
         +default_robot_id() str
-        +get_iksolver(robot_id) IKSolver
+        +get_kinematics(robot_id) Kinematics
         +get_motor_backend(robot_id) MotorBackend
     }
 
@@ -231,7 +231,7 @@ classDiagram
         +bool enabled
         +str host
         +str motor_backend
-        +str iksolver
+        +str kinematics_backend
         +Path type_dir
         +Path urdf_path
         +Path type_motors_yaml
@@ -338,10 +338,10 @@ graph TB
 | [core/joint_state_cache.py](../backend/core/cache/joint_state_cache.py) | 갱신 | dict[robot_id] state |
 | [core/messages/__init__.py](../backend/core/transport/messages/__init__.py) | 신규 | Pydantic typed payload 패키지 |
 | [core/messages/base.py](../backend/core/transport/messages/base.py) | 신규 | `BaseRobotMessage` / `ServiceResponse[T]` |
-| [modules/kinematics/iksolver.py](../backend/modules/kinematics/iksolver.py) | 신규 | `IKSolver` Protocol + exceptions |
-| [modules/kinematics/adapters/pybullet_solver.py](../backend/modules/kinematics/adapters/pybullet_solver.py) | 신규 | `PybulletIKSolver` (ideal only) |
-| [modules/kinematics/corrected.py](../backend/modules/kinematics/corrected.py) | 신규 | `CorrectedIKSolver` Decorator |
-| [modules/kinematics/solver.py](../backend/modules/kinematics/solver.py) | 갱신 | `PybulletSolver()` facade — Registry.get_iksolver() 위임 |
+| [modules/kinematics/kinematics.py](../backend/modules/kinematics/kinematics.py) | 신규 | `Kinematics` Protocol + exceptions |
+| [modules/kinematics/adapters/pybullet_kinematics.py](../backend/modules/kinematics/adapters/pybullet_kinematics.py) | 신규 | `PybulletKinematics` (ideal only) |
+| [modules/kinematics/adapters/sag_corrected.py](../backend/modules/kinematics/adapters/sag_corrected.py) | 신규 | `SagCorrectedKinematics` Decorator |
+| [modules/kinematics/registry.py](../backend/modules/kinematics/registry.py) | 갱신 | `get_default_kinematics()` facade — Registry.get_kinematics() 위임 |
 | [modules/motor/backend.py](../backend/modules/motor/backend.py) | 신규 | `MotorBackend` Protocol |
 | [modules/motor/adapters/dynamixel_backend.py](../backend/modules/motor/adapters/dynamixel_backend.py) | 신규 | `DynamixelBackend` (Protocol + legacy aliases) |
 | [modules/camera/capture.py](../backend/modules/camera/capture.py) | 갱신 | `CameraCapture` Protocol + dataclasses (구현체는 `adapters/realsense_capture.py` 의 `RealsenseCapture`, raw SDK wrap 은 `adapters/realsense_driver.py` 의 `RealsenseDriver`) |
@@ -371,9 +371,9 @@ sequenceDiagram
     participant JC as JointCoordinates
     participant LC as LinkCoordinates
     participant SC as SagCoordinates
-    participant Solver as get_iksolver()
-    participant PIS as PybulletIKSolver
-    participant CIS as CorrectedIKSolver
+    participant Solver as get_kinematics()
+    participant PIS as PybulletKinematics
+    participant CIS as SagCorrectedKinematics
 
     Main->>Reg: RobotRegistry() (singleton init)
     Reg->>YAML: yaml.safe_load
@@ -388,7 +388,7 @@ sequenceDiagram
     Reg-->>JC: [omx_f_0 config]
     JC->>JC: load joint_offsets.npz for each robot
 
-    Main->>Solver: RobotRegistry.get_iksolver()
+    Main->>Solver: RobotRegistry.get_kinematics()
     Solver->>PIS: __init__(urdf_path)
     PIS->>PIS: write_patched_urdf (link_offset 적용)
     PIS->>PIS: PyBullet loadURDF
@@ -396,20 +396,20 @@ sequenceDiagram
     CIS->>LC: snapshot()
     CIS->>SC: snapshot()
     CIS->>CIS: _link_trans_array, _sag_k_array 캐싱
-    Solver-->>Main: CorrectedIKSolver instance
+    Solver-->>Main: SagCorrectedKinematics instance
 ```
 
-`PybulletSolver()` 호출 시 (backward compat facade):
+`get_default_kinematics()` 호출 시 (backward compat facade):
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant Caller
-    participant Facade as PybulletSolver()
+    participant Facade as get_default_kinematics()
     participant Reg as RobotRegistry
-    Caller->>Facade: PybulletSolver()
-    Facade->>Reg: get_iksolver()
-    Reg-->>Facade: CorrectedIKSolver (cached)
+    Caller->>Facade: get_default_kinematics()
+    Facade->>Reg: get_kinematics()
+    Reg-->>Facade: SagCorrectedKinematics (cached)
     Facade-->>Caller: same instance
 ```
 
@@ -434,13 +434,13 @@ sequenceDiagram
 
 ### 6.2 왜 Decorator 로 sag 분리?
 
-기존 `PybulletSolver` 안에 fk → sag → pybullet → sag-inverse → return 다 박혀있어서:
+기존 `Kinematics` 안에 fk → sag → pybullet → sag-inverse → return 다 박혀있어서:
 - inner kinematics 만 단독 테스트 불가
 - MuJoCo 로 swap 시 sag 코드 복붙
 
 Decorator 로 분리하면:
-- `PybulletIKSolver` = ideal URDF kinematics (테스트 단독 가능)
-- `CorrectedIKSolver` = sag 보정 (어떤 inner 든 wrap)
+- `PybulletKinematics` = ideal URDF kinematics (테스트 단독 가능)
+- `SagCorrectedKinematics` = sag 보정 (어떤 inner 든 wrap)
 - 미래 다른 보정 (thermal drift 등) → 새 Decorator 한 layer 더
 
 ### 6.3 왜 Pydantic v2 (Protobuf 아닌)?
@@ -473,14 +473,14 @@ ROS 2 multi-robot namespace 표준 + Zenoh wildcard subscribe 와 자연.
 |---|---|---|---|
 | **폴더 type/instance split** | `592bf52` | `robot/` 전체 | `git show 592bf52 --stat` 으로 mv 목록 |
 | **RobotRegistry** | `592bf52` | `core/robot_registry.py` | `_validate_robot_id` / `_build_config` / `enabled_robots` |
-| **IKSolver Protocol** | `5bfbe72` | `modules/kinematics/iksolver.py` | Protocol 메서드 6개 + exception 2종 |
-| **PybulletIKSolver adapter** | `5bfbe72` | `modules/kinematics/adapters/pybullet_solver.py` | sag 코드가 *없음* 에 주목 |
-| **CorrectedIKSolver Decorator** | `5bfbe72` | `modules/kinematics/corrected.py` | `_commanded_to_actual` / `_actual_to_commanded` 양방향 |
+| **Kinematics Protocol** | `5bfbe72` | `modules/kinematics/kinematics.py` | Protocol 메서드 6개 + exception 2종 |
+| **PybulletKinematics adapter** | `5bfbe72` | `modules/kinematics/adapters/pybullet_kinematics.py` | sag 코드가 *없음* 에 주목 |
+| **SagCorrectedKinematics Decorator** | `5bfbe72` | `modules/kinematics/adapters/sag_corrected.py` | `_commanded_to_actual` / `_actual_to_commanded` 양방향 |
 | **MotorBackend Protocol + Adapter** | `8fd77ab` | `modules/motor/{backend.py, adapters/dynamixel_backend.py}` | DynamixelBackend 의 legacy aliases 가 caller backward compat |
 | **CameraCapture Protocol** | `5ec460f` | `modules/camera/capture.py` | `CameraCaptureProtocol` + dataclass + 기존 class 가 Protocol 만족 (후속 commit: Protocol 이름 `CameraCapture` 회수 + impl `RealSenseCapture` 로 rename + `adapters/realsense.py` 분리) |
 | **Coordinates dict[robot_id]** | `e8f75ea` | `core/{joint,link,sag,tool}_coordinates.py`, `joint_state_cache.py` | 모든 메서드의 `robot_id=None` kwarg pattern |
-| **Registry factory** | `6d95551` | `core/robot_registry.py` | `get_iksolver` / `get_motor_backend` + `_build_*` lazy import |
-| **PybulletSolver facade 단순화** | `6d95551` | `modules/kinematics/solver.py` | 50줄 → 15줄 |
+| **Registry factory** | `6d95551` | `core/robot_registry.py` | `get_kinematics` / `get_motor_backend` + `_build_*` lazy import |
+| **Kinematics facade 단순화** | `6d95551` | `modules/kinematics/registry.py` | 50줄 → 15줄 |
 | **Pydantic infra scaffolding** | `b207246` | `core/messages/base.py` | `BaseRobotMessage` + `ServiceResponse[T]` generic |
 
 **한 줄 학습 path**:
@@ -603,7 +603,7 @@ graph TB
 `trajectory_runner.py` (보조).
 
 **주목**:
-- service handler 가 payload 에서 `robot_id` 추출 → 적절한 IKSolver /
+- service handler 가 payload 에서 `robot_id` 추출 → 적절한 Kinematics /
   MotorBackend dispatch
 - per-robot TrajectoryRunner 생성 (`dict[robot_id] → TrajectoryRunner`)
 - `_publish_cmd` 가 robot-scoped 토픽 사용 (D 작업과 연결)
@@ -658,7 +658,7 @@ print('robots:', r.list_robots())
 cfg = r.default()
 print('urdf:', cfg.urdf_path.exists())
 print('calibration files:', sum(1 for p in cfg.calibration_dir.iterdir() if p.suffix == '.npz'))
-solver = r.get_iksolver()
+solver = r.get_kinematics()
 print('solver type:', type(solver).__name__)
 "
 ```
@@ -668,7 +668,7 @@ print('solver type:', type(solver).__name__)
 robots: ['omx_f_0']
 urdf: True
 calibration files: 7
-solver type: CorrectedIKSolver
+solver type: SagCorrectedKinematics
 ```
 
 ### Boot 시 log 확인
@@ -683,7 +683,7 @@ RobotRegistry load 완료: 1 robot — ['omx_f_0']
 link_offsets[omx_f_0] 적용: 5 joints
 patched URDF 로드: D:\Study\horibot\robot\omx_f\urdf\.patched\omx_f.urdf
 sag_offsets[omx_f_0] 적용: J2=+0.2652, J3=+0.1413
-CorrectedIKSolver sag 적용: J2=+0.26523, J3=+0.14126
+SagCorrectedKinematics sag 적용: J2=+0.26523, J3=+0.14126
 ```
 
 `[omx_f_0]` 가 robot_id key. 다중 robot 시 `[omx_f_0]`, `[so101_6dof_0]` 둘 다 보일 것.
@@ -696,16 +696,16 @@ CorrectedIKSolver sag 적용: J2=+0.26523, J3=+0.14126
 - [step_dsl.md](step_dsl.md) — Step DSL refactor walkthrough (본 문서 스타일의 원형)
 - [calibration_apply_flow.md](calibration_apply_flow.md) — 4종 캘 산출물 적용 메커니즘 (Phase 1 에서 path 만 변경, 적용 흐름 동일)
 - [so101_6dof_plan.md](so101_6dof_plan.md) — SO-101 하드웨어 plan + 모터 SDK 추상화
-- [hand_eye_extended_ba.md](hand_eye_extended_ba.md) — sag 모델 + 확장 BA (CorrectedIKSolver 가 적용하는 그 sag)
+- [hand_eye_extended_ba.md](hand_eye_extended_ba.md) — sag 모델 + 확장 BA (SagCorrectedKinematics 가 적용하는 그 sag)
 
 ---
 
 ## 11. FAQ (Phase 1 작업하며 나왔던 질문)
 
-**Q. `PybulletSolver()` 라는 facade 가 왜 있나? `RobotRegistry().get_iksolver()` 직접 쓰면 안 되나?**
+**Q. `get_default_kinematics()` 라는 facade 가 왜 있나? `RobotRegistry().get_kinematics()` 직접 쓰면 안 되나?**
 
-A. 14개 기존 caller 가 모두 `PybulletSolver()` 호출 패턴. caller 수정 비용 회피
-용. 미래에 점진 migration 가능 — 새 코드는 `RobotRegistry().get_iksolver(robot_id)`
+A. 14개 기존 caller 가 모두 `get_default_kinematics()` 호출 패턴. caller 수정 비용 회피
+용. 미래에 점진 migration 가능 — 새 코드는 `RobotRegistry().get_kinematics(robot_id)`
 직접 호출 권장.
 
 **Q. `enabled: false` 인 robot 은?**
@@ -723,11 +723,11 @@ A. `RobotRegistry._validate_robot_id()` 가 load 시 즉시 `ValueError` raise.
 A. `robots.yaml` 에 `omx_f_0`, `omx_f_1` entry 추가. 각자 `robot/instances/omx_f_0/`,
 `omx_f_1/` 폴더 (calibration 따로). URDF 는 자동으로 `robot/omx_f/urdf/` 공유.
 
-**Q. `CorrectedIKSolver` 가 sag 안 적용된 inner pos 를 return 한다는 거 맞나?**
+**Q. `SagCorrectedKinematics` 가 sag 안 적용된 inner pos 를 return 한다는 거 맞나?**
 
-A. **반대**. `CorrectedIKSolver.fk()` 는 sag *적용된* (실제 ee 위치) 를 반환.
+A. **반대**. `SagCorrectedKinematics.fk()` 는 sag *적용된* (실제 ee 위치) 를 반환.
 `inner.fk()` 는 sag 안 적용된 ideal URDF 위치를 반환. caller 입장에서는
-`CorrectedIKSolver` 만 봐서 신경 안 써도 OK.
+`SagCorrectedKinematics` 만 봐서 신경 안 써도 OK.
 
 **Q. backward compat alias (`get_present_positions` 등) 는 언제 제거?**
 

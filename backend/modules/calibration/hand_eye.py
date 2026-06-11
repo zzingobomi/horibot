@@ -151,7 +151,7 @@ class HandEyeCalibration:
             use_extended_ba: True면 확장 BA(41자유도) 사용.
                 joint_offset + link_trans + link_rot + R/t 동시 추정.
                 fk_fn 대신 modules.kinematics.fk_chain의 numpy 체인을 내부 호출
-                (PybulletSolver는 URDF 고정이라 link_offset 변수화 불가능).
+                (PybulletKinematics는 URDF 고정이라 link_offset 변수화 불가능).
             use_physical_sag: True면 확장 BA + 자세 의존 sag (43자유도) 사용.
                 위 + sag_k_J2, sag_k_J3 동시 추정. lumped mass + 모멘트 암 기반.
                 σ_rot ~0.65° / σ_t ~7.9mm 달성 가능 (vs extended_ba 1.30°/9.3mm).

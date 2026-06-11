@@ -764,9 +764,9 @@ J의 j번째 열은 "*j번째 조인트만 살짝 돌렸을 때 EE가 어느 방
 
 `λ` (damping)이 *어떤 자세에서도 안전*하게. PyBullet의 `calculateInverseKinematics`가 DLS 변형.
 
-### 8.5 PybulletSolver.ik의 실제 흐름
+### 8.5 Kinematics.ik의 실제 흐름
 
-[solver.py:171-234](backend/modules/kinematics/solver.py#L171-L234):
+[solver.py:171-234](backend/modules/kinematics/registry.py#L171-L234):
 
 ```python
 def ik(self, target_position, target_quaternion, current_joint_angles):
@@ -797,7 +797,7 @@ def ik(self, target_position, target_quaternion, current_joint_angles):
 
 ### 8.6 코드에서 어디?
 
-- IK 호출: [solver.py:171-234](backend/modules/kinematics/solver.py#L171-L234)
+- IK 호출: [solver.py:171-234](backend/modules/kinematics/registry.py#L171-L234)
 - MoveTCP entry: [motion_modes.py:25-35](backend/modules/kinematics/motion_modes.py#L25-L35)
 
 ---

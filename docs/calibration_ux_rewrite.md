@@ -49,7 +49,7 @@ unlock 하려면 §1.1 의 조건 통과 필요.
 
 - **BA solver** — `bundle_adjust.py`, standard/extended/physical_sag 3 모드.
   0.65°/7.94mm 결과 재현이 가장 큰 risk.
-- **Offset apply pipeline** — `CorrectedIKSolver`, `JointCoordinates`,
+- **Offset apply pipeline** — `SagCorrectedKinematics`, `JointCoordinates`,
   `LinkCoordinates`, `SagCoordinates`. URDF patch + FK/IK 적용 메커니즘.
 - **npz 포맷 + 산출물 디스크 구조** — `robot/instances/<id>/calibration/`
 - **Joint/link/sag offset 자체의 수학** — BA 가 출력하는 값의 정의

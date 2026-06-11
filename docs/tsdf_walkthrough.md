@@ -752,7 +752,7 @@ build_mesh(scans, arm_cfgs, out_path):
   # §1: 자세별 초기 T_base_cam 계산
   for each scan s:
       arm_rad = motor_raw → URDF rad           (joint_offset 적용)
-      R, t   = PybulletSolver.fk(arm_rad)      (sag + link offset 적용)
+      R, t   = Kinematics.fk(arm_rad)      (sag + link offset 적용)
       T_base_ee = [R | t]                       (4×4)
       T_base_cam_init[i] = T_base_ee · T_ee_cam   (hand_eye 곱)
 

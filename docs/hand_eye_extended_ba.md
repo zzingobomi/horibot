@@ -269,7 +269,7 @@ weight 튜닝 실험:
 ## 6. URDF patch — 변경 결과를 production에 어떻게 적용하나
 
 BA가 풀어준 link_offset을 production code (motion/detector/task)에도 반영해야
-함. 이들은 `PybulletSolver`로 FK/IK를 푸는데 PyBullet은 URDF 로드 후 변경 불가.
+함. 이들은 `Kinematics`로 FK/IK를 푸는데 PyBullet은 URDF 로드 후 변경 불가.
 
 해결: **URDF 텍스트를 patch한 파일을 따로 만들고 PyBullet에 그걸 로드**.
 
@@ -578,7 +578,7 @@ def _srv_handeye_commit(self, req: dict) -> dict:
     }
 ```
 
-**`restart_required: true`가 중요** — `PybulletSolver`는 URDF를 부팅 시 1회만
+**`restart_required: true`가 중요** — `Kinematics`는 URDF를 부팅 시 1회만
 로드하므로 commit 후 메모리 자동 갱신 X. 다음 부팅에 적용. UI가 사용자에게
 "백엔드 재시작 필요" 알림.
 
@@ -704,7 +704,7 @@ function LinkTransTable({ rows }: { rows: LinkTransDelta[] }) {
 
 ---
 
-## 10. 부팅 시 흐름 — LinkCoordinates + PybulletSolver
+## 10. 부팅 시 흐름 — LinkCoordinates + Kinematics
 
 `link_offsets.npz`(디스크) → 메모리 캐시 → patched URDF → PyBullet 로드.
 
@@ -745,13 +745,13 @@ class LinkCoordinates:
 > joint 만 옛 `commit_offsets(delta)` cumulative 였던 시절은 [calibration_ux_rewrite.md §6](calibration_ux_rewrite.md) 의 Bug A (last_compute stale double-add) 노출 자리 → API 통일로 제거.
 > 진짜 수렴 신호는 "다음 라운드 BA 가 추정하는 *delta* 가 0 에 가까움" — 이건 그대로 (BA math 내부).
 
-### 10b. PybulletSolver 수정
+### 10b. Kinematics 수정
 
-[solver.py:30~](../backend/modules/kinematics/solver.py) — 부팅 시 patched URDF
+[solver.py:30~](../backend/modules/kinematics/registry.py) — 부팅 시 patched URDF
 생성하고 그걸 로드:
 
 ```python
-class PybulletSolver:
+class Kinematics:
     def __init__(self):
         if self._initialized: return
         self._initialized = True
@@ -787,7 +787,7 @@ class PybulletSolver:
   → 응답: restart_required=true
 
 [Backend 재시작]
-  → PybulletSolver() 부팅
+  → get_default_kinematics() 부팅
   → LinkCoordinates() 새 값 로드
   → write_patched_urdf(...) → .patched/omx_f.urdf 갱신
   → p.loadURDF(patched_path) → FK/IK가 새 모델로 동작
@@ -880,11 +880,11 @@ PC에서 git add + commit + push
 
 모터 Pi (motion_node)
   → ssh + git pull + backend 재시작
-  → PybulletSolver 부팅 시 새 link_offsets로 patched URDF 자동 생성
+  → Kinematics 부팅 시 새 link_offsets로 patched URDF 자동 생성
   → motion_node의 IK가 patched URDF로 풀음
 
 카메라 Pi (camera_node)
-  → 영향 없음 (PybulletSolver 안 씀)
+  → 영향 없음 (Kinematics 안 씀)
 ```
 
 `.patched/`가 .gitignore된 게 핵심:
@@ -1288,7 +1288,7 @@ implicit이라 fixed-point. 1차 Taylor 근사 (sag ~2°라 잔차 < 0.05°):
 commanded ≈ actual - sag(actual)
 ```
 
-[fk_chain.py:actual_to_commanded](backend/modules/kinematics/fk_chain.py)가 이걸 처리. [PybulletSolver.ik](backend/modules/kinematics/solver.py)가 PyBullet IK 결과(`actual`)를 받아서 `actual_to_commanded` 한 번 호출 → motor 명령으로 변환.
+[fk_chain.py:actual_to_commanded](backend/modules/kinematics/fk_chain.py)가 이걸 처리. [Kinematics.ik](backend/modules/kinematics/registry.py)가 PyBullet IK 결과(`actual`)를 받아서 `actual_to_commanded` 한 번 호출 → motor 명령으로 변환.
 
 ### 16.7. SagCoordinates — joint/link와 다른 점
 
@@ -1446,7 +1446,7 @@ def serve_patched_urdf_for_web():
 §17.2 옵션 C가 진짜 깔끔한 이유 — frontend의 RobotModel.tsx:92에서 emitTCP를 자체 계산 대신 backend가 publish한 ee_pose_actual을 받아 그대로 쓰면 됨. RobotModel은 시각화용 로봇 모양만 그리고, 진짜 TCP는 backend 권위.
 그럼 주기는..? 주기가 문제일거 같긴한데..
 
-sag는 자세 의존이라 URDF로 표현 불가. backend가 [PybulletSolver.fk](../backend/modules/kinematics/solver.py) 결과(actual ee pose)를 새 토픽으로 발행:
+sag는 자세 의존이라 URDF로 표현 불가. backend가 [Kinematics.fk](../backend/modules/kinematics/registry.py) 결과(actual ee pose)를 새 토픽으로 발행:
 
 ```
 omx/motor/state/ee_pose_actual   # T_base_ee (sag 적용된 actual)
@@ -1461,7 +1461,7 @@ const tcpMatrix = useEEPoseStore((s) => s.eeMatrix);
 
 장점: 모든 정확도가 backend 단일 진실에서 옴. URDF는 *robot 모양 시각화*만 담당, ee 자세는 backend 권위.
 
-단점: backend가 motor state publish할 때마다 PybulletSolver.fk 호출 (현재 20Hz 정도면 부담 작음).
+단점: backend가 motor state publish할 때마다 Kinematics.fk 호출 (현재 20Hz 정도면 부담 작음).
 
 #### 작업 우선순위
 

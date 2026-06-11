@@ -14,7 +14,7 @@ import type { components } from "@/api/generated/types";
 export type MotorConfigItem = components["schemas"]["MotorConfigItem"];
 
 // Project-wide URDF 컨벤션: 모든 robot type 의 URDF 는 TCP 를 가리키는 `tcp`
-// 이름의 link 를 가져야 함. backend `pybullet_solver.EE_LINK_NAME` 와 같은
+// 이름의 link 를 가져야 함. backend `pybullet_kinematics.TCP_LINK_NAME` 와 같은
 // 컨벤션을 frontend `urdf-loader` 가 link lookup 에 사용. 새 robot type 추가
 // 시 URDF 에 `<link name="tcp"/>` 를 박으면 양쪽 다 추가 config 없이 동작.
 export const TCP_LINK_NAME = "tcp";

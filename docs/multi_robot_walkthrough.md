@@ -337,7 +337,7 @@ graph TB
 | [core/tool_coordinates.py](../backend/core/coords/tool_coordinates.py) | 갱신 | dict[robot_id] 화 |
 | [core/joint_state_cache.py](../backend/core/cache/joint_state_cache.py) | 갱신 | dict[robot_id] state |
 | [core/messages/__init__.py](../backend/core/transport/messages/__init__.py) | 신규 | Pydantic typed payload 패키지 |
-| [core/messages/base.py](../backend/core/transport/messages/base.py) | 신규 | `BaseRobotMessage` / `ServiceResponse[T]` |
+| [core/messages/base.py](../backend/core/transport/messages/base.py) | 신규 | `StrictModel` / `EmptyData` / `ServiceRequest[T]` / `ServiceResponse[T]` |
 | [modules/kinematics/kinematics.py](../backend/modules/kinematics/kinematics.py) | 신규 | `Kinematics` Protocol + exceptions |
 | [modules/kinematics/adapters/pybullet_kinematics.py](../backend/modules/kinematics/adapters/pybullet_kinematics.py) | 신규 | `PybulletKinematics` (ideal only) |
 | [modules/kinematics/adapters/sag_corrected.py](../backend/modules/kinematics/adapters/sag_corrected.py) | 신규 | `SagCorrectedKinematics` Decorator |
@@ -481,7 +481,7 @@ ROS 2 multi-robot namespace 표준 + Zenoh wildcard subscribe 와 자연.
 | **Coordinates dict[robot_id]** | `e8f75ea` | `core/{joint,link,sag,tool}_coordinates.py`, `joint_state_cache.py` | 모든 메서드의 `robot_id=None` kwarg pattern |
 | **Registry factory** | `6d95551` | `core/robot_registry.py` | `get_kinematics` / `get_motor_backend` + `_build_*` lazy import |
 | **Kinematics facade 단순화** | `6d95551` | `modules/kinematics/registry.py` | 50줄 → 15줄 |
-| **Pydantic infra scaffolding** | `b207246` | `core/messages/base.py` | `BaseRobotMessage` + `ServiceResponse[T]` generic |
+| **Pydantic infra scaffolding** | `b207246` | `core/messages/base.py` | `StrictModel` + `ServiceRequest[T]` / `ServiceResponse[T]` generic |
 
 **한 줄 학습 path**:
 
@@ -627,7 +627,7 @@ graph TB
 
 **주목**:
 - 점진 도입 — service signature 먼저 (Phase 1.A), core topic 후순위 (Phase 1.B)
-- `BaseRobotMessage(BaseModel)` 상속 → `robot_id` + `timestamp` 강제
+- `StrictModel` 상속 → `extra="forbid"` 로 schema drift 방지 (robot_id 는 topic key placeholder 로 routing — 당초 BaseRobotMessage plan 은 구현 단계에서 도태)
 - `ServiceResponse[T]` envelope generic 패턴
 - backward compat: `model_validate(dict)` 로 기존 dict caller 도 호환
 

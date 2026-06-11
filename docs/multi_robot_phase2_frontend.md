@@ -86,8 +86,8 @@ Phase 1 (foundation) 완료 후 남은 자리. [multi_robot_architecture.md §12
 3. **Prefix 위치: `horibot/<robot_id>/<domain>/...`**
    - `horibot/robot/<id>/...` 같은 `robot` 키워드 X. robot_id 자체가 `omx_f_0` / `so101_0` 처럼 unique 해서 키워드 불필요. ROS2 `/<robot_name>/joint_states` 와 같은 패턴.
 
-4. **Payload 의 `robot_id` 필드 ([`BaseRobotMessage`](../backend/core/transport/messages/base.py)): 유지**
-   - key 의 prefix 와 redundant 하지만 validation / debug / log 용. 제거는 reversible — 필요해지면 그때.
+4. **Payload 의 `robot_id` 필드: 도입 X (당초 plan 도태)**
+   - 초기 design 은 `BaseRobotMessage(robot_id, timestamp)` 로 payload 에 강제할 계획이었으나, 구현 단계에서 topic key 의 `{robot_id}` placeholder 만으로 routing 충분 → payload 필드 redundant. `BaseRobotMessage` 클래스 자체 삭제됨 (사용처 0).
 
 5. **외부 고정 카메라 추가 시**: 별도 namespace `horibot/world/camera/<cam_id>/...` (아직 없음 — 도착하면 추가).
 
@@ -106,7 +106,6 @@ Phase 1 (foundation) 완료 후 남은 자리. [multi_robot_architecture.md §12
 - [`frontend/src/constants/topics.ts`](../frontend/src/constants/topics.ts) — 동기 갱신. 같은 staticmethod 패턴 (TS 의 `static`).
 - [`backend/bridge/zenoh_bridge.py`](../backend/bridge/zenoh_bridge.py) — `_ALWAYS_SUBSCRIBE` 자리. MJPEG HTTP 라우트 `/camera/stream` → **`/robots/<robot_id>/camera/stream`** (frontend URL `/robots/<id>` 와 일관, RESTful).
 - 각 노드 (`backend/nodes/*.py`) — `BaseNode` publish / subscribe / service create 자리에서 `robot_id` 채움. `RobotConfig` 에서 가져옴.
-- [`backend/core/transport/messages/base.py`](../backend/core/transport/messages/base.py) — `BaseRobotMessage.robot_id` 유지 (위 결정 4).
 - typed_messaging codegen — robot_id key 자동 반영되는지 Slice A 시작 시 확인. 안 되면 codegen template 갱신 (이 자리만 진짜 deferred).
 
 ### 참조

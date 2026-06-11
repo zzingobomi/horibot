@@ -29,9 +29,8 @@ from core.transport.messages.motor import (
     MotorSetProfileReq,
 )
 from core.transport.topic_map import Service, Topic
-from core.common import GRIPPER_ID
 from core.units import raw_to_deg
-from modules.motor.motor_config import load_motor_config
+from modules.motor.motor_config import load_motor_layout
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +45,9 @@ class MockMotorNode(DeviceNode):
         # 무관 동일 lookup 가능 (CLAUDE.md "mock 노드는 contract 만 충족" 정합).
         super().__init__("motor_node", robot_id=robot_id)
 
-        _port, self.motor_cfgs = load_motor_config(robot_id)
+        layout = load_motor_layout(robot_id)
+        self.motor_cfgs = layout.motors
+        self._gripper_cfg = layout.gripper
         # 초기 raw position = motors.yaml home (URDF 의 home pose 에 자연스럽게 매칭)
         self._positions: dict[int, int] = {cfg.id: int(cfg.home) for cfg in self.motor_cfgs}
         self._lock = threading.Lock()
@@ -174,6 +175,7 @@ class MockMotorNode(DeviceNode):
                 name=cfg.name,
                 model=cfg.model,
                 mode=cfg.mode,
+                kind=cfg.kind.value,
                 home=cfg.home,
                 limit=MotorLimit(min=cfg.limit_min, max=cfg.limit_max),
             )
@@ -193,5 +195,5 @@ class MockMotorNode(DeviceNode):
         else:
             raw = GRIPPER_OPEN_RAW if req.data.action == "open" else GRIPPER_CLOSE_RAW
         with self._lock:
-            self._positions[GRIPPER_ID] = raw
+            self._positions[self._gripper_cfg.id] = raw
         return ServiceResponse(success=True, message="mock ok", data=EmptyData())

@@ -5,7 +5,6 @@ import threading
 from core.transport.device_node import DeviceNode
 from core.transport.topic_map import Topic, Service
 from core.units import raw_to_deg
-from core.common import GRIPPER_ID
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.motor import (
     MotorCmd,
@@ -21,7 +20,7 @@ from core.transport.messages.motor import (
     MotorSetProfileAllReq,
     MotorSetProfileReq,
 )
-from modules.motor.motor_config import load_motor_config
+from modules.motor.motor_config import load_motor_layout
 from modules.motor.adapters.dynamixel_backend import DynamixelBackend
 from modules.motor.backend import MotorCommError
 
@@ -46,10 +45,11 @@ class MotorNode(DeviceNode):
     def __init__(self, robot_id: str):
         super().__init__("motor_node", robot_id=robot_id)
 
-        port_cfg, motors = load_motor_config(robot_id)
-        self.port = port_cfg.get()
-        self.motor_cfgs = motors
-        self.driver = DynamixelBackend(self.port, motors)
+        layout = load_motor_layout(robot_id)
+        self.port = layout.port.get()
+        self.motor_cfgs = layout.motors
+        self._gripper_cfg = layout.gripper
+        self.driver = DynamixelBackend(self.port, layout.motors)
         self.connected = False
         self.torque_enabled = False
 
@@ -121,10 +121,10 @@ class MotorNode(DeviceNode):
     def _apply_gripper_smooth_profile(self) -> None:
         try:
             self.driver.set_profile_velocity(
-                GRIPPER_ID, GRIPPER_PROFILE_VELOCITY
+                self._gripper_cfg.id, GRIPPER_PROFILE_VELOCITY
             )
             self.driver.set_profile_acceleration(
-                GRIPPER_ID, GRIPPER_PROFILE_ACCELERATION
+                self._gripper_cfg.id, GRIPPER_PROFILE_ACCELERATION
             )
             logger.info(
                 "그리퍼 부드러운 profile 적용: vel=%d acc=%d",
@@ -230,7 +230,7 @@ class MotorNode(DeviceNode):
                     self.driver.reboot(mid)
             # reboot은 그리퍼 profile_velocity/acceleration도 리셋(=0).
             # 부드러운 동작 default 복원.
-            if motor_id is None or motor_id == GRIPPER_ID:
+            if motor_id is None or motor_id == self._gripper_cfg.id:
                 self._apply_gripper_smooth_profile()
             return ServiceResponse(success=True, message="ok", data=EmptyData())
         except Exception as e:
@@ -272,6 +272,7 @@ class MotorNode(DeviceNode):
                 name=cfg.name,
                 model=cfg.model,
                 mode=cfg.mode,
+                kind=cfg.kind.value,
                 home=cfg.home,
                 limit=MotorLimit(min=cfg.limit_min, max=cfg.limit_max),
             )
@@ -296,7 +297,7 @@ class MotorNode(DeviceNode):
         else:
             raw = GRIPPER_OPEN_RAW if d.action == "open" else GRIPPER_CLOSE_RAW
 
-        self.driver.set_goal_current(GRIPPER_ID, int(d.current))
-        self.driver.set_goal_position(GRIPPER_ID, raw)
+        self.driver.set_goal_current(self._gripper_cfg.id, int(d.current))
+        self.driver.set_goal_position(self._gripper_cfg.id, raw)
 
         return ServiceResponse(success=True, message="ok", data=EmptyData())

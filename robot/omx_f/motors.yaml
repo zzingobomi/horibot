@@ -79,6 +79,7 @@ motors:
     name: "gripper_joint_1"
     model: "XL330-M288"
     mode: "current_position"
+    kind: gripper
     home: 2048
     limit:
       min: 1800

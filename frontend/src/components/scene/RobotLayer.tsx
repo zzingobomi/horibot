@@ -25,7 +25,9 @@ export interface RobotLayerProps {
   showRobot?: boolean;
 }
 
-const HOME_JOINTS = [0, 0, 0, 0, 0, 0];
+// 빈 배열 → RobotModel 이 motorCfgs 순회 시 setJointValue 호출 안 함 → URDF
+// 기본 origin (보통 0 rad) 사용. multi-robot 에서 robot 마다 motor 수 달라도 OK.
+const HOME_JOINTS: number[] = [];
 
 export function RobotLayer({
   robots,
@@ -51,6 +53,7 @@ export function RobotLayer({
           <RobotModel
             key={r.id}
             robotType={r.type}
+            robotId={r.id}
             basePose={r.base_pose}
             opacity={opacity}
             jointAngles={isFocus ? jointAngles : HOME_JOINTS}

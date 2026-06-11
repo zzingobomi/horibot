@@ -26,7 +26,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
-from core.common import GRIPPER_ID, GRIPPER_SETTLE
+from core.common import GRIPPER_SETTLE
 from core.transport.messages.base import EmptyData
 from core.transport.messages.detector import (
     GroundedDetectReq,
@@ -197,7 +197,7 @@ def _verify_gripper_held(ctx: StepContext, label: str) -> bool:
     GRIPPER_HELD_RECHECK_DELAY 간격으로 두 번 측정 → threshold 미만 또는
     SLIP_DELTA 이상 감소 시 빈손 판정.
     """
-    pos1 = ctx.joint_cache.get_raw(GRIPPER_ID)
+    pos1 = ctx.joint_cache.get_raw(ctx.gripper_cfg.id)
     if pos1 is None:
         logger.error("Gripper verify: Present_Position 없음  [%s]", label)
         return False
@@ -209,7 +209,7 @@ def _verify_gripper_held(ctx: StepContext, label: str) -> bool:
         return False
 
     time.sleep(GRIPPER_HELD_RECHECK_DELAY)
-    pos2 = ctx.joint_cache.get_raw(GRIPPER_ID)
+    pos2 = ctx.joint_cache.get_raw(ctx.gripper_cfg.id)
     if pos2 is None:
         logger.error("Gripper verify (recheck): Present_Position 없음  [%s]", label)
         return False

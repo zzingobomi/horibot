@@ -113,6 +113,7 @@ class MotorConfigItem(StrictModel):
     name: str
     model: str
     mode: str
+    kind: Literal["arm", "gripper"]
     home: int
     limit: MotorLimit
 

@@ -1,8 +1,5 @@
 import { useCallback, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
+import { PanelButton } from "@/components/shared/PanelButton";
 import { useService, useTopic } from "@/framework";
 import { ServiceKey, Topic } from "@/constants/topics";
 import { mmToMVec3, mToMmVec3 } from "@/lib/robot/utils";
@@ -75,33 +72,35 @@ export function MovePControl() {
   const tcpPose = tcpSvc.data;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3">
       {tcpPose && (
-        <div className="rounded-md bg-muted px-3 py-2 text-xs font-mono">
-          <p className="text-muted-foreground mb-1">
+        <div className="rounded bg-zinc-900/60 border border-zinc-800/60 px-2.5 py-2 font-mono">
+          <p className="text-[9px] uppercase tracking-widest text-zinc-600 mb-1.5">
             현재 TCP (mm) — 자동 Start
           </p>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-3 gap-2 text-[10px] tabular-nums">
             {AXES.map((ax, i) => (
               <div key={ax}>
-                <span className="text-muted-foreground">{ax}: </span>
-                <span>{mToMmVec3(tcpPose.position)[i].toFixed(1)}</span>
+                <span className="text-zinc-500">{ax}: </span>
+                <span className="text-zinc-300">
+                  {mToMmVec3(tcpPose.position)[i].toFixed(1)}
+                </span>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      <div className="flex flex-col gap-2">
-        <div className="grid grid-cols-[20px_1fr_1fr_1fr_64px] items-center gap-1 px-1">
+      <div className="flex flex-col gap-1.5">
+        <div className="grid grid-cols-[20px_1fr_1fr_1fr_56px] items-center gap-1 px-1">
           <span />
           {AXES.map((ax) => (
-            <Label
+            <span
               key={ax}
-              className="text-[10px] text-muted-foreground text-center"
+              className="text-[9px] uppercase tracking-widest text-zinc-600 text-center font-mono"
             >
               {ax} (mm)
-            </Label>
+            </span>
           ))}
           <span />
         </div>
@@ -109,13 +108,13 @@ export function MovePControl() {
         {rows.map((row, idx) => (
           <div
             key={row.id}
-            className="grid grid-cols-[20px_1fr_1fr_1fr_64px] items-center gap-1"
+            className="grid grid-cols-[20px_1fr_1fr_1fr_56px] items-center gap-1"
           >
-            <span className="text-[10px] text-muted-foreground text-right">
+            <span className="text-[10px] text-zinc-600 text-right font-mono tabular-nums">
               {idx + 1}
             </span>
             {AXES.map((_, i) => (
-              <Input
+              <input
                 key={i}
                 type="number"
                 step={1}
@@ -132,40 +131,37 @@ export function MovePControl() {
                       }),
                     );
                 }}
-                className="h-7 text-xs text-right px-1.5"
+                className="h-7 w-full px-1.5 text-[10px] text-right text-blue-400 tabular-nums font-mono bg-zinc-900 border border-zinc-800 rounded focus:outline-none focus:border-blue-500/60 disabled:opacity-50"
                 disabled={isRunning}
               />
             ))}
-            <div className="flex gap-0.5">
-              <Button
+            <div className="flex gap-0.5 justify-end">
+              <PanelButton
                 variant="ghost"
-                size="sm"
-                className="h-7 w-7 p-0 text-[10px]"
                 title="현재 TCP 복사"
                 onClick={() => void syncRow(row.id)}
                 disabled={syncingId !== null || isRunning}
+                className="!h-7 !w-7 !p-0"
               >
                 {syncingId === row.id ? "…" : "⊕"}
-              </Button>
-              <Button
+              </PanelButton>
+              <PanelButton
                 variant="ghost"
-                size="sm"
-                className="h-7 w-7 p-0 text-destructive"
                 onClick={() =>
                   setRows((prev) => prev.filter((r) => r.id !== row.id))
                 }
                 disabled={rows.length <= 2 || isRunning}
+                className="!h-7 !w-7 !p-0 hover:!text-red-400"
               >
                 ✕
-              </Button>
+              </PanelButton>
             </div>
           </div>
         ))}
       </div>
 
-      <Button
+      <PanelButton
         variant="outline"
-        size="sm"
         onClick={() =>
           setRows((prev) => [
             ...prev,
@@ -176,49 +172,54 @@ export function MovePControl() {
           ])
         }
         disabled={isRunning}
-        className="text-xs"
       >
         + 경유점 추가
-      </Button>
+      </PanelButton>
 
-      <p className="text-[10px] text-muted-foreground">
+      <p className="text-[10px] text-zinc-500 font-mono">
         ※ CubicSpline blending — 경유점에서 멈추지 않고 부드럽게 통과
       </p>
 
       {traj && traj.status !== "idle" && (
-        <div className="flex flex-col gap-1">
-          <div className="flex justify-between text-xs text-muted-foreground">
+        <div className="flex flex-col gap-1 font-mono">
+          <div className="flex justify-between text-[10px] text-zinc-500">
             <span>
               {traj.status === "running" && "경로 이동 중…"}
               {traj.status === "done" && "완료"}
               {traj.status === "failed" && "IK 실패 — 경로 중단"}
               {traj.status === "stopped" && "중단됨"}
             </span>
-            <span>{progress}%</span>
+            <span className="tabular-nums">{progress}%</span>
           </div>
-          <Progress value={progress} className="h-1.5" />
+          <div className="h-1 w-full rounded-full bg-zinc-800 overflow-hidden">
+            <div
+              className="h-full bg-blue-500/70 rounded-full transition-all duration-100"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
         </div>
       )}
 
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && (
+        <p className="text-[10px] font-mono text-red-400">{error}</p>
+      )}
 
       <div className="flex gap-2">
-        <Button
-          size="sm"
-          className="flex-1"
+        <PanelButton
+          variant="primary"
           onClick={handleExecute}
           disabled={moveP.pending || isRunning || rows.length < 2}
+          className="flex-1"
         >
           {moveP.pending ? "전송 중…" : "실행"}
-        </Button>
-        <Button
-          variant="destructive"
-          size="sm"
+        </PanelButton>
+        <PanelButton
+          variant="danger"
           onClick={() => void stop.call({})}
           disabled={!isRunning}
         >
           Stop
-        </Button>
+        </PanelButton>
       </div>
     </div>
   );

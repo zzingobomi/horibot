@@ -7,8 +7,7 @@ from core.transport.messages.base import EmptyData, ServiceRequest, ServiceRespo
 from core.transport.messages.task import TaskStepIdReq
 from core.transport.topic_map import Service, Topic
 from core.cache.joint_state_cache import JointStateCache
-from core.common import GRIPPER_ID
-from modules.motor.motor_config import MotorConfig, load_motor_config
+from modules.motor.motor_config import load_motor_layout
 from modules.calibration.loader import load_calibration
 from modules.llm import prompt_parser
 from modules.llm.prompt_parser import parse_pick_place
@@ -49,10 +48,9 @@ class TaskNode(ApplicationNode):
 
         # transition — Step DSL robot_id field 도입 전까지 default robot 만.
         default_rid = self._registry.default().robot_id
-        _, self._motor_cfgs = load_motor_config(default_rid)
-        self._arm_cfgs: list[MotorConfig] = [
-            m for m in self._motor_cfgs if m.id != GRIPPER_ID
-        ]
+        layout = load_motor_layout(default_rid)
+        self._arm_cfgs = layout.arm
+        self._gripper_cfg = layout.gripper
         self._joint_cache = JointStateCache()
 
         calib = load_calibration(default_rid)
@@ -68,6 +66,7 @@ class TaskNode(ApplicationNode):
             node=self,
             joint_cache=self._joint_cache,
             arm_cfgs=self._arm_cfgs,
+            gripper_cfg=self._gripper_cfg,
             calibration=calib,
             on_state_change=self._on_state_change,
         )

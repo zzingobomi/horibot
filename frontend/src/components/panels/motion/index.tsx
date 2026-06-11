@@ -30,16 +30,20 @@ export function MotionPanel(props: IDockviewPanelProps<object>) {
       panelId={props.api.id}
       api={props.api}
     >
-      <Tabs defaultValue="joint" className="flex flex-col gap-2">
-        <TabsList className="w-fit">
+      <Tabs defaultValue="joint" className="flex flex-col gap-2 px-3 py-2">
+        <TabsList className="w-fit !bg-zinc-900/40 !border !border-zinc-800/60 !rounded !p-0.5 !h-auto">
           {TABS.map((t) => (
-            <TabsTrigger key={t.value} value={t.value}>
+            <TabsTrigger
+              key={t.value}
+              value={t.value}
+              className="!text-[10px] !font-mono !uppercase !tracking-wide !text-zinc-500 hover:!text-zinc-200 data-active:!bg-zinc-800/60 data-active:!text-zinc-100 dark:data-active:!bg-zinc-800/60 dark:data-active:!text-zinc-100 dark:data-active:!border-transparent !px-2 !py-1 !rounded-sm !shadow-none"
+            >
               {t.label}
             </TabsTrigger>
           ))}
         </TabsList>
         {TABS.map((t) => (
-          <TabsContent key={t.value} value={t.value} className="m-0">
+          <TabsContent key={t.value} value={t.value} className="m-0 pt-1">
             {t.body}
           </TabsContent>
         ))}

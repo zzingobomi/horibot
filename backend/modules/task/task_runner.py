@@ -100,6 +100,7 @@ class TaskRunner:
         node: "BaseNode",
         joint_cache: "JointStateCache",
         arm_cfgs: list["MotorConfig"],
+        gripper_cfg: "MotorConfig",
         calibration: "CalibrationData | None",
         on_state_change: OnStateChange | None = None,
     ) -> None:
@@ -118,6 +119,7 @@ class TaskRunner:
             node=node,
             joint_cache=joint_cache,
             arm_cfgs=arm_cfgs,
+            gripper_cfg=gripper_cfg,
             calibration=calibration,
             stop_event=self._stop_event,
         )

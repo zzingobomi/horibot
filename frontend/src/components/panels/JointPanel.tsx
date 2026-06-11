@@ -3,8 +3,7 @@ import { bridge } from "@/api/bridge";
 import { useService, useTopic } from "@/framework";
 import { ServiceKey, Topic } from "@/constants/topics";
 import { JointSlider } from "@/components/shared/JointSlider";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
+import { PanelButton } from "@/components/shared/PanelButton";
 import { loadPose } from "@/lib/robot/robotPoses";
 import type { Joint } from "@/types/motor";
 
@@ -40,37 +39,38 @@ export function JointPanel() {
   const toggleTorque = useCallback(async () => {
     const next = !torqueEnabled;
     const res = await enableSvc.call({ enable: next });
-    if (res.success) await cfgSvc.call({}); // refresh motor config cache
+    if (res.success) await cfgSvc.call({});
   }, [torqueEnabled, enableSvc, cfgSvc]);
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-          Joint Control
-        </h2>
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => void goHome()}>
-            Home
-          </Button>
-          <Button size="sm" variant="outline" onClick={syncAll}>
-            Sync
-          </Button>
-          <Button
-            size="sm"
-            variant={torqueEnabled ? "destructive" : "default"}
-            onClick={() => void toggleTorque()}
-          >
-            {torqueEnabled ? "Torque OFF" : "Torque ON"}
-          </Button>
-        </div>
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <PanelButton
+          variant="outline"
+          onClick={() => void goHome()}
+          className="flex-1"
+        >
+          Home
+        </PanelButton>
+        <PanelButton
+          variant="outline"
+          onClick={syncAll}
+          className="flex-1"
+        >
+          Sync
+        </PanelButton>
+        <PanelButton
+          variant={torqueEnabled ? "danger" : "primary"}
+          onClick={() => void toggleTorque()}
+          className="flex-1"
+        >
+          Torque {torqueEnabled ? "OFF" : "ON"}
+        </PanelButton>
       </div>
 
-      <Separator />
-
-      <div className="flex flex-col divide-y">
+      <div className="flex flex-col divide-y divide-zinc-800/60">
         {joints.length === 0 ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">
+          <p className="py-3 text-center text-[11px] text-zinc-500 font-mono">
             모터 연결 대기 중...
           </p>
         ) : (

@@ -218,12 +218,14 @@ class StepContext:
         node: "BaseNode",
         joint_cache: "JointStateCache",
         arm_cfgs: list["MotorConfig"],
+        gripper_cfg: "MotorConfig",
         calibration: "CalibrationData | None",
         stop_event: threading.Event,
     ) -> None:
         self.node = node
         self.joint_cache = joint_cache
         self.arm_cfgs = arm_cfgs
+        self.gripper_cfg = gripper_cfg
         self.calibration = calibration
         self.stop_event = stop_event
 

@@ -215,7 +215,10 @@ class IKSolver(Protocol):
 
     @property
     def ee_link_name(self) -> str:
-        """end-effector link 이름 (URDF link name). fk/ik 기준점."""
+        """end-effector link 이름 (URDF link name). fk/ik 기준점.
+
+        프로젝트 URDF 컨벤션: 항상 `"tcp"` 반환 (아래 박스 참조).
+        """
         ...
 
     def fk(self, joints: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -253,6 +256,28 @@ class IKSolver(Protocol):
 - 생성자에서 URDF 로드, init 후 immutable (URDF 변경은 process 재시작)
 - 모든 method **thread-safe** (내부 mutex — PyBullet 같은 single-threaded backend 보호)
 - `close()` 메서드 없음 — process 종료 시 GC
+
+**TCP link 이름 — 프로젝트 URDF 컨벤션 (★ 모든 robot type 공유)**
+
+모든 robot type 의 URDF 는 **`tcp` 이름의 link 를 가져야 함** — UR `tool0` 와 같은 산업 패턴. 어느 link 가 TCP 인지 config (yaml / robots.yaml entry) 로 명시하지 않고 URDF 자체가 SSOT 가 되도록 link 이름으로 표준화.
+
+```xml
+<!-- robot/<type>/urdf/<type>.urdf -->
+<joint name="tcp_joint" type="fixed">
+  <parent link="link5"/>  <!-- 또는 wrist 마지막 link -->
+  <child link="tcp"/>
+  <origin xyz="0.09193 -0.0016 0" rpy="0 0 0"/>  <!-- link5 → 실제 TCP 위치 -->
+</joint>
+<link name="tcp"/>
+```
+
+코드는 이 컨벤션을 가정해 하드코드:
+- backend [pybullet_solver.py](../backend/modules/kinematics/adapters/pybullet_solver.py): `EE_LINK_NAME = "tcp"`
+- frontend [config.ts](../frontend/src/lib/robot/config.ts): `TCP_LINK_NAME = "tcp"`
+
+새 robot type (so101_6dof 등) 통합 시 URDF 박을 때 `tcp` link 박아 둘 의무 — 빠뜨리면 `PybulletIKSolver.__init__` 가 `tcp not found in URDF` raise (fail-fast).
+
+OMX_F TCP 의도: 그리퍼 핑거 닫혔을 때 만나는 점. SO-101 도 같은 의미로 박을 것 (그리퍼 종류에 따라 link5→tcp origin xyz 만 다름).
 
 **Adapters:**
 
@@ -1337,7 +1362,7 @@ robotStore: {
 
 so101_6dof_plan §6, §7 + Phase 1 에서 deferred 된 multi-robot 운영 작업 합쳐서:
 
-1. **URDF 배치** (`robot/so101_6dof/urdf/`) + mesh STL
+1. **URDF 배치** (`robot/so101_6dof/urdf/`) + mesh STL — wrist 끝에 `tcp` link 박기 (§3.1 컨벤션, 안 박으면 IKSolver 부팅 시 fail-fast)
 2. **FeetechBackend adapter 신규** (DynamixelBackend 와 같은 MotorBackend Protocol 만족)
 3. **PybulletIKSolver(so101_6dof.urdf)** 인스턴스 생성 (5DOF/6DOF 둘 다 호환 — Registry.get_iksolver 자동)
 4. **캘리브레이션 5종** SO-101 용 새로 산출 + `robot/instances/so101_6dof_0/calibration/`

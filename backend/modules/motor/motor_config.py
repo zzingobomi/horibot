@@ -1,9 +1,19 @@
 import sys
 import yaml
 from dataclasses import dataclass
-from pathlib import Path
+from enum import StrEnum
 
 from core.robot.robot_registry import RobotRegistry
+
+
+class MotorKind(StrEnum):
+    """모터 역할 — motors.yaml 의 `kind` 필드 SSOT.
+
+    미래 확장 (tool_changer / linear_axis 등) 시 enum value 추가.
+    """
+
+    ARM = "arm"
+    GRIPPER = "gripper"
 
 
 @dataclass
@@ -16,6 +26,7 @@ class MotorConfig:
     limit_min: int
     limit_max: int
     reverse: bool
+    kind: MotorKind = MotorKind.ARM
     pid_p: int | None = None
     pid_i: int | None = None
     pid_d: int | None = None
@@ -32,16 +43,45 @@ class PortConfig:
         return self.linux
 
 
-def load_motor_config(
-    robot_id: str | None = None,
-) -> tuple[PortConfig, list[MotorConfig]]:
+@dataclass
+class MotorLayout:
+    """robot 의 모터 layout — port + 전체 motors + arm/gripper 분류.
+
+    `arm` / `gripper` 는 `motors` 위에서 `kind` 로 derive — 호출처가 매번
+    `[m for m in motors if m.id != X]` 안 짜도 됨.
+
+    invariant: gripper 는 정확히 1개. load 시 검증 (motors.yaml 에 kind=gripper
+    행이 빠지거나 중복되면 fail-fast).
+    """
+
+    port: PortConfig
+    motors: list[MotorConfig]
+
+    def __post_init__(self) -> None:
+        grippers = [m for m in self.motors if m.kind == MotorKind.GRIPPER]
+        if len(grippers) != 1:
+            raise ValueError(
+                f"motors.yaml: kind=gripper 가 정확히 1개여야 함 "
+                f"(현재 {len(grippers)}개: {[m.name for m in grippers]})"
+            )
+
+    @property
+    def arm(self) -> list[MotorConfig]:
+        return [m for m in self.motors if m.kind != MotorKind.GRIPPER]
+
+    @property
+    def gripper(self) -> MotorConfig:
+        return next(m for m in self.motors if m.kind == MotorKind.GRIPPER)
+
+
+def load_motor_layout(robot_id: str | None = None) -> MotorLayout:
     """robot_type 의 motors.yaml + robot_id 의 instance.yaml 합쳐서 로드.
 
-    type-level (motors 리스트, joint limit, gear ratio, PID 등) → robot/<type>/motors.yaml
+    type-level (motors 리스트, joint limit, gear ratio, PID, kind) → robot/<type>/motors.yaml
     instance-level (USB port, baud) → robot/instances/<robot_id>/instance.yaml
     multi_robot_architecture.md §5.1.2 split 기준.
 
-    robot_id=None 이면 RobotRegistry().default() — Phase 1 single robot.
+    robot_id=None 이면 RobotRegistry().default() — Phase 1 single robot 편의.
     """
     cfg = RobotRegistry().default() if robot_id is None else RobotRegistry().get(robot_id)
 
@@ -72,47 +112,11 @@ def load_motor_config(
                 limit_min=m["limit"]["min"],
                 limit_max=m["limit"]["max"],
                 reverse=m.get("reverse", False),
+                kind=MotorKind(m.get("kind", "arm")),
                 pid_p=pid.get("p"),
                 pid_i=pid.get("i"),
                 pid_d=pid.get("d"),
             )
         )
 
-    return port, motors
-
-
-def _legacy_load_motor_config_from_path(
-    path: str | Path,
-) -> tuple[PortConfig, list[MotorConfig]]:
-    """legacy single-file motors.yaml loader. 더 이상 사용 X — RobotRegistry-based 사용.
-
-    호환 위해 남겨두고 후속 정리에서 제거. 호출처가 직접 path 를 넘기던 경우만.
-    """
-    with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
-
-    port = PortConfig(
-        windows=raw["port"]["windows"],
-        linux=raw["port"]["linux"],
-    )
-
-    motors: list[MotorConfig] = []
-    for m in raw["motors"]:
-        pid = m.get("pid") or {}
-        motors.append(
-            MotorConfig(
-                id=m["id"],
-                name=m["name"],
-                model=m["model"],
-                mode=m["mode"],
-                home=m["home"],
-                limit_min=m["limit"]["min"],
-                limit_max=m["limit"]["max"],
-                reverse=m.get("reverse", False),
-                pid_p=pid.get("p"),
-                pid_i=pid.get("i"),
-                pid_d=pid.get("d"),
-            )
-        )
-
-    return port, motors
+    return MotorLayout(port=port, motors=motors)

@@ -7,7 +7,6 @@ import numpy as np
 import open3d as o3d
 
 from core.transport.application_node import ApplicationNode
-from core.common import GRIPPER_ID
 from core.cache.joint_state_cache import JointStateCache
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.camera import CameraSetDepthStreamReq, CameraSetDepthStreamRes
@@ -32,7 +31,7 @@ from core.transport.messages.pointcloud import (
 )
 from core.transport.topic_map import Service, Topic, topic_for
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
-from modules.motor.motor_config import MotorConfig, load_motor_config
+from modules.motor.motor_config import MotorConfig, load_motor_layout
 from modules.pointcloud import scan_capture, scan_io, tsdf_builder
 
 logger = logging.getLogger(__name__)
@@ -63,9 +62,7 @@ class PointCloudNode(ApplicationNode):
         super().__init__("pointcloud_node")
         self._states: dict[str, _RobotState] = {}
         for rid in self.enabled_robot_ids:
-            _, motor_cfgs = load_motor_config(rid)
-            arm_cfgs = [m for m in motor_cfgs if m.id != GRIPPER_ID]
-            self._states[rid] = _RobotState(arm_cfgs)
+            self._states[rid] = _RobotState(load_motor_layout(rid).arm)
 
         self._cache = JointStateCache()
 

@@ -4,7 +4,6 @@ import threading
 import cv2
 import numpy as np
 
-from core.common import GRIPPER_ID
 from core.transport.application_node import ApplicationNode
 from core.cache.frame_cache import FrameCache
 from core.cache.joint_state_cache import JointStateCache
@@ -24,7 +23,7 @@ from modules.calibration.loader import CalibrationData, load_calibration
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
 from modules.detector.grounded_detector import GroundedDetector
 from modules.detector.yolo_detector import YoloDetector
-from modules.motor.motor_config import MotorConfig, load_motor_config
+from modules.motor.motor_config import MotorConfig, load_motor_layout
 
 
 logger = logging.getLogger(__name__)
@@ -60,10 +59,7 @@ class DetectorNode(ApplicationNode):
         self._arm_cfgs_by_robot: dict[str, list[MotorConfig]] = {}
         self._calibs_by_robot: dict[str, CalibrationData] = {}
         for rid in self.enabled_robot_ids:
-            _, motor_cfgs = load_motor_config(rid)
-            self._arm_cfgs_by_robot[rid] = [
-                m for m in motor_cfgs if m.id != GRIPPER_ID
-            ]
+            self._arm_cfgs_by_robot[rid] = load_motor_layout(rid).arm
             calib = load_calibration(rid)
             self._calibs_by_robot[rid] = calib
             if not calib.is_ready():

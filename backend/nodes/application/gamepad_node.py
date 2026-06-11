@@ -13,7 +13,6 @@ import time
 import threading
 import logging
 
-from core.common import GRIPPER_ID
 from core.transport.application_node import ApplicationNode
 from core.transport.topic_map import Service
 from core.transport.messages.base import EmptyData
@@ -28,7 +27,7 @@ from core.transport.messages.motor import (
     MotorEnableRes,
     MotorGripperReq,
 )
-from modules.motor.motor_config import load_motor_config
+from modules.motor.motor_config import load_motor_layout
 from modules.gamepad.driver import GamepadDriver, GamepadState
 from modules.gamepad import mapper as M
 
@@ -94,8 +93,7 @@ class GamepadNode(ApplicationNode):
         self._last_connected: bool = False
 
         default_rid = self._registry.default().robot_id
-        _, self._motor_cfgs = load_motor_config(default_rid)
-        self._arm_cfgs = [m for m in self._motor_cfgs if m.id != GRIPPER_ID]
+        self._arm_cfgs = load_motor_layout(default_rid).arm
         self._tcp_position: list[float] | None = None
         self._gripper_open = False
 

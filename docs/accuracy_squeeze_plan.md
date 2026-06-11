@@ -39,7 +39,7 @@ GraspPolicy  → grasp_z = base_z + height * 0.5
 |--|--|--|
 | **A** | 측정 height 가 실제(20mm)보다 작게 잡힘 | grasp_z 가 floor 쪽으로 끌려 내려가서 상대적으로 윗부분 접촉으로 보임 |
 | **B** | base_z(floor) 가 실제보다 높게 잡힘 (책상 위로 떠 있음) | grasp_z 가 큐브 상단 근처로 올라감 |
-| **C** | URDF 의 `end_effector_link` 가 실제 그리퍼 끝점 (핑거 닫혔을 때 만나는 점) 이 아니라 더 위 (손목 근처) | 명령은 옆면 가운데지만 실제 그리퍼 끝점은 위쪽 |
+| **C** | URDF 의 `tcp` link 가 실제 그리퍼 끝점 (핑거 닫혔을 때 만나는 점) 이 아니라 더 위 (손목 근처) | 명령은 옆면 가운데지만 실제 그리퍼 끝점은 위쪽 |
 
 A, B 는 perception 문제. C 는 모든 task 공통의 **TCP 프레임 정의** 문제 — 즉 grasp 만이 아니라 미래 모든 task 가 같은 오프셋만큼 어긋남.
 
@@ -78,7 +78,7 @@ A, B 는 perception 문제. C 는 모든 task 공통의 **TCP 프레임 정의**
 
 - **A**: depth 샘플링 개선. 현재 bbox 안 percentile 25 → percentile 더 위로 / segmentation mask 로 객체 픽셀만 / bbox erosion 으로 책상 leak 제거.
 - **B**: ring pad 공식 조정 (객체 그림자/옆면 미포함). depth gradient outlier 거르기.
-- **C**: URDF 의 `end_effector_joint` xyz (현재 92mm) 가 실제 그리퍼 끝점 (핑거 닫혔을 때 만나는 점) 과 mm 단위로 안 맞는 것. link_offset 캘 자유도에 `end_effector_joint` 추가해서 BA 가 같이 풀게 확장 (§ 3 참조).
+- **C**: URDF 의 `tcp_joint` xyz (현재 92mm) 가 실제 그리퍼 끝점 (핑거 닫혔을 때 만나는 점) 과 mm 단위로 안 맞는 것. link_offset 캘 자유도에 `tcp_joint` 추가해서 BA 가 같이 풀게 확장 (§ 3 참조).
 
 ### 1.6 시스템 버그 — BA commit cumulative 누적 손상 (이력: 2026-05-28 발견 + fix)
 
@@ -127,18 +127,18 @@ absolute 정답으로 덮어씀, 누적 손상 없음.
 
 어떤 task 든 결국 **"base 프레임의 특정 지점에 도구 작용점을 정확히 가져다 둔다"** 가 본질. TCP 정확도는 task 별 코드가 아니라 캘리브레이션 layer 가 책임.
 
-OMX_F 의 URDF 는 `end_effector_link` 를 link5 에서 92mm 떨어진 지점에 박아두고
+OMX_F 의 URDF 는 `tcp` link 를 link5 에서 92mm 떨어진 지점에 박아두고
 ([omx_f.urdf:13-17](../robot/urdf/omx_f/omx_f.urdf#L13-L17)),
-그 위치가 그리퍼 끝점 (핑거 닫혔을 때 만나는 점) 을 노린 점임 — 즉 **URDF 의도 자체가 "EE 프레임 = 그리퍼 끝점"**.
+그 위치가 그리퍼 끝점 (핑거 닫혔을 때 만나는 점) 을 노린 점임 — 즉 **URDF 의도 자체가 "TCP 프레임 = 그리퍼 끝점"**.
 Hand-eye 는 이미 이 정의 위에서 풀려있으므로 별도 tool offset 산출물 불필요.
 
 ```
 base
  └─ link 0..5     (joint_offset + link_offset + sag 보정)
-     └─ end_effector_link = 그리퍼 끝점 (핑거 닫혔을 때 만나는 점)
-                            ↑
-                            link5→EE 의 92mm 자체도 보정 대상
-                            (link_offset 자유도 확장으로 BA 가 풀게)
+     └─ tcp = 그리퍼 끝점 (핑거 닫혔을 때 만나는 점)
+              ↑
+              link5→tcp 의 92mm 자체도 보정 대상
+              (link_offset 자유도 확장으로 BA 가 풀게)
 ```
 
 이 구조의 장점:
@@ -285,7 +285,7 @@ OMX_F 정확도 문제는 셋 다 아님 → RL 부적합.
 | # | 후보 | 무엇 | 효과 추정 | 비용 |
 |--|--|--|--|--|
 | 1 | **repeatability floor 측정** | 같은 명령 N회 → 분산 측정. 모든 squeeze 의 baseline (이 floor 보다 잘 짜내려는 시도는 무의미) | (측정만) | 30분 |
-| 2 | **link_offset BA 자유도 확장 → `end_effector_joint` xyz 포함** | URDF 의 92mm 가 실제 그리퍼 끝점 (핑거 닫혔을 때 만나는 점) 과 안 맞는 부분을 BA 가 같이 풀게. 별도 산출물 추가 X, 기존 link_offset 캘 흐름 안에서 처리. 진단이 C 로 나오면 1순위 fix. **적용 layer 변경 필요**: 현재 [urdf_patcher.py](../backend/core/coords/urdf_patcher.py) 의 `_default_joint_id_map` 은 joint1\~5 만 알기 때문에 `end_effector_joint` 도 처리하도록 확장 필요 + `LinkOffsets` 자료 구조에 fixed joint 표현 추가. **⚠️ 자유도 추가 = gauge freedom 위험 ([extended_ba §5](hand_eye_extended_ba.md))** — hand-eye t 와 swap 가능. regularization 재튜닝 + hold-out + sanity check 필수 | mm 단위 (C 결판 시) | 1\~2시간 (BA + LinkOffsets + patcher map + reg sweep + hold-out) |
+| 2 | **link_offset BA 자유도 확장 → `tcp_joint` xyz 포함** | URDF 의 92mm 가 실제 그리퍼 끝점 (핑거 닫혔을 때 만나는 점) 과 안 맞는 부분을 BA 가 같이 풀게. 별도 산출물 추가 X, 기존 link_offset 캘 흐름 안에서 처리. 진단이 C 로 나오면 1순위 fix. **적용 layer 변경 필요**: 현재 [urdf_patcher.py](../backend/core/coords/urdf_patcher.py) 의 `_default_joint_id_map` 은 joint1\~5 만 알기 때문에 `tcp_joint` 도 처리하도록 확장 필요 + `LinkOffsets` 자료 구조에 fixed joint 표현 추가. **⚠️ 자유도 추가 = gauge freedom 위험 ([extended_ba §5](hand_eye_extended_ba.md))** — hand-eye t 와 swap 가능. regularization 재튜닝 + hold-out + sanity check 필수 | mm 단위 (C 결판 시) | 1\~2시간 (BA + LinkOffsets + patcher map + reg sweep + hold-out) |
 | 3 | ~~**empirical residual 학습 layer**~~ — **실측 후 효과 없음 확정** | 2026-05-28 [analyze_residuals.py](../backend/scripts/analyze_residuals.py) 로 LOO RBF 시험. **올바른 baseline σ_t 7.77mm 에서 hold-out σ_t 8.33mm (악화)**. 잔차 ↔ joint angle 상관도 모두 \|corr\|<0.3 — 자세 의존 시그널 없음. BA 가 이미 다 짜냄. **이 후보는 폐기.** mm 미만 정확도 필요시 §3.4 visual servoing 으로. | 효과 없음 (실측 확정) | — |
 | 4 | **백래시 방향성 보정** | XL430/XL330 둘 다 backlash 존재. 같은 각도여도 CW 접근 vs CCW 접근에 raw 다름. direction-dependent offset | sub-degree, 끝단 mm 단위 | 측정 1시간 + raw 변환 layer 패치 (#3 의 잔차 학습이 흡수할 수도 — 중복 검증 필요) |
 | 5 | **sag 모델 J4/J5 확장** | 현재 J2/J3 만. J4(wrist roll) 자세에 따라 J5 처짐 모멘트 바뀜 | sub-mm \~ mm | 데이터 캡처 + 모델 확장 (#3 잔차 학습이 흡수할 수도) |

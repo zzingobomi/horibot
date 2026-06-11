@@ -3,13 +3,15 @@ import * as THREE from "three";
 import URDFLoader from "urdf-loader";
 import type { URDFRobot } from "urdf-loader";
 import { BASE_URL } from "@/constants";
-import { TCP_LINK_NAME, JOINT_CONFIGS } from "@/lib/robot/config";
+import { TCP_LINK_NAME, useMotorConfigs } from "@/lib/robot/config";
 import type { RobotBasePose } from "@/types/robot";
 
 interface URDFRobotProps {
   jointAngles: number[];
   /** URDF 의 robot_type — `robot/<type>/urdf/<type>.urdf` 경로 추론. 기본: "omx_f". */
   robotType?: string;
+  /** robot instance id — motor config (joint name 매핑) lookup 에 사용. */
+  robotId?: string;
   /** World frame 기준 robot base 위치 (m). 두 URDF 동시 마운트 시 겹치지 않게 분리. */
   basePose?: RobotBasePose;
   /** dim 효과 — 1.0 불투명, 0.3 정도가 "다른 로봇 흐릿하게" 의 합리적 default. */
@@ -58,6 +60,7 @@ function disposeMaterials(robot: URDFRobot) {
 export function RobotModel({
   jointAngles,
   robotType = "omx_f",
+  robotId,
   basePose,
   opacity = 1.0,
   onTCPMatrix,
@@ -65,6 +68,7 @@ export function RobotModel({
   linkVisibility,
   visible = true,
 }: URDFRobotProps) {
+  const motorCfgs = useMotorConfigs(robotId);
   const groupRef = useRef<THREE.Group>(null);
   const robotRef = useRef<URDFRobot>(null);
   const onTCPMatrixRef = useRef(onTCPMatrix);
@@ -165,15 +169,15 @@ export function RobotModel({
     const robot = robotRef.current;
     if (!robot) return;
 
-    JOINT_CONFIGS.forEach((joint, i) => {
+    motorCfgs.forEach((cfg, i) => {
       const angle = jointAngles[i];
-      if (angle !== undefined && robot.joints?.[joint.name]) {
-        robot.setJointValue(joint.name, angle);
+      if (angle !== undefined && robot.joints?.[cfg.name]) {
+        robot.setJointValue(cfg.name, angle);
       }
     });
 
     emitTCP(robot, onTCPMatrixRef.current);
-  }, [jointAngles]);
+  }, [jointAngles, motorCfgs]);
 
   // 전체 visible
   useEffect(() => {

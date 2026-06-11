@@ -327,13 +327,13 @@ class RobotRegistry:
         return self._get_or_build(self._motor_backends, robot_id, self._build_motor_backend)
 
     def _build_motor_backend(self, robot_id: str):
-        from modules.motor.motor_config import load_motor_config
+        from modules.motor.motor_config import load_motor_layout
         from modules.motor.adapters.dynamixel_backend import DynamixelBackend
 
         cfg = self.get(robot_id)
-        port_cfg, motors = load_motor_config(robot_id)
+        layout = load_motor_layout(robot_id)
         if cfg.motor_backend == "dynamixel":
-            return DynamixelBackend(port_cfg.get(), motors)
+            return DynamixelBackend(layout.port.get(), layout.motors)
         if cfg.motor_backend == "feetech":
             raise NotImplementedError(
                 f"feetech MotorBackend — Phase 2+ (robot_id={robot_id})"

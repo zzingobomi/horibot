@@ -40,8 +40,7 @@ from core.transport.messages.calibration import (
 from core.transport.topic_map import Service, Topic, topic_for
 from core.cache.frame_cache import FrameCache
 from core.cache.joint_state_cache import JointStateCache
-from core.common import GRIPPER_ID
-from modules.motor.motor_config import MotorConfig, load_motor_config
+from modules.motor.motor_config import MotorConfig, load_motor_layout
 from modules.camera.stream import frame_to_base64
 from modules.calibration.intrinsic import IntrinsicCalibration
 from modules.calibration.hand_eye import HandEyeCalibration, Pose
@@ -50,7 +49,6 @@ from modules.calibration import board as calib_board
 from modules.calibration import next_pose_planner
 from modules.calibration import thresholds as calib_thresholds
 from modules.calibration.link_offsets import LinkOffsets
-from modules.calibration.pose_estimator import PoseEstimator
 from modules.kinematics.corrected import CorrectedIKSolver
 
 logger = logging.getLogger(__name__)
@@ -102,17 +100,13 @@ class CalibrationNode(ApplicationNode):
     def __init__(self) -> None:
         super().__init__("calibration_node")
 
-        # pose_estimator 는 stateless — robot 무관 한 인스턴스.
-        self.pose_estimator = PoseEstimator()
-
         self._frame_cache = FrameCache()
         self._cache = JointStateCache()
 
         # robot 별 상태
         self._states: dict[str, _RobotState] = {}
         for rid in self.enabled_robot_ids:
-            _, motor_cfgs = load_motor_config(rid)
-            arm_cfgs = [m for m in motor_cfgs if m.id != GRIPPER_ID]
+            arm_cfgs = load_motor_layout(rid).arm
             intrinsic = IntrinsicCalibration()
             hand_eye = HandEyeCalibration()
             solver = self._registry.get_iksolver(rid)
@@ -585,22 +579,24 @@ class CalibrationNode(ApplicationNode):
             )
         obj_pts, img_pts = calib_board.match_object_points(ch_corners, ch_ids)
 
-        pose = self.pose_estimator.estimate(
-            obj_points=obj_pts,
-            img_points=img_pts,
-            camera_matrix=st.intrinsic.result.camera_matrix,
-            dist_coeffs=st.intrinsic.result.dist_coeffs,
+        ok, rvec, tvec = cv2.solvePnP(
+            obj_pts,
+            img_pts,
+            st.intrinsic.result.camera_matrix,
+            st.intrinsic.result.dist_coeffs,
         )
-        if pose is None:
+        if not ok:
+            logger.warning("solvePnP 풀이 실패")
             return ServiceResponse(
                 success=False, message="포즈 추정 실패", data=None
             )
+        R_t2c, _ = cv2.Rodrigues(rvec)
 
         st.hand_eye.add_pose(
             Pose(
                 raw_motor_positions=raw_positions,
-                R_target2cam=pose.R,
-                t_target2cam=pose.t,
+                R_target2cam=R_t2c,
+                t_target2cam=tvec,
             )
         )
 

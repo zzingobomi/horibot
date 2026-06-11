@@ -642,6 +642,11 @@ export interface components {
             model: string;
             /** Mode */
             mode: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "arm" | "gripper";
             /** Home */
             home: number;
             limit: components["schemas"]["MotorLimit"];

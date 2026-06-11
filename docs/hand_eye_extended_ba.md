@@ -133,7 +133,7 @@ def fk_chain(joint_angles, link_trans=None, link_rot=None):
         T_r = np.eye(4)
         T_r[:3, :3] = axis_angle_to_R(JOINT_AXES[i], joint_angles[i])
         T = T @ T_r
-    # (3) fixed end_effector_joint
+    # (3) fixed tcp_joint
     T_ee = np.eye(4); T_ee[:3, 3] = EE_ORIGIN
     Tee = T @ T_ee
     return Tee[:3, :3], Tee[:3, 3]

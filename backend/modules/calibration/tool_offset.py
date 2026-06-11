@@ -1,6 +1,6 @@
 """Tool offset 캘리브레이션 파일 I/O.
 
-URDF 의 end_effector_link (= hand_eye 캘 reference frame) 와 실제 그리퍼 끝점
+URDF 의 tcp link (= hand_eye 캘 reference frame) 와 실제 그리퍼 끝점
 (핑거 닫혔을 때 만나는 점) 사이 EE frame 오프셋. 두 frame 사이 차이가 캘 σ 및
 종합 오차 (link/sag/joint 잔여) 의 합으로 모든 자세에서 일관 시프트를 만들면,
 그 시프트를 단일 EE frame 벡터로 흡수해 motion 명령 진입 시점에 변환.

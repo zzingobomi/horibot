@@ -14,7 +14,7 @@ URDF 변경 시 sync 필요:
 
 [robot/urdf/omx_f/omx_f.urdf](robot/urdf/omx_f/omx_f.urdf) chain:
     world → link0 → [j1, z] → link1 → [j2, y] → link2 → [j3, y] → link3
-          → [j4, y] → link4 → [j5, x] → link5 → (fixed) → end_effector_link
+          → [j4, y] → link4 → [j5, x] → link5 → (fixed) → tcp
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ JOINT_AXES: np.ndarray = np.array(
     dtype=np.float64,
 )
 
-# link5 → end_effector_link fixed transform (URDF의 end_effector_joint).
+# link5 → tcp fixed transform (URDF의 tcp_joint).
 EE_ORIGIN: np.ndarray = np.array([0.09193, -0.0016, 0.0], dtype=np.float64)
 
 # arm joint 개수 (gripper 제외 — IK/FK 대상).
@@ -89,7 +89,7 @@ def fk_chain(
         link_rot: shape (5,3) or None — joint i origin frame에 적용할 rotvec (rad).
 
     Returns:
-        (R, t) — end_effector_link의 world frame 자세. R is 3x3, t is (3,).
+        (R, t) — tcp link 의 world frame 자세. R is 3x3, t is (3,).
     """
     if link_trans is None:
         link_trans = np.zeros((N_JOINTS, 3), dtype=np.float64)
@@ -109,7 +109,7 @@ def fk_chain(
         T_r[:3, :3] = axis_angle_to_R(JOINT_AXES[i], float(angles[i]))
         T = T @ T_r
 
-    # fixed end_effector_joint — URDF EE 는 캘 reference frame 으로 고정 (patch X).
+    # fixed tcp_joint — URDF EE (tcp) 는 캘 reference frame 으로 고정 (patch X).
     # 실제 그리퍼 끝점과의 차이는 별도 ToolCoordinates 가 motion_node 에서만 적용.
     T_ee = np.eye(4)
     T_ee[:3, 3] = EE_ORIGIN
@@ -153,7 +153,7 @@ def fk_chain_with_axes(
         T_r[:3, :3] = axis_angle_to_R(JOINT_AXES[i], float(angles[i]))
         T = T @ T_r
 
-    # fixed end_effector_joint — URDF EE 는 캘 reference frame 으로 고정 (patch X).
+    # fixed tcp_joint — URDF EE (tcp) 는 캘 reference frame 으로 고정 (patch X).
     T_ee = np.eye(4)
     T_ee[:3, 3] = EE_ORIGIN
     Tee = T @ T_ee

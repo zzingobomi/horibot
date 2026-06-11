@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { PanelButton } from "@/components/shared/PanelButton";
 import { useService } from "@/framework";
 import { ServiceKey } from "@/constants/topics";
 import type { Vector3Tuple } from "three";
@@ -51,59 +51,55 @@ export function MoveTCPControl() {
     <div className="flex flex-col gap-3">
       <div className="flex gap-1">
         {STEPS.map((s) => (
-          <Button
+          <PanelButton
             key={s}
-            size="sm"
-            variant={step === s ? "default" : "outline"}
-            className="flex-1 text-xs h-7"
+            variant={step === s ? "primary" : "outline"}
+            className="flex-1"
             onClick={() => setStep(s)}
           >
             {STEP_LABELS[s]}
-          </Button>
+          </PanelButton>
         ))}
       </div>
 
       <div className="flex flex-col gap-1">
         {AXES.map((axis, i) => (
-          <div key={axis} className="flex items-center gap-2">
-            <span className="w-4 text-xs font-mono text-muted-foreground uppercase">
+          <div key={axis} className="flex items-center gap-2 font-mono">
+            <span className="w-4 text-[11px] text-zinc-500 uppercase">
               {axis}
             </span>
-            <Button
-              size="sm"
+            <PanelButton
               variant="outline"
-              className="h-7 w-7 p-0"
+              className="!h-7 !w-7 !p-0"
               onClick={() => void doStep(axis, -1)}
               disabled={!tcpPose || moveTCP.pending}
             >
-              <ChevronDown className="h-3 w-3" />
-            </Button>
-            <span className="flex-1 text-center font-mono text-xs tabular-nums">
+              <ChevronDown className="h-3 w-3 mx-auto" />
+            </PanelButton>
+            <span className="flex-1 text-center text-[11px] text-zinc-300 tabular-nums">
               {(pos[i] * 1000).toFixed(1)} mm
             </span>
-            <Button
-              size="sm"
+            <PanelButton
               variant="outline"
-              className="h-7 w-7 p-0"
+              className="!h-7 !w-7 !p-0"
               onClick={() => void doStep(axis, 1)}
               disabled={!tcpPose || moveTCP.pending}
             >
-              <ChevronUp className="h-3 w-3" />
-            </Button>
+              <ChevronUp className="h-3 w-3 mx-auto" />
+            </PanelButton>
           </div>
         ))}
       </div>
 
-      <Button
-        size="sm"
+      <PanelButton
         variant="outline"
-        className="gap-1"
         onClick={() => void tcpSvc.call({})}
         disabled={tcpSvc.pending}
+        className="flex items-center justify-center gap-1.5"
       >
         <RefreshCw className="h-3 w-3" />
         현재 위치 동기화
-      </Button>
+      </PanelButton>
     </div>
   );
 }

@@ -7,8 +7,7 @@ from core.transport.topic_map import Service, Topic
 from core.coords.joint_coordinates import JointCoordinates
 from core.cache.joint_state_cache import JointStateCache
 from core.coords.tool_coordinates import ToolCoordinates
-from core.common import GRIPPER_ID
-from modules.motor.motor_config import MotorConfig, load_motor_config
+from modules.motor.motor_config import load_motor_layout
 from modules.kinematics.motion_modes import MotionModes
 from modules.kinematics.solver import PybulletSolver
 from modules.kinematics.trajectory_runner import TrajectoryRunner
@@ -44,7 +43,7 @@ logger = logging.getLogger(__name__)
 # frame 안정성 유지).
 #
 # 이력:
-# - 2026-05-28 EE patch (urdf_patcher 가 end_effector_joint origin 직접 수정) 시도
+# - 2026-05-28 EE patch (urdf_patcher 가 tcp_joint origin 직접 수정) 시도
 #   실패. detect 와 IK 양쪽 patched URDF 위에 도는 self-consistency 로 cancel out.
 # - 임시로 LinkCoordinates ID=6 행을 tool_offset 으로 재해석 → 의미 충돌.
 # - 별도 산출물 tool_offset.npz 신설로 정리 (이 commit).
@@ -54,10 +53,7 @@ class MotionNode(DeviceNode):
     def __init__(self, robot_id: str):
         super().__init__("motion_node", robot_id=robot_id)
 
-        _, self._motor_cfgs = load_motor_config(robot_id)
-        self._arm_cfgs: list[MotorConfig] = [
-            m for m in self._motor_cfgs if m.id != GRIPPER_ID
-        ]
+        self._arm_cfgs = load_motor_layout(robot_id).arm
         self._arm_ids = [cfg.id for cfg in self._arm_cfgs]
         self._n_arm = len(self._arm_cfgs)
 

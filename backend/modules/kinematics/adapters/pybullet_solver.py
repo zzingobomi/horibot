@@ -38,7 +38,13 @@ logger = logging.getLogger(__name__)
 IK_MAX_ITER = 100
 IK_TOLERANCE = 1e-4
 IK_POS_ERROR_LIMIT = 0.01
-EE_LINK_NAME = "end_effector_link"
+
+# Project-wide URDF 컨벤션: 모든 robot type 의 URDF 는 TCP 를 가리키는 `tcp` 라는
+# 이름의 link 를 가져야 함 (UR `tool0` 와 같은 패턴 — link 이름이 그 robot type
+# 의 운동학 SSOT 인 URDF 자체에서 표준화됨). 새 robot type 추가 시 URDF 에
+# `<link name="tcp"/>` 를 fixed joint child 로 박아두면 frontend / backend
+# 양쪽이 추가 config 없이 동작. 부팅 시 PyBullet 가 못 찾으면 즉시 fail-fast.
+EE_LINK_NAME = "tcp"
 
 
 class PybulletIKSolver:

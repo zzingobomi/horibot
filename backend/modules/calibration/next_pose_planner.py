@@ -87,6 +87,23 @@ class NextPoseRecommendation:
     visibility_reason: str = "unchecked"
 
 
+# 추천 후보가 비었을 때 그 이유를 *분기별 분리*. UI 가 사용자에게 명확히 안내하도록.
+# planner 단독으로 알 수 있는 분기만 다룸 — σ/verdict 기반 분기 (sigma_sufficient_*)
+# 는 caller (calibration_node) 가 결정해서 덮어씀.
+NoCandidatesReason = str
+NO_REASON_BOARD_ESTIMATE_MISSING: NoCandidatesReason = "no_board_estimate"
+NO_REASON_ALL_IK_FAIL: NoCandidatesReason = "all_ik_fail"
+NO_REASON_ALL_INVISIBLE: NoCandidatesReason = "all_invisible"
+NO_REASON_USER_MARKED_FAIL: NoCandidatesReason = "user_marked_fail"
+
+
+@dataclass
+class RecommendationResult:
+    recommendations: list[NextPoseRecommendation]
+    # 빈 list 일 때만 채워짐. caller 가 σ/verdict 결합해 덮어쓸 수 있음.
+    no_candidates_reason: NoCandidatesReason | None = None
+
+
 def recommend_many(
     *,
     last_compute: dict | None,
@@ -420,10 +437,12 @@ def recommend_geometry(
     arm_motor_ids: list[int],
     joint_limits_rad: list[tuple[float, float]],
     current_joint_angles_rad: Sequence[float] | None = None,
-    distance_m: float = 0.25,
+    distance_m: float | None = None,
+    side_offset_m: float | None = None,
+    outward_hint: np.ndarray | None = None,
     visibility_check: VisibilityCheck | None = None,
     excluded_ids: set[str] | None = None,
-) -> list[NextPoseRecommendation]:
+) -> RecommendationResult:
     """보드 sphere shell anchor 기반 EE pose IK sampling.
 
     Anchor 5개 (정면 / 좌측 / 우측 / 위쪽 / 아래쪽) — 보드 위 distance sphere shell.
@@ -431,11 +450,24 @@ def recommend_geometry(
     EE pose 자체 derive → IK 풀어 joint angles. fail (IK 풀림 X / joint limits 밖 /
     visibility fail) drop.
 
-    `excluded_ids`: 사용자가 명시 신호 ([👎]) 로 fail 표시한 추천 ID. 다음 추천
-    생성 시 제외.
+    Args:
+        outward_hint: 보드 normal 의 + 방향을 결정하는 hint vector. 보통 카메라
+            평균 위치 - 보드 중심. None 이면 fallback 으로 +Z 가정 (구 동작, 보드가
+            책상에 누워있는 경우만 정상). 보드 수직/기울임 setup 에선 반드시 hint
+            전달해야 anchor 가 *카메라가 있던 쪽* 으로 생성됨.
+        distance_m / side_offset_m: None 이면 thresholds SSOT 사용.
+        excluded_ids: 사용자가 명시 신호 ([👎]) 로 fail 표시한 추천 ID.
+
+    Returns:
+        RecommendationResult — recommendations + no_candidates_reason (빈 list 일 때).
     """
+    if distance_m is None:
+        distance_m = thresholds.RECOMMEND_DISTANCE_M
+    if side_offset_m is None:
+        side_offset_m = thresholds.RECOMMEND_SIDE_OFFSET_M
+
     if board_corners_base.shape != (4, 3):
-        return []
+        return RecommendationResult([], NO_REASON_BOARD_ESTIMATE_MISSING)
 
     board_center = board_corners_base.mean(axis=0)
     v1 = board_corners_base[1] - board_corners_base[0]
@@ -443,10 +475,20 @@ def recommend_geometry(
     board_normal = np.cross(v1, v2)
     norm_n = np.linalg.norm(board_normal)
     if norm_n < 1e-9:
-        return []
+        return RecommendationResult([], NO_REASON_BOARD_ESTIMATE_MISSING)
     board_normal = board_normal / norm_n
-    if board_normal[2] < 0:
-        board_normal = -board_normal
+
+    # 보드 normal 부호 — outward_hint (카메라가 있던 방향) 가 있으면 그 쪽 향하게.
+    # 옛 동작 (board_normal[2] < 0 뒤집기) 은 *보드가 책상에 누워있다* 가정이라
+    # 보드 수직/기울임 setup 에서 anchor 가 로봇 반대편 공중으로 생성되는 bug 원인.
+    if outward_hint is not None:
+        hint = np.asarray(outward_hint, dtype=float).reshape(3)
+        if np.linalg.norm(hint) > 1e-9 and np.dot(board_normal, hint) < 0:
+            board_normal = -board_normal
+    else:
+        # fallback: +Z 가정 (보드 누워있는 setup 만 정상)
+        if board_normal[2] < 0:
+            board_normal = -board_normal
 
     world_up = np.array([0.0, 0.0, 1.0])
     if abs(np.dot(board_normal, world_up)) > 0.95:
@@ -457,24 +499,23 @@ def recommend_geometry(
     tangent_y = np.cross(board_normal, tangent_x)
     tangent_y = tangent_y / max(np.linalg.norm(tangent_y), 1e-9)
 
-    side_offset = 0.12
     anchors: list[tuple[str, np.ndarray]] = [
         ("정면", board_center + distance_m * board_normal),
         (
             "좌측",
-            board_center + distance_m * board_normal * 0.85 + side_offset * tangent_x,
+            board_center + distance_m * board_normal * 0.85 + side_offset_m * tangent_x,
         ),
         (
             "우측",
-            board_center + distance_m * board_normal * 0.85 - side_offset * tangent_x,
+            board_center + distance_m * board_normal * 0.85 - side_offset_m * tangent_x,
         ),
         (
             "위쪽",
-            board_center + distance_m * board_normal * 0.85 + side_offset * tangent_y,
+            board_center + distance_m * board_normal * 0.85 + side_offset_m * tangent_y,
         ),
         (
             "아래쪽",
-            board_center + distance_m * board_normal * 0.85 - side_offset * tangent_y,
+            board_center + distance_m * board_normal * 0.85 - side_offset_m * tangent_y,
         ),
     ]
 
@@ -486,14 +527,21 @@ def recommend_geometry(
     excluded = excluded_ids or set()
     n_axes = min(len(arm_motor_ids), len(joint_limits_rad), 5)
 
+    # fail 카운트 — 빈 list 일 때 *어느 분기로* 떨어졌는지 reason 결정용
+    n_excluded = 0
+    n_ik_fail = 0
+    n_invisible = 0
+
     for idx, (label, cam_pos) in enumerate(anchors):
         rec_id = f"geometry_{idx}"
         if rec_id in excluded:
+            n_excluded += 1
             continue
 
         cam_z = board_center - cam_pos
         cz_norm = np.linalg.norm(cam_z)
         if cz_norm < 1e-9:
+            n_ik_fail += 1
             continue
         cam_z = cam_z / cz_norm
 
@@ -517,6 +565,7 @@ def recommend_geometry(
         try:
             quat = Rotation.from_matrix(R_ee_in_base).as_quat()
         except ValueError:
+            n_ik_fail += 1
             continue
         target_quat = (
             float(quat[0]),
@@ -531,6 +580,7 @@ def recommend_geometry(
             logger.debug("[geometry] IK 실패 anchor=%s: %s", label, e)
             joint_angles = None
         if joint_angles is None or len(joint_angles) < n_axes:
+            n_ik_fail += 1
             continue
 
         within_limits = all(
@@ -538,6 +588,7 @@ def recommend_geometry(
             for i in range(n_axes)
         )
         if not within_limits:
+            n_ik_fail += 1
             continue
 
         visible = True
@@ -546,6 +597,8 @@ def recommend_geometry(
             visible, visibility_reason = visibility_check(
                 list(joint_angles[:n_axes])
             )
+            if not visible:
+                n_invisible += 1
 
         out.append(
             NextPoseRecommendation(
@@ -570,7 +623,20 @@ def recommend_geometry(
             )
         )
 
-    return out
+    # 빈 list 분기 reason — dominant fail mode 로 결정.
+    # visible=false 인 추천도 list 에는 들어감 (UI 회색 hint) → 진짜 빈 list 는
+    # n_invisible 이 모든 후보 였을 가능성은 X. invisible 자체로는 빈 list 안 만듦.
+    # 빈 list 는 excluded + ik_fail 합쳐 5개 일 때만 발생.
+    reason: NoCandidatesReason | None = None
+    if not out:
+        if n_excluded >= len(anchors):
+            reason = NO_REASON_USER_MARKED_FAIL
+        elif n_ik_fail > 0:
+            reason = NO_REASON_ALL_IK_FAIL
+        else:
+            reason = NO_REASON_ALL_INVISIBLE  # safety fallback
+
+    return RecommendationResult(out, reason)
 
 
 def _is_duplicate(

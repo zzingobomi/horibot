@@ -259,15 +259,24 @@ class CalibrationNode(ApplicationNode):
             )
 
         if mode == "intrinsic":
-            detected, vis = st.intrinsic.capture(frame)
+            width = self._frame_cache.width(robot_id=robot_id)
+            height = self._frame_cache.height(robot_id=robot_id)
+            image_size = (
+                (int(width), int(height))
+                if width is not None and height is not None
+                else None
+            )
+            detected, vis, hint = st.intrinsic.capture(frame, image_size)
             b64 = frame_to_base64(vis)
             return ServiceResponse(
                 success=True,
-                message="체커보드 감지됨" if detected else "체커보드 미감지",
+                message=hint,
                 data=CalibCaptureRes(
                     detected=detected,
                     captured_count=len(st.intrinsic.obj_points),
                     preview=b64,
+                    hint=hint,
+                    coverage_count=len(st.intrinsic.coverage_cells),
                 ),
             )
 
@@ -318,6 +327,8 @@ class CalibrationNode(ApplicationNode):
                 camera_matrix=result.camera_matrix.tolist(),
                 dist_coeffs=result.dist_coeffs.tolist(),
                 captured_count=result.captured_count,
+                coverage_count=len(result.coverage_cells),
+                coverage_cells=[[gx, gy] for gx, gy in result.coverage_cells],
             ),
         )
 
@@ -421,17 +432,25 @@ class CalibrationNode(ApplicationNode):
         자리 자취 자리 = phase 별 hide/show.
         """
         try:
-            recs = self._compute_recommendations(robot_id)
+            result = self._compute_recommendations(robot_id)
         except Exception as e:
             logger.debug("[%s] 추천 계산 실패: %s", robot_id, e)
             return
         self.publish(
             topic_for(Topic.CALIB_HANDEYE_RECOMMENDATIONS, robot_id),
-            {"timestamp": time.time(), "recommendations": recs},
+            {
+                "timestamp": time.time(),
+                "recommendations": result["recommendations"],
+                "no_candidates_reason": result["no_candidates_reason"],
+            },
         )
 
     def _publish_sigma_state(self, robot_id: str, diag: dict) -> None:
-        """σ live topic. 자동 BA / 수동 COMPUTE 모두 호출 → frontend 가 즉시 표시."""
+        """σ live topic. 자동 BA / 수동 COMPUTE 모두 호출 → frontend 가 즉시 표시.
+
+        axis_distributions 같이 보내 frontend 가 자세 다양성 표 / 부족 axis 색깔
+        표시. verdict 4 상태 분기와 같이 UI 가 "어느 axis 변주 캡처" 안내 가능.
+        """
         self.publish(
             topic_for(Topic.CALIB_HANDEYE_SIGMA, robot_id),
             {
@@ -451,19 +470,28 @@ class CalibrationNode(ApplicationNode):
                 "sag_offset_estimated": diag.get(
                     "sag_offset_estimated", False
                 ),
+                "axis_distributions": diag.get("coach", {}).get(
+                    "axis_distributions", []
+                ),
             },
         )
 
     def _estimate_board_base_frame(
         self, robot_id: str
-    ) -> np.ndarray | None:
+    ) -> tuple[np.ndarray, np.ndarray] | None:
         """모든 capture 의 보드 pose (target2cam) → base-frame 평균.
 
         T_target2base = T_gripper2base · T_cam2gripper(=hand_eye) · T_target2cam
         각 capture 별 T_target2base 계산 → origin 평균 + R 평균(SVD averaging) →
         보드 4 외곽 코너 (board frame, board.py SSOT) 를 base-frame 으로 변환.
 
-        Returns (4, 3) base-frame 보드 외곽 코너, 또는 None (포즈 없음 / hand_eye 없음).
+        카메라 평균 위치도 같이 반환 — recommend_geometry 의 outward_hint 결정용
+        (보드 normal 부호 = 카메라가 있던 쪽). 보드 수직/기울임 setup 에서 anchor
+        가 로봇 반대편 공중에 생성되는 bug 의 fix.
+
+        Returns:
+            (corners_base, avg_cam_pos_base) — corners (4, 3) + camera 평균 (3,)
+            또는 None (포즈 없음 / hand_eye 없음).
         """
         st = self._states[robot_id]
         if st.hand_eye.result is None or not st.hand_eye.poses:
@@ -478,6 +506,7 @@ class CalibrationNode(ApplicationNode):
         coords = JointCoordinates()
         origins: list[np.ndarray] = []
         Rs: list[np.ndarray] = []
+        cam_positions: list[np.ndarray] = []
         for p in st.hand_eye.poses:
             angles: list[float] = []
             for cfg in st.arm_cfgs:
@@ -498,6 +527,9 @@ class CalibrationNode(ApplicationNode):
             T_t2b = T_g2b @ T_c2g @ T_t2c
             origins.append(T_t2b[:3, 3])
             Rs.append(T_t2b[:3, :3])
+            # 카메라 base-frame 위치 = T_g2b · T_c2g · 0 = T_g2b · t_c2g + t_g2b
+            T_c2b = T_g2b @ T_c2g
+            cam_positions.append(T_c2b[:3, 3])
 
         if not origins:
             return None
@@ -512,7 +544,8 @@ class CalibrationNode(ApplicationNode):
 
         corners_board = calib_board.board_corner_points_3d()  # (4, 3)
         corners_base = (avg_R @ corners_board.T).T + avg_origin
-        return corners_base
+        avg_cam_pos = np.mean(np.stack(cam_positions), axis=0)
+        return corners_base, avg_cam_pos
 
     def _srv_handeye_capture(
         self, _req: ServiceRequest[EmptyData], robot_id: str
@@ -644,7 +677,9 @@ class CalibrationNode(ApplicationNode):
                 "message": f"Hand-Eye 실패 (포즈 수: {len(st.hand_eye.poses)})",
                 "data": {},
             }
-        diag["recommendations"] = self._compute_recommendations(robot_id)
+        rec_result = self._compute_recommendations(robot_id)
+        diag["recommendations"] = rec_result["recommendations"]
+        diag["no_candidates_reason"] = rec_result["no_candidates_reason"]
         self._publish_sigma_state(robot_id, diag)
         return {
             "success": True,
@@ -995,24 +1030,41 @@ class CalibrationNode(ApplicationNode):
         }
 
     # ─── 다음 자세 후보 리스트 산출 ────────────────────────────
-    def _compute_recommendations(self, robot_id: str) -> list[dict]:
+    def _compute_recommendations(self, robot_id: str) -> dict:
+        """{"recommendations": list[dict], "no_candidates_reason": str | None}.
+
+        no_candidates_reason 값:
+          - "insufficient_poses"           ─ MIN_POSES_FOR_COMPUTE 미달
+          - "no_board_estimate"            ─ hand_eye / intrinsic / 보드 base 추정 X
+          - "all_ik_fail"                  ─ planner 의 anchor 다 IK 실패
+          - "all_invisible"                ─ 모든 anchor invisible (visibility hard fail 가 hint 만이라 잘 안 발생)
+          - "user_marked_fail"             ─ 사용자가 모든 anchor [👎] 마크
+          - "sigma_sufficient_and_diverse" ─ σ + 다양성 둘 다 충족 → COMMIT 권장
+          - "sigma_sufficient_but_narrow"  ─ σ 좋은데 자세 다양성 부족 → 부족 axis 변주 캡처
+
+        frontend NextPoseCard 가 분기 별 메시지 표시 + COMMIT 가이드.
+        """
         st = self._states[robot_id]
+        empty = {"recommendations": [], "no_candidates_reason": "insufficient_poses"}
+
         current = self._cache.get_joint_angles_rad(
             st.arm_cfgs, robot_id=robot_id
         )
         if current is None:
-            return []
+            return empty
         arm_motor_ids = [cfg.id for cfg in st.arm_cfgs]
         joint_limits = st.solver.joint_limits(len(arm_motor_ids))
 
         # 추천 = sphere shell anchor 기반 (정면 / 좌 / 우 / 위 / 아래 + IK + visibility).
         # 필요 조건: intrinsic + hand_eye + 보드 base 추정 모두 있어야 함.
-        # 없으면 빈 리스트 (frontend 가 phase 별 hide 처리).
         if st.intrinsic.result is None or st.hand_eye.result is None:
-            return []
-        board_corners_base = self._estimate_board_base_frame(robot_id)
-        if board_corners_base is None:
-            return []
+            return {"recommendations": [], "no_candidates_reason": "no_board_estimate"}
+        estimate = self._estimate_board_base_frame(robot_id)
+        if estimate is None:
+            return {"recommendations": [], "no_candidates_reason": "no_board_estimate"}
+        board_corners_base, avg_cam_pos = estimate
+        board_center = board_corners_base.mean(axis=0)
+        outward_hint = avg_cam_pos - board_center  # planner 의 board normal 부호 결정
 
         camera_matrix = st.intrinsic.result.camera_matrix
         dist_coeffs = st.intrinsic.result.dist_coeffs
@@ -1046,7 +1098,7 @@ class CalibrationNode(ApplicationNode):
         # 사용자가 명시 신호 ([👎]) 로 fail 표시한 추천 ID set — 다음 추천 시 제외.
         excluded_ids = st.recommendation_fail_ids
 
-        recs = next_pose_planner.recommend_geometry(
+        result = next_pose_planner.recommend_geometry(
             board_corners_base=board_corners_base,
             ik_fn=_ik,
             hand_eye_R=R_c2g,
@@ -1054,10 +1106,28 @@ class CalibrationNode(ApplicationNode):
             arm_motor_ids=arm_motor_ids,
             joint_limits_rad=joint_limits,
             current_joint_angles_rad=list(current),
+            outward_hint=outward_hint,
             visibility_check=_check,
             excluded_ids=excluded_ids,
         )
-        return [next_pose_planner.to_dict(r) for r in recs]
+
+        # σ + 다양성 verdict 결합 — planner 단독 reason 을 verdict 기반 reason 으로
+        # 덮어쓰기. σ 충분 + 다양성 OK 면 양성 메시지 (COMMIT 권장), σ 충분 + 다양성
+        # 부족 이면 "narrow" 메시지. 이게 §8.7 deferred 의 fix 핵심.
+        reason = result.no_candidates_reason
+        if not result.recommendations:
+            verdict = (st.last_compute or {}).get("coach", {}).get("verdict")
+            if verdict == "good":
+                reason = "sigma_sufficient_and_diverse"
+            elif verdict == "narrow_sigma_good":
+                reason = "sigma_sufficient_but_narrow"
+
+        return {
+            "recommendations": [
+                next_pose_planner.to_dict(r) for r in result.recommendations
+            ],
+            "no_candidates_reason": reason,
+        }
 
     def _srv_handeye_preview_enable(
         self, req: ServiceRequest[HandeyePreviewEnableReq], robot_id: str

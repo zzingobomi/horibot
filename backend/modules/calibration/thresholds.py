@@ -67,6 +67,32 @@ JOINT_DIVERSITY_THRESHOLD_DEG: tuple[float, ...] = (25.0, 15.0, 15.0, 25.0, 30.0
 TILT_MIN_DEG: float = 30.0
 TILT_MAX_DEG: float = 70.0
 
+# ─── 추천 자세 sphere shell geometry ────────────────────────────
+# next_pose_planner.recommend_geometry 가 보드 중심 주변에 anchor 5개 (정면/좌/우/
+# 위/아래) 를 sphere shell 위에 배치. distance = 카메라 ↔ 보드 거리, side_offset =
+# 정면 외 anchor 의 측면 변위. 작업대 (55×34cm) + D405 sweet spot 10-25cm 기준.
+# 0.18m = 보드 ↔ wrist 가능 거리 중간값 (사용자 setup: 보드 x=240mm + wrist 가능
+# x=40-160mm → 거리 80-200mm 범위 → 중간 ~18cm).
+RECOMMEND_DISTANCE_M: float = 0.18
+RECOMMEND_SIDE_OFFSET_M: float = 0.10
+
+# ─── Intrinsic 캘리브레이션 ─────────────────────────────────────
+# RMS reprojection error (pixels). cv2.calibrateCamera 결과.
+# GOOD < 0.5px → distortion model 잘 맞춤, USB UVC plumb_bob (5-param) 충분.
+# WARN < 1.0px → 일부 모서리에서 잔차 큼. 더 다양한 자세 or distortion model 검토.
+# BAD ≥ 1.0px → 모델 불일치 (광각 + plumb_bob 한계) 또는 자세 다양성 부족.
+INTRINSIC_RMS_GOOD_PX: float = 0.5
+INTRINSIC_RMS_WARN_PX: float = 1.0
+
+# Intrinsic 캡처 권장 수. 저장 가능 최소 5장 (수학적 한계). 권장 10장 (frame
+# 9 영역 coverage 가능 + distortion 안정).
+INTRINSIC_MIN_CAPTURES: int = 5
+INTRINSIC_RECOMMENDED_CAPTURES: int = 10
+
+# Frame 3×3 grid coverage 임계. 보드 중심이 떨어진 grid 셀 개수 ≥ 이 값이면 OK.
+# 9 영역 다 채우면 perfect, 7 이상이면 acceptable.
+INTRINSIC_GRID_COVERAGE_GOOD: int = 7
+
 
 def as_dict() -> dict:
     """프론트엔드 service 응답용 직렬화."""
@@ -85,4 +111,11 @@ def as_dict() -> dict:
         "joint_diversity_threshold_deg": list(JOINT_DIVERSITY_THRESHOLD_DEG),
         "tilt_min_deg": TILT_MIN_DEG,
         "tilt_max_deg": TILT_MAX_DEG,
+        "recommend_distance_m": RECOMMEND_DISTANCE_M,
+        "recommend_side_offset_m": RECOMMEND_SIDE_OFFSET_M,
+        "intrinsic_rms_good_px": INTRINSIC_RMS_GOOD_PX,
+        "intrinsic_rms_warn_px": INTRINSIC_RMS_WARN_PX,
+        "intrinsic_min_captures": INTRINSIC_MIN_CAPTURES,
+        "intrinsic_recommended_captures": INTRINSIC_RECOMMENDED_CAPTURES,
+        "intrinsic_grid_coverage_good": INTRINSIC_GRID_COVERAGE_GOOD,
     }

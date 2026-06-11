@@ -117,8 +117,8 @@ export type ServiceMap = {
   "horibot/{robot_id}/calib/srv/handeye/commit": { req: Record<string, never>; res: components["schemas"]["HandeyeCommitRes"] };
   "horibot/{robot_id}/calib/srv/handeye/list_poses": { req: Record<string, never>; res: components["schemas"]["HandeyeListPosesRes"] };
   "horibot/{robot_id}/calib/srv/handeye/preview_enable": { req: components["schemas"]["HandeyePreviewEnableReq"]; res: components["schemas"]["HandeyePreviewEnableRes"] };
-  "horibot/{robot_id}/calib/srv/handeye/recommendation_fail": { req: unknown; res: unknown };
-  "horibot/{robot_id}/calib/srv/handeye/multi_start": { req: unknown; res: unknown };
+  "horibot/{robot_id}/calib/srv/handeye/recommendation_fail": { req: components["schemas"]["RecommendationFailReq"]; res: components["schemas"]["RecommendationFailRes"] };
+  "horibot/{robot_id}/calib/srv/handeye/multi_start": { req: components["schemas"]["MultiStartReq"]; res: components["schemas"]["MultiStartRes"] };
   "horibot/{robot_id}/calib/srv/backup/list": { req: Record<string, never>; res: components["schemas"]["BackupListRes"] };
   "horibot/{robot_id}/calib/srv/backup/restore": { req: components["schemas"]["BackupRestoreReq"]; res: components["schemas"]["BackupRestoreRes"] };
   "horibot/task/srv/stop": { req: Record<string, never>; res: Record<string, never> };

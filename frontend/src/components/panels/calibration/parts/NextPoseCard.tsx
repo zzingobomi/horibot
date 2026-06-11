@@ -2,13 +2,16 @@ import { useState } from "react";
 import { bridge } from "@/api/bridge";
 import { PanelButton } from "@/components/shared/PanelButton";
 import { ServiceKey } from "@/constants/topics";
-import type { NextPoseRecommendation } from "./types";
+import type { NextPoseRecommendation, NoCandidatesReason } from "./types";
 
 interface Props {
   // null: 아직 한 번도 publish 안 됨 (Phase 2 진입 직후 backend 보내기 전)
-  // []  : 추천 후보 0개 (hand_eye / 보드 위치 추정 안 됨, 모든 anchor IK fail 등)
+  // []  : 추천 후보 0개 — noCandidatesReason 으로 *왜* 분기
   // [..]: 후보 N개 (sphere shell anchor — 정면 / 좌 / 우 / 위 / 아래)
   recommendations: NextPoseRecommendation[] | null;
+  // 빈 추천 시 *어느 분기로* 떨어졌는지. backend recommend_geometry + verdict 결합.
+  // §8.7 deferred 의 root cause fix — 모호 메시지 → 분기별 명확 안내.
+  noCandidatesReason?: NoCandidatesReason | null;
   visited: Set<number>;
   activeIndex: number | null;
   onMoved: (index: number) => void;
@@ -19,6 +22,59 @@ interface Props {
     category: "not_visible" | "red" | "motion_fail",
   ) => Promise<void> | void;
   disabled?: boolean;
+}
+
+/**
+ * 빈 추천 분기 별 메시지 + 색깔. trauma source 의 직접적 UI fix —
+ * "사용자 명시 fail 다수, IK 솔러블 자세 없음, 또는 σ 충분히 낮음" 모호 메시지
+ * → 분기별 한 가지로.
+ */
+function reasonMeta(reason: NoCandidatesReason | null | undefined): {
+  text: string;
+  color: string;
+} {
+  switch (reason) {
+    case "sigma_sufficient_and_diverse":
+      return {
+        text: "캘 완료 — σ + 자세 다양성 모두 충족. [COMMIT] 권장.",
+        color: "text-green-400",
+      };
+    case "sigma_sufficient_but_narrow":
+      return {
+        text: "σ 통과지만 자세 다양성 부족 — 위 [Status] 의 ⚠ axis 변주 자세로 추가 캡처 권장. 그래도 [COMMIT] 가능.",
+        color: "text-amber-400",
+      };
+    case "all_invisible":
+      return {
+        text: "추천 자세에서 보드가 카메라 시야 밖. 보드 위치 점검 또는 자유 자세로 [캡처].",
+        color: "text-amber-400",
+      };
+    case "all_ik_fail":
+      return {
+        text: "추천 자세 IK 불가 — 보드가 로봇 reach 밖이거나 joint limits 충돌. 보드를 base 정면 + 적정 거리 (15-25cm) 로 옮겨주세요.",
+        color: "text-amber-400",
+      };
+    case "user_marked_fail":
+      return {
+        text: "추천 자세 모두 [👎] 표시됨 — 자유 자세로 [캡처] 또는 [리셋] 후 재시작.",
+        color: "text-amber-400",
+      };
+    case "insufficient_poses":
+      return {
+        text: "최소 캡처 수 미달 — 자유 자세로 더 캡처해주세요.",
+        color: "text-zinc-400",
+      };
+    case "no_board_estimate":
+      return {
+        text: "보드 위치 추정 안 됨 — hand_eye / intrinsic 결과 없음. 캡처 더 진행.",
+        color: "text-zinc-400",
+      };
+    default:
+      return {
+        text: "추천 후보 없음.",
+        color: "text-zinc-500",
+      };
+  }
 }
 
 /**
@@ -39,6 +95,7 @@ interface Props {
  */
 export function NextPoseCard({
   recommendations,
+  noCandidatesReason,
   visited,
   activeIndex,
   onMoved,
@@ -73,12 +130,12 @@ export function NextPoseCard({
     );
   }
 
-  // 추천 후보 0개 — 모든 anchor 가 IK fail / visibility fail / 사용자 명시 fail.
+  // 추천 후보 0개 — noCandidatesReason 으로 분기별 메시지 표시 (§8.7 fix).
   if (recommendations.length === 0) {
+    const meta = reasonMeta(noCandidatesReason);
     return (
-      <p className="text-[11px] text-zinc-500 leading-snug font-mono">
-        추천 후보 없음 — 사용자 명시 fail 다수, IK 솔러블 자세 없음, 또는 σ
-        충분히 낮음. [캡처] 자유 자세 시도 또는 [COMMIT].
+      <p className={`text-[11px] leading-snug font-mono ${meta.color}`}>
+        {meta.text}
       </p>
     );
   }

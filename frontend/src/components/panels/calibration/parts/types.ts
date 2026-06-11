@@ -54,11 +54,34 @@ export type CoachMessage = {
   text: string;
 };
 
+/**
+ * coach.py 의 axis 분포 메타 한 행. low_diversity=true 면 *그 축 자세 다양성 부족*.
+ * "narrow_sigma_good" verdict 의 dominant 원인이라 UI 표 + 색깔 표시 핵심.
+ */
+export type AxisDistribution = {
+  motor_id: number;
+  name_ko: string;
+  std_deg: number;
+  min_deg: number;
+  max_deg: number;
+  threshold_deg: number;
+  is_low_diversity: boolean;
+  motor_limit_min_deg: number;
+  motor_limit_max_deg: number;
+  suggested_deg: number | null;
+  suggestion_text: string;
+};
+
+export type CoachVerdict =
+  | "good" // σ pass + 자세 다양성 충족 → 초록, COMMIT 권장
+  | "narrow_sigma_good" // σ pass + 자세 다양성 부족 → 노랑, COMMIT 가능 + 추가 캡처 권장
+  | "needs_work" // σ warn → 노랑, 추가 캡처 권장
+  | "bad"; // σ bad → 빨강, COMMIT disable
+
 export type CoachReport = {
-  verdict: "good" | "needs_work" | "bad";
+  verdict: CoachVerdict;
   messages: CoachMessage[];
-  // 백엔드는 axis_distributions(각 축의 분포 메타)도 같이 보내지만 현재 UI는
-  // coach 메시지 텍스트만 소비. 시각화/히스토그램 도입 시 타입 추가.
+  axis_distributions?: AxisDistribution[];
 };
 
 /**
@@ -191,19 +214,40 @@ export type HandEyeSigmaState = {
   pose_count: number;
   ba_mode: string | null;
   ba_converged: boolean;
-  coach_verdict: string | null;
+  coach_verdict: CoachVerdict | null;
   joint_offset_estimated: boolean;
   link_offset_estimated: boolean;
   sag_offset_estimated: boolean;
+  /** capture 시점의 axis 분포. low_diversity 인 축이 있으면 narrow_sigma_good verdict 의 원인. */
+  axis_distributions?: AxisDistribution[];
 };
 
 /**
  * `CALIB_HANDEYE_RECOMMENDATIONS` topic — 매 capture 후 자동 publish.
- * Phase 1 (n<8 자체 자리 자취 자리) frontend 자체 자리 자취 자리 hide, Phase 2 (n>=8) 자체 자리 자취 자리 show.
+ * Phase 1 (n<8) frontend hide, Phase 2 (n>=8) show.
+ *
+ * `no_candidates_reason` ─ 빈 추천 분기를 분리하는 핵심 (§8.7 deferred fix).
+ *   "sigma_sufficient_and_diverse" → COMMIT 권장 양성 메시지
+ *   "sigma_sufficient_but_narrow"  → 부족 axis 변주 캡처 안내 (axis_distributions 동반)
+ *   "all_invisible"                → 추천 자세에서 보드 시야 밖
+ *   "all_ik_fail"                  → 추천 자세 IK 불가
+ *   "user_marked_fail"             → 사용자가 명시 [👎] 다수
+ *   "insufficient_poses"           → 최소 N 캡처 필요
+ *   "no_board_estimate"            → hand_eye / intrinsic / 보드 base 추정 X
  */
+export type NoCandidatesReason =
+  | "sigma_sufficient_and_diverse"
+  | "sigma_sufficient_but_narrow"
+  | "all_invisible"
+  | "all_ik_fail"
+  | "user_marked_fail"
+  | "insufficient_poses"
+  | "no_board_estimate";
+
 export type HandeyeRecommendationsState = {
   timestamp: number;
   recommendations: NextPoseRecommendation[];
+  no_candidates_reason?: NoCandidatesReason | null;
 };
 
 /**
@@ -278,4 +322,13 @@ export type CalibThresholds = {
   min_poses_for_trusted_sigma: number;
   recommended_poses: number;
   joint_diversity_threshold_deg: number[];
+  tilt_min_deg?: number;
+  tilt_max_deg?: number;
+  recommend_distance_m?: number;
+  recommend_side_offset_m?: number;
+  intrinsic_rms_good_px?: number;
+  intrinsic_rms_warn_px?: number;
+  intrinsic_min_captures?: number;
+  intrinsic_recommended_captures?: number;
+  intrinsic_grid_coverage_good?: number;
 };

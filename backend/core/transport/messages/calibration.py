@@ -32,6 +32,8 @@ class IntrinsicSaveRes(StrictModel):
     camera_matrix: list[list[float]]
     dist_coeffs: list[list[float]]  # shape (1, 5)
     captured_count: int
+    coverage_count: int = 0  # 3×3 grid 중 채운 cell 수 (0..9)
+    coverage_cells: list[list[int]] = []  # 채운 cell 좌표 [[gx, gy], ...]
 
 
 # ─── Service: CALIB_CAPTURE ──────────────────────────────────────────
@@ -47,6 +49,8 @@ class CalibCaptureRes(StrictModel):
     detected: bool
     captured_count: int
     preview: str  # base64 JPEG
+    hint: str = ""  # 사용자 안내 — 성공/실패 분기별 사유
+    coverage_count: int = 0  # 누적 3×3 grid coverage (intrinsic 만 의미)
 
 
 # ─── Service: CALIB_HANDEYE_CAPTURE ──────────────────────────────────
@@ -149,10 +153,36 @@ class BackupRestoreRes(StrictModel):
 # ─── Topic: CALIB_HANDEYE_SIGMA ──────────────────────────────────────
 
 
+class AxisDistributionEntry(StrictModel):
+    """coach.axis_distributions 원소. UI 의 자세 다양성 표 + low_diversity 색 분기.
+
+    motor_id ─ J{motor_id} 로 표시. std_deg ─ 캡처 자세의 표준편차.
+    threshold_deg ─ thresholds.JOINT_DIVERSITY_THRESHOLD_DEG 의 해당 axis 값.
+    is_low_diversity ─ std < threshold. suggested_deg ─ planner 가 권장하는 다음
+    각도 (있으면 NextPoseCard 와 별개로 status 패널에서 안내 가능).
+    """
+
+    motor_id: int
+    name_ko: str
+    std_deg: float
+    min_deg: float
+    max_deg: float
+    threshold_deg: float
+    is_low_diversity: bool
+    motor_limit_min_deg: float
+    motor_limit_max_deg: float
+    suggested_deg: float | None
+    suggestion_text: str
+
+
 class HandeyeSigmaState(StrictModel):
     """capture 후 자동 BA / 수동 COMPUTE 마다 publish. frontend σ live 표시.
 
     BA 실패 / 포즈 부족 시에는 publish 안 함 (직전 σ 유지 또는 frontend 가 unknown).
+
+    `axis_distributions` 는 4-상태 verdict (good / narrow_sigma_good / needs_work /
+    bad) 와 묶여 UI 의 자세 다양성 표시 → 사용자가 *어느 axis 가 부족한지* 매 capture
+    후 즉시 확인. trauma source 의 root cause fix.
     """
 
     timestamp: float
@@ -165,6 +195,7 @@ class HandeyeSigmaState(StrictModel):
     joint_offset_estimated: bool
     link_offset_estimated: bool
     sag_offset_estimated: bool
+    axis_distributions: list[AxisDistributionEntry] = []
 
 
 # ─── Service: CALIB_HANDEYE_PREVIEW_ENABLE ───────────────────────────

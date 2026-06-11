@@ -21,6 +21,7 @@ import type {
   HandEyeSigmaState,
   MultiStartRes,
   NextPoseRecommendation,
+  NoCandidatesReason,
   PoseMeta,
   RecommendationFailReq,
 } from "@/components/panels/calibration/parts/types";
@@ -36,8 +37,11 @@ interface CalibrationState {
   compute: ComputeData | null;
   computeStale: boolean;
   // recommendations — CALIB_HANDEYE_RECOMMENDATIONS topic 자동 갱신 (매 capture 마다).
-  // Phase 1 (manualModeActive=true) frontend 자체 자리 자취 자리 hide.
+  // Phase 1 (manualModeActive=true) frontend 자체 자리 hide.
   recommendations: NextPoseRecommendation[] | null;
+  // 빈 추천 시 *왜* 인지 분리 — NextPoseCard 가 분기별 메시지 표시.
+  // null = 아직 publish 안 됨 (Phase 1) 또는 recommendations 채워짐 (분기 N/A).
+  noCandidatesReason: NoCandidatesReason | null;
   visited: Set<number>;
   activeIndex: number | null;
   thresholds: CalibThresholds | null;
@@ -86,6 +90,7 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
   compute: null,
   computeStale: false,
   recommendations: null,
+  noCandidatesReason: null,
   visited: new Set(),
   activeIndex: null,
   thresholds: null,
@@ -140,7 +145,10 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
       Topic.CALIB_HANDEYE_RECOMMENDATIONS,
       (data) => {
         const s = data as unknown as HandeyeRecommendationsState;
-        set({ recommendations: s.recommendations ?? [] });
+        set({
+          recommendations: s.recommendations ?? [],
+          noCandidatesReason: s.no_candidates_reason ?? null,
+        });
       },
     );
 
@@ -189,6 +197,7 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
       compute: null,
       computeStale: false,
       recommendations: null,
+      noCandidatesReason: null,
       visited: new Set(),
       activeIndex: null,
       saturate: null,
@@ -236,6 +245,7 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
         compute: null,
         computeStale: false,
         recommendations: null,
+        noCandidatesReason: null,
         visited: new Set(),
         activeIndex: null,
         liveSigma: null,

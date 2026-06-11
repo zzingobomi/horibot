@@ -28,7 +28,11 @@ class CoachMessage:
 
 @dataclass
 class CoachReport:
-    verdict: str  # "good" | "needs_work" | "bad"
+    # "good"               ─ σ pass + 자세 다양성 5축 다 충족 → COMMIT 권장
+    # "narrow_sigma_good"  ─ σ pass + 자세 다양성 부족 → COMMIT 가능, 추가 캡처 권장
+    # "needs_work"         ─ σ warn → 추가 캡처 필요
+    # "bad"                ─ σ bad → 캡처 절차 / setup 문제
+    verdict: str
     messages: list[CoachMessage] = field(default_factory=list)
     # axis별 분포 (UI에서 추가 시각화/히스토그램에 사용)
     axis_distributions: list[AxisDistribution] = field(default_factory=list)
@@ -127,18 +131,45 @@ def diagnose(
             )
         )
 
-    # 6. 종합 verdict
-    if sigma_rot_deg < T.SIGMA_ROT_GOOD_DEG and sigma_t_mm < T.SIGMA_T_GOOD_MM:
+    # 6. 종합 verdict — σ + 자세 다양성 둘 다 봄.
+    # σ 가 self-consistency metric 이라 측정 안 된 방향은 잔차도 0 효과 → σ 좋아도
+    # 자세 다양성 부족하면 *그 방향 정확도 미보장*. trauma source 의 root cause.
+    # → σ pass 라도 자세 다양성 부족이면 "narrow_sigma_good" 으로 분리, 사용자에게
+    # 부족 axis 명시.
+    low_diversity_axes = [d for d in axis_dists if d.is_low_diversity]
+    sigma_good = (
+        sigma_rot_deg < T.SIGMA_ROT_GOOD_DEG and sigma_t_mm < T.SIGMA_T_GOOD_MM
+    )
+    sigma_warn = (
+        sigma_rot_deg < T.SIGMA_ROT_WARN_DEG and sigma_t_mm < T.SIGMA_T_WARN_MM
+    )
+
+    if sigma_good and not low_diversity_axes:
         verdict = "good"
         msgs.insert(
             0,
             CoachMessage(
                 "success",
-                f"정확도 충분 (σ_rot={sigma_rot_deg:.2f}°, σ_t={sigma_t_mm:.1f}mm). "
-                f"COMMIT 가능합니다.",
+                f"정확도 충분 (σ_rot={sigma_rot_deg:.2f}°, σ_t={sigma_t_mm:.1f}mm) + "
+                f"자세 다양성 충족. COMMIT 권장.",
             ),
         )
-    elif sigma_rot_deg < T.SIGMA_ROT_WARN_DEG and sigma_t_mm < T.SIGMA_T_WARN_MM:
+    elif sigma_good and low_diversity_axes:
+        verdict = "narrow_sigma_good"
+        axis_names = ", ".join(
+            f"J{d.motor_id} (σ={d.std_deg:.1f}°/{d.threshold_deg:.0f}°)"
+            for d in low_diversity_axes
+        )
+        msgs.insert(
+            0,
+            CoachMessage(
+                "warn",
+                f"σ 통과 (σ_rot={sigma_rot_deg:.2f}°, σ_t={sigma_t_mm:.1f}mm) 이지만 "
+                f"자세 다양성 부족: {axis_names}. COMMIT 가능하지만 부족 axis 변주로 "
+                f"추가 캡처 권장 — σ self-consistency 만으로는 미측정 방향 정확도 미보장.",
+            ),
+        )
+    elif sigma_warn:
         verdict = "needs_work"
         if not any(m.level in ("warn", "error") for m in msgs):
             msgs.append(

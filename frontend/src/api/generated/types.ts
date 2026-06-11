@@ -141,6 +141,39 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AxisDistributionEntry
+         * @description coach.axis_distributions 원소. UI 의 자세 다양성 표 + low_diversity 색 분기.
+         *
+         *     motor_id ─ J{motor_id} 로 표시. std_deg ─ 캡처 자세의 표준편차.
+         *     threshold_deg ─ thresholds.JOINT_DIVERSITY_THRESHOLD_DEG 의 해당 axis 값.
+         *     is_low_diversity ─ std < threshold. suggested_deg ─ planner 가 권장하는 다음
+         *     각도 (있으면 NextPoseCard 와 별개로 status 패널에서 안내 가능).
+         */
+        AxisDistributionEntry: {
+            /** Motor Id */
+            motor_id: number;
+            /** Name Ko */
+            name_ko: string;
+            /** Std Deg */
+            std_deg: number;
+            /** Min Deg */
+            min_deg: number;
+            /** Max Deg */
+            max_deg: number;
+            /** Threshold Deg */
+            threshold_deg: number;
+            /** Is Low Diversity */
+            is_low_diversity: boolean;
+            /** Motor Limit Min Deg */
+            motor_limit_min_deg: number;
+            /** Motor Limit Max Deg */
+            motor_limit_max_deg: number;
+            /** Suggested Deg */
+            suggested_deg: number | null;
+            /** Suggestion Text */
+            suggestion_text: string;
+        };
+        /**
          * BackupEntry
          * @description `.history/` 안 한 snapshot 의 picker 표시용 메타.
          *
@@ -222,6 +255,16 @@ export interface components {
             captured_count: number;
             /** Preview */
             preview: string;
+            /**
+             * Hint
+             * @default
+             */
+            hint: string;
+            /**
+             * Coverage Count
+             * @default 0
+             */
+            coverage_count: number;
         };
         /**
          * CalibrationResults
@@ -390,6 +433,10 @@ export interface components {
          * @description capture 후 자동 BA / 수동 COMPUTE 마다 publish. frontend σ live 표시.
          *
          *     BA 실패 / 포즈 부족 시에는 publish 안 함 (직전 σ 유지 또는 frontend 가 unknown).
+         *
+         *     `axis_distributions` 는 4-상태 verdict (good / narrow_sigma_good / needs_work /
+         *     bad) 와 묶여 UI 의 자세 다양성 표시 → 사용자가 *어느 axis 가 부족한지* 매 capture
+         *     후 즉시 확인. trauma source 의 root cause fix.
          */
         HandeyeSigmaState: {
             /** Timestamp */
@@ -412,6 +459,11 @@ export interface components {
             link_offset_estimated: boolean;
             /** Sag Offset Estimated */
             sag_offset_estimated: boolean;
+            /**
+             * Axis Distributions
+             * @default []
+             */
+            axis_distributions: components["schemas"]["AxisDistributionEntry"][];
         };
         /**
          * Heartbeat
@@ -444,6 +496,16 @@ export interface components {
             dist_coeffs: number[][];
             /** Captured Count */
             captured_count: number;
+            /**
+             * Coverage Count
+             * @default 0
+             */
+            coverage_count: number;
+            /**
+             * Coverage Cells
+             * @default []
+             */
+            coverage_cells: number[][];
         };
         /**
          * IntrinsicSchema
@@ -710,6 +772,40 @@ export interface components {
             position: number[];
         };
         /**
+         * MultiStartReq
+         * @description Multi-start BA 명시 트리거 — random init 다중 시도 → 가장 좋은 σ 선택.
+         *
+         *     Local minimum 자리 escape. 사용자가 saturate 알림 받고 시도, 또는
+         *     [수동 모드 종료] 시점 자동 트리거.
+         */
+        MultiStartReq: {
+            /**
+             * N Starts
+             * @default 10
+             */
+            n_starts: number;
+            /**
+             * Mode
+             * @default physical_sag
+             */
+            mode: string;
+        };
+        /** MultiStartRes */
+        MultiStartRes: {
+            /** N Tried */
+            n_tried: number;
+            /** N Converged */
+            n_converged: number;
+            /** Sigma Rot Deg */
+            sigma_rot_deg: number | null;
+            /** Sigma T Mm */
+            sigma_t_mm: number | null;
+            /** Improvement Rot Deg */
+            improvement_rot_deg: number | null;
+            /** Improvement T Mm */
+            improvement_t_mm: number | null;
+        };
+        /**
          * OpenApiSchemaRegistry
          * @description OpenAPI schema export only — auto-built from api_contract.
          */
@@ -748,6 +844,8 @@ export interface components {
             MoveLReq?: components["schemas"]["MoveLReq"] | null;
             MovePReq?: components["schemas"]["MovePReq"] | null;
             MoveTcpReq?: components["schemas"]["MoveTcpReq"] | null;
+            MultiStartReq?: components["schemas"]["MultiStartReq"] | null;
+            MultiStartRes?: components["schemas"]["MultiStartRes"] | null;
             PointcloudBuildMeshReq?: components["schemas"]["PointcloudBuildMeshReq"] | null;
             PointcloudBuildMeshRes?: components["schemas"]["PointcloudBuildMeshRes"] | null;
             PointcloudCaptureReq?: components["schemas"]["PointcloudCaptureReq"] | null;
@@ -763,6 +861,8 @@ export interface components {
             PointcloudNewSessionReq?: components["schemas"]["PointcloudNewSessionReq"] | null;
             PointcloudNewSessionRes?: components["schemas"]["PointcloudNewSessionRes"] | null;
             PointcloudState?: components["schemas"]["PointcloudState"] | null;
+            RecommendationFailReq?: components["schemas"]["RecommendationFailReq"] | null;
+            RecommendationFailRes?: components["schemas"]["RecommendationFailRes"] | null;
             TaskStepIdReq?: components["schemas"]["TaskStepIdReq"] | null;
         };
         /**
@@ -896,6 +996,26 @@ export interface components {
             enabled: boolean;
             /** Voxel Size */
             voxel_size: number;
+        };
+        /**
+         * RecommendationFailReq
+         * @description 사용자 명시 신호 — 추천 자세 fail 기록. 다음 추천 생성 시 제외.
+         *
+         *     카테고리:
+         *       - "not_visible": [이동] 후 보드 화면 밖
+         *       - "red": 도달했고 보이지만 한 장 단위 hint 빨강 (tilt extreme / 코너 부족)
+         *       - "motion_fail": 도달 실패 (IK 통과했지만 motion 자체 fail)
+         */
+        RecommendationFailReq: {
+            /** Anchor Id */
+            anchor_id: string;
+            /** Category */
+            category: string;
+        };
+        /** RecommendationFailRes */
+        RecommendationFailRes: {
+            /** Excluded Count */
+            excluded_count: number;
         };
         /**
          * RobotInfo

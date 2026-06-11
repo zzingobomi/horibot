@@ -22,10 +22,64 @@ import { HandEyePoseList } from "./parts/PoseList";
 import { useCalibrationStore } from "@/domain/stores/calibration";
 import { useCalibrationResults } from "@/hooks/useCalibrationResults";
 import type {
+  AxisDistribution,
   CalibThresholds,
+  CoachVerdict,
   HandeyeSaturateState,
   HandEyeSigmaState,
 } from "./parts/types";
+
+/**
+ * verdict → 색 / 라벨 분기. 4 상태:
+ *   good              → 초록 "충분"
+ *   narrow_sigma_good → 노랑 "σ 좋음, 자세 부족"  ← σ 만 보면 trap, 별도 라벨 필수
+ *   needs_work        → 노랑 "경계"
+ *   bad               → 빨강 "부족"
+ */
+function verdictMeta(verdict: CoachVerdict | null): {
+  color: string;
+  bgColor: string;
+  borderColor: string;
+  label: string;
+} {
+  switch (verdict) {
+    case "good":
+      return {
+        color: "text-green-400",
+        bgColor: "bg-green-500/10",
+        borderColor: "border-green-500/40",
+        label: "충분 — COMMIT 권장",
+      };
+    case "narrow_sigma_good":
+      return {
+        color: "text-amber-400",
+        bgColor: "bg-amber-500/10",
+        borderColor: "border-amber-500/40",
+        label: "σ 통과, 자세 다양성 부족 — COMMIT 가능 / 추가 캡처 권장",
+      };
+    case "needs_work":
+      return {
+        color: "text-amber-400",
+        bgColor: "bg-amber-500/10",
+        borderColor: "border-amber-500/40",
+        label: "경계 — 추가 캡처 권장",
+      };
+    case "bad":
+      return {
+        color: "text-red-400",
+        bgColor: "bg-red-500/10",
+        borderColor: "border-red-500/40",
+        label: "부족 — 캡처 절차 / setup 점검",
+      };
+    default:
+      return {
+        color: "text-zinc-500",
+        bgColor: "bg-zinc-800/40",
+        borderColor: "border-zinc-700/40",
+        label: "측정 중…",
+      };
+  }
+}
 
 /**
  * σ live badge — n<trusted 면 회색.
@@ -79,6 +133,105 @@ function LiveSigmaBadge({
 }
 
 /**
+ * verdict 배너 — 색깔 + 라벨. σ 만 보면 trap (narrow_sigma_good) 자리를 별도 색깔로
+ * 분리 표시. trauma source 의 root cause fix UI 측 핵심 자리.
+ */
+function VerdictBanner({ verdict }: { verdict: CoachVerdict | null }) {
+  if (!verdict) return null;
+  const meta = verdictMeta(verdict);
+  return (
+    <div
+      className={`rounded border ${meta.borderColor} ${meta.bgColor} ${meta.color} px-2 py-1.5 text-[11px] font-mono leading-snug`}
+    >
+      {meta.label}
+    </div>
+  );
+}
+
+/**
+ * 자세 다양성 표 — axis 별 std vs threshold. low_diversity 자리 강조.
+ * narrow_sigma_good verdict 시 사용자가 *어느 axis 변주* 해야 할지 직접 보임.
+ */
+function AxisDistributionTable({
+  axes,
+}: {
+  axes: AxisDistribution[] | undefined;
+}) {
+  if (!axes || axes.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-0.5 font-mono text-[10px]">
+      <div className="flex justify-between text-zinc-500 uppercase tracking-wide px-1">
+        <span>축</span>
+        <span>σ / 권장</span>
+      </div>
+      {axes.map((d) => {
+        const color = d.is_low_diversity ? "text-amber-400" : "text-zinc-400";
+        return (
+          <div
+            key={d.motor_id}
+            className={`flex justify-between px-1 ${color}`}
+            title={d.suggestion_text}
+          >
+            <span>
+              J{d.motor_id}
+              {d.is_low_diversity && " ⚠"}
+            </span>
+            <span className="tabular-nums">
+              {d.std_deg.toFixed(1)}° / {d.threshold_deg.toFixed(0)}°
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * COMMIT 섹션 — verdict 기반 안내 + 버튼 gate.
+ *   - bad 만 disable (σ 진짜 못 씀)
+ *   - good / narrow_sigma_good / needs_work 다 enable (사용자 판단권)
+ *   - verdict 별 안내 문구 다름 (σ self-consistency 의 한계 명시)
+ */
+function CommitSection({
+  verdict,
+  hasResult,
+  stale,
+  loading,
+  onCommit,
+}: {
+  verdict: CoachVerdict | null;
+  hasResult: boolean;
+  stale: boolean;
+  loading: boolean;
+  onCommit: () => Promise<void>;
+}) {
+  const disabledByVerdict = verdict === "bad";
+  const disabled = loading || !hasResult || stale || disabledByVerdict;
+  const guide =
+    verdict === "good"
+      ? "σ 통과 + 자세 다양성 충족 — hand_eye.npz 저장."
+      : verdict === "narrow_sigma_good"
+        ? "σ 통과지만 자세 다양성 부족. 저장 가능하지만 부족 axis 변주로 추가 캡처 후 재평가 권장."
+        : verdict === "needs_work"
+          ? "σ 경계 — 추가 캡처 권장. 그래도 저장 가능."
+          : verdict === "bad"
+            ? "σ 부족 — 저장 비활성. 캡처 절차 / setup 점검."
+            : "σ 측정 후 저장 가능.";
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-[11px] text-zinc-500 font-mono leading-snug">{guide}</p>
+      <PanelButton
+        variant="secondary"
+        onClick={() => void onCommit()}
+        disabled={disabled}
+      >
+        COMMIT (저장)
+      </PanelButton>
+    </div>
+  );
+}
+
+/**
  * Saturate 알림 — σ 변화율 거의 0 → "saturate" 명시. in_good=true 면 COMMIT 권장,
  * false 면 floor 도달 escape 안내.
  */
@@ -107,6 +260,7 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
   const compute = useCalibrationStore((s) => s.compute);
   const computeStale = useCalibrationStore((s) => s.computeStale);
   const recommendations = useCalibrationStore((s) => s.recommendations);
+  const noCandidatesReason = useCalibrationStore((s) => s.noCandidatesReason);
   const visited = useCalibrationStore((s) => s.visited);
   const activeIndex = useCalibrationStore((s) => s.activeIndex);
   const thresholds = useCalibrationStore((s) => s.thresholds);
@@ -208,6 +362,8 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
                 </span>
                 <LiveSigmaBadge sigma={liveSigma} thresholds={thresholds} />
               </div>
+              <VerdictBanner verdict={liveSigma?.coach_verdict ?? null} />
+              <AxisDistributionTable axes={liveSigma?.axis_distributions} />
               <SaturateBanner saturate={saturate} />
             </div>
           </Section>
@@ -215,6 +371,7 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
           <Section label="Next Pose">
             <NextPoseCard
               recommendations={recommendations}
+              noCandidatesReason={noCandidatesReason}
               visited={visited}
               activeIndex={activeIndex}
               onMoved={movedAction}
@@ -247,18 +404,13 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
           </Section>
 
           <Section label="Commit">
-            <div className="flex flex-col gap-2">
-              <p className="text-[11px] text-zinc-500 font-mono">
-                σ TSDF GOOD 안이면 sufficient — hand_eye.npz 에 저장.
-              </p>
-              <PanelButton
-                variant="secondary"
-                onClick={() => void handleCommit()}
-                disabled={loading || (!compute && !liveSigma) || computeStale}
-              >
-                COMMIT (저장)
-              </PanelButton>
-            </div>
+            <CommitSection
+              verdict={liveSigma?.coach_verdict ?? null}
+              hasResult={!!(compute || liveSigma)}
+              stale={computeStale}
+              loading={loading}
+              onCommit={handleCommit}
+            />
           </Section>
         </>
       )}

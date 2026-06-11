@@ -237,36 +237,6 @@ export interface components {
             y2: number;
         };
         /**
-         * CalibCaptureReq
-         * @description mode: intrinsic 만 현재 지원. 추후 handeye 모드 추가 시 Literal 확장.
-         */
-        CalibCaptureReq: {
-            /**
-             * Mode
-             * @default intrinsic
-             */
-            mode: string;
-        };
-        /** CalibCaptureRes */
-        CalibCaptureRes: {
-            /** Detected */
-            detected: boolean;
-            /** Captured Count */
-            captured_count: number;
-            /** Preview */
-            preview: string;
-            /**
-             * Hint
-             * @default
-             */
-            hint: string;
-            /**
-             * Coverage Count
-             * @default 0
-             */
-            coverage_count: number;
-        };
-        /**
          * CalibrationResults
          * @description `GET /calibration/results` 응답. npz 없으면 해당 필드 생략, joint_offsets 는
          *     항상 포함 (없으면 빈 리스트).
@@ -485,6 +455,25 @@ export interface components {
             status: string;
             /** Robot Id */
             robot_id?: string | null;
+        };
+        /** IntrinsicCaptureRes */
+        IntrinsicCaptureRes: {
+            /** Detected */
+            detected: boolean;
+            /** Captured Count */
+            captured_count: number;
+            /** Preview */
+            preview: string;
+            /**
+             * Hint
+             * @default
+             */
+            hint: string;
+            /**
+             * Coverage Count
+             * @default 0
+             */
+            coverage_count: number;
         };
         /** IntrinsicSaveRes */
         IntrinsicSaveRes: {
@@ -818,8 +807,6 @@ export interface components {
             BackupListRes?: components["schemas"]["BackupListRes"] | null;
             BackupRestoreReq?: components["schemas"]["BackupRestoreReq"] | null;
             BackupRestoreRes?: components["schemas"]["BackupRestoreRes"] | null;
-            CalibCaptureReq?: components["schemas"]["CalibCaptureReq"] | null;
-            CalibCaptureRes?: components["schemas"]["CalibCaptureRes"] | null;
             CameraStatus?: components["schemas"]["CameraStatus"] | null;
             DetectorState?: components["schemas"]["DetectorState"] | null;
             EmptyData?: components["schemas"]["EmptyData"] | null;
@@ -833,6 +820,7 @@ export interface components {
             HandeyeResetRes?: components["schemas"]["HandeyeResetRes"] | null;
             HandeyeSigmaState?: components["schemas"]["HandeyeSigmaState"] | null;
             Heartbeat?: components["schemas"]["Heartbeat"] | null;
+            IntrinsicCaptureRes?: components["schemas"]["IntrinsicCaptureRes"] | null;
             IntrinsicSaveRes?: components["schemas"]["IntrinsicSaveRes"] | null;
             LogMessage?: components["schemas"]["LogMessage"] | null;
             MotionTcpPose?: components["schemas"]["MotionTcpPose"] | null;

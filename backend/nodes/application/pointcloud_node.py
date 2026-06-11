@@ -64,7 +64,7 @@ class PointCloudNode(ApplicationNode):
         for rid in self.enabled_robot_ids:
             self._states[rid] = _RobotState(load_motor_layout(rid).arm)
 
-        self._cache = JointStateCache()
+        self._joint_cache = JointStateCache()
 
         self._stream_thread: threading.Thread | None = None
 
@@ -128,7 +128,7 @@ class PointCloudNode(ApplicationNode):
             )
 
         super().start()
-        self._cache.subscribe(self)
+        self._joint_cache.subscribe(self)
 
         self._stream_thread = threading.Thread(
             target=self._stream_loop,
@@ -275,7 +275,7 @@ class PointCloudNode(ApplicationNode):
             depth_z16 = scan_capture.consensus_depth(frames)
             color_bgr = scan_capture.consensus_color(frames)
 
-            raw_dict = self._cache.get_raw_motor_positions(
+            raw_dict = self._joint_cache.get_raw_motor_positions(
                 st.arm_cfgs, robot_id=robot_id
             )
             if raw_dict is None:

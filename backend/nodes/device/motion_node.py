@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 #   실제 끝점 = URDF EE + R_be @ tool_offset_ee
 # 외부 (detect, task) 가 받는 좌표는 obj 의 진짜 base 좌표 (frame 무관), motion
 # service handler 가 cartesian 명령 진입 시점에만 단방향 변환 (target_urdf =
-# target_user - tool_base). solver / 캘 / BA 는 URDF frame 그대로 (캘 reference
+# target_user - tool_base). kinematics / 캘 / BA 는 URDF frame 그대로 (캘 reference
 # frame 안정성 유지).
 #
 # 이력:
@@ -58,8 +58,8 @@ class MotionNode(DeviceNode):
         self._n_arm = len(self._arm_cfgs)
 
         self._motion = MotionModes()
-        self._cache = JointStateCache()
-        self._cache.subscribe(self)
+        self._joint_cache = JointStateCache()
+        self._joint_cache.subscribe(self)
 
         self._runner = TrajectoryRunner(
             n_arm=self._n_arm,
@@ -126,7 +126,7 @@ class MotionNode(DeviceNode):
 
         입력 (req.data.position / via / end / waypoints) = user frame.
         내부 cmd.execute 에는 URDF frame 으로 변환해 전달 (= 입력 - tool_offset_base).
-        시작점 tcp_pos 도 URDF frame (solver.fk 결과 그대로) 사용 → start/end 일관.
+        시작점 tcp_pos 도 URDF frame (kinematics.fk 결과 그대로) 사용 → start/end 일관.
 
         cmd 내부는 dict API 유지 (typed_messaging.md §미해결 #4) — handler 가
         `{"data": {...}}` envelope dict 로 wrap 해 cmd 에 넘김.
@@ -142,7 +142,7 @@ class MotionNode(DeviceNode):
             if error:
                 return ServiceResponse(success=False, message=error, data=None)
 
-            angles = self._cache.get_joint_angles_rad(self._arm_cfgs)
+            angles = self._joint_cache.get_joint_angles_rad(self._arm_cfgs)
             if angles is None:
                 return ServiceResponse(
                     success=False, message="관절 상태 수신 전", data=None
@@ -200,7 +200,7 @@ class MotionNode(DeviceNode):
             if error:
                 return ServiceResponse(success=False, message=error, data=None)
 
-            angles = self._cache.get_joint_angles_rad(self._arm_cfgs)
+            angles = self._joint_cache.get_joint_angles_rad(self._arm_cfgs)
             if angles is None:
                 return ServiceResponse(
                     success=False, message="관절 상태 수신 전", data=None
@@ -246,7 +246,7 @@ class MotionNode(DeviceNode):
         진짜 base 좌표) 를 URDF target (= 명령 - tool_base) 으로 변환해 IK 호출.
         실제 끝점 = URDF EE + tool_base = 명령 위치 ✓
         """
-        angles = self._cache.get_joint_angles_rad(self._arm_cfgs)
+        angles = self._joint_cache.get_joint_angles_rad(self._arm_cfgs)
         if angles is None:
             return ServiceResponse(
                 success=False, message="관절 상태 수신 전", data=None
@@ -269,7 +269,7 @@ class MotionNode(DeviceNode):
     ) -> ServiceResponse[EmptyData]:
         """target_pos (user frame) → URDF frame → IK."""
         target_pos_user = req.data.position
-        angles = self._cache.get_joint_angles_rad(self._arm_cfgs)
+        angles = self._joint_cache.get_joint_angles_rad(self._arm_cfgs)
         if angles is None:
             return ServiceResponse(
                 success=False, message="관절 상태 수신 전", data=None

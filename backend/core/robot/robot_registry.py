@@ -37,7 +37,7 @@ RESERVED_TOPIC_DOMAINS = frozenset(
     {"system", "task", "coord", "viz", "cameras"}
 )
 
-# Valid backend / solver 이름 — yaml typo 부팅 시 fail-fast.
+# Valid backend / kinematics 이름 — yaml typo 부팅 시 fail-fast.
 # 새 backend 추가 시 여기에 + factory 분기 추가 (pyright 가 두 곳 동기화 검사).
 MotorBackendName = Literal["dynamixel", "feetech"]
 KinematicsBackendName = Literal["pybullet", "mujoco"]

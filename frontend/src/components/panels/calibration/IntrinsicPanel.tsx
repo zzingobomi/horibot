@@ -129,9 +129,7 @@ export function IntrinsicPanel(props: IDockviewPanelProps<object>) {
 
   const handleCapture = async () => {
     setLoading(true);
-    const res = await bridge.callService(ServiceKey.CALIB_CAPTURE, {
-      mode: "intrinsic",
-    });
+    const res = await bridge.callService(ServiceKey.CALIB_INTRINSIC_CAPTURE, {});
     setLoading(false);
     if (res.success) {
       const data = res.data as CaptureRes;

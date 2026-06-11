@@ -6,7 +6,7 @@
 서비스 (request data / response data):
 - CALIB_INTRINSIC_START         — EmptyData / EmptyData
 - CALIB_INTRINSIC_SAVE          — EmptyData / IntrinsicSaveRes
-- CALIB_CAPTURE                 — CalibCaptureReq / CalibCaptureRes
+- CALIB_INTRINSIC_CAPTURE       — EmptyData / IntrinsicCaptureRes
 - CALIB_HANDEYE_CAPTURE         — EmptyData / HandeyeCaptureRes
 - CALIB_HANDEYE_RESET           — EmptyData / HandeyeResetRes
 - CALIB_HANDEYE_COMPUTE         — typed 면제 (legacy dict — 응답 ~25 필드 동적)
@@ -36,21 +36,15 @@ class IntrinsicSaveRes(StrictModel):
     coverage_cells: list[list[int]] = []  # 채운 cell 좌표 [[gx, gy], ...]
 
 
-# ─── Service: CALIB_CAPTURE ──────────────────────────────────────────
+# ─── Service: CALIB_INTRINSIC_CAPTURE ────────────────────────────────
 
 
-class CalibCaptureReq(StrictModel):
-    """mode: intrinsic 만 현재 지원. 추후 handeye 모드 추가 시 Literal 확장."""
-
-    mode: str = "intrinsic"
-
-
-class CalibCaptureRes(StrictModel):
+class IntrinsicCaptureRes(StrictModel):
     detected: bool
     captured_count: int
     preview: str  # base64 JPEG
     hint: str = ""  # 사용자 안내 — 성공/실패 분기별 사유
-    coverage_count: int = 0  # 누적 3×3 grid coverage (intrinsic 만 의미)
+    coverage_count: int = 0  # 누적 3×3 grid coverage
 
 
 # ─── Service: CALIB_HANDEYE_CAPTURE ──────────────────────────────────

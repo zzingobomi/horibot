@@ -88,9 +88,9 @@ def build_mesh(
     from core.robot.robot_registry import RobotRegistry
     from modules.kinematics.adapters.sag_corrected import SagCorrectedKinematics
 
-    solver_obj = RobotRegistry().get_kinematics(robot_id)
-    assert isinstance(solver_obj, SagCorrectedKinematics)
-    solver = solver_obj
+    kinematics_obj = RobotRegistry().get_kinematics(robot_id)
+    assert isinstance(kinematics_obj, SagCorrectedKinematics)
+    kinematics = kinematics_obj
     coords = JointCoordinates()
 
     cfg_by_id = {cfg.id: cfg for cfg in arm_cfgs}
@@ -113,7 +113,7 @@ def build_mesh(
                 )
             arm_rad.append(coords.motor_to_urdf(int(raw), cfg, robot_id=robot_id))
 
-        R_be, t_be = solver.fk_to_matrix(arm_rad)
+        R_be, t_be = kinematics.fk_to_matrix(arm_rad)
         T_base_ee = np.eye(4)
         T_base_ee[:3, :3] = np.asarray(R_be)
         T_base_ee[:3, 3] = np.asarray(t_be)

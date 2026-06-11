@@ -114,7 +114,7 @@ class SagCorrectedKinematics:
         """LinkCoordinates / SagCoordinates 에서 array 재로드.
 
         COMMIT 후 외부에서 호출하면 재시작 없이 반영. 단 LinkCoordinates 는 URDF
-        patch 영향도라 inner solver 도 재로드 필요 (실용상 process 재시작 권장).
+        patch 영향도라 inner kinematics 도 재로드 필요 (실용상 process 재시작 권장).
         """
         with self._cache_lock:
             link_offsets = self._link_coords.snapshot()

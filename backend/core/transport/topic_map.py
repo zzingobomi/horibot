@@ -72,7 +72,7 @@ class Service:
     CALIB_HANDEYE_THRESHOLDS = "horibot/{robot_id}/calib/srv/handeye/thresholds"
     CALIB_HANDEYE_RECOMMENDATION_FAIL = "horibot/{robot_id}/calib/srv/handeye/recommendation_fail"
     CALIB_HANDEYE_MULTI_START = "horibot/{robot_id}/calib/srv/handeye/multi_start"
-    CALIB_CAPTURE = "horibot/{robot_id}/calib/srv/capture"
+    CALIB_INTRINSIC_CAPTURE = "horibot/{robot_id}/calib/srv/intrinsic/capture"
     CALIB_BACKUP_LIST = "horibot/{robot_id}/calib/srv/backup/list"
     CALIB_BACKUP_RESTORE = "horibot/{robot_id}/calib/srv/backup/restore"
 

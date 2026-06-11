@@ -62,7 +62,7 @@ export const ServiceKey = {
   MOTION_MOVE_P: "horibot/{robot_id}/motion/srv/move_p",
   MOTION_STOP: "horibot/{robot_id}/motion/srv/stop",
   PERCEPTION_GROUNDED_DETECT: "horibot/{robot_id}/perception/srv/grounded_detect",
-  CALIB_CAPTURE: "horibot/{robot_id}/calib/srv/capture",
+  CALIB_INTRINSIC_CAPTURE: "horibot/{robot_id}/calib/srv/intrinsic/capture",
   CALIB_INTRINSIC_START: "horibot/{robot_id}/calib/srv/intrinsic/start",
   CALIB_INTRINSIC_SAVE: "horibot/{robot_id}/calib/srv/intrinsic/save",
   CALIB_HANDEYE_CAPTURE: "horibot/{robot_id}/calib/srv/handeye/capture",
@@ -109,7 +109,7 @@ export type ServiceMap = {
   "horibot/{robot_id}/motion/srv/move_p": { req: components["schemas"]["MovePReq"]; res: Record<string, never> };
   "horibot/{robot_id}/motion/srv/stop": { req: Record<string, never>; res: Record<string, never> };
   "horibot/{robot_id}/perception/srv/grounded_detect": { req: components["schemas"]["GroundedDetectReq"]; res: components["schemas"]["GroundedDetectionResult"] };
-  "horibot/{robot_id}/calib/srv/capture": { req: components["schemas"]["CalibCaptureReq"]; res: components["schemas"]["CalibCaptureRes"] };
+  "horibot/{robot_id}/calib/srv/intrinsic/capture": { req: Record<string, never>; res: components["schemas"]["IntrinsicCaptureRes"] };
   "horibot/{robot_id}/calib/srv/intrinsic/start": { req: Record<string, never>; res: Record<string, never> };
   "horibot/{robot_id}/calib/srv/intrinsic/save": { req: Record<string, never>; res: components["schemas"]["IntrinsicSaveRes"] };
   "horibot/{robot_id}/calib/srv/handeye/capture": { req: Record<string, never>; res: components["schemas"]["HandeyeCaptureRes"] };

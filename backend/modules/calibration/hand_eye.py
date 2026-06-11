@@ -24,7 +24,7 @@ from .coach import diagnose
 from .se3 import make_T
 
 # sag 모델은 J2, J3에만 적용 (motor id 2, 3). bundle_adjust의 sag_k_rad_per_m
-# (2,) 배열의 순서와 일치. solver.py의 _SAG_JOINT_IDS와 같은 정의.
+# (2,) 배열의 순서와 일치. sag_corrected.py 의 _SAG_JOINT_IDS와 같은 정의.
 _SAG_MOTOR_IDS: list[int] = [2, 3]
 
 # 결과 dispatch 시 사용. Union 매번 풀어쓰는 것 방지.
@@ -159,7 +159,7 @@ class HandEyeCalibration:
 
         반복 캘 작동 보장:
             포즈는 raw로 저장되어 *영속*. 매번 _resolve_pose_arrays가 *현재*
-            JointCoordinates offset으로 URDF rad를 새로 생성. fk_fn (solver.fk_to_matrix)
+            JointCoordinates offset으로 URDF rad를 새로 생성. fk_fn (kinematics.fk_to_matrix)
             은 cv2.calibrateHandEye의 seed 산출에만 사용 (R_gripper2base) — BA 내부
             FK는 fk_chain (original URDF + 변수 link_t/link_r/sag_k) 사용.
 

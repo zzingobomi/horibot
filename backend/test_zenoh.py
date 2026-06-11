@@ -275,7 +275,7 @@ def main():
     session.declare_queryable(_tkey(Service.MOTION_MOVE_L), on_move_l)
     session.declare_queryable(_tkey(Service.MOTION_STOP), on_stop)
 
-    session.declare_queryable(_tkey(Service.CALIB_CAPTURE), on_calib_capture)
+    session.declare_queryable(_tkey(Service.CALIB_INTRINSIC_CAPTURE), on_calib_capture)
     session.declare_queryable(
         _tkey(Service.CALIB_HANDEYE_CAPTURE), on_handeye_capture)
     session.declare_queryable(_tkey(Service.CALIB_HANDEYE_COMMIT), on_handeye_commit)

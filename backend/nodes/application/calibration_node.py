@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import threading
 import time
 import cv2
@@ -19,8 +19,6 @@ from core.transport.messages.calibration import (
     BackupListRes,
     BackupRestoreReq,
     BackupRestoreRes,
-    CalibCaptureReq,
-    CalibCaptureRes,
     HandeyeCaptureRes,
     HandeyeCommitRes,
     HandeyeListPosesRes,
@@ -28,6 +26,7 @@ from core.transport.messages.calibration import (
     HandeyePreviewEnableReq,
     HandeyePreviewEnableRes,
     HandeyeResetRes,
+    IntrinsicCaptureRes,
     IntrinsicSaveRes,
     JointOffsetEntry,
     LinkOffsetEntry,
@@ -84,24 +83,20 @@ class _RobotState:
     arm_cfgs: list[MotorConfig]
     intrinsic: IntrinsicCalibration
     hand_eye: HandEyeCalibration
-    solver: SagCorrectedKinematics
+    kinematics: SagCorrectedKinematics
     last_compute: dict | None = None
     preview_enabled: bool = False
-    # 사용자 명시 신호 ([👎 안 보임] / [👎 빨강] / [👎 도달 실패]) 로 fail 표시한
-    # 추천 ID set. 다음 추천 생성 시 제외. [수동 모드 종료] / 라운드 reset 시 초기화.
+    # recommendation 실패한 자세 ID (사용자가 직접 후보에서 제외)
     recommendation_fail_ids: set[str] = field(default_factory=set)
-    # Saturate 인지 — σ 변화율 추적 (최근 N capture 동안 변화 거의 0 → saturate).
     sigma_history: list[float] = field(default_factory=list)
 
 
 class CalibrationNode(ApplicationNode):
-    """Application 노드 — robot 무관 한 인스턴스. robot 별 dict[robot_id] state."""
-
     def __init__(self) -> None:
         super().__init__("calibration_node")
 
         self._frame_cache = FrameCache()
-        self._cache = JointStateCache()
+        self._joint_cache = JointStateCache()
 
         # robot 별 상태
         self._states: dict[str, _RobotState] = {}
@@ -109,8 +104,8 @@ class CalibrationNode(ApplicationNode):
             arm_cfgs = load_motor_layout(rid).arm
             intrinsic = IntrinsicCalibration()
             hand_eye = HandEyeCalibration()
-            solver = self._registry.get_kinematics(rid)
-            assert isinstance(solver, SagCorrectedKinematics)
+            kinematics = self._registry.get_kinematics(rid)
+            assert isinstance(kinematics, SagCorrectedKinematics)
 
             path = _save_dir(rid) / "intrinsic.npz"
             loaded = intrinsic.load(path)
@@ -123,7 +118,7 @@ class CalibrationNode(ApplicationNode):
                 arm_cfgs=arm_cfgs,
                 intrinsic=intrinsic,
                 hand_eye=hand_eye,
-                solver=solver,
+                kinematics=kinematics,
             )
 
         self._preview_thread: threading.Thread | None = None
@@ -133,10 +128,10 @@ class CalibrationNode(ApplicationNode):
             self._frame_cache.subscribe(self, robot_id=rid)
             # 내부 캘리브레이션
             self.create_service(
-                topic_for(Service.CALIB_CAPTURE, rid),
-                CalibCaptureReq,
-                CalibCaptureRes,
-                lambda req, _rid=rid: self._srv_capture(req, _rid),
+                topic_for(Service.CALIB_INTRINSIC_CAPTURE, rid),
+                EmptyData,
+                IntrinsicCaptureRes,
+                lambda req, _rid=rid: self._srv_intrinsic_capture(req, _rid),
             )
             self.create_service(
                 topic_for(Service.CALIB_INTRINSIC_START, rid),
@@ -163,7 +158,6 @@ class CalibrationNode(ApplicationNode):
                 HandeyeResetRes,
                 lambda req, _rid=rid: self._srv_handeye_reset(req, _rid),
             )
-            # legacy dict — typed 면제 (free-form). robot_id closure.
             self.create_service(
                 topic_for(Service.CALIB_HANDEYE_COMPUTE, rid),
                 lambda req, _rid=rid: self._srv_handeye_compute(req, _rid),
@@ -194,9 +188,7 @@ class CalibrationNode(ApplicationNode):
                 topic_for(Service.CALIB_HANDEYE_RECOMMENDATION_FAIL, rid),
                 RecommendationFailReq,
                 RecommendationFailRes,
-                lambda req, _rid=rid: self._srv_handeye_recommendation_fail(
-                    req, _rid
-                ),
+                lambda req, _rid=rid: self._srv_handeye_recommendation_fail(req, _rid),
             )
             self.create_service(
                 topic_for(Service.CALIB_HANDEYE_MULTI_START, rid),
@@ -218,7 +210,7 @@ class CalibrationNode(ApplicationNode):
             )
 
         super().start()
-        self._cache.subscribe(self)
+        self._joint_cache.subscribe(self)
         self._preview_thread = threading.Thread(
             target=self._preview_loop,
             daemon=True,
@@ -232,17 +224,14 @@ class CalibrationNode(ApplicationNode):
             if loaded > 0:
                 logger.info("[%s] 이전 Hand-Eye 포즈 %d개 복원됨", rid, loaded)
 
-        logger.info(
-            "CalibrationNode 시작 (robots=%s)", self.enabled_robot_ids
-        )
+        logger.info("CalibrationNode 시작 (robots=%s)", self.enabled_robot_ids)
 
     # ─── 이미지 캡처 ─────────────────────────────────────────
 
-    def _srv_capture(
-        self, req: ServiceRequest[CalibCaptureReq], robot_id: str
-    ) -> ServiceResponse[CalibCaptureRes]:
+    def _srv_intrinsic_capture(
+        self, _req: ServiceRequest[EmptyData], robot_id: str
+    ) -> ServiceResponse[IntrinsicCaptureRes]:
         st = self._states[robot_id]
-        mode = req.data.mode
 
         ret, frame = self._frame_cache.get_frame(robot_id=robot_id)
         if not ret or frame is None:
@@ -252,30 +241,25 @@ class CalibrationNode(ApplicationNode):
                 data=None,
             )
 
-        if mode == "intrinsic":
-            width = self._frame_cache.width(robot_id=robot_id)
-            height = self._frame_cache.height(robot_id=robot_id)
-            image_size = (
-                (int(width), int(height))
-                if width is not None and height is not None
-                else None
-            )
-            detected, vis, hint = st.intrinsic.capture(frame, image_size)
-            b64 = frame_to_base64(vis)
-            return ServiceResponse(
-                success=True,
-                message=hint,
-                data=CalibCaptureRes(
-                    detected=detected,
-                    captured_count=len(st.intrinsic.obj_points),
-                    preview=b64,
-                    hint=hint,
-                    coverage_count=len(st.intrinsic.coverage_cells),
-                ),
-            )
-
+        width = self._frame_cache.width(robot_id=robot_id)
+        height = self._frame_cache.height(robot_id=robot_id)
+        image_size = (
+            (int(width), int(height))
+            if width is not None and height is not None
+            else None
+        )
+        detected, vis, hint = st.intrinsic.capture(frame, image_size)
+        b64 = frame_to_base64(vis)
         return ServiceResponse(
-            success=False, message=f"알 수 없는 mode: {mode}", data=None
+            success=True,
+            message=hint,
+            data=IntrinsicCaptureRes(
+                detected=detected,
+                captured_count=len(st.intrinsic.obj_points),
+                preview=b64,
+                hint=hint,
+                coverage_count=len(st.intrinsic.coverage_cells),
+            ),
         )
 
     # ─── 내부 캘리브레이션 ────────────────────────────────────
@@ -339,11 +323,11 @@ class CalibrationNode(ApplicationNode):
         """
         st = self._states[robot_id]
         arm_motor_ids = [cfg.id for cfg in st.arm_cfgs]
-        joint_limits = st.solver.joint_limits(len(arm_motor_ids))
+        joint_limits = st.kinematics.joint_limits(len(arm_motor_ids))
         use_physical_sag = mode == "physical_sag"
         use_extended_ba = mode in ("physical_sag", "extended")
         diag = st.hand_eye.compute_with_diagnostics(
-            fk_fn=st.solver.fk_to_matrix,
+            fk_fn=st.kinematics.fk_to_matrix,
             arm_motor_cfgs=st.arm_cfgs,
             joint_limits_rad=joint_limits,
             use_extended_ba=use_extended_ba,
@@ -455,15 +439,9 @@ class CalibrationNode(ApplicationNode):
                 "ba_mode": diag.get("method"),
                 "ba_converged": diag.get("ba_converged", False),
                 "coach_verdict": diag.get("coach", {}).get("verdict"),
-                "joint_offset_estimated": diag.get(
-                    "joint_offset_estimated", False
-                ),
-                "link_offset_estimated": diag.get(
-                    "link_offset_estimated", False
-                ),
-                "sag_offset_estimated": diag.get(
-                    "sag_offset_estimated", False
-                ),
+                "joint_offset_estimated": diag.get("joint_offset_estimated", False),
+                "link_offset_estimated": diag.get("link_offset_estimated", False),
+                "sag_offset_estimated": diag.get("sag_offset_estimated", False),
                 "axis_distributions": diag.get("coach", {}).get(
                     "axis_distributions", []
                 ),
@@ -511,7 +489,7 @@ class CalibrationNode(ApplicationNode):
                 angles.append(coords.motor_to_urdf(int(raw), cfg, robot_id))
             if not angles:
                 continue
-            R_g2b, t_g2b = st.solver.fk_to_matrix(angles)
+            R_g2b, t_g2b = st.kinematics.fk_to_matrix(angles)
             T_g2b = np.eye(4)
             T_g2b[:3, :3] = np.asarray(R_g2b)
             T_g2b[:3, 3] = np.asarray(t_g2b).reshape(3)
@@ -552,7 +530,7 @@ class CalibrationNode(ApplicationNode):
                 data=None,
             )
 
-        raw_positions = self._cache.get_raw_motor_positions(
+        raw_positions = self._joint_cache.get_raw_motor_positions(
             st.arm_cfgs, robot_id=robot_id
         )
         if raw_positions is None:
@@ -587,9 +565,7 @@ class CalibrationNode(ApplicationNode):
         )
         if not ok:
             logger.warning("solvePnP 풀이 실패")
-            return ServiceResponse(
-                success=False, message="포즈 추정 실패", data=None
-            )
+            return ServiceResponse(success=False, message="포즈 추정 실패", data=None)
         R_t2c, _ = cv2.Rodrigues(rvec)
 
         st.hand_eye.add_pose(
@@ -622,9 +598,7 @@ class CalibrationNode(ApplicationNode):
         return ServiceResponse(
             success=True,
             message=f"포즈 기록됨 ({len(st.hand_eye.poses)}개)",
-            data=HandeyeCaptureRes(
-                detected=True, pose_count=len(st.hand_eye.poses)
-            ),
+            data=HandeyeCaptureRes(detected=True, pose_count=len(st.hand_eye.poses)),
         )
 
     def _srv_handeye_reset(
@@ -658,9 +632,7 @@ class CalibrationNode(ApplicationNode):
         return ServiceResponse(
             success=True,
             message="ok",
-            data=HandeyeListPosesRes(
-                poses=poses, pose_count=len(st.hand_eye.poses)
-            ),
+            data=HandeyeListPosesRes(poses=poses, pose_count=len(st.hand_eye.poses)),
         )
 
     def _srv_handeye_compute(self, req: dict, robot_id: str) -> dict:
@@ -718,9 +690,7 @@ class CalibrationNode(ApplicationNode):
         applied: dict[int, float] = {}
         offset_msg = ""
         if st.last_compute.get("joint_offset_estimated"):
-            absolute_by_id: dict[int, float] = (
-                st.last_compute["_joint_absolute_by_id"]
-            )
+            absolute_by_id: dict[int, float] = st.last_compute["_joint_absolute_by_id"]
             applied = JointCoordinates().commit_absolute(
                 absolute_by_id,
                 method=st.hand_eye.result.method,
@@ -759,9 +729,7 @@ class CalibrationNode(ApplicationNode):
                 robot_id=robot_id,
             )
             n_joints = len(link_applied.trans)
-            link_msg = (
-                f" + link_offsets 갱신 (absolute, n={n_joints}, 백엔드 재시작 후 FK/IK 적용)"
-            )
+            link_msg = f" + link_offsets 갱신 (absolute, n={n_joints}, 백엔드 재시작 후 FK/IK 적용)"
             link_applied_meta = [
                 {
                     "motor_id": int(jid),
@@ -773,7 +741,8 @@ class CalibrationNode(ApplicationNode):
             restart_required = True
             logger.info(
                 "[%s] link_offsets 디스크 적용 (absolute, 재시작 필요): n=%d",
-                robot_id, n_joints,
+                robot_id,
+                n_joints,
             )
 
         # 4) sag_offsets — BA 출력이 absolute total.
@@ -783,8 +752,7 @@ class CalibrationNode(ApplicationNode):
             sag_delta_list = st.last_compute.get("sag_offset_delta", [])
             new_sag = SagOffsets(
                 k_rad_per_m={
-                    int(e["motor_id"]): float(e["k_rad_per_m"])
-                    for e in sag_delta_list
+                    int(e["motor_id"]): float(e["k_rad_per_m"]) for e in sag_delta_list
                 },
             )
             sag_applied = SagCoordinates().commit_absolute(
@@ -792,7 +760,7 @@ class CalibrationNode(ApplicationNode):
                 method=st.hand_eye.result.method,
                 robot_id=robot_id,
             )
-            st.solver._reload_caches()
+            st.kinematics._reload_caches()
             sag_applied_meta = [
                 {
                     "motor_id": int(jid),
@@ -805,8 +773,7 @@ class CalibrationNode(ApplicationNode):
             logger.info(
                 "[%s] sag_offsets 즉시 적용: %s",
                 robot_id,
-                {m["motor_id"]: round(m["k_rad_per_m"], 5)
-                 for m in sag_applied_meta},
+                {m["motor_id"]: round(m["k_rad_per_m"], 5) for m in sag_applied_meta},
             )
 
         # Response 준비 — last_compute 의 estimated 플래그를 invalidate 전에 캡처.
@@ -831,13 +798,11 @@ class CalibrationNode(ApplicationNode):
                 ],
                 link_offsets_applied=link_estimated,
                 link_offsets=[
-                    LinkOffsetEntry.model_validate(m)
-                    for m in link_applied_meta
+                    LinkOffsetEntry.model_validate(m) for m in link_applied_meta
                 ],
                 sag_offsets_applied=sag_estimated,
                 sag_offsets=[
-                    SagOffsetEntry.model_validate(m)
-                    for m in sag_applied_meta
+                    SagOffsetEntry.model_validate(m) for m in sag_applied_meta
                 ],
                 restart_required=restart_required,
             ),
@@ -859,16 +824,16 @@ class CalibrationNode(ApplicationNode):
         st.recommendation_fail_ids.add(anchor_id)
         logger.info(
             "[%s] 추천 fail: anchor_id=%s, category=%s",
-            robot_id, anchor_id, category,
+            robot_id,
+            anchor_id,
+            category,
         )
         # 즉시 추천 갱신 publish
         self._publish_recommendations(robot_id)
         return ServiceResponse(
             success=True,
             message=f"fail 기록: {anchor_id} ({category})",
-            data=RecommendationFailRes(
-                excluded_count=len(st.recommendation_fail_ids)
-            ),
+            data=RecommendationFailRes(excluded_count=len(st.recommendation_fail_ids)),
         )
 
     def _srv_handeye_multi_start(
@@ -918,9 +883,7 @@ class CalibrationNode(ApplicationNode):
                     best_sigma = float(sigma)
                     best_diag = diag
             except Exception as e:
-                logger.warning(
-                    "[%s] multi-start mode=%s 실패: %s", robot_id, mode, e
-                )
+                logger.warning("[%s] multi-start mode=%s 실패: %s", robot_id, mode, e)
 
         if best_diag is None:
             return ServiceResponse(
@@ -999,13 +962,14 @@ class CalibrationNode(ApplicationNode):
         st = self._states[robot_id]
         st.hand_eye.load(_save_dir(robot_id) / "hand_eye.npz")
         st.intrinsic.load(_save_dir(robot_id) / "intrinsic.npz")
-        st.solver._reload_caches()
+        st.kinematics._reload_caches()
         # 안전상 compute 결과도 무효화 (옛 absolute 가 현 disk 와 맞지 않음).
         st.last_compute = None
 
         logger.info(
             "[%s] calibration snapshot 복원 완료: timestamp=%s, restart_required=True",
-            robot_id, info.timestamp,
+            robot_id,
+            info.timestamp,
         )
 
         return ServiceResponse(
@@ -1043,13 +1007,11 @@ class CalibrationNode(ApplicationNode):
         st = self._states[robot_id]
         empty = {"recommendations": [], "no_candidates_reason": "insufficient_poses"}
 
-        current = self._cache.get_joint_angles_rad(
-            st.arm_cfgs, robot_id=robot_id
-        )
+        current = self._joint_cache.get_joint_angles_rad(st.arm_cfgs, robot_id=robot_id)
         if current is None:
             return empty
         arm_motor_ids = [cfg.id for cfg in st.arm_cfgs]
-        joint_limits = st.solver.joint_limits(len(arm_motor_ids))
+        joint_limits = st.kinematics.joint_limits(len(arm_motor_ids))
 
         # 추천 = sphere shell anchor 기반 (정면 / 좌 / 우 / 위 / 아래 + IK + visibility).
         # 필요 조건: intrinsic + hand_eye + 보드 base 추정 모두 있어야 함.
@@ -1067,7 +1029,7 @@ class CalibrationNode(ApplicationNode):
         w, h = st.intrinsic.result.image_size
         R_c2g = st.hand_eye.result.R_cam2gripper
         t_c2g = st.hand_eye.result.t_cam2gripper
-        fk_fn = st.solver.fk_to_matrix
+        fk_fn = st.kinematics.fk_to_matrix
 
         def _check(angles: list[float]) -> tuple[bool, str]:
             return next_pose_planner.is_pose_visible(
@@ -1087,7 +1049,7 @@ class CalibrationNode(ApplicationNode):
             target_quaternion,
             current_joint_angles,
         ):
-            return st.solver.ik(
+            return st.kinematics.ik(
                 target_position, target_quaternion, current_joint_angles
             )
 
@@ -1157,9 +1119,7 @@ class CalibrationNode(ApplicationNode):
 
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                     h, w = gray.shape[:2]
-                    ch_corners, ch_ids, m_corners, m_ids = (
-                        calib_board.detect_full(gray)
-                    )
+                    ch_corners, ch_ids, m_corners, m_ids = calib_board.detect_full(gray)
                     ok = (
                         ch_corners is not None
                         and ch_ids is not None
@@ -1179,9 +1139,7 @@ class CalibrationNode(ApplicationNode):
                         markers_payload = []
                         for quad, mid in zip(m_corners, m_ids):
                             pts = quad.reshape(-1, 2).tolist()
-                            markers_payload.append(
-                                {"corners": pts, "id": int(mid[0])}
-                            )
+                            markers_payload.append({"corners": pts, "id": int(mid[0])})
                         if markers_payload:
                             payload["markers"] = markers_payload
 
@@ -1198,16 +1156,12 @@ class CalibrationNode(ApplicationNode):
                             bbox_w,
                             bbox_h,
                         ]
-                        payload["coverage_ratio"] = (
-                            bbox_w * bbox_h
-                        ) / float(w * h)
+                        payload["coverage_ratio"] = (bbox_w * bbox_h) / float(w * h)
 
                         if st.intrinsic.result is not None:
                             try:
-                                obj_pts, img_pts = (
-                                    calib_board.match_object_points(
-                                        ch_corners, ch_ids
-                                    )
+                                obj_pts, img_pts = calib_board.match_object_points(
+                                    ch_corners, ch_ids
                                 )
                                 ok_pnp, rvec, _tvec = cv2.solvePnP(
                                     obj_pts,
@@ -1218,18 +1172,14 @@ class CalibrationNode(ApplicationNode):
                                 )
                                 if ok_pnp:
                                     R, _ = cv2.Rodrigues(rvec)
-                                    cos_v = float(
-                                        np.clip(abs(R[2, 2]), 0.0, 1.0)
-                                    )
+                                    cos_v = float(np.clip(abs(R[2, 2]), 0.0, 1.0))
                                     payload["tilt_deg"] = float(
                                         np.degrees(np.arccos(cos_v))
                                     )
                             except cv2.error:
                                 pass
 
-                    self.publish(
-                        topic_for(Topic.CALIB_HANDEYE_PREVIEW, rid), payload
-                    )
+                    self.publish(topic_for(Topic.CALIB_HANDEYE_PREVIEW, rid), payload)
                 except Exception as e:
                     logger.debug("[%s] preview loop 오류: %s", rid, e)
 

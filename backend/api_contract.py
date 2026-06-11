@@ -1,11 +1,7 @@
-"""프론트엔드 ↔ 백엔드 공개 API contract — single source of truth.
+"""프론트엔드 ↔ 백엔드 공개 API contract
 
-산업 표준 (tRPC `appRouter` / Connect-RPC `.proto` / ts-rest `initContract`) 의
-"하나의 명시적 contract object + opt-in" 원리를 우리 Zenoh-over-WS transport
-위에 재구현.
-
-여기 등재된 토픽 / 서비스만 프론트엔드에 공개. 미등재 = internal (백엔드 노드
-간 호출만, 프론트는 호출 불가). 의도가 코드로 명시되는 자리.
+여기 등재된 토픽 / 서비스만 프론트엔드에 공개.
+미등재 = internal (백엔드 노드간 호출만, 프론트는 호출 불가).
 
 흐름:
 1. bridge 가 `PUBLIC_TOPICS` 읽어 `_ALWAYS_SUBSCRIBE` 자동 — 프론트로 mirror.
@@ -118,7 +114,7 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
         _detector.GroundedDetectionResult,
     ),
     # ─ Calibration
-    Service.CALIB_CAPTURE: (_calibration.CalibCaptureReq, _calibration.CalibCaptureRes),
+    Service.CALIB_INTRINSIC_CAPTURE: (EmptyData, _calibration.IntrinsicCaptureRes),
     Service.CALIB_INTRINSIC_START: (EmptyData, EmptyData),
     Service.CALIB_INTRINSIC_SAVE: (EmptyData, _calibration.IntrinsicSaveRes),
     Service.CALIB_HANDEYE_CAPTURE: (EmptyData, _calibration.HandeyeCaptureRes),
@@ -162,7 +158,10 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
         _pointcloud.PointcloudCaptureReq,
         _pointcloud.PointcloudCaptureRes,
     ),
-    Service.POINTCLOUD_LIST_SESSIONS: (EmptyData, _pointcloud.PointcloudListSessionsRes),
+    Service.POINTCLOUD_LIST_SESSIONS: (
+        EmptyData,
+        _pointcloud.PointcloudListSessionsRes,
+    ),
     Service.POINTCLOUD_LIST_SCANS: (
         _pointcloud.PointcloudListScansReq,
         _pointcloud.PointcloudListScansRes,

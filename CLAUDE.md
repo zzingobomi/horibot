@@ -27,6 +27,7 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 - [slice_abc_verify.md](docs/slice_abc_verify.md) — Slice A/B/C 실 hardware + dev 서버 검증 순차 가이드
 - [distributed_topology.md](docs/distributed_topology.md) — Phase 2 분산 토폴로지 + 카메라 배치 design (잠정) — `hori1/2/3` Pi 3대 + so101 D405 양도, `robots.yaml` host 필드 확장 후보
 - [multi_robot_cross_calibration.md](docs/multi_robot_cross_calibration.md) — 두 robot base 사이 transform 캘 (6번째 종) design + hand-measure fallback + so101 도착 후 follow-up
+- [storage_layer.md](docs/storage_layer.md) — 영속성 layer design (storage_node Zenoh gateway + RdbStore/ObjectStore Protocol, bridge 와 동일 패턴). Phase 1 = 캘 5종 + SQLite/fs (git push/pull 동기화 사라짐), Phase 2 scans/meshes/task_runs, Phase 3 NAS Postgres/MinIO
 - [llm_preload_race_debug.md](docs/llm_preload_race_debug.md) — LLM/Grounding DINO preload meta-tensor race 진단 + 검증 plan (10회+ 깔짝 fix 박제 anchor, reproduction script 가 fix 보다 먼저)
 - [roadmap.md](docs/roadmap.md) — 진행 중/예정 작업
 

@@ -22,6 +22,7 @@ export const Topic = {
   CALIB_HANDEYE_SIGMA: "horibot/{robot_id}/calib/state/handeye_sigma",
   CALIB_HANDEYE_RECOMMENDATIONS: "horibot/{robot_id}/calib/state/handeye_recommendations",
   CALIB_HANDEYE_SATURATE: "horibot/{robot_id}/calib/state/handeye_saturate",
+  CALIB_HANDEYE_OBSERVABILITY: "horibot/{robot_id}/calib/state/handeye_observability",
   POINTCLOUD_STREAM: "horibot/{robot_id}/pointcloud/stream",
 } as const;
 export type TopicKey = (typeof Topic)[keyof typeof Topic];
@@ -47,6 +48,7 @@ export type TopicPayloadMap = {
   "horibot/{robot_id}/calib/state/handeye_sigma": components["schemas"]["HandeyeSigmaState"];
   "horibot/{robot_id}/calib/state/handeye_recommendations": unknown;
   "horibot/{robot_id}/calib/state/handeye_saturate": unknown;
+  "horibot/{robot_id}/calib/state/handeye_observability": components["schemas"]["HandeyeObservabilityState"];
 };
 
 export const ServiceKey = {

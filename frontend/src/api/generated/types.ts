@@ -436,6 +436,33 @@ export interface components {
             axis_distributions: components["schemas"]["AxisDistributionEntry"][];
         };
         /**
+         * HandeyeObservabilityState
+         * @description 매 capture 후 자동 발행. 자세들의 기하학적 관측성 진단.
+         *     verdict ('A'/'B'/'mid') 만 사용자 안내 — metric 숫자는 backend 진단용.
+         */
+        HandeyeObservabilityState: {
+            /** Timestamp */
+            timestamp: number;
+            /** Pose Count */
+            pose_count: number;
+            /** Axis Spread Deg */
+            axis_spread_deg: number;
+            /** Tilt Min Deg */
+            tilt_min_deg: number;
+            /** Tilt Max Deg */
+            tilt_max_deg: number;
+            /** Tilt Std Deg */
+            tilt_std_deg: number;
+            /** Tilt In Range Count */
+            tilt_in_range_count: number;
+            /** Rotation Axis Ratio */
+            rotation_axis_ratio: number;
+            /** Wrist Roll Range Raw */
+            wrist_roll_range_raw: number;
+            /** Verdict */
+            verdict: string;
+        };
+        /**
          * Heartbeat
          * @description SYSTEM_HEARTBEAT 페이로드. 노드별 1Hz.
          *

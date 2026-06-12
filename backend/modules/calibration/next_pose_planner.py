@@ -30,13 +30,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from math import degrees, radians
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Protocol, Sequence
 
 import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from . import joint_distribution as jd
 from . import thresholds
 
 logger = logging.getLogger(__name__)
@@ -45,31 +44,8 @@ logger = logging.getLogger(__name__)
 VisibilityCheck = Callable[[list[float]], tuple[bool, str]]
 """후보 joint angles → (visible, reason). visibility_check 인자."""
 
-# 잔차 큰 포즈를 base로 추천 자세를 만들 때 J1/J4/J5 중 어느 축을 변주할지
-# 우선순위 (hand-eye 회전 추정 영향 큰 순). 0-indexed: 3=J4, 0=J1, 4=J5.
-# cv2.calibrateHandEye는 카메라 광축에 수직한 축(J4 pitch, J1 yaw) 회전이
-# 회전 추정에 가장 많은 정보를 줌. J5(wrist roll)은 광축 회전이라 정보 기여가
-# 작아 fallback. (이전 [4,3,0]은 시야 안전 휴리스틱이었지만, J5 가동범위가
-# ±150° 이상이라 우선순위 1위 + _VARIANTS_PER_BASE=2 조합이 한 base에서 J5
-# 위/아래로 슬롯을 다 먹어 J4/J1이 영원히 추천 안 나오는 버그가 있었음.)
-_AXIS_PRIORITY = [3, 0, 4]
-
-# 잔차 큰 포즈 근처에서 한 축을 얼마나 변주할지 (deg). 너무 작으면 BA가 새 정보
-# 못 받음. 너무 크면 체커보드 시야 벗어남.
-_AXIS_PERTURBATION_DEG: float = 20.0
-
-# 잔차 임계 (deg). 이 이상인 포즈가 "잔차 큰 영역 보강" 대상.
-# 미만이면 "분포 다양성 보강"으로 자리 채움.
-_HIGH_RESIDUAL_THRESHOLD_DEG: float = 0.5
-
 # 후보 리스트 최대 길이. 너무 많으면 사용자 피로, 너무 적으면 다 가도 안 보일 수 있음.
 MAX_RECOMMENDATIONS: int = 6
-
-# 한 잔차-큰-포즈에서 뽑을 변주 개수. 1 = 한 base에서 한 축 한 방향만 →
-# 다음 high-residual base로 넘어가 다른 축/시작점에서 변주가 나오도록 강제.
-# (이전 2는 가동범위 넓은 축이 한 base 안에서 위/아래 두 슬롯을 다 먹어
-# _AXIS_PRIORITY의 다음 축까지 못 닿는 문제 원인이었음.)
-_VARIANTS_PER_BASE: int = 1
 
 # 중복 판정 임계 (rad). 두 후보의 모든 축 차이가 이 이내면 같은 자세로 봄.
 _DEDUPE_TOLERANCE_RAD: float = radians(5.0)
@@ -103,68 +79,6 @@ class RecommendationResult:
     # 빈 list 일 때만 채워짐. caller 가 σ/verdict 결합해 덮어쓸 수 있음.
     no_candidates_reason: NoCandidatesReason | None = None
 
-
-def recommend_many(
-    *,
-    last_compute: dict | None,
-    joint_angles_per_pose_at_compute: list[list[float]] | None,
-    current_joint_angles_rad: list[float],
-    arm_motor_ids: list[int],
-    joint_limits_rad: list[tuple[float, float]],
-    visibility_check: VisibilityCheck | None = None,
-) -> list[NextPoseRecommendation]:
-    """다음 캡처 후보 N개 반환.
-
-    Args:
-        last_compute: 직전 compute 결과. 없으면 분포 기반만.
-        joint_angles_per_pose_at_compute: 직전 compute 의 해석된 joint angles
-            (URDF rad). last_compute 의 per_pose_residual 과 같은 순서.
-        current_joint_angles_rad: 분포 fallback 의 base 가 될 현재 모터 위치.
-        arm_motor_ids: [1..5]
-        joint_limits_rad: Kinematics.joint_limits(5)
-        visibility_check: 후보 자세에서 보드가 카메라 frame 안인지 확인 함수.
-            None 이면 visibility 표시만 "unchecked" 로 박힘. intrinsic + hand_eye +
-            board base 추정 모두 있을 때만 caller 가 제공.
-    """
-    n_axes = min(len(arm_motor_ids), len(joint_limits_rad), 5)
-    if len(current_joint_angles_rad) < n_axes:
-        return []
-
-    out: list[NextPoseRecommendation] = []
-
-    out.extend(
-        _from_high_residual_many(
-            last_compute=last_compute,
-            ja_at_compute=joint_angles_per_pose_at_compute,
-            arm_motor_ids=arm_motor_ids[:n_axes],
-            joint_limits_rad=joint_limits_rad[:n_axes],
-            remaining=MAX_RECOMMENDATIONS,
-        )
-    )
-
-    remaining = MAX_RECOMMENDATIONS - len(out)
-    if remaining > 0:
-        out.extend(
-            _from_distribution_many(
-                ja_per_pose=joint_angles_per_pose_at_compute or [],
-                current=current_joint_angles_rad[:n_axes],
-                arm_motor_ids=arm_motor_ids[:n_axes],
-                joint_limits_rad=joint_limits_rad[:n_axes],
-                already_chosen=out,
-                remaining=remaining,
-            )
-        )
-
-    # visibility 마크 — 각 후보의 보드 가시성. UI 는 visible=false 후보를 회색
-    # 처리하되 사용자가 원하면 시도 가능 (gate 가 hard filter 가 아니라 hint).
-    if visibility_check is not None:
-        for rec in out:
-            rec_rad = [radians(j["degree"]) for j in rec.joints]
-            visible, reason = visibility_check(rec_rad)
-            rec.visible = visible
-            rec.visibility_reason = reason
-
-    return out[:MAX_RECOMMENDATIONS]
 
 
 def is_pose_visible(
@@ -245,180 +159,6 @@ def is_pose_visible(
 
     return True, "visible"
 
-
-def _from_high_residual_many(
-    *,
-    last_compute: dict | None,
-    ja_at_compute: list[list[float]] | None,
-    arm_motor_ids: list[int],
-    joint_limits_rad: list[tuple[float, float]],
-    remaining: int,
-) -> list[NextPoseRecommendation]:
-    """잔차 큰 포즈들 → 각 포즈에서 최대 _VARIANTS_PER_BASE개 변주."""
-    if not last_compute or not ja_at_compute or remaining <= 0:
-        return []
-    per_pose = last_compute.get("per_pose_residual", [])
-    if not per_pose:
-        return []
-
-    # excluded 제외, 잔차 큰 것부터 정렬
-    candidates = [(i, r) for i, r in enumerate(per_pose) if not r.get("excluded")]
-    if not candidates:
-        return []
-    candidates.sort(key=lambda x: -float(x[1].get("drot_deg", 0.0)))
-
-    n_axes = len(arm_motor_ids)
-    out: list[NextPoseRecommendation] = []
-
-    for idx, res in candidates:
-        if len(out) >= remaining:
-            break
-        drot = float(res.get("drot_deg", 0.0))
-        if drot < _HIGH_RESIDUAL_THRESHOLD_DEG:
-            # 더 이상 큰 잔차 없음 — 잔차 모드 종료
-            break
-        if idx >= len(ja_at_compute):
-            continue
-        base_angles_rad = list(ja_at_compute[idx][:n_axes])
-        pose_id = res.get("id", "?")
-        produced_for_base = 0
-
-        # 이미 추천된 축은 뒤로 — base 간 축 다양성 강제. 같은 카운트 내에서는
-        # _AXIS_PRIORITY 순 유지. (이전엔 모든 base가 우선순위 1위 축으로만 가서
-        # 한 축이 추천 리스트를 도배하는 문제가 있었음.)
-        axis_counts = {a: 0 for a in _AXIS_PRIORITY}
-        for rec in out:
-            if rec.primary_axis in axis_counts:
-                axis_counts[rec.primary_axis] += 1
-        axis_order = sorted(
-            _AXIS_PRIORITY,
-            key=lambda a: (axis_counts[a], _AXIS_PRIORITY.index(a)),
-        )
-
-        for axis_idx in axis_order:
-            if produced_for_base >= _VARIANTS_PER_BASE:
-                break
-            if len(out) >= remaining:
-                break
-            if axis_idx >= n_axes:
-                continue
-            lo, hi = joint_limits_rad[axis_idx]
-            cur = base_angles_rad[axis_idx]
-            delta = radians(_AXIS_PERTURBATION_DEG)
-            up_room = hi - cur
-            down_room = cur - lo
-
-            # 한 축에서 한 방향만 — 더 여유 있는 쪽 선택. 둘 다 부족하면 다음 축.
-            if up_room >= delta and up_room >= down_room:
-                dir_name, new_val = "위쪽", cur + delta
-            elif down_room >= delta:
-                dir_name, new_val = "아래쪽", cur - delta
-            elif up_room >= delta:
-                dir_name, new_val = "위쪽", cur + delta
-            else:
-                continue
-
-            target = list(base_angles_rad)
-            target[axis_idx] = new_val
-            # 다른 축들 안전 클램프
-            for i in range(n_axes):
-                lo_i, hi_i = joint_limits_rad[i]
-                target[i] = max(lo_i, min(hi_i, target[i]))
-
-            if _is_duplicate(target, out):
-                continue
-
-            signed_deg = (
-                _AXIS_PERTURBATION_DEG if dir_name == "위쪽"
-                else -_AXIS_PERTURBATION_DEG
-            )
-            label = f"J{axis_idx + 1} {dir_name} {signed_deg:+.0f}°"
-            reason = (
-                f"포즈 #{pose_id} 잔차 큼 (Δrot={drot:.2f}°) — "
-                f"그 영역 J{axis_idx + 1} {dir_name} "
-                f"{_AXIS_PERTURBATION_DEG:.0f}° 변주."
-            )
-            out.append(
-                NextPoseRecommendation(
-                    joints=[
-                        {"id": int(mid), "degree": float(degrees(ang))}
-                        for mid, ang in zip(arm_motor_ids, target)
-                    ],
-                    reason=reason,
-                    label=label,
-                    primary_axis=axis_idx,
-                    source="high_residual",
-                    diagnostics={
-                        "mode": "high_residual",
-                        "base_pose_id": pose_id,
-                        "base_residual_rot_deg": drot,
-                        "direction": dir_name,
-                    },
-                )
-            )
-            produced_for_base += 1
-
-    return out
-
-
-def _from_distribution_many(
-    *,
-    ja_per_pose: list[list[float]],
-    current: list[float],
-    arm_motor_ids: list[int],
-    joint_limits_rad: list[tuple[float, float]],
-    already_chosen: list[NextPoseRecommendation],
-    remaining: int,
-) -> list[NextPoseRecommendation]:
-    """빈 축 1개당 1후보. J5/J4/J1 우선, 그 다음 J2/J3."""
-    if remaining <= 0:
-        return []
-    dists = jd.analyze(
-        joint_angles_per_pose=ja_per_pose,
-        arm_motor_ids=arm_motor_ids,
-        joint_limits_rad=joint_limits_rad,
-    )
-    out: list[NextPoseRecommendation] = []
-    axis_order = _AXIS_PRIORITY + [1, 2]
-    for axis_idx in axis_order:
-        if len(out) >= remaining:
-            break
-        if axis_idx >= len(dists):
-            continue
-        dist = dists[axis_idx]
-        if not dist.is_low_diversity or dist.suggested_deg is None:
-            continue
-        target_rad = radians(dist.suggested_deg)
-        lo, hi = joint_limits_rad[axis_idx]
-        if not (lo <= target_rad <= hi):
-            continue
-        target = list(current)
-        target[axis_idx] = target_rad
-        for i in range(len(target)):
-            lo_i, hi_i = joint_limits_rad[i]
-            target[i] = max(lo_i, min(hi_i, target[i]))
-
-        if _is_duplicate(target, already_chosen + out):
-            continue
-
-        label = f"J{axis_idx + 1} {dist.suggested_deg:+.0f}°"
-        out.append(
-            NextPoseRecommendation(
-                joints=[
-                    {"id": int(mid), "degree": float(degrees(ang))}
-                    for mid, ang in zip(arm_motor_ids, target)
-                ],
-                reason=dist.suggestion_text,
-                label=label,
-                primary_axis=axis_idx,
-                source="distribution",
-                diagnostics={
-                    "mode": "distribution",
-                    "axis_distribution": jd.to_dict(dist),
-                },
-            )
-        )
-    return out
 
 
 def recommend_geometry(
@@ -574,20 +314,34 @@ def recommend_geometry(
             float(quat[3]),
         )
 
-        try:
-            joint_angles = ik_fn(target_pos, target_quat, current_joint_angles_rad)
-        except Exception as e:
-            logger.debug("[geometry] IK 실패 anchor=%s: %s", label, e)
-            joint_angles = None
-        if joint_angles is None or len(joint_angles) < n_axes:
-            n_ik_fail += 1
-            continue
+        # IK multi-seed retry — OMX-F 5DOF 의 좁은 joint manifold 에서 single seed IK
+        # 실패하던 anchor 들 (좌/우/위/아래) 의 풀이 성공률 향상. base yaw 의 ±60°,
+        # ±120° offset seed 들 시도 → 첫 풀린 + joint_limits 안 인 답 채택.
+        # (audit: 5 anchor 중 1 개만 IK 풀리던 trauma source 직접 fix.)
+        seeds_to_try: list[Sequence[float] | None] = [current_joint_angles_rad]
+        if current_joint_angles_rad is not None:
+            base = list(current_joint_angles_rad)
+            for d_deg in (60.0, -60.0, 120.0, -120.0):
+                alt = list(base)
+                alt[0] = alt[0] + np.deg2rad(d_deg)
+                seeds_to_try.append(alt)
 
-        within_limits = all(
-            joint_limits_rad[i][0] <= joint_angles[i] <= joint_limits_rad[i][1]
-            for i in range(n_axes)
-        )
-        if not within_limits:
+        joint_angles = None
+        for seed in seeds_to_try:
+            try:
+                ja = ik_fn(target_pos, target_quat, seed)
+            except Exception:
+                continue
+            if ja is None or len(ja) < n_axes:
+                continue
+            if all(
+                joint_limits_rad[i][0] <= ja[i] <= joint_limits_rad[i][1]
+                for i in range(n_axes)
+            ):
+                joint_angles = ja
+                break
+
+        if joint_angles is None:
             n_ik_fail += 1
             continue
 
@@ -637,6 +391,272 @@ def recommend_geometry(
             reason = NO_REASON_ALL_INVISIBLE  # safety fallback
 
     return RecommendationResult(out, reason)
+
+
+def recommend_joint_sample(
+    *,
+    current_joint_angles_rad: Sequence[float],
+    arm_motor_ids: list[int],
+    joint_limits_rad: list[tuple[float, float]],
+    fk_fn: Callable[[list[float]], tuple[Any, Any]],
+    visibility_check: VisibilityCheck | None = None,
+    existing_joint_angles: list[list[float]] | None = None,
+    excluded_ids: set[str] | None = None,
+    max_candidates: int = MAX_RECOMMENDATIONS,
+) -> RecommendationResult:
+    """5DOF robot 용 추천 자세 — current 자세 위 joint space perturbation.
+
+    원리: "*좋은 카메라 자세 만들어서 로봇이 따라간다*" (recommend_geometry) 가 아니라
+    "*로봇이 갈 수 있는 자세 중 좋은 걸 고른다*". 5DOF (OMX-F, wrist yaw 없음) 처럼
+    임의 R 못 만드는 robot 에 자연스러움.
+
+    추천 점수 (3 축):
+      1. 갈 수 있음        — joint_limit + visibility 통과 (hard filter)
+      2. 보드 잘 보임      — visibility_check 의 FOV + tilt 권장 범위
+      3. 기존 pose 와 다름  — existing_joint_angles 와 joint-space min distance
+
+    Strategy 패턴 — robots.yaml 의 `pose_recommend_strategy="joint_perturbation"`
+    인 robot 만 사용. SO-101 (6DOF) 은 `recommend_geometry` 사용.
+
+    Args:
+        current_joint_angles_rad: 현재 자세 (J1..J5).
+        arm_motor_ids: [1..5]
+        joint_limits_rad: 각 joint 의 (lo, hi).
+        fk_fn: angles → (R, t). visibility_check 의 forward 용.
+        visibility_check: 보드 시야 안 + tilt 권장 범위 check. 통과 만 추천.
+        existing_joint_angles: 이미 캡처된 pose 들의 joint angles. 다양성 점수 base.
+            None 이면 다양성 점수 X (current 만 기준).
+        excluded_ids: 사용자가 [👎] 표시한 추천 ID set.
+        max_candidates: 최대 추천 개수.
+
+    Returns:
+        RecommendationResult — 5~8 개 안정 후보 목표.
+    """
+    n_axes = min(len(arm_motor_ids), len(joint_limits_rad), 5)
+    if len(current_joint_angles_rad) < n_axes:
+        return RecommendationResult([], None)
+
+    excluded = excluded_ids or set()
+
+    # axis 별 perturbation 후보 — board 가 23cm 가까이라 큰 yaw/pitch 가 시야 벗어남.
+    # 작은 step (±10°) 부터 + 단계적으로 큼 (±25°). visible 한 step 부터 채택.
+    # hand-eye 회전 추정 정보 큰 순: J1 > J4 > J5 > J2/J3.
+    perturbations: list[tuple[int, str, float]] = [
+        # ±10° step — board 시야 유지 확률 높음
+        (0, "J1 yaw +10°", +10.0),
+        (0, "J1 yaw -10°", -10.0),
+        (3, "J4 pitch +10°", +10.0),
+        (3, "J4 pitch -10°", -10.0),
+        (4, "J5 roll +20°", +20.0),
+        (4, "J5 roll -20°", -20.0),
+        (1, "J2 shoulder +10°", +10.0),
+        (1, "J2 shoulder -10°", -10.0),
+        (2, "J3 elbow +10°", +10.0),
+        (2, "J3 elbow -10°", -10.0),
+        # ±20° step — 시야 유지되면 추가 다양성
+        (0, "J1 yaw +20°", +20.0),
+        (0, "J1 yaw -20°", -20.0),
+        (3, "J4 pitch +20°", +20.0),
+        (3, "J4 pitch -20°", -20.0),
+        (4, "J5 roll +40°", +40.0),
+        (4, "J5 roll -40°", -40.0),
+        # ±30°+ step — fallback
+        (0, "J1 yaw +30°", +30.0),
+        (0, "J1 yaw -30°", -30.0),
+        (4, "J5 roll +60°", +60.0),
+        (4, "J5 roll -60°", -60.0),
+    ]
+
+    # candidates 모두 시도 → visibility 통과한 것만 후보. 이후 다양성 score 로 ranking.
+    candidates: list[tuple[NextPoseRecommendation, list[float]]] = []
+    n_excluded = 0
+    n_limit_fail = 0
+    n_invisible = 0
+
+    for idx, (axis_idx, label, delta_deg) in enumerate(perturbations):
+        rec_id = f"joint_sample_{idx}"
+        if rec_id in excluded:
+            n_excluded += 1
+            continue
+        if axis_idx >= n_axes:
+            continue
+
+        target = list(current_joint_angles_rad[:n_axes])
+        target[axis_idx] = target[axis_idx] + radians(delta_deg)
+
+        # joint limit
+        lo, hi = joint_limits_rad[axis_idx]
+        if not (lo <= target[axis_idx] <= hi):
+            n_limit_fail += 1
+            continue
+
+        # visibility hard filter — joint_sample 은 visible 통과 자세만
+        visible = True
+        v_reason = "unchecked"
+        if visibility_check is not None:
+            visible, v_reason = visibility_check(target)
+            if not visible:
+                n_invisible += 1
+                continue
+
+        if _is_duplicate(target, [c[0] for c in candidates]):
+            continue
+
+        candidates.append(
+            (
+                NextPoseRecommendation(
+                    joints=[
+                        {"id": int(mid), "degree": float(degrees(ang))}
+                        for mid, ang in zip(arm_motor_ids[:n_axes], target)
+                    ],
+                    reason=(
+                        f"{label} — 현재 자세 위 변주, 보드 시야 안 + tilt 권장 범위."
+                    ),
+                    label=label,
+                    primary_axis=axis_idx,
+                    source="joint_sample",
+                    diagnostics={
+                        "mode": "joint_sample",
+                        "delta_deg": delta_deg,
+                        "axis_idx": axis_idx,
+                    },
+                    visible=visible,
+                    visibility_reason=v_reason,
+                ),
+                target,
+            )
+        )
+
+    # 다양성 score — 각 후보의 *기존 캡처 pose 들과의 joint-space minimum L2 distance* (rad).
+    # 큼 = 기존과 다름 = 정보 기여 큼. existing 없으면 score = 1.0 (uniform).
+    def diversity_score(target_angles: list[float]) -> float:
+        if not existing_joint_angles:
+            return 1.0
+        ta = np.asarray(target_angles)
+        existing = np.asarray(
+            [e[: len(target_angles)] for e in existing_joint_angles]
+        )
+        dists = np.linalg.norm(existing - ta, axis=1)
+        return float(dists.min())
+
+    candidates.sort(key=lambda c: -diversity_score(c[1]))
+
+    # diagnostics 에 다양성 점수 기록 (UI 가 표시 가능)
+    for rec, ang in candidates:
+        rec.diagnostics["diversity_score_rad"] = round(diversity_score(ang), 4)
+
+    out = [c[0] for c in candidates[:max_candidates]]
+
+    reason: NoCandidatesReason | None = None
+    if not out:
+        if n_excluded >= len(perturbations):
+            reason = NO_REASON_USER_MARKED_FAIL
+        elif n_invisible > 0 and n_invisible >= n_limit_fail:
+            reason = NO_REASON_ALL_INVISIBLE
+        else:
+            reason = NO_REASON_ALL_IK_FAIL  # joint_limit 실패도 IK 실패 부류
+
+    return RecommendationResult(out, reason)
+
+
+# ─── Strategy Pattern — 로봇 kinematic 구조별 추천 전략 ──────────────────
+#
+# 발견: recommend_geometry (6DOF anchor 기반) 가 OMX-F (5DOF, wrist yaw 없음)
+# 에선 anchor 5 중 1만 IK 풀림. "*좋은 카메라 자세 만들어 로봇이 따라간다*"
+# 모델이 *5DOF manifold 안* 에 못 들어옴.
+#
+# 신규: JointPerturbationStrategy — "*로봇이 갈 수 있는 자세 중 좋은 걸 고른다*".
+# IK 안 풀고 FK 만 사용 → 항상 robot 이 만들 수 있는 자세.
+#
+# robots.yaml 의 `pose_recommend_strategy` 가 SSOT.
+
+
+@dataclass
+class RecommendContext:
+    """추천 전략 공통 입력. strategy 가 자기 필요한 필드만 사용."""
+
+    current_joint_angles_rad: Sequence[float]
+    arm_motor_ids: list[int]
+    joint_limits_rad: list[tuple[float, float]]
+    fk_fn: Callable[[list[float]], tuple[Any, Any]]
+    ik_fn: Callable[
+        [
+            tuple[float, float, float],
+            tuple[float, float, float, float] | None,
+            Sequence[float] | None,
+        ],
+        list[float] | None,
+    ]
+    board_corners_base: np.ndarray  # (4, 3)
+    hand_eye_R: np.ndarray  # (3, 3)
+    hand_eye_t: np.ndarray  # (3,)
+    outward_hint: np.ndarray | None = None
+    visibility_check: VisibilityCheck | None = None
+    existing_joint_angles: list[list[float]] | None = None
+    excluded_ids: set[str] | None = None
+    max_candidates: int = MAX_RECOMMENDATIONS
+
+
+class PoseRecommendationStrategy(Protocol):
+    """robot 별 추천 전략 인터페이스."""
+
+    def recommend(self, ctx: RecommendContext) -> RecommendationResult: ...
+
+
+class GeometryStrategy:
+    """6DOF (또는 wrist yaw 있는) robot 용 — anchor sphere shell + IK.
+
+    임의 카메라 R 만들 수 있는 robot 에 자연 — SO-101, UR 등.
+    """
+
+    def recommend(self, ctx: RecommendContext) -> RecommendationResult:
+        return recommend_geometry(
+            board_corners_base=ctx.board_corners_base,
+            ik_fn=ctx.ik_fn,
+            hand_eye_R=ctx.hand_eye_R,
+            hand_eye_t=ctx.hand_eye_t,
+            arm_motor_ids=ctx.arm_motor_ids,
+            joint_limits_rad=ctx.joint_limits_rad,
+            current_joint_angles_rad=ctx.current_joint_angles_rad,
+            outward_hint=ctx.outward_hint,
+            visibility_check=ctx.visibility_check,
+            excluded_ids=ctx.excluded_ids,
+        )
+
+
+class JointPerturbationStrategy:
+    """5DOF (또는 wrist yaw 없는) robot 용 — joint space perturbation + FK.
+
+    robot kinematic manifold 안에서만 sample → 항상 reachable. OMX-F 등.
+    """
+
+    def recommend(self, ctx: RecommendContext) -> RecommendationResult:
+        return recommend_joint_sample(
+            current_joint_angles_rad=ctx.current_joint_angles_rad,
+            arm_motor_ids=ctx.arm_motor_ids,
+            joint_limits_rad=ctx.joint_limits_rad,
+            fk_fn=ctx.fk_fn,
+            visibility_check=ctx.visibility_check,
+            existing_joint_angles=ctx.existing_joint_angles,
+            excluded_ids=ctx.excluded_ids,
+            max_candidates=ctx.max_candidates,
+        )
+
+
+def make_strategy(name: str) -> PoseRecommendationStrategy:
+    """robots.yaml::pose_recommend_strategy 값으로 strategy 인스턴스 생성.
+
+    유효값: "geometry" (6DOF, default), "joint_perturbation" (5DOF).
+    """
+    name_lower = (name or "geometry").lower()
+    if name_lower == "geometry":
+        return GeometryStrategy()
+    if name_lower == "joint_perturbation":
+        return JointPerturbationStrategy()
+    raise ValueError(
+        f"unknown pose_recommend_strategy='{name}'. "
+        f"유효: 'geometry' | 'joint_perturbation'"
+    )
 
 
 def _is_duplicate(

@@ -17,6 +17,7 @@ import type {
   ComputeData,
   HandEyePreview,
   HandeyeRecommendationsState,
+  HandeyeObservabilityState,
   HandeyeSaturateState,
   HandEyeSigmaState,
   MultiStartRes,
@@ -47,6 +48,8 @@ interface CalibrationState {
   thresholds: CalibThresholds | null;
   // saturate — σ 변화율 추적 결과. Phase 2 표시.
   saturate: HandeyeSaturateState | null;
+  // observability — 자세 분포의 기하학적 관측성. verdict 만 사용자 안내.
+  observability: HandeyeObservabilityState | null;
 
   // ─── Phase 1/2 분기 ────────────────────────────────────────
   // manualModeActive=true → Phase 1 (수동 자유 자세, 추천/σ hide).
@@ -95,6 +98,7 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
   activeIndex: null,
   thresholds: null,
   saturate: null,
+  observability: null,
   manualModeActive: true,
 
   loading: false,
@@ -160,6 +164,14 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
       },
     );
 
+    // Observability — 매 capture 후 자세 분포 진단. verdict 만 사용자 안내.
+    const unsubObservability = bridge.subscribe(
+      Topic.CALIB_HANDEYE_OBSERVABILITY,
+      (data) => {
+        set({ observability: data as unknown as HandeyeObservabilityState });
+      },
+    );
+
     // 초기 fetch — pose list + thresholds
     void bridge.callService(ServiceKey.CALIB_HANDEYE_LIST_POSES, {}).then(
       (res) => {
@@ -175,7 +187,15 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
       },
     );
 
-    set({ _unsubscribes: [unsubPreview, unsubSigma, unsubRecs, unsubSaturate] });
+    set({
+      _unsubscribes: [
+        unsubPreview,
+        unsubSigma,
+        unsubRecs,
+        unsubSaturate,
+        unsubObservability,
+      ],
+    });
   },
 
   dispose: () => {

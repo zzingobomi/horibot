@@ -38,12 +38,17 @@ export type MethodCompareEntry = {
  * `excluded=true`이면 outlier 자동 제거 단계에서 빠진 포즈.
  * 이 경우 잔차는 1차 BA 값 (왜 빠졌는지 표시용).
  * 사용자는 캡처/계산/커밋만 함 — 직접 삭제 X.
+ *
+ * `weight` ─ IRLS+Huber 가 추정한 자세별 weight ∈ [0, 1]. `_physical_sag` BA 경로
+ * 에서만 채워짐 (fallback / 1차 BA 경로 = null). weight < 0.5 = 자동 down-weight =
+ * 사용자 안내 "자동 제외 의심" 색상 표시. *수치 자체* 는 사용자에게 노출 X.
  */
 export type PerPoseResidual = {
   id: number;
   drot_deg: number;
   dt_mm: number;
   excluded: boolean;
+  weight: number | null;
 };
 
 /**
@@ -220,6 +225,28 @@ export type HandEyeSigmaState = {
   sag_offset_estimated: boolean;
   /** capture 시점의 axis 분포. low_diversity 인 축이 있으면 narrow_sigma_good verdict 의 원인. */
   axis_distributions?: AxisDistribution[];
+};
+
+/**
+ * `CALIB_HANDEYE_OBSERVABILITY` topic — 매 capture 후 자동 publish.
+ *
+ * 캡처된 자세들의 *기하학적 관측성* 진단. verdict 만 사용자 표시 — metric 수치는
+ * backend 진단용.
+ *   verdict='A'   → 다양성 충분, 추가 캡처가 σ 개선 가능
+ *   verdict='B'   → 구조적 다양성 부족 (보드 위치 / 거리 변경 권고)
+ *   verdict='mid' → 중간
+ */
+export type HandeyeObservabilityState = {
+  timestamp: number;
+  pose_count: number;
+  axis_spread_deg: number;
+  tilt_min_deg: number;
+  tilt_max_deg: number;
+  tilt_std_deg: number;
+  tilt_in_range_count: number;
+  rotation_axis_ratio: number;
+  wrist_roll_range_raw: number;
+  verdict: "A" | "B" | "mid";
 };
 
 /**

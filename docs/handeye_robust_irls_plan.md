@@ -185,3 +185,95 @@ IRLS + Huber + LOOCV 만이 **(1) 추가 hardware 0 + (2) trauma 양 축 (outlie
 - 코드 변경 다 revert (`git checkout HEAD -- backend/`) — 깨끗한 baseline (a9fc583 상태)
 - NPZ 파일 = 어제 백업 복원본 (σ 0.367°)
 - 다음 세션 진입 시 본 문서 + CLAUDE.md 만 읽으면 즉시 작업 가능
+
+## 12. 진행 결과 (2026-06-12 session)
+
+진단 + 구현 + cleanup 한 단위 완료. *집에서 실 hardware 검증* 만 사용자 owning.
+
+### 12.1 관측성 진단 결과
+
+8장 baseline 위 4 metric ([`backend/modules/calibration/observability.py`](../backend/modules/calibration/observability.py)):
+
+| metric | 측정 | 임계 | 결과 |
+|---|---|---|---|
+| 카메라 광축 펼침 | 8 자세의 광축 pairwise max angle | A>40° / B<20° | **41.01°** (A 경계) |
+| 보드 tilt 분포 | 8 자세 모두 [30°, 70°] 안 | 8/8 | ✓ 35°~62° |
+| 회전축 spanning (Tsai degeneracy) | 28 쌍 relative motion 회전축의 covariance σ₃/σ₁ | A>0.3 / B<0.1 | **0.422** (3D span OK) |
+| wrist roll 활용도 | joint5 raw 변동 폭 | — | 858 (≈75°) |
+
+→ **가설 A 우세** — 5DOF 구조적 degeneracy 증거 없음. IRLS sprint 정당화.
+
+### 12.2 가설 검증
+
+GPT 분석 + 우리 진단 sync — *8장 σ 0.367° → 12장 σ 0.708° 악화 패턴* 이 "정보량 부족" (수렴) 보다 "outlier 유입" (악화) 시그널과 일치.
+
+가설 C 추가 검증 — 11 DOF BA 의 σ floor (0.637°) 가 trauma 의 *과도 표현* 원인. _physical_sag (43 DOF) 가 0.290° 까지 떨어짐. 운영 BA = _physical_sag.
+
+### 12.3 구현 결과
+
+**알고리즘 차원**:
+1. **PnP 품질 gate** ([`calibration_node._srv_handeye_capture`](../backend/nodes/application/calibration_node.py)) — `solvePnP` 직후 reprojection RMS 계산, `HANDEYE_PNP_RMS_REJECT_PX=1.5px` 초과 시 capture *자동 reject*. trauma source 의 입구 차단.
+2. **IRLS+Huber on `_physical_sag`** ([`bundle_adjust_hand_eye_physical_sag_irls`](../backend/modules/calibration/bundle_adjust.py)) — 운영 BA 가 outlier 자동 down-weight. 결과 type 통일 (`BundleAdjustPhysicalSagResult` 에 weights / outer_iter / history 필드 추가, default 값으로 호환).
+3. **observability auto-publish** — 매 capture 후 `CALIB_HANDEYE_OBSERVABILITY` topic publish. verdict (A/B/mid) 만 frontend 노출.
+
+**UX 차원 — "사용자가 아무 생각 X"**:
+4. **Strategy 패턴** ([`next_pose_planner.py`](../backend/modules/calibration/next_pose_planner.py)) — robot kinematic 별 추천 전략 분리:
+   - `JointPerturbationStrategy` (5DOF, OMX-F) — current 자세 위 joint perturbation + FK + visibility + 다양성 score. **"로봇이 갈 수 있는 자세 중 좋은 걸 고른다"**.
+   - `GeometryStrategy` (6DOF, SO-101) — anchor sphere shell + IK (기존).
+   - `RecommendContext` dataclass 공통 입력.
+   - robots.yaml `pose_recommend_strategy` SSOT.
+5. **frontend observability banner** ([`HandEyePanel`](../frontend/src/components/panels/calibration/HandEyePanel.tsx)) — verdict 만 색깔 안내. metric 숫자 노출 X.
+6. **frontend PoseList weight dot** ([`PoseList.tsx`](../frontend/src/components/panels/calibration/parts/PoseList.tsx)) — 자세별 *자동 제외 / down-weight* 색깔 dot (정상 emerald / 낮음 amber / 제외 red). weight 숫자 노출 X.
+
+### 12.4 acceptance test 결과
+
+**`_physical_sag` IRLS** ([`backend/scripts/handeye_irls_acceptance_sag.py`](../backend/scripts/handeye_irls_acceptance_sag.py)) — 8장 + pose7 에 합성 outlier (5° rot + 20mm trans) 시뮬:
+
+```
+S1 clean baseline σ_rot=0.290°,  IRLS σ=0.306° (≈ baseline)
+S2 perturbed baseline σ=1.175°,  IRLS σ=1.389° (σ artifact)
+ΔX (S1→S2): baseline ΔR=2.11°, IRLS ΔR=1.16° — *55%, 절반*
+IRLS w_pose7 = 0.118 (강하게 down-weight)
+판정: PASS 4/5 — IRLS 가 outlier 의 X drift 차단 정량 증거.
+```
+
+**추천 자세 audit** ([`backend/scripts/next_pose_audit.py`](../backend/scripts/next_pose_audit.py)):
+```
+recommend_geometry (6DOF anchor) : 1 candidate (정면, tilt=0 회색)
+recommend_joint_sample (5DOF)    : 5 candidates 모두 visible + 정상
+```
+
+### 12.5 외부 정확도 검증 (LOOCV) — 큰 발견
+
+[`backend/scripts/handeye_loocv_accuracy.py`](../backend/scripts/handeye_loocv_accuracy.py):
+```
+σ (BA fit residual):  0.306° / 2.22mm
+LOOCV (외부 proxy):    6.344° / 40.39mm
+ratio:                 20× over-fit
+```
+
+**해석 (두 가능성)**:
+- (A) statistical artifact — _physical_sag 43 자유도 + 8장 = under-determined. 7장 → 43 DOF 라 X 가 자세마다 흔들림. **자세 더 많이 (15-20 장) 캡처 시 LOOCV 줄어들 가능 큼**.
+- (B) 진짜 정확도 한계 — σ ≠ 외부 정확도. *진짜 외부 측정 도구* (TCP probe / known marker ruler) 필요.
+
+(A) (B) 분리는 *집에서 실 hardware* 에서 자세 더 많이 캡처 + LOOCV 재실행 시 답 나옴.
+
+### 12.6 정리한 dead code
+
+- 11 DOF IRLS prototype (`bundle_adjust_hand_eye_irls` + `BundleAdjustIrlsResult`) — _physical_sag IRLS 가 운영 대체
+- `recommend_many` + `_from_high_residual_many` + `_from_distribution_many` — Strategy 패턴이 대체
+- `scripts/handeye_irls_acceptance.py` / `scripts/handeye_pose_diagnostics.py` / `scripts/handeye_model_capacity_diag.py` — 진단 한 번 한 임시 스크립트
+
+남은 운영 도구:
+- `scripts/handeye_irls_acceptance_sag.py` — 향후 회귀 검증
+- `scripts/handeye_loocv_accuracy.py` — 외부 정확도 측정
+- `scripts/next_pose_audit.py` — 추천 자세 검증
+- `modules/calibration/observability.py` 의 CLI — verdict 진단
+
+### 12.7 집에서 진행 anchor
+
+다음 캘 round 시 검증:
+1. `uv run --no-sync python -m scripts.next_pose_audit` — joint_perturbation 추천 5+ candidates 작동 확인
+2. 자세 15~20 장 캡처 (8 장 보다 늘림 — LOOCV 가설 (A) 검증)
+3. `uv run --no-sync python -m scripts.handeye_loocv_accuracy` — LOOCV ratio < 3× 면 σ 신뢰 가능
+4. `uv run --no-sync python -m scripts.handeye_irls_acceptance_sag` — outlier 시뮬 회귀 검증

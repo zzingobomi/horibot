@@ -25,6 +25,7 @@ import type {
   AxisDistribution,
   CalibThresholds,
   CoachVerdict,
+  HandeyeObservabilityState,
   HandeyeSaturateState,
   HandEyeSigmaState,
 } from "./parts/types";
@@ -232,6 +233,36 @@ function CommitSection({
 }
 
 /**
+ * Observability 안내 — 자세 분포의 기하학적 다양성 verdict 표시.
+ *
+ * A=충분 (회녹), B=구조적 부족 (앰버), mid=중립 (회색). 사용자에게는 verdict
+ * 메시지만 — metric 숫자 (axis_spread / σ₃/σ₁ 등) 노출 X.
+ */
+function ObservabilityBanner({
+  observability,
+}: {
+  observability: HandeyeObservabilityState | null;
+}) {
+  if (!observability) return null;
+  const v = observability.verdict;
+  if (v === "A") {
+    return (
+      <div className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 text-[11px] text-emerald-300">
+        자세 다양성 충분 — 추가 캡처로 정확도 개선 가능.
+      </div>
+    );
+  }
+  if (v === "B") {
+    return (
+      <div className="rounded border border-amber-500/50 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-300">
+        자세 다양성이 구조적으로 부족합니다. 보드 위치 / 거리 변경을 고려하세요.
+      </div>
+    );
+  }
+  return null;
+}
+
+/**
  * Saturate 알림 — σ 변화율 거의 0 → "saturate" 명시. in_good=true 면 COMMIT 권장,
  * false 면 floor 도달 escape 안내.
  */
@@ -265,6 +296,7 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
   const activeIndex = useCalibrationStore((s) => s.activeIndex);
   const thresholds = useCalibrationStore((s) => s.thresholds);
   const saturate = useCalibrationStore((s) => s.saturate);
+  const observability = useCalibrationStore((s) => s.observability);
   const manualModeActive = useCalibrationStore((s) => s.manualModeActive);
   const loading = useCalibrationStore((s) => s.loading);
   const status = useCalibrationStore((s) => s.status);
@@ -330,7 +362,10 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
                   리셋
                 </PanelButton>
               </div>
-              <HandEyePoseList poses={poses} />
+              <HandEyePoseList
+                poses={poses}
+                perPose={compute?.per_pose_residual ?? null}
+              />
             </div>
           </Section>
 
@@ -365,6 +400,7 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
               <VerdictBanner verdict={liveSigma?.coach_verdict ?? null} />
               <AxisDistributionTable axes={liveSigma?.axis_distributions} />
               <SaturateBanner saturate={saturate} />
+              <ObservabilityBanner observability={observability} />
             </div>
           </Section>
 
@@ -399,7 +435,10 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
                   리셋
                 </PanelButton>
               </div>
-              <HandEyePoseList poses={poses} />
+              <HandEyePoseList
+                poses={poses}
+                perPose={compute?.per_pose_residual ?? null}
+              />
             </div>
           </Section>
 

@@ -76,6 +76,7 @@ PUBLIC_TOPICS: dict[str, TopicPayload] = {
     # 추천 자세 + saturate state — 동적 dict (recommendations list 자체 자리, sigma_history list)
     Topic.CALIB_HANDEYE_RECOMMENDATIONS: None,
     Topic.CALIB_HANDEYE_SATURATE: None,
+    Topic.CALIB_HANDEYE_OBSERVABILITY: _calibration.HandeyeObservabilityState,
     # ── Internal (의도적 미등재) ──
     # Topic.CAMERA_DEPTH_FRAME    — pointcloud_node 만 구독 (binary)
 }

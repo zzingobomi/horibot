@@ -20,6 +20,7 @@ class Topic:
     CALIB_HANDEYE_SIGMA = "horibot/{robot_id}/calib/state/handeye_sigma"
     CALIB_HANDEYE_RECOMMENDATIONS = "horibot/{robot_id}/calib/state/handeye_recommendations"
     CALIB_HANDEYE_SATURATE = "horibot/{robot_id}/calib/state/handeye_saturate"
+    CALIB_HANDEYE_OBSERVABILITY = "horibot/{robot_id}/calib/state/handeye_observability"
 
     # ─── Task ──────────────────────────────────────────────
     TASK_STATE = "horibot/task/state"

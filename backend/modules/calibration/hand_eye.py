@@ -18,7 +18,7 @@ from .bundle_adjust import (
     FkFn,
     bundle_adjust_hand_eye,
     bundle_adjust_hand_eye_extended,
-    bundle_adjust_hand_eye_physical_sag,
+    bundle_adjust_hand_eye_physical_sag_irls,
 )
 from .coach import diagnose
 from .se3 import make_T
@@ -311,19 +311,38 @@ class HandEyeCalibration:
             )
             id_to_clean_idx = {pid: i for i, pid in enumerate(final_pose_ids)}
 
+            # IRLS weight — _physical_sag IRLS BA 가 자세별 Huber weight 추정.
+            # weight < 0.5 = outlier 자동 down-weight (사용자에게 "자동 제외" 안내).
+            # excluded 자세 (1차 outlier 제거) 는 BA 안 돌아가 weight=None.
+            irls_weights = None
+            if isinstance(ba_final, BundleAdjustPhysicalSagResult):
+                irls_weights = ba_final.weights  # np.ndarray | None
+
             per_pose: list[dict] = []
             for i, pid in enumerate(pose_ids):
                 if pid in id_to_clean_idx:
                     idx = id_to_clean_idx[pid]
                     drot = float(ba_final.residual_rot_deg[idx])
                     dt_mm = float(ba_final.residual_t_mm[idx])
+                    weight = (
+                        float(irls_weights[idx])
+                        if irls_weights is not None
+                        else None
+                    )
                     excl = False
                 else:
                     drot = float(ba_first.residual_rot_deg[i]) if ba_first else 0.0
                     dt_mm = float(ba_first.residual_t_mm[i]) if ba_first else 0.0
+                    weight = None  # excluded 자세는 IRLS BA 에 포함 안 됨
                     excl = True
                 per_pose.append(
-                    {"id": pid, "drot_deg": drot, "dt_mm": dt_mm, "excluded": excl}
+                    {
+                        "id": pid,
+                        "drot_deg": drot,
+                        "dt_mm": dt_mm,
+                        "excluded": excl,
+                        "weight": weight,
+                    }
                 )
 
             sigma_rot = float(np.sqrt(np.mean(ba_final.residual_rot_deg**2)))
@@ -366,7 +385,8 @@ class HandEyeCalibration:
                 R_tc_list=R_tc_list,
                 t_tc_list=t_tc_list,
             )
-            per_pose = [{**r, "excluded": False} for r in pairwise]
+            # BA fallback 경로 — IRLS 안 돌아감, weight 정보 없음.
+            per_pose = [{**r, "excluded": False, "weight": None} for r in pairwise]
             excluded_ids = []
             ba_converged = False
             ba_message = ba_final.message if ba_final is not None else "BA 미실행"
@@ -523,9 +543,17 @@ class HandEyeCalibration:
         t_tc_list: list[np.ndarray],
         seed: HandEyeResult,
     ) -> BundleAdjustPhysicalSagResult | None:
-        """물리 sag BA 한 번 실행 (extended + sag_k 동시 추정)."""
+        """물리 sag BA + IRLS+Huber 한 번 실행 (43 DOF + outlier 자동 down-weight).
+
+        clean data 에서는 IRLS weight ≈ 1 → non-IRLS 와 동일 결과.
+        outlier 자세 (PnP 가림/blur 등으로 잔차 큰 자세) 의 w_i 자동 < 0.5 → BA 가
+        그 자세에 덜 흔들림. trauma 사이클의 알고리즘 차원 차단.
+
+        결과 type 은 BundleAdjustPhysicalSagResult — IRLS 추가 필드 (weights /
+        outer_iter / history) 가 채워진 상태로 반환.
+        """
         try:
-            return bundle_adjust_hand_eye_physical_sag(
+            return bundle_adjust_hand_eye_physical_sag_irls(
                 joint_angles_per_pose=[list(a) for a in ja_list],
                 R_target2cam=R_tc_list,
                 t_target2cam=[
@@ -534,7 +562,7 @@ class HandEyeCalibration:
                 X_init=(seed.R_cam2gripper, seed.t_cam2gripper),
             )
         except Exception as e:
-            logger.exception("물리 sag BA 실패: %s", e)
+            logger.exception("물리 sag BA (IRLS) 실패: %s", e)
             return None
 
     def _multiseed_ba_lists(

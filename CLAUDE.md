@@ -16,7 +16,7 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 - [calibration_workflow.md](docs/calibration_workflow.md) — 캡처 절차 + 결과 해석 가이드
 - [calibration_apply_flow.md](docs/calibration_apply_flow.md) — 4종 캘 산출물의 적용 메커니즘
 - [hand_eye_extended_ba.md](docs/hand_eye_extended_ba.md) — 확장 BA + 물리 sag 모델 (σ_rot 0.65°/σ_t 7.94mm 도달기)
-- [handeye_robust_irls_plan.md](docs/handeye_robust_irls_plan.md) — 캘 trauma 영구 fix plan (IRLS + Huber + posterior σ_X + LOOCV). **다음 세션 진입 anchor**
+- [handeye_robust_irls_plan.md](docs/handeye_robust_irls_plan.md) — 캘 trauma 영구 fix plan (IRLS + Huber + Strategy 패턴). **§12 진행 결과 (2026-06-12) — PnP gate / IRLS / observability / JointPerturbationStrategy / LOOCV 외부 정확도 발견까지**
 - [tsdf_pipeline.md](docs/tsdf_pipeline.md) — multi-way ICP + TSDF mesh 빌드 결정사항
 - [step_dsl.md](docs/step_dsl.md) — typed Slot 기반 lego Step DSL (Step/Slot/StepContext/Recipe + 다이어그램 + 확장 가이드)
 - [random_palletizing.md](docs/random_palletizing.md) — 사이즈 가변 직육면체 팔레타이징 design (3-track: 휴리스틱 / 정석 / iterative sim2real RL)
@@ -297,6 +297,19 @@ PointCloudNode (PC) — [backend/nodes/application/pointcloud_node.py](backend/n
 **tilt SSOT (2026-06-10)** — [`thresholds.py`](backend/modules/calibration/thresholds.py) 의 `TILT_MIN_DEG=30 / TILT_MAX_DEG=70` 가 PnP 권장 범위. backend `next_pose_planner.is_pose_visible` (추천 자세 가시성 게이트) + frontend [`CheckerboardOverlay`](frontend/src/components/panels/calibration/parts/CheckerboardOverlay.tsx) (캡처 가능 임계) 가 같은 임계 공유 — 추천 따라 [이동] 한 자세가 캡처 가능 자세와 일치.
 
 **자동 BA + σ live (2026-06-10)** — `_srv_handeye_capture` 끝에 `pose_count >= MIN_POSES_FOR_COMPUTE` 면 자동 BA → `CALIB_HANDEYE_SIGMA` topic 으로 `HandeyeSigmaState` publish. 사용자가 [COMPUTE] 별도로 안 눌러도 매 capture 후 frontend σ badge 갱신. visibility gate (`next_pose_planner.is_pose_visible`) 가 추천 후보의 보드 reproject → 화면 밖이면 `visible=false` 마크 (UI 회색 hint, hard filter 아님).
+
+**PnP 품질 gate (2026-06-12)** — `_srv_handeye_capture` 의 `cv2.solvePnP` 직후 reprojection error RMS 계산. `thresholds.HANDEYE_PNP_RMS_REJECT_PX=1.5px` 초과 시 capture **자동 reject** + 사용자 안내 ("이미지 품질 부족, 다시 시도해주세요"). ChArUco 코너 가림 / blur / 광량 부족 / board 미세 움직임이 만든 안 좋은 자세 자체를 *애초에 안 들임* — trauma source 입구 차단.
+
+**IRLS+Huber on `_physical_sag` (2026-06-12, [docs/handeye_robust_irls_plan.md §12](docs/handeye_robust_irls_plan.md))** — 운영 BA = [`bundle_adjust_hand_eye_physical_sag_irls`](backend/modules/calibration/bundle_adjust.py). 자세별 Huber weight `w_i = min(1, κ/r_i)`, κ=1.345·MAD/0.6745. outlier 자세의 X drift *수학적으로 bounded*. acceptance test (8장 + 합성 outlier 5°/20mm) — IRLS ΔR=baseline×0.55, w_outlier=0.118. 결과 dataclass `BundleAdjustPhysicalSagResult` 가 weights / outer_iter / cost_history / sigma_hat_history 통합 (non-IRLS BA 가 default 채움 호환). per-pose weight 가 `last_compute.per_pose_residual[i].weight` 로 frontend 전파 → [`PoseList`](frontend/src/components/panels/calibration/parts/PoseList.tsx) 가 color dot (정상/낮음/제외) 표시 — 수치 노출 X.
+
+**관측성 진단 (2026-06-12, [`observability.py`](backend/modules/calibration/observability.py))** — 매 capture 후 [`analyze_pose_data`](backend/modules/calibration/observability.py) 자동 호출 + `CALIB_HANDEYE_OBSERVABILITY` topic publish. 4 metric (광축 펼침 / tilt 분포 / 회전축 spanning σ₃/σ₁ / wrist roll) → verdict (A/B/mid). frontend [`HandEyePanel`](frontend/src/components/panels/calibration/HandEyePanel.tsx) 의 `ObservabilityBanner` 가 verdict 만 색깔 안내 (metric 숫자 노출 X). A=다양성 충분 / B=구조적 부족 (보드 위치 변경 권고) / mid=중립.
+
+**추천 자세 Strategy 패턴 (2026-06-12)** — robot kinematic 별 추천 전략 분리. [`next_pose_planner.py`](backend/modules/calibration/next_pose_planner.py) 의 `PoseRecommendationStrategy` Protocol + `RecommendContext` dataclass + `make_strategy(name)` factory:
+
+- **`JointPerturbationStrategy`** (5DOF, OMX-F) — `recommend_joint_sample`. current 자세 위 joint perturbation (J1/J2/J3/J4/J5 ±10°~30°) + FK + visibility hard filter + 기존 캡처 자세와의 joint-space distance 다양성 score. **"로봇이 갈 수 있는 자세 중 좋은 걸 고른다"** — IK 안 풀고 forward only → robot kinematic manifold 안에서만 sample → 항상 reachable.
+- **`GeometryStrategy`** (6DOF, SO-101) — `recommend_geometry` (기존). board 주변 sphere shell anchor 5개 + IK + visibility. 임의 R 만들 수 있는 robot 에 자연.
+
+`robots.yaml::pose_recommend_strategy` SSOT — `joint_perturbation` | `geometry`. [`RobotRegistry`](backend/core/robot/robot_registry.py) 가 `RobotConfig.pose_recommend_strategy` 로 노출. [`calibration_node._compute_recommendations`](backend/nodes/application/calibration_node.py) 가 strategy factory 통해 호출. 발견 — OMX-F 5DOF + wrist yaw 없음 = recommend_geometry 의 임의 R IK 가 5 anchor 중 1만 풀림 → joint_perturbation 으로 5+ candidates 안정.
 
 ### Frontend stores & 3D 워크스페이스
 

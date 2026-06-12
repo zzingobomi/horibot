@@ -31,7 +31,7 @@ scipy.optimize.least_squares + Levenberg-Marquardt. 잔차는 포즈마다 6차�
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import cv2
@@ -222,6 +222,13 @@ def bundle_adjust_hand_eye(
         residual_t_mm=t_norms * 1000.0,
         n_joint_vars=n_offset_vars,
     )
+
+
+# ─── IRLS+Huber 공통 default — _physical_sag_irls 가 사용 ──────────────────
+
+DEFAULT_IRLS_MAX_OUTER_ITER: int = 5
+DEFAULT_IRLS_COST_REL_TOL: float = 1e-3
+DEFAULT_HUBER_KAPPA_FACTOR: float = 1.345  # standard Huber: 95% efficiency at Gaussian
 
 
 # ─── 확장 BA — joint_offset + link_trans + link_rot + X 동시 추정 ──────────
@@ -420,6 +427,11 @@ class BundleAdjustPhysicalSagResult:
 
     BundleAdjustExtendedResult + sag_k_rad_per_m (2,) + max_sag_deg (2,).
     sag는 J2, J3에만 적용 (DIY 5축에서 중력 부하 가장 큰 두 joint).
+
+    IRLS 변형 (`bundle_adjust_hand_eye_physical_sag_irls`) 도 같은 type return —
+    weights / outer_iter / history 가 추가로 채워짐. non-IRLS BA 가 호출하면 default.
+    이렇게 한 type 으로 통일해 caller (`hand_eye._run_ba_physical_sag_lists` etc.) 가
+    IRLS 여부와 무관하게 동일 처리 가능.
     """
     R_cam2gripper: np.ndarray  # 3x3
     t_cam2gripper: np.ndarray  # (3,) meters
@@ -435,6 +447,12 @@ class BundleAdjustPhysicalSagResult:
     message: str
     residual_rot_deg: np.ndarray  # (N,)
     residual_t_mm: np.ndarray  # (N,)
+    # IRLS-only 필드 — non-IRLS 호출 시 default. weights=None 이 IRLS 미사용 marker.
+    weights: np.ndarray | None = None  # (N,) Huber w_i ∈ [0,1]
+    outer_iter: int = 0
+    cost_history: list[float] = field(default_factory=list)
+    sigma_hat_history: list[float] = field(default_factory=list)
+    huber_kappa_history: list[float] = field(default_factory=list)
 
 
 # reg sweep으로 검증된 default.
@@ -622,4 +640,234 @@ def bundle_adjust_hand_eye_physical_sag(
         message=str(result.message),
         residual_rot_deg=np.degrees(rot_norms),
         residual_t_mm=t_norms * 1000.0,
+    )
+
+
+# ─── _physical_sag + IRLS+Huber — robust 43 DOF BA ────────────────────────
+# 결과 type 은 BundleAdjustPhysicalSagResult 와 동일 — weights / outer_iter /
+# history 필드가 채워진 상태로 반환. caller 가 IRLS 여부로 분기할 필요 X.
+
+
+def bundle_adjust_hand_eye_physical_sag_irls(
+    *,
+    joint_angles_per_pose: list[list[float]],
+    R_target2cam: list[np.ndarray],
+    t_target2cam: list[np.ndarray],
+    X_init: tuple[np.ndarray, np.ndarray],
+    joint_offset_reg: float = DEFAULT_JOINT_OFFSET_REG,
+    link_trans_reg: float = DEFAULT_LINK_TRANS_REG,
+    link_rot_reg: float = DEFAULT_LINK_ROT_REG,
+    sag_k_reg: float = DEFAULT_SAG_K_REG,
+    max_outer_iter: int = DEFAULT_IRLS_MAX_OUTER_ITER,
+    cost_rel_tol: float = DEFAULT_IRLS_COST_REL_TOL,
+    huber_kappa_factor: float = DEFAULT_HUBER_KAPPA_FACTOR,
+    max_nfev: int = 5000,
+) -> BundleAdjustPhysicalSagResult:
+    """_physical_sag 의 IRLS+Huber 버전. _physical_sag 와 동일 43 DOF + outer loop.
+
+    각 outer iter:
+      1. sqrt(w_i) 로 per-pose 잔차에 weight (6N 부분만, reg 항은 weight 안 곱)
+      2. LM 풀기
+      3. per-pose 잔차 norm 계산
+      4. σ̂ = MAD(r)/0.6745, κ = 1.345·σ̂, w_i = min(1, κ/r_i)
+      5. 잔차 cost change < cost_rel_tol 면 수렴
+    """
+    from modules.kinematics.fk_chain import (
+        N_JOINTS,
+        apply_gravity_sag,
+        fk_chain,
+        fk_chain_with_axes,
+        gravity_torque_lumped,
+    )
+
+    N = len(joint_angles_per_pose)
+    assert N == len(R_target2cam) == len(t_target2cam), "포즈 리스트 길이 불일치"
+    if N < 3:
+        raise ValueError(f"BA 최소 3 포즈 필요 (받은 {N}개)")
+
+    J = N_JOINTS
+    assert all(len(a) == J for a in joint_angles_per_pose), (
+        f"포즈마다 joint angle 수가 {J}이어야 함"
+    )
+
+    angles_arr = np.array(joint_angles_per_pose, dtype=np.float64)
+    R_tc_list = [np.asarray(R, dtype=np.float64) for R in R_target2cam]
+    t_tc_list = [np.asarray(t, dtype=np.float64).reshape(3) for t in t_target2cam]
+    T_tc_list = [make_T(R, t) for R, t in zip(R_tc_list, t_tc_list)]
+
+    rod_seed, _ = cv2.Rodrigues(np.asarray(X_init[0], dtype=np.float64))
+    t_seed = np.asarray(X_init[1], dtype=np.float64).reshape(3)
+
+    n_off = J
+    n_lt = 3 * J
+    n_lr = 3 * J
+    n_k = 2
+    n_reg = n_off + n_lt + n_lr + n_k
+
+    def unpack(x: np.ndarray):
+        i = 0
+        offset = x[i : i + n_off]
+        i += n_off
+        link_t = x[i : i + n_lt].reshape(J, 3)
+        i += n_lt
+        link_r = x[i : i + n_lr].reshape(J, 3)
+        i += n_lr
+        sag_k = x[i : i + n_k]
+        i += n_k
+        rod = x[i : i + 3]
+        i += 3
+        t_x = x[i : i + 3]
+        return offset, link_t, link_r, sag_k, rod, t_x
+
+    def compute_T_target_in_base(x: np.ndarray) -> list[np.ndarray]:
+        offset, link_t, link_r, sag_k, rod, t_x = unpack(x)
+        R_x = cv2.Rodrigues(rod)[0]
+        T_x = make_T(R_x, t_x)
+        out: list[np.ndarray] = []
+        for i in range(N):
+            a_corr = apply_gravity_sag(
+                angles_arr[i] + offset, sag_k, link_t, link_r
+            )
+            R_gb, t_gb = fk_chain(a_corr, link_t, link_r)
+            T_gb = make_T(R_gb, t_gb)
+            out.append(T_gb @ T_x @ T_tc_list[i])
+        return out
+
+    def residual_unweighted(x: np.ndarray) -> np.ndarray:
+        offset, link_t, link_r, sag_k, _, _ = unpack(x)
+        T_list = compute_T_target_in_base(x)
+        positions = np.array([T[:3, 3] for T in T_list])
+        mean_pos = positions.mean(axis=0)
+        mean_R = _mean_rotation([T[:3, :3] for T in T_list])
+        res = np.empty(6 * N + n_reg, dtype=np.float64)
+        for i, T in enumerate(T_list):
+            R_dev = T[:3, :3] @ mean_R.T
+            rod_dev, _ = cv2.Rodrigues(R_dev)
+            res[6 * i : 6 * i + 3] = rod_dev.flatten()
+            res[6 * i + 3 : 6 * (i + 1)] = T[:3, 3] - mean_pos
+        k = 6 * N
+        res[k : k + n_off] = joint_offset_reg * offset
+        k += n_off
+        res[k : k + n_lt] = link_trans_reg * link_t.flatten()
+        k += n_lt
+        res[k : k + n_lr] = link_rot_reg * link_r.flatten()
+        k += n_lr
+        res[k : k + n_k] = sag_k_reg * sag_k
+        return res
+
+    x0 = np.concatenate(
+        [
+            np.zeros(n_off),
+            np.zeros(n_lt),
+            np.zeros(n_lr),
+            np.zeros(n_k),
+            rod_seed.flatten(),
+            t_seed,
+        ]
+    )
+
+    # ── IRLS outer loop ──
+    w = np.ones(N, dtype=np.float64)
+    x_current = x0.copy()
+    prev_cost = float("inf")
+    cost_history: list[float] = []
+    sigma_hat_history: list[float] = []
+    kappa_history: list[float] = []
+    result = None
+    outer_used = 0
+
+    for outer in range(max_outer_iter):
+        outer_used = outer + 1
+        sqrt_w_per_pose = np.repeat(np.sqrt(w), 6)  # 6N
+        sqrt_w_full = np.concatenate([sqrt_w_per_pose, np.ones(n_reg)])
+
+        def residual_weighted(x: np.ndarray, _w=sqrt_w_full) -> np.ndarray:
+            return residual_unweighted(x) * _w
+
+        result = least_squares(
+            residual_weighted,
+            x_current,
+            method="lm",
+            max_nfev=max_nfev,
+            xtol=1e-11,
+            ftol=1e-11,
+        )
+        x_current = result.x.copy()
+
+        # per-pose unweighted 잔차 norm
+        r_full = residual_unweighted(result.x)
+        r_pose_part = r_full[: 6 * N]
+        r_per_pose = np.linalg.norm(r_pose_part.reshape(N, 6), axis=1)
+
+        # σ̂ = MAD/0.6745
+        median_r = float(np.median(r_per_pose))
+        mad = float(np.median(np.abs(r_per_pose - median_r)))
+        sigma_hat = max(mad / 0.6745, 1e-9)
+        kappa = huber_kappa_factor * sigma_hat
+        w_new = np.minimum(1.0, kappa / np.maximum(r_per_pose, 1e-9))
+
+        unweighted_cost = float(0.5 * np.sum(r_per_pose**2))
+        cost_history.append(unweighted_cost)
+        sigma_hat_history.append(sigma_hat)
+        kappa_history.append(kappa)
+
+        if outer > 0:
+            rel_change = abs(unweighted_cost - prev_cost) / max(prev_cost, 1e-12)
+            if rel_change < cost_rel_tol:
+                w = w_new
+                break
+        prev_cost = unweighted_cost
+        w = w_new
+
+    assert result is not None
+
+    offset_opt, link_t_opt, link_r_opt, sag_k_opt, rod_opt, t_opt = unpack(result.x)
+    R_opt, _ = cv2.Rodrigues(rod_opt)
+
+    T_list_final = compute_T_target_in_base(result.x)
+    positions = np.array([T[:3, 3] for T in T_list_final])
+    mean_pos = positions.mean(axis=0)
+    mean_R = _mean_rotation([T[:3, :3] for T in T_list_final])
+    T_b_final = make_T(mean_R, mean_pos)
+
+    rot_norms = np.empty(N, dtype=np.float64)
+    t_norms = np.empty(N, dtype=np.float64)
+    for i, T in enumerate(T_list_final):
+        R_dev = T[:3, :3] @ mean_R.T
+        rod_dev, _ = cv2.Rodrigues(R_dev)
+        rot_norms[i] = float(np.linalg.norm(rod_dev))
+        t_norms[i] = float(np.linalg.norm(T[:3, 3] - mean_pos))
+
+    max_sag = np.zeros(2, dtype=np.float64)
+    for i in range(N):
+        _, ee_pos, jo, ja = fk_chain_with_axes(
+            angles_arr[i] + offset_opt, link_t_opt, link_r_opt
+        )
+        tau2 = gravity_torque_lumped(ee_pos, jo[1], ja[1])
+        tau3 = gravity_torque_lumped(ee_pos, jo[2], ja[2])
+        s2 = abs(np.degrees(sag_k_opt[0] * tau2))
+        s3 = abs(np.degrees(sag_k_opt[1] * tau3))
+        max_sag[0] = max(max_sag[0], s2)
+        max_sag[1] = max(max_sag[1], s3)
+
+    return BundleAdjustPhysicalSagResult(
+        R_cam2gripper=R_opt.copy(),
+        t_cam2gripper=t_opt.reshape(3).copy(),
+        T_board_base=T_b_final,
+        joint_offset_rad=offset_opt.copy(),
+        link_trans_m=link_t_opt.copy(),
+        link_rot_rad=link_r_opt.copy(),
+        sag_k_rad_per_m=sag_k_opt.copy(),
+        max_sag_deg=max_sag,
+        cost=float(result.cost),
+        n_iter=int(result.nfev),
+        success=bool(result.success),
+        message=str(result.message),
+        residual_rot_deg=np.degrees(rot_norms),
+        residual_t_mm=t_norms * 1000.0,
+        weights=w.copy(),
+        outer_iter=outer_used,
+        cost_history=cost_history,
+        sigma_hat_history=sigma_hat_history,
+        huber_kappa_history=kappa_history,
     )

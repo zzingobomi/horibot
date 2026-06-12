@@ -59,6 +59,21 @@ RECOMMENDED_POSES: int = 10
 # J2/J3는 ee 위치 변화엔 중요하지만 hand-eye 회전 추정엔 덜 중요해 임계값을 낮춤.
 JOINT_DIVERSITY_THRESHOLD_DEG: tuple[float, ...] = (25.0, 15.0, 15.0, 25.0, 30.0)
 
+# ─── Hand-Eye PnP 품질 gate ──────────────────────────────────────
+# solvePnP 직후 reprojection error 임계. 이 이상이면 *capture 자동 reject*.
+# trauma source 차단 — ChArUco 코너 일부 가림 / blur / 광량 부족 / board 미세 움직임이
+# 만든 안 좋은 PnP 자세를 *애초에 안 들임*. 사용자는 "캡처 거부됨, 더 또렷한 이미지로
+# 다시 시도해 주세요" 만 봄 (RMS 숫자 안 보임).
+#
+# 기준 (D405 1280×720 sub-pixel ChArUco 기준):
+#   - 0.5px 이하 = excellent
+#   - 1.0px 이하 = nominal
+#   - 1.5px 이하 = acceptable (warn 자리 — capture 받되 미래 threshold 조정 후보)
+#   - 1.5px 초과 = reject (capture 거부)
+HANDEYE_PNP_RMS_WARN_PX: float = 1.0
+HANDEYE_PNP_RMS_REJECT_PX: float = 1.5
+
+
 # ─── tilt 임계 ───────────────────────────────────────────────────
 # tilt = 보드 normal vs 카메라 광축 각. 0° = 카메라가 보드 정면 (depth ambiguous),
 # 90° = edge-on (corner 픽셀 정확도 ↓). docs/calibration_workflow.md §2 권장 범위.
@@ -74,7 +89,10 @@ TILT_MAX_DEG: float = 70.0
 # 0.18m = 보드 ↔ wrist 가능 거리 중간값 (사용자 setup: 보드 x=240mm + wrist 가능
 # x=40-160mm → 거리 80-200mm 범위 → 중간 ~18cm).
 RECOMMEND_DISTANCE_M: float = 0.18
-RECOMMEND_SIDE_OFFSET_M: float = 0.10
+# side_offset 0.10 은 anchor 가 OMX-F (reach ~25cm) 작업공간 끝으로 가서 IK 풀림이
+# 5개 중 1개만 성공 (audit 결과). 0.05 로 줄여 작업공간 안쪽 sphere shell. 사용자가
+# 받는 추천이 거의 항상 empty 였던 trauma source.
+RECOMMEND_SIDE_OFFSET_M: float = 0.05
 
 # ─── Intrinsic 캘리브레이션 ─────────────────────────────────────
 # RMS reprojection error (pixels). cv2.calibrateCamera 결과.
@@ -109,6 +127,8 @@ def as_dict() -> dict:
         "min_poses_for_trusted_sigma": MIN_POSES_FOR_TRUSTED_SIGMA,
         "recommended_poses": RECOMMENDED_POSES,
         "joint_diversity_threshold_deg": list(JOINT_DIVERSITY_THRESHOLD_DEG),
+        "handeye_pnp_rms_warn_px": HANDEYE_PNP_RMS_WARN_PX,
+        "handeye_pnp_rms_reject_px": HANDEYE_PNP_RMS_REJECT_PX,
         "tilt_min_deg": TILT_MIN_DEG,
         "tilt_max_deg": TILT_MAX_DEG,
         "recommend_distance_m": RECOMMEND_DISTANCE_M,

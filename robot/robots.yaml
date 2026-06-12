@@ -12,6 +12,9 @@ robots:
     motor_backend: dynamixel
     kinematics_backend: pybullet
     camera_backend: realsense    # Phase 2 (distributed_topology.md §1): omx_f → opencv (UVC)
+    # Hand-Eye 캘 추천 자세 전략. 5DOF (wrist yaw 없음) 라 임의 R IK 못 풀림 →
+    # joint space perturbation (FK only). geometry (6DOF anchor + IK) 는 SO-101 에서.
+    pose_recommend_strategy: joint_perturbation
     base_pose:                   # World frame 의 robot base 위치 (m, x/y/z).
       x: 0.0
       y: 0.0
@@ -33,6 +36,8 @@ robots:
     motor_backend: dynamixel
     kinematics_backend: pybullet
     camera_backend: realsense
+    # SO-101 6DOF 가정 (실 hardware 도착 시) — wrist yaw 있어 임의 R 만들 수 있음.
+    pose_recommend_strategy: geometry
     base_pose:
       x: 0.4
       y: 0.0

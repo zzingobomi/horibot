@@ -99,6 +99,10 @@ class RobotConfig:
     scans_dir: Path
     meshes_dir: Path
 
+    # Hand-Eye 캘 추천 자세 전략. 5DOF = "joint_perturbation", 6DOF = "geometry".
+    # robots.yaml 의 `pose_recommend_strategy` SSOT. None 이면 default = "geometry".
+    pose_recommend_strategy: str = "geometry"
+
 
 class RobotRegistry:
     """robots.yaml 싱글톤. 부팅 시 1회 load + validation.
@@ -196,6 +200,14 @@ class RobotRegistry:
         if camera_backend not in _VALID_CAMERA_BACKENDS:
             raise ValueError(f"robot '{robot_id}' camera_backend={camera_backend!r} 미지원. 가능: {sorted(_VALID_CAMERA_BACKENDS)}")
 
+        pose_recommend_strategy = str(entry.get("pose_recommend_strategy", "geometry"))
+        if pose_recommend_strategy not in ("geometry", "joint_perturbation"):
+            raise ValueError(
+                f"robot '{robot_id}' pose_recommend_strategy="
+                f"{pose_recommend_strategy!r} 미지원. "
+                f"가능: 'geometry' | 'joint_perturbation'"
+            )
+
         caps_raw = entry.get("capabilities", []) or []
         if not isinstance(caps_raw, list):
             raise ValueError(
@@ -234,6 +246,7 @@ class RobotRegistry:
             kinematics_backend=cast(KinematicsBackendName, kinematics_backend),
             camera_backend=cast(CameraBackendName, camera_backend),
             capabilities=tuple(caps),
+            pose_recommend_strategy=pose_recommend_strategy,
             type_dir=type_dir,
             urdf_path=type_dir / "urdf" / f"{robot_type}.urdf",
             type_motors_yaml=type_dir / "motors.yaml",

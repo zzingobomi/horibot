@@ -423,6 +423,42 @@ class CalibrationNode(ApplicationNode):
             },
         )
 
+    def _publish_observability_state(self, robot_id: str, st) -> None:
+        """매 capture 후 자세 분포 진단 publish.
+
+        verdict (A / B / mid) 만 frontend 안내. 4 metric 숫자는 backend 진단용.
+        - A: 다양성 충분 → 사용자 안내 "캘 가능, 추가 자세는 σ 개선 가능"
+        - B: 구조적 부족 → "보드 위치 / 거리 변경 권고"
+        - mid: 중립
+        """
+        from modules.calibration import observability as _obs
+
+        poses = st.hand_eye.poses
+        if len(poses) < 3:
+            return
+        R_arr = np.array([p.R_target2cam for p in poses], dtype=np.float64)
+        raw_arr = np.array([p.raw_motor_positions for p in poses], dtype=np.float64)
+        rep = _obs.analyze_pose_data(R_arr, raw_arr)
+        v = rep.verdict()
+        # verdict 첫 글자만 ('A'/'B'/'mid')
+        v_short = "A" if v.startswith("A") else ("B" if v.startswith("B") else "mid")
+
+        self.publish(
+            topic_for(Topic.CALIB_HANDEYE_OBSERVABILITY, robot_id),
+            {
+                "timestamp": time.time(),
+                "pose_count": rep.n_poses,
+                "axis_spread_deg": rep.axis_spread_deg,
+                "tilt_min_deg": rep.tilt_min_deg,
+                "tilt_max_deg": rep.tilt_max_deg,
+                "tilt_std_deg": rep.tilt_std_deg,
+                "tilt_in_range_count": rep.tilt_in_range_count,
+                "rotation_axis_ratio": rep.rotation_axis_ratio,
+                "wrist_roll_range_raw": rep.wrist_roll_range_raw,
+                "verdict": v_short,
+            },
+        )
+
     def _publish_sigma_state(self, robot_id: str, diag: dict) -> None:
         """σ live topic. 자동 BA / 수동 COMPUTE 모두 호출 → frontend 가 즉시 표시.
 
@@ -566,6 +602,39 @@ class CalibrationNode(ApplicationNode):
         if not ok:
             logger.warning("solvePnP 풀이 실패")
             return ServiceResponse(success=False, message="포즈 추정 실패", data=None)
+
+        # PnP 품질 gate — trauma 차단 (코너 가림 / blur / 광량 / board 미세 움직임이 만든
+        # 안 좋은 자세 자체를 거부). thresholds.HANDEYE_PNP_RMS_REJECT_PX 초과 시 capture
+        # 받지 않음. 사용자는 "다시 시도" 안내만 봄 (숫자 노출 X).
+        projected, _ = cv2.projectPoints(
+            obj_pts,
+            rvec,
+            tvec,
+            st.intrinsic.result.camera_matrix,
+            st.intrinsic.result.dist_coeffs,
+        )
+        reproj_err = np.linalg.norm(
+            projected.reshape(-1, 2) - img_pts.reshape(-1, 2), axis=1
+        )
+        reproj_rms_px = float(np.sqrt(np.mean(reproj_err**2)))
+        if reproj_rms_px > calib_thresholds.HANDEYE_PNP_RMS_REJECT_PX:
+            logger.info(
+                "[%s] PnP 품질 부족 (RMS=%.2fpx > %.2fpx) — capture 거부",
+                robot_id,
+                reproj_rms_px,
+                calib_thresholds.HANDEYE_PNP_RMS_REJECT_PX,
+            )
+            return ServiceResponse(
+                success=False,
+                message=(
+                    "이미지 품질이 부족해 자세 추정이 부정확합니다. "
+                    "보드가 또렷이 보이는 자세에서 다시 시도해주세요."
+                ),
+                data=HandeyeCaptureRes(
+                    detected=False, pose_count=len(st.hand_eye.poses)
+                ),
+            )
+
         R_t2c, _ = cv2.Rodrigues(rvec)
 
         st.hand_eye.add_pose(
@@ -594,6 +663,15 @@ class CalibrationNode(ApplicationNode):
                     self._publish_recommendations(robot_id)
             except Exception as e:
                 logger.warning("[%s] 자동 BA 실패: %s", robot_id, e)
+
+        # 자동 observability 진단 — capture 마다 자세 분포의 기하학적 정보 분석.
+        # verdict='A' 면 다양성 충분, 'B' 면 구조적 부족. frontend 가 verdict 기반
+        # 안내 (4 metric 숫자 X, "보드 위치 변경" 같은 액션만).
+        if len(st.hand_eye.poses) >= calib_thresholds.MIN_POSES_FOR_COMPUTE:
+            try:
+                self._publish_observability_state(robot_id, st)
+            except Exception as e:
+                logger.warning("[%s] observability 진단 실패: %s", robot_id, e)
 
         return ServiceResponse(
             success=True,
@@ -1056,18 +1134,43 @@ class CalibrationNode(ApplicationNode):
         # 사용자가 명시 신호 ([👎]) 로 fail 표시한 추천 ID set — 다음 추천 시 제외.
         excluded_ids = st.recommendation_fail_ids
 
-        result = next_pose_planner.recommend_geometry(
-            board_corners_base=board_corners_base,
-            ik_fn=_ik,
-            hand_eye_R=R_c2g,
-            hand_eye_t=t_c2g,
+        # 기존 캡처 자세 list (다양성 score 용 — joint_perturbation strategy 가 사용).
+        # raw → rad 단순 변환 (joint_offset 적용은 다양성 score 에 영향 X).
+        from core import units as _units
+
+        existing_ja = [
+            [_units.raw_to_rad(int(p.raw_motor_positions[i]))
+             for i in range(len(st.arm_cfgs))]
+            for p in st.hand_eye.poses
+        ]
+
+        # Strategy 선택 — robots.yaml::pose_recommend_strategy SSOT.
+        # OMX-F (5DOF) = joint_perturbation, SO-101 (6DOF) = geometry.
+        robot_cfg = RobotRegistry().get(robot_id)
+        strategy = next_pose_planner.make_strategy(
+            robot_cfg.pose_recommend_strategy
+        )
+
+        # FK wrapper — joint_sample 의 visibility forward 용.
+        def _fk(angles):
+            R, t = st.kinematics.fk_to_matrix(list(angles))
+            return np.asarray(R), np.asarray(t).reshape(3)
+
+        ctx = next_pose_planner.RecommendContext(
+            current_joint_angles_rad=list(current),
             arm_motor_ids=arm_motor_ids,
             joint_limits_rad=joint_limits,
-            current_joint_angles_rad=list(current),
+            fk_fn=_fk,
+            ik_fn=_ik,
+            board_corners_base=board_corners_base,
+            hand_eye_R=R_c2g,
+            hand_eye_t=t_c2g,
             outward_hint=outward_hint,
             visibility_check=_check,
+            existing_joint_angles=existing_ja,
             excluded_ids=excluded_ids,
         )
+        result = strategy.recommend(ctx)
 
         # σ + 다양성 verdict 결합 — planner 단독 reason 을 verdict 기반 reason 으로
         # 덮어쓰기. σ 충분 + 다양성 OK 면 양성 메시지 (COMMIT 권장), σ 충분 + 다양성

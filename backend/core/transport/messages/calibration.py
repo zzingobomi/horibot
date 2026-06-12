@@ -169,6 +169,31 @@ class AxisDistributionEntry(StrictModel):
     suggestion_text: str
 
 
+class HandeyeObservabilityState(StrictModel):
+    """매 capture 후 자동 발행. 캡처된 자세들의 *기하학적 observability* 진단.
+
+    개발자 진단용 metric 이지만 verdict ('A'/'B'/'mid') 만 frontend 표시 (4 metric
+    숫자 X). 사용자는:
+      - verdict='A' (다양성 충분) → 추가 자세 의미 있음 안내
+      - verdict='B' (구조적 부족) → 보드 위치 / 거리 변경 안내
+      - verdict='mid' → 중립
+
+    metric 4가지는 docs/observability.md 참조 — 광축 펼침 / tilt / 회전축 spanning
+    / wrist roll.
+    """
+
+    timestamp: float
+    pose_count: int
+    axis_spread_deg: float
+    tilt_min_deg: float
+    tilt_max_deg: float
+    tilt_std_deg: float
+    tilt_in_range_count: int
+    rotation_axis_ratio: float
+    wrist_roll_range_raw: int
+    verdict: str  # 'A' | 'B' | 'mid'
+
+
 class HandeyeSigmaState(StrictModel):
     """capture 후 자동 BA / 수동 COMPUTE 마다 publish. frontend σ live 표시.
 

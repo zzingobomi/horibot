@@ -336,21 +336,23 @@ class RobotRegistry:
         raise ValueError(f"unknown kinematics_backend: {cfg.kinematics_backend!r} (robot_id={robot_id})")
 
     def get_motor_backend(self, robot_id: str | None = None):
-        """cfg.motor_backend = "dynamixel" → DynamixelBackend(port, motors) / "feetech" 미구현."""
+        """cfg.motor_backend = "dynamixel" → DynamixelBackend / "feetech" → FeetechBackend."""
         return self._get_or_build(self._motor_backends, robot_id, self._build_motor_backend)
 
     def _build_motor_backend(self, robot_id: str):
+        # Lazy import — Pi 별 SDK 그룹 (pi-motor) 의 dynamixel-sdk / feetech-servo-sdk
+        # 가 동작 시점에만 import. host config 에 robot 하나만 enabled 면 다른 SDK 미설치 OK.
         from modules.motor.motor_config import load_motor_layout
-        from modules.motor.adapters.dynamixel_backend import DynamixelBackend
 
         cfg = self.get(robot_id)
         layout = load_motor_layout(robot_id)
         if cfg.motor_backend == "dynamixel":
+            from modules.motor.adapters.dynamixel_backend import DynamixelBackend
             return DynamixelBackend(layout.port.get(), layout.motors)
         if cfg.motor_backend == "feetech":
-            raise NotImplementedError(
-                f"feetech MotorBackend — Phase 2+ (robot_id={robot_id})"
-            )
+            # so101_6dof (STS3215/3250 + scservo_sdk). so101_6dof_plan §6-1 / §6-6.
+            from modules.motor.adapters.feetech_backend import FeetechBackend
+            return FeetechBackend(layout.port.get(), layout.motors)
         raise ValueError(
             f"unknown motor_backend: {cfg.motor_backend!r} (robot_id={robot_id})"
         )

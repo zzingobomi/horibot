@@ -20,8 +20,8 @@ from core.transport.messages.motor import (
     MotorSetProfileAllReq,
     MotorSetProfileReq,
 )
+from core.robot.robot_registry import RobotRegistry
 from modules.motor.motor_config import load_motor_layout
-from modules.motor.adapters.dynamixel_backend import DynamixelBackend
 from modules.motor.backend import MotorCommError
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,10 @@ class MotorNode(DeviceNode):
         self.port = layout.port.get()
         self.motor_cfgs = layout.motors
         self._gripper_cfg = layout.gripper
-        self.driver = DynamixelBackend(self.port, layout.motors)
+        # RobotRegistry factory 경유 — robots.yaml 의 motor_backend 따라
+        # DynamixelBackend / FeetechBackend 자동 분기. 두 backend 모두
+        # MotorBackend Protocol + legacy aliases 만족 (motor_node 호출 그대로).
+        self.driver = RobotRegistry().get_motor_backend(robot_id)
         self.connected = False
         self.torque_enabled = False
 

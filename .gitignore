@@ -51,6 +51,14 @@ desktop.ini
 # multi_robot_architecture.md §5.1 의 새 구조 기준 (구: robot/urdf/<robot>/.patched/).
 robot/*/urdf/**/.patched/
 
+# ─── Convex decomposition collision meshes ─────────────────────
+# onshape-to-robot 가 자동 생성하는 정밀 collision STL (각 visual 부품을 convex
+# hull 여러 개로 분해). PyBullet self-collision check 같은 자리에서 사용.
+# 우리 코드는 IK / FK / 시각화만 — collision 미사용. URDF 의 <collision> tag
+# 자체를 제거 (so101_6dof URDF 처리 단계) 했으므로 자산 자체가 불필요.
+# ts_flake d2lrobot 리포에서 필요 시 재 다운로드 가능 (so101_6dof_plan.md §3 참조).
+robot/*/urdf/meshes/convex_decomposition/
+
 # ─── TSDF scans / meshes (per-instance runtime artifact) ───────
 # 대용량 + 머신별 캡처. 캘 결과 (robot/instances/<id>/calibration/) 와는 다름.
 robot/instances/*/scans/

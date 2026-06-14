@@ -1,0 +1,86 @@
+# Type-level motor spec for so101_6dof (ts_flake wrist yaw mod, 6DOF + gripper = 7 motor).
+# 같은 type 의 모든 instance 가 공유. Instance (USB port, baud) 는
+# robot/instances/<robot_id>/instance.yaml.
+# multi_robot_architecture.md §5.1.2 split + so101_6dof_plan.md §3 모터 배치 참조.
+#
+# joint name = ts_flake URDF (robot/so101_6dof/urdf/so101_6dof.urdf) 의 revolute joint 이름 그대로.
+# limit raw 값 = URDF joint limit (rad) → raw 변환 (raw = 2048 + rad * 4095/(2π)).
+# PID 는 비워둠 — Feetech STS default 사용. shoulder sag/진동 본 후 튜닝
+# (so101_6dof_plan §6-6 (b): STS PID 는 EEPROM 영역이라 한 번 굽고 끝).
+# Operating Mode = 0 (Position Servo, STS register 33).
+
+motors:
+  - id: 1
+    name: "joint1"
+    model: "STS3215"
+    mode: "position"
+    home: 2048
+    limit:
+      min: 797    # URDF -1.91986 rad (-110°)
+      max: 3299   # URDF +1.91986 rad (+110°)
+    reverse: false
+    # pid: Feetech default
+
+  - id: 2
+    name: "joint2"
+    model: "STS3250"   # ⭐ shoulder upgrade (50kg·cm, so101_6dof_plan §6-5)
+    mode: "position"
+    home: 2048
+    limit:
+      min: 911    # URDF -1.74533 rad (-100°)
+      max: 3185   # URDF +1.74533 rad (+100°)
+    reverse: false
+    # pid: Feetech default. shoulder 가 sag 가장 큰 자리 — 동작 본 후 튜닝 우선
+
+  - id: 3
+    name: "joint3"
+    model: "STS3215"
+    mode: "position"
+    home: 2048
+    limit:
+      min: 947    # URDF -1.68948 rad (-97°)
+      max: 3072   # URDF +1.5708 rad (+90°)
+    reverse: false
+
+  - id: 4
+    name: "joint4"
+    model: "STS3215"
+    mode: "position"
+    home: 2048
+    limit:
+      min: 1092   # URDF -1.46608 rad (-84°)
+      max: 3117   # URDF +1.64061 rad (+94°)
+    reverse: false
+
+  - id: 5
+    name: "joint5"   # NEW wrist yaw (ts_flake mod, 6DOF 만드는 핵심 축)
+    model: "STS3215"
+    mode: "position"
+    home: 2048
+    limit:
+      min: 1041   # URDF -1.54481 rad (-88°)
+      max: 3043   # URDF +1.52697 rad (+88°)
+    reverse: false
+
+  - id: 6
+    name: "joint6"   # wrist roll
+    model: "STS3215"
+    mode: "position"
+    home: 2048
+    limit:
+      # URDF ±170° 인데 cable 꼬임 위험 — 조립 후 mechanical 측정 권장.
+      # 1차엔 URDF 값 그대로 (TrajectoryRunner + STS Goal_Velocity 가 안전망).
+      min: 112    # URDF -2.97071 rad (-170°)
+      max: 3911   # URDF +2.85869 rad (+164°)
+    reverse: false
+
+  - id: 7
+    name: "joint7"
+    model: "STS3215"
+    mode: "position"
+    kind: gripper   # MotorLayout 검증 (motor_config.py:60-66) — 정확히 1개 강제
+    home: 2048
+    limit:
+      min: 1935   # URDF -0.17412 rad (-10°)
+      max: 3186   # URDF +1.74574 rad (+100°, 그리퍼 full open)
+    reverse: false

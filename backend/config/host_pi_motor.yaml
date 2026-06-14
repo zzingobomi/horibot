@@ -1,7 +1,9 @@
-# 모터 Pi (192.168.0.101). omx_f_0 의 motor + motion (100Hz 제어 같은 머신).
+# 모터 Pi (192.168.0.101). 사용자 (2026-06-14) — OMX OFF 후 OpenRB-150 자리에
+# Waveshare bus servo driver 연결, SO-101 6DOF mod (모터 7개) 운영.
+# motor + motion 같은 머신 (100Hz 제어 명령이 네트워크 안 넘게).
 #
 # 시작 예:
-#   uv sync --no-default-groups --group pi-motor
+#   uv sync --no-default-groups --group pi-motor      # feetech-servo-sdk 자동 포함
 #   uv run --no-sync python main.py --host pi_motor
 host_name: pi_motor
 
@@ -17,7 +19,7 @@ zenoh:
   #   - "tcp/0.0.0.0:7447"
 
 robots:
-  - omx_f_0
+  - so101_6dof_0   # OMX 통합 검증 후 omx_f_0 복귀 또는 dual-arm 추가 (Phase 2+)
 
 device_nodes:
   - motor

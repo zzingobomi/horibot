@@ -7,7 +7,10 @@
 robots:
   omx_f_0:
     type: omx_f
-    enabled: true
+    # 사용자 (2026-06-14) — SO-101 통합 작업 중 OMX 일시 OFF.
+    # 기존 OMX 모터 Pi (host_pi_motor) 의 OpenRB-150 자리에 Waveshare 보드 +
+    # SO-101 결선. OMX 모터 디바이스 detach. 통합 검증 후 다시 enabled=true.
+    enabled: false
     capabilities: [move, calibrate, scan]   # D405 보유 → scan 가능. SO-101 도착 시 USB cam 으로 바뀌면 [move, calibrate] 로 변경.
     motor_backend: dynamixel
     kinematics_backend: pybullet
@@ -21,23 +24,25 @@ robots:
       z: 0.0
       yaw_deg: 0.0
 
-  # multi_robot_phase2_frontend.md §2 프로토타입 자리 — 가짜 SO101 entry.
-  # type=omx_f 로 URDF/mesh 복제 (시각화만이라 충분). 실 hardware 도착 시
-  # type=so101_6dof 로 교체 + so101_0 instance 폴더의 calibration/poses 갱신.
-  # enabled=false — backend 가 motor/camera 노드 부팅 시도 안 함 (frontend 시각화 only).
-  so101_0:
-    type: omx_f
-    enabled: false
-    # viz-only placeholder 라도 sidebar 에서 navigate 가능해야 multi-robot
-    # 시각화 (focus 전환 → others dim) 검증됨. enabled=false 라 backend 가
-    # 실제 motor/camera 노드는 안 띄움 → panel 들은 빈 데이터로 보임 (의도된 동작).
-    # 실 hardware 도착 시 enabled=true + scan 추가 (D405 양도).
-    capabilities: [move, calibrate]
-    motor_backend: dynamixel
+  # SO-101 6DOF mod (ts_flake wrist yaw, MakerWorld 1913316 + d2lrobot 리포 CAD).
+  # 모터 7개 (M1~M7, ID 1~7). shoulder M2 = STS3250 (50kg·cm), 나머지 = STS3215.
+  # 1차 통합 (2026-06-14): motor/motion 만, camera 제외 (D405 patch 후속 session).
+  # so101_6dof_plan.md §3 (모터 배치) + §6 (백엔드 통합 작업 포인트) 참조.
+  so101_6dof_0:
+    type: so101_6dof
+    # default robot 결정 위해 enabled=true (RobotRegistry.default(),
+    # MotionNode 부팅 시 get_default_kinematics 호출 자리).
+    # OMX OFF 상태 (omx_f_0.enabled=false) → so101_6dof_0 가 유일한 enabled = default.
+    # 결선 안 된 단계 부팅 시: MotorNode connect 실패 log 만 (motor_node.py:91-99),
+    # 나머지 노드 정상. 결선 후 backend 재시작 → MOTOR_STATE_JOINT publish.
+    enabled: true
+    capabilities: [move, calibrate]   # camera 후속 session — D405 patch 끝나면 scan 추가
+    motor_backend: feetech            # ⭐ FeetechBackend (STS3215/3250 + scservo_sdk)
     kinematics_backend: pybullet
-    camera_backend: realsense
-    # SO-101 6DOF 가정 (실 hardware 도착 시) — wrist yaw 있어 임의 R 만들 수 있음.
+    camera_backend: realsense         # D405. 1차엔 camera_node 안 띄움 (host_pi_motor 에 camera device_node 없음)
+    # 6DOF — wrist yaw 있어 임의 R IK 풀림. SO-101 빌드 가이드의 next pose 추천 전략.
     pose_recommend_strategy: geometry
+    # OMX 우측에 배치 (World frame, m).
     base_pose:
       x: 0.4
       y: 0.0

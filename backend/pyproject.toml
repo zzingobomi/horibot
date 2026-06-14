@@ -23,6 +23,9 @@ dev = [
 
 pi-motor = [
     "dynamixel-sdk>=3.7.31",
+    # SO-101 (Feetech STS3215/3250). LeRobot 와 동일 pin.
+    # 패키지 이름 ≠ import 이름: `import scservo_sdk`.
+    "feetech-servo-sdk>=1.0.0,<2.0.0",
     "pybullet>=3.2.0",
     "ruckig>=0.17.3",
     "scipy>=1.17.1",

@@ -37,12 +37,15 @@ const CAPABILITY_LABELS: Record<RobotCapability, string> = {
 const COLLAPSED_KEY = "omx.sidebar.collapsed";
 
 export function Sidebar() {
-  const cfgSvc = useService(ServiceKey.MOTOR_GET_CONFIG);
-  const enableSvc = useService(ServiceKey.MOTOR_ENABLE);
-  const moveJ = useService(ServiceKey.MOTION_MOVE_J);
+  // Sidebar 는 global (URL param 못 받음) — backend default robot
+  // (RobotRegistry().default(), enabled=true 첫 robot) 의 service / pose 사용.
+  // multi-robot 시 robot 페이지의 RobotStatePanel 이 명시 robot 의 동등 컨트롤 보유.
+  const { robots, defaultId } = useRobots();
+  const cfgSvc = useService(ServiceKey.MOTOR_GET_CONFIG, defaultId);
+  const enableSvc = useService(ServiceKey.MOTOR_ENABLE, defaultId);
+  const moveJ = useService(ServiceKey.MOTION_MOVE_J, defaultId);
   const torqueEnabled = cfgSvc.data?.torque_enabled ?? false;
 
-  const { robots } = useRobots();
   const { tasks } = useTasks();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
@@ -54,14 +57,14 @@ export function Sidebar() {
   }, [collapsed]);
 
   const goHome = useCallback(async () => {
-    const pose = await loadPose("home");
+    const pose = await loadPose(defaultId, "home");
     await moveJ.call({ joints: pose });
-  }, [moveJ]);
+  }, [defaultId, moveJ]);
 
   const goRest = useCallback(async () => {
-    const pose = await loadPose("rest");
+    const pose = await loadPose(defaultId, "rest");
     await moveJ.call({ joints: pose });
-  }, [moveJ]);
+  }, [defaultId, moveJ]);
 
   const toggleTorque = useCallback(async () => {
     const next = !torqueEnabled;

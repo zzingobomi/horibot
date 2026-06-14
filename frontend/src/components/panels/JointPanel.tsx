@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { useParams } from "react-router-dom";
 import { bridge } from "@/api/bridge";
 import { useService, useTopic } from "@/framework";
 import { ServiceKey, Topic } from "@/constants/topics";
@@ -10,31 +11,39 @@ import type { Joint } from "@/types/motor";
 const EMPTY_JOINTS: Joint[] = [];
 
 export function JointPanel() {
-  const joints = useTopic(Topic.MOTOR_STATE_JOINT)?.joints ?? EMPTY_JOINTS;
-  const cfgSvc = useService(ServiceKey.MOTOR_GET_CONFIG);
+  const { id: robotId = "" } = useParams<{ id: string }>();
+  const joints = useTopic(Topic.MOTOR_STATE_JOINT, robotId)?.joints ?? EMPTY_JOINTS;
+  const cfgSvc = useService(ServiceKey.MOTOR_GET_CONFIG, robotId);
   const configs = cfgSvc.data?.motors ?? [];
   const torqueEnabled = cfgSvc.data?.torque_enabled ?? false;
-  const enableSvc = useService(ServiceKey.MOTOR_ENABLE);
-  const moveJ = useService(ServiceKey.MOTION_MOVE_J);
+  const enableSvc = useService(ServiceKey.MOTOR_ENABLE, robotId);
+  const moveJ = useService(ServiceKey.MOTION_MOVE_J, robotId);
 
   const [cmdPositions, setCmdPositions] = useState<Record<number, number>>({});
 
-  const handleJointCmd = useCallback((id: number, position: number) => {
-    setCmdPositions((prev) => ({ ...prev, [id]: position }));
-    bridge.publish(Topic.MOTOR_CMD_JOINT, {
-      timestamp: Date.now() / 1000,
-      joints: [{ id, position }],
-    });
-  }, []);
+  const handleJointCmd = useCallback(
+    (id: number, position: number) => {
+      setCmdPositions((prev) => ({ ...prev, [id]: position }));
+      bridge.publish(
+        Topic.MOTOR_CMD_JOINT,
+        {
+          timestamp: Date.now() / 1000,
+          joints: [{ id, position }],
+        },
+        robotId,
+      );
+    },
+    [robotId],
+  );
 
   const syncAll = useCallback(() => {
     setCmdPositions(Object.fromEntries(joints.map((j) => [j.id, j.position])));
   }, [joints]);
 
   const goHome = useCallback(async () => {
-    const pose = await loadPose("home");
+    const pose = await loadPose(robotId, "home");
     await moveJ.call({ joints: pose });
-  }, [moveJ]);
+  }, [robotId, moveJ]);
 
   const toggleTorque = useCallback(async () => {
     const next = !torqueEnabled;

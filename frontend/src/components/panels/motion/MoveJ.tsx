@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { useParams } from "react-router-dom";
 import * as SliderPrimitive from "@radix-ui/react-slider";
 import { PanelButton } from "@/components/shared/PanelButton";
 import { useService, useTopic } from "@/framework";
@@ -7,12 +8,13 @@ import { rawToDeg } from "@/lib/robot/utils";
 import { useArmJoints, useMotorConfigs } from "@/lib/robot/config";
 
 export function MoveJControl() {
-  const joints = useTopic(Topic.MOTOR_STATE_JOINT)?.joints ?? [];
-  const configs = useMotorConfigs();
-  const armJoints = useArmJoints();
-  const traj = useTopic(Topic.MOTION_STATE_TRAJ);
-  const moveJ = useService(ServiceKey.MOTION_MOVE_J);
-  const stop = useService(ServiceKey.MOTION_STOP);
+  const { id: robotId = "" } = useParams<{ id: string }>();
+  const joints = useTopic(Topic.MOTOR_STATE_JOINT, robotId)?.joints ?? [];
+  const configs = useMotorConfigs(robotId);
+  const armJoints = useArmJoints(robotId);
+  const traj = useTopic(Topic.MOTION_STATE_TRAJ, robotId);
+  const moveJ = useService(ServiceKey.MOTION_MOVE_J, robotId);
+  const stop = useService(ServiceKey.MOTION_STOP, robotId);
 
   const armIds = useMemo(() => new Set(armJoints.map((j) => j.id)), [armJoints]);
   const currentJoints = joints.filter((j) => armIds.has(j.id));

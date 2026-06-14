@@ -377,7 +377,7 @@
   </joint>
   <!-- Joint from upper_arm to under_arm -->
   <joint name="joint3" type="revolute">
-    <origin xyz="0.11257 0.028 -0" rpy="0 -0 1.5708"/>
+    <origin xyz="0.11257 0.028 -0" rpy="0 0 3.14159"/>
     <parent link="upper_arm"/>
     <child link="under_arm"/>
     <axis xyz="0 0 1"/>
@@ -385,7 +385,7 @@
   </joint>
   <!-- Joint from base_rotation to upper_arm -->
   <joint name="joint2" type="revolute">
-    <origin xyz="0.0306 0.0183 -0.0542" rpy="1.5708 1.5708 0"/>
+    <origin xyz="0.0306 0.0183 -0.0542" rpy="1.5708 3.14159 0"/>
     <parent link="base_rotation"/>
     <child link="upper_arm"/>
     <axis xyz="0 0 1"/>
@@ -399,7 +399,6 @@
     <axis xyz="0 0 1"/>
     <limit effort="3.3" velocity="5" lower="-1.91986" upper="1.91986"/>
   </joint>
-  <!-- TCP (Tool Center Point) — horibot 컨벤션 (CLAUDE.md). gripper_center alias. -->
   <joint name="tcp_joint" type="fixed">
     <parent link="gripper_center"/>
     <child link="tcp"/>
@@ -408,12 +407,8 @@
   <link name="tcp">
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
-      <geometry>
-        <box size="0.01 0.01 0.01"/>
-      </geometry>
-      <material name="tcp_red">
-        <color rgba="1.0 0.0 0.0 1"/>
-      </material>
+      <geometry><box size="0.01 0.01 0.01"/></geometry>
+      <material name="tcp_red"><color rgba="1.0 0.0 0.0 1"/></material>
     </visual>
   </link>
 </robot>

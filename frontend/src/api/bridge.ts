@@ -243,12 +243,13 @@ class BridgeClient {
   publish<T extends keyof TopicPayloadMap>(
     topic: T,
     data: TopicPayloadMap[T],
+    robotId?: string,
   ): void;
-  publish(topic: string, data: Record<string, unknown>): void;
-  publish(topic: string, data: unknown): void {
+  publish(topic: string, data: Record<string, unknown>, robotId?: string): void;
+  publish(topic: string, data: unknown, robotId?: string): void {
     this._send({
       type: WsMsgType.Publish,
-      topic: this._expand(topic),
+      topic: this.expand(topic, robotId),
       data: data as Record<string, unknown>,
     });
   }

@@ -8,6 +8,17 @@
 # PID 는 비워둠 — Feetech STS default 사용. shoulder sag/진동 본 후 튜닝
 # (so101_6dof_plan §6-6 (b): STS PID 는 EEPROM 영역이라 한 번 굽고 끝).
 # Operating Mode = 0 (Position Servo, STS register 33).
+#
+# arm_profile = motor_node start 시 적용되는 부드러운 baseline.
+# STS default Goal_Velocity=0 (= 무제한 슬램) 라 슬라이더 한 칸 → 풀스피드 jerk
+# (특히 J2 STS3250 무거운 자세). 이 cap 으로 부드럽게 따라옴.
+# 단위: velocity = steps/sec (1 step = 360°/4096 ≈ 0.088°),
+#       acceleration = 100·steps/sec². 500/20 ≈ 44°/s, 176°/s² ramp (~0.25s).
+# moveJ/L/C/P 진입 시 TrajectoryRunner 가 0,0 (= cap 해제) 로 풀었다가
+# 종료 시 이 baseline 으로 복원 (Ruckig trajectory shape 보존).
+arm_profile:
+  velocity: 500
+  acceleration: 20
 
 motors:
   - id: 1

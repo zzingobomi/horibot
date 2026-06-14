@@ -44,6 +44,23 @@ class PortConfig:
 
 
 @dataclass
+class ArmProfileConfig:
+    """arm 모터들의 부드러운 motion profile baseline.
+
+    motor_node start 시 적용 → slider/teleop slam 방지. TrajectoryRunner 가
+    moveJ/L/C/P 진입 시 0,0 (= no cap, Ruckig 직접 명령) 으로 풀고 종료 시
+    이 baseline 으로 복원.
+
+    단위 — Feetech STS: velocity = steps/sec (1 step = 360°/4096),
+           acceleration = 100·steps/sec². ex) 500/20 ≈ 44°/s, 176°/s² ramp.
+    Dynamixel XL430: velocity = 0.229 rpm, acceleration = 214.577 rpm/s².
+    """
+
+    velocity: int
+    acceleration: int
+
+
+@dataclass
 class MotorLayout:
     """robot 의 모터 layout — port + 전체 motors + arm/gripper 분류.
 
@@ -56,6 +73,7 @@ class MotorLayout:
 
     port: PortConfig
     motors: list[MotorConfig]
+    arm_profile: ArmProfileConfig | None = None
 
     def __post_init__(self) -> None:
         grippers = [m for m in self.motors if m.kind == MotorKind.GRIPPER]
@@ -99,6 +117,16 @@ def load_motor_layout(robot_id: str | None = None) -> MotorLayout:
         linux=motor_inst["port"]["linux"],
     )
 
+    arm_profile_raw = type_raw.get("arm_profile")
+    arm_profile = (
+        ArmProfileConfig(
+            velocity=int(arm_profile_raw["velocity"]),
+            acceleration=int(arm_profile_raw["acceleration"]),
+        )
+        if arm_profile_raw
+        else None
+    )
+
     motors: list[MotorConfig] = []
     for m in type_raw["motors"]:
         pid = m.get("pid") or {}
@@ -119,4 +147,4 @@ def load_motor_layout(robot_id: str | None = None) -> MotorLayout:
             )
         )
 
-    return MotorLayout(port=port, motors=motors)
+    return MotorLayout(port=port, motors=motors, arm_profile=arm_profile)

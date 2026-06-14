@@ -28,7 +28,8 @@ export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) 
   // 어떻게 표현할지는 별도 자리).
   const calibRobotId = effectiveFocus ?? defaultId ?? "";
   const { results } = useCalibrationResults(calibRobotId);
-  const joints = useTopic(Topic.MOTOR_STATE_JOINT)?.joints ?? EMPTY_JOINTS;
+  const joints =
+    useTopic(Topic.MOTOR_STATE_JOINT, calibRobotId)?.joints ?? EMPTY_JOINTS;
   const jointOffsetsRad = useJointOffsetsRad(calibRobotId);
   // motorCfgs (id 오름차순) 가 jointAngles 순서를 결정 — RobotModel 의 setJointValue
   // 매핑과 같은 source 사용해 인덱스 align (motorCfgs.length 가 robot 마다 달라도 OK).

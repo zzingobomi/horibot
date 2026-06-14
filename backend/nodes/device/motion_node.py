@@ -53,7 +53,8 @@ class MotionNode(DeviceNode):
     def __init__(self, robot_id: str):
         super().__init__("motion_node", robot_id=robot_id)
 
-        self._arm_cfgs = load_motor_layout(robot_id).arm
+        layout = load_motor_layout(robot_id)
+        self._arm_cfgs = layout.arm
         self._arm_ids = [cfg.id for cfg in self._arm_cfgs]
         self._n_arm = len(self._arm_cfgs)
 
@@ -61,12 +62,21 @@ class MotionNode(DeviceNode):
         self._joint_cache = JointStateCache()
         self._joint_cache.subscribe(self)
 
+        # arm_profile 가 motors.yaml 에 있으면 TrajectoryRunner 의 restore 기준값을
+        # 그 값으로 — motor_node start baseline 과 동일. 없으면 constructor default
+        # (Dynamixel OMX 가 기존 150/40 그대로 쓰던 자리).
+        runner_kwargs: dict[str, int] = {}
+        if layout.arm_profile is not None:
+            runner_kwargs["default_profile_vel"] = layout.arm_profile.velocity
+            runner_kwargs["default_profile_acc"] = layout.arm_profile.acceleration
+
         self._runner = TrajectoryRunner(
             n_arm=self._n_arm,
             set_profile=self._set_arm_profile,
             publish_cmd=self._publish_cmd,
             publish_state=self._publish_traj_state,
             move_tcp=self._motion.move_tcp,
+            **runner_kwargs,
         )
 
         self.create_service(

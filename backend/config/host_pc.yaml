@@ -21,10 +21,18 @@ robots: []
 device_nodes: []
 
 application_nodes:
+  - storage
   - calibration
   - task
   - detector
   - pointcloud
+
+# 영속성 인프라 (docs/storage_layer.md). PC 만 storage_node 띄움 — 모터/카메라
+# Pi 는 application_nodes 비어있어 init() 호출 X. Phase 3 NAS 도입 시
+# postgresql:// / s3:// 로 URI 만 교체.
+storage:
+  rdb_uri:    "sqlite:///~/.local/horibot/storage.db"
+  object_uri: "file:///~/.local/horibot/blobs"
 
 bridge:
   enabled: true

@@ -126,6 +126,24 @@ def main():
     # ─── Zenoh 세션 초기화 ────────────────────────────────────
     ZenohSession.init(cfg.get("zenoh"))
 
+    # ─── Storage 초기화 (storage 노드 떠 있을 때만) ────────────
+    # PC 만 storage_node 띄움 — 분산 모드 모터/카메라 Pi 는 init() 호출 안 됨.
+    # 단, storage 가 application_nodes 에 있는데 host yaml 의 'storage:' block
+    # 누락이면 fail-fast.
+    if "storage" in application_node_names:
+        storage_cfg = cfg.get("storage") or {}
+        rdb_uri = storage_cfg.get("rdb_uri")
+        object_uri = storage_cfg.get("object_uri")
+        if not rdb_uri or not object_uri:
+            raise ValueError(
+                "host config 의 application_nodes 에 'storage' 가 있는데 "
+                "'storage:' block 의 rdb_uri / object_uri 누락. "
+                "docs/storage_layer.md §8 참조."
+            )
+        from modules.storage.registry import StorageRegistry
+
+        StorageRegistry.init(rdb_uri, object_uri)
+
     # ─── D405 intrinsic seed (camera 노드 robot 마다) ──────────
     if "camera" in device_node_names:
         from modules.camera.factory_intrinsic import seed_d405_intrinsic_if_missing

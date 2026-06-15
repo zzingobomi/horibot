@@ -17,10 +17,17 @@ device_nodes:
   - camera
 
 application_nodes:
+  - storage
   - calibration
   - task
   - detector
   - pointcloud
+
+# 영속성 인프라 (docs/storage_layer.md). storage_node 가 application_nodes 에
+# 있을 때 필수.
+storage:
+  rdb_uri:    "sqlite:///~/.local/horibot/storage.db"
+  object_uri: "file:///~/.local/horibot/blobs"
 
 bridge:
   enabled: true

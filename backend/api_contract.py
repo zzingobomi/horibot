@@ -32,6 +32,7 @@ from core.transport.messages import (
     motion as _motion,
     motor as _motor,
     pointcloud as _pointcloud,
+    storage as _storage,
     system as _system,
     task as _task,
 )
@@ -77,6 +78,8 @@ PUBLIC_TOPICS: dict[str, TopicPayload] = {
     Topic.CALIB_HANDEYE_RECOMMENDATIONS: None,
     Topic.CALIB_HANDEYE_SATURATE: None,
     Topic.CALIB_HANDEYE_OBSERVABILITY: _calibration.HandeyeObservabilityState,
+    # Storage — ACTIVATE 마다 1회. frontend list 패널이 활성 row 갱신 트리거.
+    Topic.STORAGE_CALIBRATION_INVALIDATED: _storage.CalibrationInvalidated,
     # ── Internal (의도적 미등재) ──
     # Topic.CAMERA_DEPTH_FRAME    — pointcloud_node 만 구독 (binary)
 }
@@ -138,6 +141,23 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
     Service.CALIB_BACKUP_RESTORE: (
         _calibration.BackupRestoreReq,
         _calibration.BackupRestoreRes,
+    ),
+    # ─ Storage (Phase 1 — 캘 4 service)
+    Service.STORAGE_GET_ACTIVE_CALIBRATION: (
+        _storage.StorageGetActiveReq,
+        _storage.StorageGetActiveRes,
+    ),
+    Service.STORAGE_LIST_CALIBRATIONS: (
+        _storage.StorageListReq,
+        _storage.StorageListRes,
+    ),
+    Service.STORAGE_COMMIT_CALIBRATION: (
+        _storage.StorageCommitReq,
+        _storage.StorageCommitRes,
+    ),
+    Service.STORAGE_ACTIVATE_CALIBRATION: (
+        _storage.StorageActivateReq,
+        _storage.StorageActivateRes,
     ),
     # ─ Task
     Service.TASK_STOP: (EmptyData, EmptyData),

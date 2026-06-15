@@ -21,10 +21,17 @@ device_nodes:
   - motion
 
 application_nodes:
+  - storage
   - calibration
   - task
   - detector
   - pointcloud
+
+# Memory backend — 매번 fresh, 영속화 X. mock 은 frontend UX 검증용이라
+# 캘 데이터 누적이 의도 X.
+storage:
+  rdb_uri:    "memory://"
+  object_uri: "memory://"
 
 bridge:
   enabled: true

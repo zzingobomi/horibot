@@ -36,6 +36,11 @@ class Topic:
     POINTCLOUD_SNAPSHOT = "horibot/{robot_id}/pointcloud/snapshot"
     POINTCLOUD_STATE = "horibot/{robot_id}/pointcloud/state"
 
+    # ─── Storage (global — robot_id 가 payload 에 포함) ────
+    # 캘 INVALIDATED — ACTIVATE 마다 1회. payload=(robot_id, kind). 각 노드의
+    # CalibrationCache 가 구독해 refetch 트리거. docs/storage_layer.md §7.
+    STORAGE_CALIBRATION_INVALIDATED = "horibot/storage/state/calibration_invalidated"
+
 
 class Service:
     # ─── Motor ─────────────────────────────────────────────
@@ -93,6 +98,13 @@ class Service:
 
     # ─── Perception ────────────────────────────────────────
     PERCEPTION_GROUNDED_DETECT = "horibot/{robot_id}/perception/srv/grounded_detect"
+
+    # ─── Storage (global — payload 에 robot_id 포함) ───────
+    # 캘 5종 저장/조회/활성화. docs/storage_layer.md §2 architecture.
+    STORAGE_GET_ACTIVE_CALIBRATION = "horibot/storage/srv/calibration/get_active"
+    STORAGE_LIST_CALIBRATIONS = "horibot/storage/srv/calibration/list"
+    STORAGE_COMMIT_CALIBRATION = "horibot/storage/srv/calibration/commit"
+    STORAGE_ACTIVATE_CALIBRATION = "horibot/storage/srv/calibration/activate"
 
     # ─── PointCloud ────────────────────────────────────────
     POINTCLOUD_CONFIGURE = "horibot/{robot_id}/pointcloud/srv/configure"

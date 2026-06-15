@@ -4,6 +4,8 @@ OMX_F 단독 시스템에서 **OMX_F + SO-101 6DOF dual-arm cooperative manipula
 
 본 문서는 "design + 마이그레이션 plan" 이지 즉시 구현 명세가 아님. SO-101 도착 시점에 이 문서를 토대로 본격 작업.
 
+> **2026-06-15 업데이트** — 본 문서의 `.patched/` 디렉토리 / `write_patched_urdf` 언급 (§5.1, §11) 은 *historical* (Phase 1 design 시점 기록). storage_node 도입 후 `.patched/` 디스크 영속화 폐기, in-memory `patch_urdf_text` + tempfile 1회성 패턴으로 교체됨 ([storage_layer.md §13](storage_layer.md)). multi-instance 충돌 (같은 type 다중 instance 가 같은 `.patched/` 공유) 도 함께 해소.
+
 **관련 문서:**
 
 - [so101_6dof_plan.md](so101_6dof_plan.md) — 하드웨어 plan + 모터 SDK 추상화 (§6) — 본 문서의 prerequisite

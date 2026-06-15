@@ -19,6 +19,7 @@ from core.transport.application_node import ApplicationNode
 from core.transport.messages.base import ServiceRequest, ServiceResponse
 from core.transport.messages.storage import (
     CalibrationInvalidated,
+    CalibrationRunSummary,
     StorageActivateReq,
     StorageActivateRes,
     StorageCommitReq,
@@ -27,6 +28,8 @@ from core.transport.messages.storage import (
     StorageGetActiveRes,
     StorageListReq,
     StorageListRes,
+    StorageListRunsReq,
+    StorageListRunsRes,
 )
 from core.transport.topic_map import Service, Topic
 from modules.storage.registry import StorageRegistry
@@ -53,6 +56,12 @@ class StorageNode(ApplicationNode):
             StorageListReq,
             StorageListRes,
             self._srv_list,
+        )
+        self.create_service(
+            Service.STORAGE_LIST_CALIBRATION_RUNS,
+            StorageListRunsReq,
+            StorageListRunsRes,
+            self._srv_list_runs,
         )
         self.create_service(
             Service.STORAGE_COMMIT_CALIBRATION,
@@ -98,6 +107,17 @@ class StorageNode(ApplicationNode):
         )
         return ServiceResponse(
             success=True, data=StorageListRes(results=records)
+        )
+
+    def _srv_list_runs(
+        self, req: ServiceRequest[StorageListRunsReq]
+    ) -> ServiceResponse[StorageListRunsRes]:
+        rows = self._reg.rdb.list_runs(req.data.robot_id, req.data.limit)
+        summaries = [
+            CalibrationRunSummary(run=run, results=results) for run, results in rows
+        ]
+        return ServiceResponse(
+            success=True, data=StorageListRunsRes(runs=summaries)
         )
 
     def _srv_commit(

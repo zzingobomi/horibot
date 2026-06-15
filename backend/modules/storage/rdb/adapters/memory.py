@@ -50,6 +50,27 @@ class MemoryRdbStore:
         matching.sort(key=lambda r: r.created_at, reverse=True)
         return [copy.deepcopy(r) for r in matching[:limit]]
 
+    def list_runs(
+        self, robot_id: str, limit: int = 50
+    ) -> list[tuple[CalibrationRunRecord, list[CalibrationResultRecord]]]:
+        with self._lock:
+            matching_runs = [
+                r for r in self._runs.values() if r.robot_id == robot_id
+            ]
+            matching_runs.sort(key=lambda r: r.started_at, reverse=True)
+            matching_runs = matching_runs[:limit]
+            results_by_run: dict[int, list[CalibrationResultRecord]] = {}
+            for r in self._results.values():
+                if r.run_id in {run.id for run in matching_runs if run.id is not None}:
+                    results_by_run.setdefault(r.run_id, []).append(copy.deepcopy(r))
+        return [
+            (
+                copy.deepcopy(run),
+                results_by_run.get(run.id, []) if run.id is not None else [],
+            )
+            for run in matching_runs
+        ]
+
     def get_result(self, result_id: int) -> CalibrationResultRecord | None:
         with self._lock:
             r = self._results.get(result_id)

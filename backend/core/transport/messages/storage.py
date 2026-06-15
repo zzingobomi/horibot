@@ -53,6 +53,31 @@ class StorageListRes(StrictModel):
     results: list[CalibrationResultRecord]
 
 
+# ─── Service: STORAGE_LIST_CALIBRATION_RUNS ────────────────────
+
+
+class CalibrationRunSummary(StrictModel):
+    """Run + 그 Run 의 모든 kind Result. frontend list/ACTIVATE 패널이 한 Run
+    한 row 로 펼침 — 5 kind 같이 보이고 ACTIVATE 도 Run 전체 / kind 별 양쪽 가능.
+
+    storage_layer.md §13.7 Stage 4 design A.
+    """
+
+    run: CalibrationRunRecord
+    results: list[CalibrationResultRecord]
+
+
+class StorageListRunsReq(StrictModel):
+    robot_id: str
+    limit: int = 50
+
+
+class StorageListRunsRes(StrictModel):
+    """`run.started_at DESC` 정렬. 각 Run 마다 그 Run 의 모든 Result 가 묶여 옴."""
+
+    runs: list[CalibrationRunSummary]
+
+
 # ─── Service: STORAGE_COMMIT_CALIBRATION ───────────────────────
 
 

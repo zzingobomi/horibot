@@ -237,6 +237,48 @@ export interface components {
             y2: number;
         };
         /**
+         * CalibrationCaptureRecord
+         * @description Evidence — per-pose 자세 정보 (BA 입력 + 출력 residual + IRLS weight).
+         */
+        CalibrationCaptureRecord: {
+            /** Id */
+            id?: number | null;
+            /** Run Id */
+            run_id: number;
+            /** Pose Index */
+            pose_index: number;
+            /** Joint Angles */
+            joint_angles: number[];
+            /** Board In Cam */
+            board_in_cam?: number[][] | null;
+            /** Residual Rot */
+            residual_rot?: number | null;
+            /** Residual Trans */
+            residual_trans?: number | null;
+            /** Weight */
+            weight?: number | null;
+        };
+        /**
+         * CalibrationInvalidated
+         * @description ACTIVATE 마다 1회 발행. 노드들의 CalibrationCache 가 refetch trigger.
+         *
+         *     docs/storage_layer.md §7 — payload 에 (robot_id, kind) 만 — subscriber 가
+         *     자기 robot 만 filter. event stream 정석 (global 1개 topic).
+         */
+        CalibrationInvalidated: {
+            /** Robot Id */
+            robot_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
+            /** Result Id */
+            result_id: number;
+            /** Timestamp */
+            timestamp: number;
+        };
+        /**
          * CalibrationResults
          * @description `GET /calibration/results` 응답. npz 없으면 해당 필드 생략, joint_offsets 는
          *     항상 포함 (없으면 빈 리스트).
@@ -249,6 +291,54 @@ export interface components {
              * @default []
              */
             joint_offsets: components["schemas"]["JointOffsetSchema"][];
+        };
+        /**
+         * CalibrationRunRecord
+         * @description 한 번의 캘 실행 이력 (immutable).
+         *
+         *     한 Run 이 여러 Result 만들 수 있음 (예: 확장 BA → hand_eye + joint + link +
+         *     sag 동시 산출). algorithm 은 'extended_ba_irls' 등 식별자.
+         */
+        CalibrationRunRecord: {
+            /** Id */
+            id?: number | null;
+            /** Robot Id */
+            robot_id: string;
+            /** Started At */
+            started_at: number;
+            /** Ended At */
+            ended_at?: number | null;
+            /** Operator */
+            operator?: string | null;
+            /** Note */
+            note?: string | null;
+            /** Algorithm */
+            algorithm: string;
+            /**
+             * Algorithm Params
+             * @default {}
+             */
+            algorithm_params: {
+                [key: string]: unknown;
+            };
+            /**
+             * Status
+             * @default success
+             * @enum {string}
+             */
+            status: "success" | "failed";
+        };
+        /**
+         * CalibrationRunSummary
+         * @description Run + 그 Run 의 모든 kind Result. frontend list/ACTIVATE 패널이 한 Run
+         *     한 row 로 펼침 — 5 kind 같이 보이고 ACTIVATE 도 Run 전체 / kind 별 양쪽 가능.
+         *
+         *     storage_layer.md §13.7 Stage 4 design A.
+         */
+        CalibrationRunSummary: {
+            run: components["schemas"]["CalibrationRunRecord"];
+            /** Results */
+            results: (components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"])[];
         };
         /**
          * CameraStatus
@@ -283,9 +373,7 @@ export interface components {
         };
         /**
          * EmptyData
-         * @description payload 가 빈 service request / response 용. unused `_req` 자리에도 쓰임.
-         *
-         *     generic envelope 의 data 필드가 required 라서 빈 모델이라도 인스턴스가 필요.
+         * @description payload 가 빈 service request / response 용.
          */
         EmptyData: Record<string, never>;
         /**
@@ -323,6 +411,46 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
+         * HandEyeResultData
+         * @description 카메라 ↔ EE (gripper) 변환. R_cam2gripper / t_cam2gripper.
+         *
+         *     Detector + PointCloudLayer 가 사용 — runtime cache 의 hot path.
+         */
+        HandEyeResultData: {
+            /** R Cam2Gripper */
+            R_cam2gripper: number[][];
+            /** T Cam2Gripper */
+            t_cam2gripper: number[][];
+            /** Method */
+            method: string;
+        };
+        /** HandEyeResultRecord */
+        HandEyeResultRecord: {
+            /** Id */
+            id?: number | null;
+            /** Run Id */
+            run_id: number;
+            /** Robot Id */
+            robot_id: string;
+            /** Created At */
+            created_at: number;
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
+            /** Sigma Rot */
+            sigma_rot?: number | null;
+            /** Sigma T */
+            sigma_t?: number | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "hand_eye";
+            result_data: components["schemas"]["HandEyeResultData"];
+        };
+        /**
          * HandEyeSchema
          * @description Hand-Eye 응답 — 카메라 ↔ EE 변환 R/t.
          */
@@ -355,7 +483,7 @@ export interface components {
             /** Link Offsets Applied */
             link_offsets_applied: boolean;
             /** Link Offsets */
-            link_offsets: components["schemas"]["LinkOffsetEntry"][];
+            link_offsets: components["schemas"]["core__transport__messages__calibration__LinkOffsetEntry"][];
             /** Sag Offsets Applied */
             sag_offsets_applied: boolean;
             /** Sag Offsets */
@@ -369,6 +497,41 @@ export interface components {
             poses: components["schemas"]["HandeyePoseMeta"][];
             /** Pose Count */
             pose_count: number;
+        };
+        /**
+         * HandeyeObservabilityState
+         * @description 매 capture 후 자동 발행. 캡처된 자세들의 *기하학적 observability* 진단.
+         *
+         *     개발자 진단용 metric 이지만 verdict ('A'/'B'/'mid') 만 frontend 표시 (4 metric
+         *     숫자 X). 사용자는:
+         *       - verdict='A' (다양성 충분) → 추가 자세 의미 있음 안내
+         *       - verdict='B' (구조적 부족) → 보드 위치 / 거리 변경 안내
+         *       - verdict='mid' → 중립
+         *
+         *     metric 4가지는 docs/observability.md 참조 — 광축 펼침 / tilt / 회전축 spanning
+         *     / wrist roll.
+         */
+        HandeyeObservabilityState: {
+            /** Timestamp */
+            timestamp: number;
+            /** Pose Count */
+            pose_count: number;
+            /** Axis Spread Deg */
+            axis_spread_deg: number;
+            /** Tilt Min Deg */
+            tilt_min_deg: number;
+            /** Tilt Max Deg */
+            tilt_max_deg: number;
+            /** Tilt Std Deg */
+            tilt_std_deg: number;
+            /** Tilt In Range Count */
+            tilt_in_range_count: number;
+            /** Rotation Axis Ratio */
+            rotation_axis_ratio: number;
+            /** Wrist Roll Range Raw */
+            wrist_roll_range_raw: number;
+            /** Verdict */
+            verdict: string;
         };
         /**
          * HandeyePoseMeta
@@ -436,33 +599,6 @@ export interface components {
             axis_distributions: components["schemas"]["AxisDistributionEntry"][];
         };
         /**
-         * HandeyeObservabilityState
-         * @description 매 capture 후 자동 발행. 자세들의 기하학적 관측성 진단.
-         *     verdict ('A'/'B'/'mid') 만 사용자 안내 — metric 숫자는 backend 진단용.
-         */
-        HandeyeObservabilityState: {
-            /** Timestamp */
-            timestamp: number;
-            /** Pose Count */
-            pose_count: number;
-            /** Axis Spread Deg */
-            axis_spread_deg: number;
-            /** Tilt Min Deg */
-            tilt_min_deg: number;
-            /** Tilt Max Deg */
-            tilt_max_deg: number;
-            /** Tilt Std Deg */
-            tilt_std_deg: number;
-            /** Tilt In Range Count */
-            tilt_in_range_count: number;
-            /** Rotation Axis Ratio */
-            rotation_axis_ratio: number;
-            /** Wrist Roll Range Raw */
-            wrist_roll_range_raw: number;
-            /** Verdict */
-            verdict: string;
-        };
-        /**
          * Heartbeat
          * @description SYSTEM_HEARTBEAT 페이로드. 노드별 1Hz.
          *
@@ -501,6 +637,44 @@ export interface components {
              * @default 0
              */
             coverage_count: number;
+        };
+        /**
+         * IntrinsicResultData
+         * @description 카메라 내부 파라미터 (D405 등).
+         */
+        IntrinsicResultData: {
+            /** Camera Matrix */
+            camera_matrix: number[][];
+            /** Dist Coeffs */
+            dist_coeffs: number[][];
+            /** Image Size */
+            image_size?: number[] | null;
+        };
+        /** IntrinsicResultRecord */
+        IntrinsicResultRecord: {
+            /** Id */
+            id?: number | null;
+            /** Run Id */
+            run_id: number;
+            /** Robot Id */
+            robot_id: string;
+            /** Created At */
+            created_at: number;
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
+            /** Sigma Rot */
+            sigma_rot?: number | null;
+            /** Sigma T */
+            sigma_t?: number | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "intrinsic";
+            result_data: components["schemas"]["IntrinsicResultData"];
         };
         /** IntrinsicSaveRes */
         IntrinsicSaveRes: {
@@ -553,6 +727,46 @@ export interface components {
             offset_rad: number;
         };
         /**
+         * JointOffsetResultData
+         * @description 모터 raw zero 오차 보정. motor_id (int) → offset_rad (float).
+         *
+         *     JSON 직렬화 시 dict[int, float] 의 key 는 string 화 — Pydantic 가 양방향 변환.
+         */
+        JointOffsetResultData: {
+            /** Offsets */
+            offsets: {
+                [key: string]: number;
+            };
+            /** Method */
+            method: string;
+        };
+        /** JointOffsetResultRecord */
+        JointOffsetResultRecord: {
+            /** Id */
+            id?: number | null;
+            /** Run Id */
+            run_id: number;
+            /** Robot Id */
+            robot_id: string;
+            /** Created At */
+            created_at: number;
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
+            /** Sigma Rot */
+            sigma_rot?: number | null;
+            /** Sigma T */
+            sigma_t?: number | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "joint_offset";
+            result_data: components["schemas"]["JointOffsetResultData"];
+        };
+        /**
          * JointOffsetSchema
          * @description 단일 joint offset 항목.
          */
@@ -562,14 +776,41 @@ export interface components {
             /** Offset Rad */
             offset_rad: number;
         };
-        /** LinkOffsetEntry */
-        LinkOffsetEntry: {
-            /** Motor Id */
-            motor_id: number;
-            /** Trans M */
-            trans_m: number[];
-            /** Rot Rad */
-            rot_rad: number[];
+        /**
+         * LinkOffsetResultData
+         * @description URDF 링크 기하 오차 — 부팅 시 URDF patch 에 반영 (restart 필요).
+         */
+        LinkOffsetResultData: {
+            /** Offsets */
+            offsets: components["schemas"]["modules__calibration__result_models__LinkOffsetEntry"][];
+            /** Method */
+            method: string;
+        };
+        /** LinkOffsetResultRecord */
+        LinkOffsetResultRecord: {
+            /** Id */
+            id?: number | null;
+            /** Run Id */
+            run_id: number;
+            /** Robot Id */
+            robot_id: string;
+            /** Created At */
+            created_at: number;
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
+            /** Sigma Rot */
+            sigma_rot?: number | null;
+            /** Sigma T */
+            sigma_t?: number | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "link_offset";
+            result_data: components["schemas"]["LinkOffsetResultData"];
         };
         /**
          * LogMessage
@@ -834,6 +1075,7 @@ export interface components {
             BackupListRes?: components["schemas"]["BackupListRes"] | null;
             BackupRestoreReq?: components["schemas"]["BackupRestoreReq"] | null;
             BackupRestoreRes?: components["schemas"]["BackupRestoreRes"] | null;
+            CalibrationInvalidated?: components["schemas"]["CalibrationInvalidated"] | null;
             CameraStatus?: components["schemas"]["CameraStatus"] | null;
             DetectorState?: components["schemas"]["DetectorState"] | null;
             EmptyData?: components["schemas"]["EmptyData"] | null;
@@ -842,6 +1084,7 @@ export interface components {
             HandeyeCaptureRes?: components["schemas"]["HandeyeCaptureRes"] | null;
             HandeyeCommitRes?: components["schemas"]["HandeyeCommitRes"] | null;
             HandeyeListPosesRes?: components["schemas"]["HandeyeListPosesRes"] | null;
+            HandeyeObservabilityState?: components["schemas"]["HandeyeObservabilityState"] | null;
             HandeyePreviewEnableReq?: components["schemas"]["HandeyePreviewEnableReq"] | null;
             HandeyePreviewEnableRes?: components["schemas"]["HandeyePreviewEnableRes"] | null;
             HandeyeResetRes?: components["schemas"]["HandeyeResetRes"] | null;
@@ -883,6 +1126,16 @@ export interface components {
             PointcloudState?: components["schemas"]["PointcloudState"] | null;
             RecommendationFailReq?: components["schemas"]["RecommendationFailReq"] | null;
             RecommendationFailRes?: components["schemas"]["RecommendationFailRes"] | null;
+            StorageActivateReq?: components["schemas"]["StorageActivateReq"] | null;
+            StorageActivateRes?: components["schemas"]["StorageActivateRes"] | null;
+            StorageCommitReq?: components["schemas"]["StorageCommitReq"] | null;
+            StorageCommitRes?: components["schemas"]["StorageCommitRes"] | null;
+            StorageGetActiveReq?: components["schemas"]["StorageGetActiveReq"] | null;
+            StorageGetActiveRes?: components["schemas"]["StorageGetActiveRes"] | null;
+            StorageListReq?: components["schemas"]["StorageListReq"] | null;
+            StorageListRes?: components["schemas"]["StorageListRes"] | null;
+            StorageListRunsReq?: components["schemas"]["StorageListRunsReq"] | null;
+            StorageListRunsRes?: components["schemas"]["StorageListRunsRes"] | null;
             TaskStepIdReq?: components["schemas"]["TaskStepIdReq"] | null;
         };
         /**
@@ -1075,6 +1328,44 @@ export interface components {
             k_rad_per_m: number;
         };
         /**
+         * SagOffsetResultData
+         * @description J2/J3 자세 의존 중력 처짐 보정. joint_id (int) → k_rad_per_m (float).
+         */
+        SagOffsetResultData: {
+            /** K Rad Per M */
+            k_rad_per_m: {
+                [key: string]: number;
+            };
+            /** Method */
+            method: string;
+        };
+        /** SagOffsetResultRecord */
+        SagOffsetResultRecord: {
+            /** Id */
+            id?: number | null;
+            /** Run Id */
+            run_id: number;
+            /** Robot Id */
+            robot_id: string;
+            /** Created At */
+            created_at: number;
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
+            /** Sigma Rot */
+            sigma_rot?: number | null;
+            /** Sigma T */
+            sigma_t?: number | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "sag";
+            result_data: components["schemas"]["SagOffsetResultData"];
+        };
+        /**
          * ScanMeta
          * @description scan_io.scan_meta() 결과 1개.
          */
@@ -1087,6 +1378,105 @@ export interface components {
             timestamp: number;
             /** Num Frames */
             num_frames: number;
+        };
+        /** StorageActivateReq */
+        StorageActivateReq: {
+            /** Result Id */
+            result_id: number;
+        };
+        /**
+         * StorageActivateRes
+         * @description activated result 의 robot_id / kind 는 frontend 가 invalidation 확인 시 사용.
+         */
+        StorageActivateRes: {
+            /** Result */
+            result: components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"];
+        };
+        /**
+         * StorageCommitReq
+         * @description 한 Run + 그 산출물 (Result list) + Evidence (Capture list) atomic INSERT.
+         *
+         *     run.id / results[*].id 는 무시 (storage 가 부여). results[*].run_id 도
+         *     무시 (storage 가 새 run_id 로 덮어씀). caller 가 임시 placeholder 채우거나
+         *     None 두면 됨.
+         *
+         *     INSERT 시 모든 result.is_active=false — caller 가 받은 result_id 로
+         *     ACTIVATE 별도 호출.
+         */
+        StorageCommitReq: {
+            run: components["schemas"]["CalibrationRunRecord"];
+            /** Results */
+            results: (components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"])[];
+            /**
+             * Captures
+             * @default []
+             */
+            captures: components["schemas"]["CalibrationCaptureRecord"][];
+        };
+        /** StorageCommitRes */
+        StorageCommitRes: {
+            /** Run Id */
+            run_id: number;
+            /** Result Ids */
+            result_ids: number[];
+        };
+        /** StorageGetActiveReq */
+        StorageGetActiveReq: {
+            /** Robot Id */
+            robot_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
+        };
+        /**
+         * StorageGetActiveRes
+         * @description found=False 면 활성 result 없음 — 첫 부팅 robot. caller 가 default fallback.
+         */
+        StorageGetActiveRes: {
+            /** Found */
+            found: boolean;
+            /** Result */
+            result?: (components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"]) | null;
+        };
+        /** StorageListReq */
+        StorageListReq: {
+            /** Robot Id */
+            robot_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
+            /**
+             * Limit
+             * @default 100
+             */
+            limit: number;
+        };
+        /** StorageListRes */
+        StorageListRes: {
+            /** Results */
+            results: (components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"])[];
+        };
+        /** StorageListRunsReq */
+        StorageListRunsReq: {
+            /** Robot Id */
+            robot_id: string;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+        };
+        /**
+         * StorageListRunsRes
+         * @description `run.started_at DESC` 정렬. 각 Run 마다 그 Run 의 모든 Result 가 묶여 옴.
+         */
+        StorageListRunsRes: {
+            /** Runs */
+            runs: components["schemas"]["CalibrationRunSummary"][];
         };
         /**
          * SystemMetrics
@@ -1153,6 +1543,24 @@ export interface components {
             bbox: number[];
             /** Conf */
             conf: number;
+        };
+        /** LinkOffsetEntry */
+        core__transport__messages__calibration__LinkOffsetEntry: {
+            /** Motor Id */
+            motor_id: number;
+            /** Trans M */
+            trans_m: number[];
+            /** Rot Rad */
+            rot_rad: number[];
+        };
+        /** LinkOffsetEntry */
+        modules__calibration__result_models__LinkOffsetEntry: {
+            /** Joint Id */
+            joint_id: number;
+            /** Trans M */
+            trans_m: number[];
+            /** Rot Rad */
+            rot_rad: number[];
         };
     };
     responses: never;

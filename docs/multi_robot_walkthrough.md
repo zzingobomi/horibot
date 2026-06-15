@@ -5,6 +5,8 @@
 >
 > Design 원본은 [multi_robot_architecture.md](multi_robot_architecture.md) (긴 design doc).
 > 본 문서는 **"코드 보면서 따라가기"** 관점에서 재정리. step_dsl.md 와 같은 스타일.
+>
+> **2026-06-15 업데이트** — 본 문서의 `.patched/` 디렉토리 / `write_patched_urdf` 언급은 *historical* (Phase 1 시점 기록). storage_node 도입 후 `.patched/` 디스크 영속화 폐기, in-memory `patch_urdf_text` + tempfile 1회성 패턴으로 교체 ([storage_layer.md §13](storage_layer.md)).
 
 ## 한 줄
 

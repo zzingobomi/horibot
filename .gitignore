@@ -45,12 +45,6 @@ desktop.ini
 *.pt
 *.pth
 
-# ─── Runtime-patched URDF ──────────────────────────────────────
-# robot/<robot_type>/urdf/.patched/ 에 link_offsets.npz를 적용한 URDF 캐시.
-# 각 머신이 부팅 시 자체 생성 — 푸시/공유 대상 아님.
-# multi_robot_architecture.md §5.1 의 새 구조 기준 (구: robot/urdf/<robot>/.patched/).
-robot/*/urdf/**/.patched/
-
 # ─── Convex decomposition collision meshes ─────────────────────
 # onshape-to-robot 가 자동 생성하는 정밀 collision STL (각 visual 부품을 convex
 # hull 여러 개로 분해). PyBullet self-collision check 같은 자리에서 사용.

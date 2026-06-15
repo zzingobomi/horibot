@@ -118,6 +118,39 @@ class SqliteStore:
             ).fetchall()
         return [_row_to_result(r) for r in rows]
 
+    def list_runs(
+        self, robot_id: str, limit: int = 50
+    ) -> list[tuple[CalibrationRunRecord, list[CalibrationResultRecord]]]:
+        with self._lock:
+            run_rows = self._conn.execute(
+                "SELECT * FROM calibration_runs "
+                "WHERE robot_id=? "
+                "ORDER BY started_at DESC LIMIT ?",
+                (robot_id, limit),
+            ).fetchall()
+            runs = [_row_to_run(r) for r in run_rows]
+            if not runs:
+                return []
+            # 한 번에 모든 Result fetch — N+1 query 회피.
+            run_ids = [r.id for r in runs if r.id is not None]
+            placeholders = ",".join("?" * len(run_ids))
+            result_rows = self._conn.execute(
+                f"SELECT * FROM calibration_results "
+                f"WHERE run_id IN ({placeholders}) "
+                f"ORDER BY created_at DESC",
+                run_ids,
+            ).fetchall()
+        results_by_run: dict[int, list[CalibrationResultRecord]] = {
+            rid: [] for rid in run_ids
+        }
+        for row in result_rows:
+            result = _row_to_result(row)
+            results_by_run.setdefault(row["run_id"], []).append(result)
+        return [
+            (run, results_by_run.get(run.id, []) if run.id is not None else [])
+            for run in runs
+        ]
+
     def get_result(self, result_id: int) -> CalibrationResultRecord | None:
         with self._lock:
             row = self._conn.execute(

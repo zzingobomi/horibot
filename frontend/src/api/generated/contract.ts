@@ -23,6 +23,7 @@ export const Topic = {
   CALIB_HANDEYE_RECOMMENDATIONS: "horibot/{robot_id}/calib/state/handeye_recommendations",
   CALIB_HANDEYE_SATURATE: "horibot/{robot_id}/calib/state/handeye_saturate",
   CALIB_HANDEYE_OBSERVABILITY: "horibot/{robot_id}/calib/state/handeye_observability",
+  STORAGE_CALIBRATION_INVALIDATED: "horibot/storage/state/calibration_invalidated",
   POINTCLOUD_STREAM: "horibot/{robot_id}/pointcloud/stream",
 } as const;
 export type TopicKey = (typeof Topic)[keyof typeof Topic];
@@ -49,6 +50,7 @@ export type TopicPayloadMap = {
   "horibot/{robot_id}/calib/state/handeye_recommendations": unknown;
   "horibot/{robot_id}/calib/state/handeye_saturate": unknown;
   "horibot/{robot_id}/calib/state/handeye_observability": components["schemas"]["HandeyeObservabilityState"];
+  "horibot/storage/state/calibration_invalidated": components["schemas"]["CalibrationInvalidated"];
 };
 
 export const ServiceKey = {
@@ -76,6 +78,11 @@ export const ServiceKey = {
   CALIB_HANDEYE_MULTI_START: "horibot/{robot_id}/calib/srv/handeye/multi_start",
   CALIB_BACKUP_LIST: "horibot/{robot_id}/calib/srv/backup/list",
   CALIB_BACKUP_RESTORE: "horibot/{robot_id}/calib/srv/backup/restore",
+  STORAGE_GET_ACTIVE_CALIBRATION: "horibot/storage/srv/calibration/get_active",
+  STORAGE_LIST_CALIBRATIONS: "horibot/storage/srv/calibration/list",
+  STORAGE_LIST_CALIBRATION_RUNS: "horibot/storage/srv/calibration/list_runs",
+  STORAGE_COMMIT_CALIBRATION: "horibot/storage/srv/calibration/commit",
+  STORAGE_ACTIVATE_CALIBRATION: "horibot/storage/srv/calibration/activate",
   TASK_STOP: "horibot/task/srv/stop",
   TASK_PAUSE: "horibot/task/srv/pause",
   TASK_RESUME: "horibot/task/srv/resume",
@@ -123,6 +130,11 @@ export type ServiceMap = {
   "horibot/{robot_id}/calib/srv/handeye/multi_start": { req: components["schemas"]["MultiStartReq"]; res: components["schemas"]["MultiStartRes"] };
   "horibot/{robot_id}/calib/srv/backup/list": { req: Record<string, never>; res: components["schemas"]["BackupListRes"] };
   "horibot/{robot_id}/calib/srv/backup/restore": { req: components["schemas"]["BackupRestoreReq"]; res: components["schemas"]["BackupRestoreRes"] };
+  "horibot/storage/srv/calibration/get_active": { req: components["schemas"]["StorageGetActiveReq"]; res: components["schemas"]["StorageGetActiveRes"] };
+  "horibot/storage/srv/calibration/list": { req: components["schemas"]["StorageListReq"]; res: components["schemas"]["StorageListRes"] };
+  "horibot/storage/srv/calibration/list_runs": { req: components["schemas"]["StorageListRunsReq"]; res: components["schemas"]["StorageListRunsRes"] };
+  "horibot/storage/srv/calibration/commit": { req: components["schemas"]["StorageCommitReq"]; res: components["schemas"]["StorageCommitRes"] };
+  "horibot/storage/srv/calibration/activate": { req: components["schemas"]["StorageActivateReq"]; res: components["schemas"]["StorageActivateRes"] };
   "horibot/task/srv/stop": { req: Record<string, never>; res: Record<string, never> };
   "horibot/task/srv/pause": { req: Record<string, never>; res: Record<string, never> };
   "horibot/task/srv/resume": { req: Record<string, never>; res: Record<string, never> };

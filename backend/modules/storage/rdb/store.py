@@ -36,6 +36,16 @@ class RdbStore(Protocol):
         """`created_at DESC` 정렬. limit 최대 100 default."""
         ...
 
+    def list_runs(
+        self, robot_id: str, limit: int = 50
+    ) -> list[tuple[CalibrationRunRecord, list[CalibrationResultRecord]]]:
+        """Run 단위 history — frontend list/ACTIVATE 패널이 사용.
+
+        `run.started_at DESC` 정렬. 각 tuple = (Run, 그 Run 의 모든 Result list).
+        storage_layer.md Stage 4 design A — MLflow Model Registry 정합.
+        """
+        ...
+
     def get_result(self, result_id: int) -> CalibrationResultRecord | None: ...
 
     def get_run(self, run_id: int) -> CalibrationRunRecord | None: ...

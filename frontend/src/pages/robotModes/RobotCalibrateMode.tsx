@@ -8,7 +8,7 @@ const PANELS: PanelSpec[] = [
   { id: "calibration-camera", component: "calibrationCamera", title: "Calibration Camera", width: 520, height: 420 },
   { id: "hand-eye", component: "handEye", title: "Hand-Eye", width: 320, height: 640 },
   { id: "intrinsic", component: "intrinsic", title: "Intrinsic", width: 280, height: 420 },
-  { id: "rollback", component: "rollback", title: "Rollback", width: 320, height: 360 },
+  { id: "calibration-history", component: "calibrationHistory", title: "Calibration History", width: 380, height: 400 },
   { id: "scene-controls", component: "sceneControls", title: "Scene Controls", width: 260, height: 300 },
 ];
 

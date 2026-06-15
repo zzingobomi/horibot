@@ -2,6 +2,8 @@
 
 > σ_rot 1.5° / σ_t 17mm floor → 확장 BA(link offset, §1~§14)로 1.30°/9.3mm →
 > 물리 sag 모델(§16)로 **0.65°/7.94mm**까지 내림. 수식 최소, **실제 코드 스니펫 + 줄별 설명** 중심.
+>
+> **2026-06-15 업데이트** — 본 문서 내 `write_patched_urdf` / `.patched/` 디렉토리 / "디스크에 patched URDF 저장" 언급은 *historical*. storage_node 도입 후 in-memory `patch_urdf_text` + tempfile 1회성 패턴으로 교체됨 ([storage_layer.md §13](storage_layer.md)). BA 의 link_offset 추정/적용 의미는 동일 (URDF 의 `<joint><origin>` 에 delta 가산), 적용 메커니즘만 다름.
 
 ---
 

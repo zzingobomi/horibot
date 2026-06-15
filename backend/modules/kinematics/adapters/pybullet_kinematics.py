@@ -1,9 +1,9 @@
 """PyBullet 기반 Kinematics adapter — ideal URDF 기구학 only.
 
-multi_robot_architecture.md §3.1 참조.
+multi_robot_architecture.md §3.1 참조. URDF patch 메커니즘 = storage_layer.md §13.
 
 책임:
-- URDF 로드 (link_offsets 적용된 patched URDF). PyBullet DIRECT 모드
+- URDF 로드 (link_offsets in-memory patch → tempfile 1회성 → loadURDF → unlink)
 - fk / ik / fk_to_matrix / joint_limits / self_collision
 - thread-safe (`_sim_lock`)
 
@@ -15,6 +15,8 @@ multi_robot_architecture.md §3.1 참조.
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Sequence
@@ -22,7 +24,7 @@ from typing import Sequence
 import numpy as np
 import pybullet as p
 
-from core.coords.urdf_patcher import write_patched_urdf
+from core.coords.urdf_patcher import patch_urdf_text
 from modules.calibration.link_offsets import LinkOffsets
 from modules.kinematics.kinematics import (
     Position3,
@@ -81,23 +83,37 @@ class PybulletKinematics:
         """URDF patch + PyBullet DIRECT 모드 로드 + joint info parse.
 
         calibration_node 가 apply_link_offsets 직후 호출. 두 번 호출 시 no-op.
+
+        link_offsets 는 in-memory string patch (storage_layer.md §13). PyBullet
+        `loadURDF` 가 path-only 라 OS temp 파일로 1회성 우회 — load 직후 unlink.
+        mesh 는 patch_urdf_text 가 절대경로 rewrite 해두므로 unlink 후에도
+        원본 mesh 파일에서 lazy load 가능.
         """
         with self._sim_lock:
             if self._initialized:
                 return
 
-            urdf_to_load = write_patched_urdf(self._urdf_path, self._link_offsets)
+            patched_text = patch_urdf_text(self._urdf_path, self._link_offsets)
             if not self._link_offsets.is_empty():
-                logger.info(f"patched URDF 로드: {urdf_to_load}")
+                logger.info("link_offsets 적용된 URDF in-memory render")
 
             self._client = p.connect(p.DIRECT)
             p.setGravity(0, 0, -9.81, physicsClientId=self._client)
 
-            self._robot = p.loadURDF(
-                str(urdf_to_load),
-                useFixedBase=True,
-                physicsClientId=self._client,
-            )
+            fd, temp_path = tempfile.mkstemp(suffix=".urdf", prefix="horibot_")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(patched_text)
+                self._robot = p.loadURDF(
+                    temp_path,
+                    useFixedBase=True,
+                    physicsClientId=self._client,
+                )
+            finally:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
             num_joints = p.getNumJoints(self._robot, physicsClientId=self._client)
             for i in range(num_joints):

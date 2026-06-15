@@ -151,6 +151,10 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
         _storage.StorageListReq,
         _storage.StorageListRes,
     ),
+    Service.STORAGE_LIST_CALIBRATION_RUNS: (
+        _storage.StorageListRunsReq,
+        _storage.StorageListRunsRes,
+    ),
     Service.STORAGE_COMMIT_CALIBRATION: (
         _storage.StorageCommitReq,
         _storage.StorageCommitRes,

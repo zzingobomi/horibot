@@ -103,6 +103,9 @@ class Service:
     # 캘 5종 저장/조회/활성화. docs/storage_layer.md §2 architecture.
     STORAGE_GET_ACTIVE_CALIBRATION = "horibot/storage/srv/calibration/get_active"
     STORAGE_LIST_CALIBRATIONS = "horibot/storage/srv/calibration/list"
+    # Run 단위 history. frontend list/ACTIVATE 패널이 사용 (storage_layer.md
+    # Stage 4 §6.A — MLflow Model Registry / git history 정합).
+    STORAGE_LIST_CALIBRATION_RUNS = "horibot/storage/srv/calibration/list_runs"
     STORAGE_COMMIT_CALIBRATION = "horibot/storage/srv/calibration/commit"
     STORAGE_ACTIVATE_CALIBRATION = "horibot/storage/srv/calibration/activate"
 

@@ -54,9 +54,12 @@ MIN_POSES_FOR_TRUSTED_SIGMA: int = 8
 
 RECOMMENDED_POSES: int = 10
 
-# 5DOF 아암 각 조인트의 std (deg) — 이 미만이면 다양성 부족.
+# Arm 각 조인트의 std (deg) — 이 미만이면 다양성 부족. caller 의 arm DOF 길이에
+# 맞춰 사용 (joint_distribution.analyze 는 i >= len 일 때 fallback 15.0).
 # 캘에 가장 중요한 회전 축은 J1 (base yaw), J4 (wrist pitch), J5 (wrist roll).
-# J2/J3는 ee 위치 변화엔 중요하지만 hand-eye 회전 추정엔 덜 중요해 임계값을 낮춤.
+# J2/J3 는 ee 위치 변화엔 중요하지만 hand-eye 회전 추정엔 덜 중요해 임계값을 낮춤.
+# omx_f (5DOF) 기준 J1~J5. so101_6dof (6DOF) 의 J6 (wrist yaw) 는 fallback 15.0
+# 적용 — 별도 튜닝 시점에 robot type 별 분리 (multi_robot Phase 3).
 JOINT_DIVERSITY_THRESHOLD_DEG: tuple[float, ...] = (25.0, 15.0, 15.0, 25.0, 30.0)
 
 # ─── Hand-Eye PnP 품질 gate ──────────────────────────────────────

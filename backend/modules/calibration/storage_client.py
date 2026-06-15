@@ -20,6 +20,7 @@ import zenoh
 
 from core.transport.messages.storage import (
     CalibrationInvalidated,
+    CalibrationRunSummary,
     StorageActivateReq,
     StorageActivateRes,
     StorageCommitReq,
@@ -28,6 +29,8 @@ from core.transport.messages.storage import (
     StorageGetActiveRes,
     StorageListReq,
     StorageListRes,
+    StorageListRunsReq,
+    StorageListRunsRes,
 )
 from core.transport.topic_map import Service, Topic
 from modules.calibration.persistence_models import (
@@ -66,6 +69,18 @@ class CalibrationStorageClient:
             StorageListRes,
         )
         return res.results
+
+    def list_runs(
+        self, robot_id: str, limit: int = 50
+    ) -> list[CalibrationRunSummary]:
+        """Run 단위 history — frontend list/ACTIVATE 패널이 사용. 한 Run 의
+        모든 kind Result 가 묶여 옴 (storage_layer.md Stage 4 design A)."""
+        res = self._t.call(
+            Service.STORAGE_LIST_CALIBRATION_RUNS,
+            StorageListRunsReq(robot_id=robot_id, limit=limit),
+            StorageListRunsRes,
+        )
+        return res.runs
 
     # ─── write ───────────────────────────────────────────────
 

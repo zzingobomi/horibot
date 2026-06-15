@@ -126,17 +126,23 @@ for joint_el in root.findall("joint"):
     origin_el.set("rpy", _fmt_xyz(rpy + d_rot))     # ← 가산
 ```
 
-즉 `robot/urdf/omx_f/.patched/omx_f.urdf` (gitignored)에 *수정된* URDF를 만들어 PyBullet이 그걸 로드한다. 원본은 그대로 두니까 git status가 노이지하지 않고, BA를 다시 돌릴 때 baseline이 항상 같다.
+즉 `patch_urdf_text` 가 in-memory 에서 수정된 URDF text 를 만들어 PyBullet 이 그걸 로드한다. 원본은 그대로 두니까 git status 가 노이지하지 않고, BA 를 다시 돌릴 때 baseline 이 항상 같다.
+
+> **2026-06-15 업데이트** — 이전에는 `robot/<type>/urdf/.patched/` 디스크에 영속 저장하던 패턴 (git push/pull 시대 잔재). storage_node 도입으로 폐기. 매 부팅 시 in-memory render → tempfile 1회성 (PyBullet `loadURDF` path-only 우회) → load 직후 unlink. 상세 [storage_layer.md §13](storage_layer.md).
 
 ### 부팅 시 흐름
 
-[backend/modules/kinematics/registry.py:52](../backend/modules/kinematics/registry.py#L52) — `Kinematics.__init__`:
+[backend/modules/kinematics/adapters/pybullet_kinematics.py](../backend/modules/kinematics/adapters/pybullet_kinematics.py) `initialize()`:
 
 ```python
-link_offsets = LinkCoordinates().snapshot()
-urdf_to_load = write_patched_urdf(URDF_PATH, link_offsets)  # ← patched URDF 생성
-...
-self._robot = p.loadURDF(str(urdf_to_load), ...)            # ← 그걸 로드
+patched_text = patch_urdf_text(self._urdf_path, self._link_offsets)  # ← in-memory string
+fd, temp_path = tempfile.mkstemp(suffix=".urdf", prefix="horibot_")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(patched_text)
+    self._robot = p.loadURDF(temp_path, ...)        # ← PyBullet 가 1회 파싱
+finally:
+    os.unlink(temp_path)                            # ← load 끝나면 즉시 삭제
 ```
 
 게다가 link offset은 numpy로 직접 구현한 FK([backend/modules/kinematics/fk_chain.py](../backend/modules/kinematics/fk_chain.py))에도 그대로 전달돼야 한다 — sag 계산이 numpy fk를 쓰는데, PyBullet의 patched URDF와 *수학적으로 동일한 transform*을 써야 두 경로의 EE 위치가 일치한다:

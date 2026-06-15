@@ -524,6 +524,7 @@ Phase 1 의 generic 토대가 Phase 2/3 에서 그대로 재사용. Phase 2 는 
 | git push/pull 캘 동기화 | 운영 step | invalidation topic 자동 |
 | capture session 중 race 우려 (phantom freeze 패턴) | — | commit/activate 분리가 자연 해결 |
 | BA 입력 자세 정보 휘발성 (npz 안 묻혀 있던 자리) | npz | `calibration_captures` 테이블 (per-pose row, IRLS weight/residual 포함) |
+| `robot/<robot_type>/urdf/.patched/` 디렉토리 + `write_patched_urdf` / `patched_urdf_path` 함수 | [backend/core/coords/urdf_patcher.py](../backend/core/coords/urdf_patcher.py) | `patch_urdf_text` (in-memory string) + `tempfile.mkstemp` (PyBullet 의 `loadURDF` path-only 한계 우회용 1회성). 상세 §13 |
 
 ### Phase 2 (scans/meshes/task_runs) 도입 후
 
@@ -578,29 +579,59 @@ JointCoordinates / LinkCoordinates / SagCoordinates / PybulletKinematics / Calib
 - **`hand_eye_path = ... ; st.hand_eye.save(hand_eye_path)`** — 이미 제거됨. legacy npz disk save 0.
 - **`handeye_poses.npz`** — capture session 의 working state (자세 임시 보존, 재시작 후 복원용). storage 와 별개 — 유지.
 
-### Stage 3 — 마이그레이션 스크립트 (pending, omx_f_0 대상)
+### Stage 3 — 마이그레이션 스크립트 (불필요, 폐기)
 
-- `backend/scripts/migrate_calibration_to_storage.py` 신설
-- `omx_f_0` 의 5종 npz (`robot/instances/omx_f_0/calibration/*.npz`) 읽음 → `CalibrationRunRecord` + 5 `*ResultRecord` 빌드 → `storage.commit` + `storage.activate`.
-- captures 정보 없음 → `captures=[]` (Evidence 자리는 Phase 2 에서 가져옴).
-- **so101_6dof_0 은 skip** — 옛 캘 없음. 첫 캘은 hardware 자리에서 새로 진행.
-- 1회 실행. 다음 부팅 시 storage 에서 fetch + push → 옛 omx_f_0 캘 운영.
+**폐기 (2026-06-16 사용자 결정)** — omx_f_0 카메라가 D405 → USB 카메라로 swap 진행 중. 옛 5종 npz 의 intrinsic / hand_eye 는 다른 카메라 캘이라 *틀린 값* (detector 가 엉뚱한 위치 찾음). "아예 처음부터" = kinematic 캘 (joint / link / sag) 도 다시. → **옛 npz 모두 garbage, import 가 의미 없음.**
 
-### Stage 4 — Frontend UI (pending, 다음 세션 핵심)
+본 흐름 — `storage.db` 빈 채로 첫 부팅 → hardware 자리에서 5종 캘 처음부터:
+1. backend 첫 부팅 → `storage.db` 빈 채.
+2. UI 의 [캘 패널] 에서 omx_f_0 / so101_6dof_0 각각 5종 캘 처음부터 (intrinsic capture → save / hand_eye capture/compute/commit / ...).
+3. 각 COMMIT → 새 Run + Result row INSERT (is_active=false). ACTIVATE 별도 step.
+4. ACTIVATE 후 invalidation publish → 노드들이 캘 fetch + push.
 
-frontend 변경 0 — backend 만 변경. 다음 자리:
+(이력 — 본 세션에서 `backend/scripts/migrate_calibration_to_storage.py` 작성했으나 omx 카메라 swap 으로 무의미해져 삭제. 미래 유사 자리 필요해지면 git history 에서 재현 가능.)
 
-1. **`HandeyeCommitRes.path`** — `"storage:run/3"` 식 새 형식. frontend 가 *파일 경로* 표기로 사용 중인지 확인 → "run #3" 식으로 변경 (또는 그대로 둠).
+### Stage 4 — Frontend UI (진행 중)
 
-2. **`STORAGE_CALIBRATION_INVALIDATED` topic 구독** — frontend 의 `BridgeClient` 가 본 topic 받으면 `/robots/{rid}/calibration/results` HTTP refetch + 패널 갱신. 현재 frontend 가 invalidation 받아 refetch 안 함 → page reload 시점에만 fresh.
+**Design A — Run 단위 통합 list (2026-06-16 결정)**
 
-3. **list / ACTIVATE 패널 (new)** — `STORAGE_LIST_CALIBRATIONS(robot_id, kind, limit)` 호출 → history list 표시. `STORAGE_ACTIVATE_CALIBRATION(result_id)` 버튼. 현재 활성 강조 (is_active=true row).
-   - 캘 패널의 새 탭 또는 기존 Rollback 탭 swap.
-   - kind 별 (intrinsic / hand_eye / joint_offset / link_offset / sag) tab 또는 통합 list + filter.
+List 모델 — `STORAGE_LIST_CALIBRATIONS(robot_id, kind, limit)` 는 *kind 별*. RollbackPanel 의 직관 ("한 시점 = 한 캘 세션") 으로 보려면 **Run 단위 그루핑** 이 자연. 산업 표준 (MLflow Model Registry / git history) 정합.
 
-4. **Rollback 탭 swap** — `CALIB_BACKUP_LIST` / `CALIB_BACKUP_RESTORE` (`.history/` 의존) → `STORAGE_LIST_CALIBRATIONS` + `STORAGE_ACTIVATE_CALIBRATION`. 그 후 backend 의 `backup.py` 제거 가능.
+→ backend 에 **`STORAGE_LIST_CALIBRATION_RUNS(robot_id, limit)`** 추가 (commit 본 세션). 한 Run + 그 Run 의 모든 kind Result 가 묶여 옴. frontend 가 5번 호출 안 하고 1번에 받음.
 
-5. **`pnpm gen:types`** — backend `/openapi.json` 의 `x-contract` 가 5종 ResultData + 5종 ResultRecord + Storage service 4 + invalidation topic 다 포함. frontend codegen 실행 → `contract.ts` / `types.ts` 갱신.
+```python
+# backend/core/transport/messages/storage.py
+class CalibrationRunSummary(StrictModel):
+    run: CalibrationRunRecord
+    results: list[CalibrationResultRecord]  # 그 Run 의 모든 kind
+
+class StorageListRunsReq(StrictModel):
+    robot_id: str
+    limit: int = 50
+
+class StorageListRunsRes(StrictModel):
+    runs: list[CalibrationRunSummary]  # run.started_at DESC 정렬
+```
+
+다른 옵션 (보류):
+- B. kind 별 tab — 5 tab. σ_rot 후퇴 비교 (hand_eye 만) 자연하지만 5종 묶음 rollback = 5번 클릭. UX 비용.
+- C. 통합 list + kind filter — A + B 절충, 화면 복잡.
+
+**진행 단계:**
+
+1. ✅ **Backend `list_runs` API 추가** — `STORAGE_LIST_CALIBRATION_RUNS` Service / `CalibrationRunSummary` / `StorageListRunsReq` / `StorageListRunsRes` + RdbStore Protocol + SqliteStore (N+1 query 회피 single IN query) + MemoryRdbStore + storage_node handler + CalibrationStorageClient.list_runs + api_contract.PUBLIC_SERVICES.
+
+2. ⏳ **`pnpm gen:types`** — backend `/openapi.json` 의 `x-contract` 가 새 service + invalidation topic 다 포함. frontend codegen 실행 → `contract.ts` / `types.ts` 갱신.
+
+3. ⏳ **`STORAGE_CALIBRATION_INVALIDATED` topic 구독** — frontend 의 `BridgeClient` 가 본 topic 받으면 `useCalibrationRuns` hook 의 query 강제 refetch + 패널 갱신. 현재 frontend 는 invalidation 받아 refetch 안 함 → page reload 시점에만 fresh.
+
+4. ⏳ **list / ACTIVATE 패널 (RollbackPanel swap)** — `STORAGE_LIST_CALIBRATION_RUNS(robot_id, limit)` 호출 → Run 별 row → 펼침 → 5 kind 의 σ_rot / σ_t / created_at + ACTIVATE 버튼 (Run 전체 / kind 별 양쪽). 현재 활성 강조 (is_active=true row).
+   - 기존 Rollback 탭 swap (panel 이름 그대로 두고 내부 구현만 swap, 또는 `CalibrationHistoryPanel` 로 이름 변경).
+   - `.history/` 의존 (옛 `CALIB_BACKUP_LIST` / `CALIB_BACKUP_RESTORE`) 사라짐.
+
+5. ⏳ **`HandeyeCommitRes.path`** — `"storage:run/3"` 식 새 형식. frontend 가 *파일 경로* 표기로 사용 중인지 확인 → "run #3" 식으로 변경 (또는 그대로 둠).
+
+6. **Stage 2d cleanup** — Stage 4 끝나면 backend 의 `backup.py` + `CALIB_BACKUP_*` 서비스 제거.
 
 ### Phase 2 / 3 generic — 미리 박지 말 것
 
@@ -608,11 +639,154 @@ frontend 변경 0 — backend 만 변경. 다음 자리:
 - 캘 raw image (Artifact 계층) — Phase 2 진입 시 도입 (§6 매핑)
 - NAS Postgres/MinIO adapter 의 connection pool / transaction 정책 — Phase 3 진입 시 논의
 
-## 12. 다음 세션 anchor
+## 12. 다음 세션 anchor (2026-06-16 갱신)
 
-본 commit 후 picking up:
+본 세션 (2026-06-15 → 06-16) 완료된 자리:
 
-1. **검증** (집에서 hardware) — host_dev 부팅, so101 첫 캘 (intrinsic capture/save → handeye capture/compute/commit) → 재부팅 후 storage 에서 fetch + 운영 확인.
-2. **Stage 3 마이그레이션 스크립트** 작성 (`omx_f_0` 의 옛 npz import).
-3. **Stage 4 frontend** — 우선 `pnpm gen:types` 실행, `BridgeClient` 의 invalidation 구독 + refetch, list/ACTIVATE 패널 추가.
-4. **Stage 2d cleanup** — Stage 4 끝나면 `backup.py` + `CALIB_BACKUP_*` 서비스 제거.
+- ✅ `.patched/` URDF 디스크 영속화 폐기 (Option A — in-memory `patch_urdf_text` + tempfile, §13).
+- ✅ omx 5DOF 하드코딩 일부 fix (`_default_joint_id_map` 자동 도출 / `joint_distribution` cap 제거 / `thresholds` 주석). 보류 자리는 §13.6 (5.5).
+- ✅ Backend `STORAGE_LIST_CALIBRATION_RUNS` API (Run 단위 통합 list, §13.7 Stage 4 design A).
+- ✅ Frontend `useCalibrationRuns` hook + invalidation 자동 refetch.
+- ✅ Frontend `CalibrationHistoryPanel` (옛 `RollbackPanel` swap. registry / RobotCalibrateMode 갱신, `BackupEntry` type 삭제).
+- ❌ Stage 3 마이그레이션 스크립트 (작성했으나 omx 카메라 swap 으로 폐기, §11 Stage 3).
+
+**다음 세션 시작 자리** (hardware 자리에서 검증):
+
+1. **첫 부팅 검증** — `storage.db` 빈 채로 host_dev 시작. 빈 storage 에서 calibration_node 가 `STORAGE_GET_ACTIVE_CALIBRATION` 호출 시 `found=false` 정상 응답 + 노드들이 default 캘 (identity / joint_offset=0 등) 로 wait 모드 진입 확인. UI 의 `CalibrationHistoryPanel` 이 빈 list 정상 표시.
+
+2. **omx_f_0 첫 캘** (USB 카메라 결선 후) — UI 의 [Intrinsic] 패널 capture/save → storage.db 에 intrinsic Run + Result INSERT. ACTIVATE → invalidation → 다른 노드 refetch. 이어서 hand_eye / joint_offset / link_offset / sag 순서. **각 단계마다 `CalibrationHistoryPanel` 의 Run row 추가 확인 + ACTIVATE 시 활성 강조 색깔 확인.**
+
+3. **so101_6dof_0 첫 캘** — 결선 후 동일 흐름. `pose_recommend_strategy: geometry` (6DOF anchor IK) 동작 검증.
+
+4. **Stage 2d cleanup** — Stage 4 (frontend) 가 hardware 검증으로 동작 확인되면 backend 의 `backup.py` + `CALIB_BACKUP_LIST` / `CALIB_BACKUP_RESTORE` 서비스 제거. frontend 의 `RollbackPanel` 은 이미 삭제됨.
+
+5. **so101 link_offset 캘 본격 진입 시점에** — §13.6 (5.5) 의 omx 하드코딩 anchor 처리:
+   - `fk_chain.py` (omx 5DOF literal numpy array) 일반화 — pinocchio / KDL / Drake 의 URDF parse → numpy FK chain build 패턴 산업 표준 리서치 먼저.
+   - `sag_corrected._ARM_DOF=5` (fk_chain 묶임).
+   - `observability.wrist_roll_axis=4` default — `robots.yaml::wrist_roll_motor_index` per-robot config 추가 + `RobotConfig` 노출 + caller 명시 주입 + observability default 제거.
+
+**(보류) 검증 필요 자리** (§13.6):
+- (5.1) PyBullet 가 `loadURDF` 후 URDF 파일 다시 안 봄 확인 — `.patched/` 폐기 + tempfile 패턴 의존. fk / ik 동작 확인 (수렴 + EE pos 정상).
+- (5.2) Option B (xacro 도입) — SO-101 URDF refactor 시점에 묶기.
+- (5.3) mesh `package://` 도입 — ROS 2 stack 과 URDF 공유 필요해질 때.
+- (5.4) hand_eye 도 URDF 안의 `camera_link` joint origin 으로 박는 게 정통 — Option B 시점.
+
+## 13. link_offset 적용 메커니즘 — `.patched/` 폐기 + in-memory render
+
+> **결정 요약 (2026-06-15)** — `robot/<robot_type>/urdf/.patched/` 디스크 영속화 폐기. 매 부팅 시 `patch_urdf_text` 로 in-memory render → PyBullet `loadURDF` 가 path-only 라 OS temp 파일로 1회성 우회 → load 직후 unlink. SSOT = storage DB, URDF 는 process 시작 시점에 render 된 임시 string.
+
+### 13.1 동기 — `.patched/` 가 git 시대 잔재
+
+`link_offset` 만 다른 4 종 (intrinsic/hand_eye/joint_offset/sag) 과 적용 메커니즘이 달랐음:
+- 다른 4 종 → 메모리 cache 의 값을 함수에서 곱하는 식 (런타임 hot-reload)
+- `link_offset` → URDF 의 `<joint><origin xyz/rpy>` 에 delta 가산 → 새 URDF 파일을 `robot/<type>/urdf/.patched/` 디스크에 저장 → PyBullet 이 그 파일 load
+
+디스크 영속화의 이유 — git push/pull 분산 동기화 시대에 `.patched/` URDF 를 분산 머신끼리 git 으로 공유해야 했음. storage_node 도입 후:
+- `link_offset` SSOT = storage DB row (kind='link_offset')
+- 분산 동기화 = invalidation topic + push (자동)
+- `.patched/` URDF = DB 의 stale render = **두 곳 동기화 책임 발생 (SSOT 원칙 위반)**
+
+추가 문제 — `.patched/` 경로가 `robot/<robot_type>/urdf/` (TYPE 폴더). 같은 type 다중 instance (omx_f_0, omx_f_1) 가 같은 `.patched/` 디렉토리 공유 → last-writer-wins 충돌. N=1 라서 가려진 multi-robot 버그.
+
+### 13.2 산업 표준 리서치 (2026-06-15)
+
+robot stack 들의 캘 결과 URDF 적용 패턴 — 전부 같은 모양으로 수렴:
+
+```
+YAML (캘 값, SSOT) → xacro/template render → URDF string → parser → in-memory model
+```
+
+| Stack | 캘 결과 저장 자리 | URDF 적용 방식 |
+|---|---|---|
+| ROS 2 `robot_state_publisher` | xacro args / robot_description parameter | parameter 에 URDF *string* 으로 inject — file 도 topic 도 아님 |
+| Universal Robots `ur_calibration` | `<robot>_calibration.yaml` (DH delta) | launch 시 xacro 가 YAML 읽어 `<joint><origin>` 변수 치환 |
+| Franka Emika | `kinematics.yaml` + 3 종 (`inertials/joint_limits/dynamics`) | xacro `load_yaml` + `${var}` 치환 |
+| Drake | YAML / xacro | `Parser.AddModelsFromString(urdf_text, "urdf")` — in-memory 직접 |
+| Isaac Sim | URDF / USD | UrdfImporter 가 in-memory string parse 지원 |
+
+**공통 원칙**:
+1. URDF = *파생물*, SSOT 는 YAML/DB
+2. render 는 매 process 시작 시 1회 (런타임 reload 안 함)
+3. rendered URDF 는 string 으로 살아 있고 **디스크에 영속 X**
+4. mesh path 는 parser 의 resolver (PackageMap 등) 또는 절대경로 rewrite
+
+### 13.3 PyBullet 의 제약
+
+- **bullet3 C++ 코어** `UrdfParser::loadUrdf(const char* urdfText, ...)` — in-memory string load **지원**
+- **PyBullet Python wrapper** `pybullet.loadURDF(fileName=...)` — **path-only** (SharedMemoryCommand 가 path 만 직렬화, wrapper 가 string API 안 노출)
+- **런타임 override** — `changeDynamics` 가 mass/inertia/CoM/friction 만 변경, **joint origin xyz/rpy 못 건드림**. `resetJointState` 는 joint *position* 만. 런타임 patch 경로 **없음**
+
+→ PyBullet user 입장에선 *tempfile 1회성 우회* 가 커뮤니티 정석 workaround.
+
+### 13.4 옵션 비교
+
+| 옵션 | 메커니즘 | 산업 표준 정합 | 면적 | 채택 |
+|---|---|---|---|---|
+| **A. tempfile in-memory render** | `patch_urdf_text` → tempfile → loadURDF → unlink | ROS 2 `robot_description` 정신 (PyBullet wrapper 한계 위에서 emulation) | ~30 LOC | ✅ 즉시 |
+| **B. xacro/jinja2 템플릿** | URDF.xacro + storage.link_offset → template render → string → tempfile | UR/Franka/ROS 정통 패턴 그대로 | ~200-400 LOC + URDF 재작성 | SO-101 URDF refactor 시점에 묶기 |
+| C. Drake adapter | `Parser.AddModelsFromString` (in-memory) | Drake 정통 | ~300 LOC + 의존성 거대 + Win11 약함 | 오버킬 |
+| D. 디스크 유지 + per-instance | `.patched/` 를 instance 폴더로 옮김 | 낮음 — 어떤 stack 도 안 함 | 작음 | SSOT 원칙 위반 잔존 |
+
+### 13.5 채택 — A → B 단계적
+
+**즉시 (지금, Option A)**:
+- `patch_urdf_text(...)` 는 그대로 유지 (이미 in-memory string 반환)
+- `write_patched_urdf` + `patched_urdf_path` 제거
+- `PybulletKinematics.initialize` 안:
+  ```python
+  patched_text = patch_urdf_text(self._urdf_path, self._link_offsets)
+  fd, temp_path = tempfile.mkstemp(suffix=".urdf", prefix="horibot_")
+  try:
+      with os.fdopen(fd, "w", encoding="utf-8") as f:
+          f.write(patched_text)
+      self._client = p.connect(p.DIRECT)
+      self._robot = p.loadURDF(temp_path, useFixedBase=True, ...)
+  finally:
+      try: os.unlink(temp_path)
+      except OSError: pass
+  ```
+- `.patched/` 디렉토리 통째 삭제 (gitignored 라 그대로 사라짐)
+- mesh 절대경로 rewrite (`patch_urdf_text` 안의 자리) **유지** — PyBullet 가 `package://` 지원 안 함
+
+**중기 (Option B, SO-101 URDF refactor 시점에 묶기)**:
+- omx_f / so101_6dof URDF 둘 다 `*.urdf.xacro` 화
+- `urdf_patcher` → xacro/jinja2 wrapper 로 교체
+- LinkOffsets semantic 재정의 (delta 가산 → nominal + override 의 어느 자리에 박힐지) — UR/Franka 패턴 학습 자리
+
+### 13.6 검증 + 보류
+
+**Option A 검증 step** — PyBullet 가 `loadURDF` 후 URDF 파일 자체를 다시 안 본다는 가정 의존. 실 hardware 자리에서 (or DIRECT 모드 single fk/ik test 로):
+1. tempfile 에 patched URDF write → loadURDF → 즉시 unlink
+2. fk(joint_angles) 호출 → EE pos 정상 반환
+3. ik(target_pos) 호출 → 수렴 + 정상 joint_angles 반환
+4. mesh 가 정상 보이는지 (visual 모드 또는 collision check) — mesh 는 lazy load 라 unlink 후에도 원본 mesh 파일에서 읽어야 함, mesh 절대경로 rewrite 가 그 자리
+
+**보류 자리들**:
+- (5.1) PyBullet 가 loadURDF 후 URDF 다시 보는 자리 검증 미완 — Option A 채택 시 1회 확인
+- (5.2) Option B 의 LinkOffsets semantic (delta vs absolute) — Option B 진입 시 재논의
+- (5.3) mesh `package://` 도입 — ROS 2 stack 과 URDF 공유 필요해질 때 별도 결정
+- (5.4) hand_eye 도 URDF 안의 `camera_link` joint origin 으로 박는 게 정통 (MoveIt 패턴) — Option B 진입 시 같이 검토
+- (5.5) **omx 5DOF 하드코딩 잔재 정리** (2026-06-15 사용자 짚어주기) — 본 storage_layer 작업과 별개 multi-robot 일반화 자리. 발견 자리:
+  - [backend/modules/kinematics/fk_chain.py](../backend/modules/kinematics/fk_chain.py) — `JOINT_ORIGINS` / `JOINT_AXES` / `EE_ORIGIN` / `N_JOINTS=5` 가 omx_f URDF geometry 의 *literal numpy array*. BA + sag 가 이걸 씀 (PybulletKinematics 아닌 별도 numpy FK — BA 가 매 LM iteration 마다 link_offset 변수로 호출하려 PyBullet 우회). **so101 link_offset 캘 진입 시 omx geometry 위에서 풀어버림 = 완전 잘못된 결과.**
+  - [backend/modules/kinematics/adapters/sag_corrected.py:39](../backend/modules/kinematics/adapters/sag_corrected.py#L39) — `_ARM_DOF: int = 5` 모듈 상수. fk_chain 의 `apply_gravity_sag` 가 5-element array 전제라 sag_corrected 단독 일반화 불가 — fk_chain 과 묶인 자리.
+  - [backend/modules/calibration/observability.py:58](../backend/modules/calibration/observability.py#L58) — `wrist_roll_axis: int = 4` default = OMX-F joint5 (motor index 4, 0-indexed). `analyze_pose_data` caller (`calibration_node._srv_handeye_capture`) 가 명시 주입 안 함 — so101 가 omx 가정 사용. fix = `robots.yaml::wrist_roll_motor_index` per-robot config 추가 + `RobotRegistry::RobotConfig` 노출 + caller 가 `cfg.wrist_roll_motor_index` 주입 + observability default 제거.
+
+  **fix 면적**:
+  - (a) **fk_chain.py 일반화** = 큼 (~100+ LOC). 산업 표준 리서치 필요 — pinocchio / KDL / Drake 의 "URDF parse → numpy FK kinematics chain build" 패턴 어떻게 하는지 분석 후 결정 ([feedback-research-before-decide](../memory/feedback_research_before_decide.md)). BA 의 매 LM iteration FK 호출 hot path 라 성능 / 정확성 양쪽 검토.
+  - (b) sag_corrected ARM_DOF = (a) 와 묶임. fk_chain 일반화 시 자동 정리.
+  - (c) observability wrist_roll_axis = robots.yaml schema 결정 자리. fix 면적 ~30 LOC (yaml + RobotConfig + caller + observability).
+
+  **트리거** — so101 의 link_offset 캘 / hand_eye 캘 본격 진입 시점. 그 전엔 omx_f_0 만 운영 (so101 enabled 지만 결선 안 됨) 이라 silent.
+
+  완료된 자리 (2026-06-15 본 세션):
+  - `urdf_patcher.py::_default_joint_id_map` (range(1,6) 하드코딩) → `LinkOffsets.ids` 기반 자동 도출 (SSOT)
+  - `joint_distribution.py::n_axes = min(..., 5)` → cap 제거 + `JOINT_NAMES_KO` i 범위 밖 fallback
+  - `thresholds.py::JOINT_DIVERSITY_THRESHOLD_DEG` 주석을 multi-robot 컨텍스트로 갱신 (코드는 `joint_distribution` 의 fallback 패턴이 이미 처리)
+
+### 13.7 산업 표준 references
+
+- [bullet3 UrdfParser::loadUrdf](https://github.com/bulletphysics/bullet3/blob/master/examples/Importers/ImportURDFDemo/UrdfParser.cpp) — C++ string load 지원
+- [Universal_Robots_ROS_Driver/ur_calibration](https://github.com/UniversalRobots/Universal_Robots_ROS_Driver/tree/master/ur_calibration) — YAML SSOT + xacro substitute (우리와 가장 닮은 패턴)
+- [frankaemika/franka_description](https://github.com/frankaemika/franka_description) — kinematics.yaml + xacro
+- [Drake Parser.AddModelsFromString](https://drake.mit.edu/doxygen_cxx/classdrake_1_1multibody_1_1_parser.html) — in-memory 정통
+- [ROS 2 robot_description parameter pattern](https://medium.com/@zakerima/understanding-robot-description-in-ros-2-its-not-a-topic-f2f365f2b496)

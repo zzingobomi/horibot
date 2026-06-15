@@ -321,18 +321,6 @@ export type MultiStartRes = {
 };
 
 /**
- * `CALIB_BACKUP_LIST` 응답 한 행 — `.history/<ts>_<tag>/meta.json` 의 picker 표시용.
- */
-export type BackupEntry = {
-  timestamp: string;
-  tag: string;
-  sigma_rot_deg: number | null;
-  sigma_t_mm: number | null;
-  capture_count: number | null;
-  ba_mode: string | null;
-};
-
-/**
  * `CALIB_HANDEYE_THRESHOLDS` 응답 — 백엔드 thresholds.py의 단일 출처.
  * 프론트엔드는 RobotCalibrateMode 진입 시 calibrationStore.bootstrap 안에서 1회 fetch.
  */

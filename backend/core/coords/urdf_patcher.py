@@ -1,20 +1,20 @@
-"""원본 URDF에 link_offsets를 patch 적용해 PyBullet이 로드할 URDF 생성.
+"""원본 URDF 에 link_offsets 를 patch 적용한 URDF text 를 in-memory 반환.
 
-설계 이유:
-    PyBullet의 loadURDF는 파일 경로만 받음 (메모리 string API 없음). 그렇다고
-    원본 URDF를 매번 modify-in-place하면 git status가 노이지하고 분산 모드에서
-    "URDF는 source-of-truth + link_offsets.npz만 push" 흐름이 깨짐.
+설계 (docs/storage_layer.md §13):
+    SSOT 는 storage DB 의 link_offset row. URDF 는 부팅 시점에 render 되는
+    파생물 (디스크 영속화 X). PyBullet `loadURDF` 가 path-only API 라
+    caller (PybulletKinematics.initialize) 가 tempfile 로 1회성 우회.
 
-해결:
-    원본 URDF는 *그대로* 두고, 머신 부팅 시 link_offsets.npz를 patch 적용한
-    URDF를 .patched/ 폴더(gitignored)에 생성. PyBullet은 그 patched 파일을 로드.
-    다른 머신은 git pull + 재시작 → 자체 patched URDF 갱신.
+    산업 표준 패턴 — ROS 2 `robot_description` parameter (URDF *string* 으로 들고
+    다님, 파일 아님) / UR `ur_calibration` (YAML SSOT + xacro substitute) /
+    Franka `franka_description` (kinematics.yaml + xacro) 와 동형.
 
 URDF rpy 가산 — small-angle 가정:
     BA가 추정하는 link_rot은 axis-angle rotation vector (rad). URDF의
     <joint><origin rpy="..."/>는 ZYX 오일러. 일반적으로 두 표현이 다르나, 작은
     각(<5°)에서는 rpy ≈ rotvec 근사 정확. 현재 v3 final 결과 link_rot 최대
-    0.85° 수준이라 안전. 큰 각이 필요해지면 정확한 matrix→rpy 변환 도입.
+    0.85° 수준이라 안전. 큰 각이 필요해지면 정확한 matrix→rpy 변환 도입
+    (Option B / xacro 도입 시점에 같이 정리).
 """
 
 from __future__ import annotations
@@ -28,21 +28,6 @@ import numpy as np
 from modules.calibration.link_offsets import LinkOffsets
 
 logger = logging.getLogger(__name__)
-
-
-def _default_joint_id_map() -> dict[str, int]:
-    """URDF joint name → link_offsets dict key. joint1~joint5 → 1~5 (모터 ID와 동일).
-
-    tcp_joint 는 *URDF patch 안 함* — 그 위치는 캘리브레이션 reference frame
-    (hand_eye / IK 의 기준점) 으로 고정. URDF EE (tcp) 와 실제 그리퍼 끝점 사이
-    갭은 LinkCoordinates ID=6 행을 *tool_offset* 으로 재해석해 motion_node 의
-    service handler 에서 명령 좌표 변환에 사용 (cancel out 회피).
-
-    이력: 한때 tcp_joint:6 으로 URDF patch 시도했으나 detect 와 IK 양쪽 모두
-    같은 patched URDF 위에 도는 self-consistency 로 cancel out 됨 → 효과 0
-    (2026-05-28 22:18 실측 확인). 그 fix 가 이 변경.
-    """
-    return {f"joint{i}": i for i in range(1, 6)}
 
 
 def _parse_xyz(s: str) -> np.ndarray:
@@ -61,20 +46,28 @@ def patch_urdf_text(
 ) -> str:
     """원본 URDF 파일을 읽어 link_offsets patch 적용한 URDF 텍스트 반환.
 
-    부수 변경: <mesh filename="...">의 상대경로를 절대경로로 rewrite.
-    patched URDF가 원본과 다른 디렉토리(.patched/)에 저장돼도 mesh 찾도록.
+    부수 변경: <mesh filename="...">의 상대경로를 절대경로로 rewrite (tempfile load
+    시점에 원본 mesh 경로 lazy resolve 위해, storage_layer.md §13.5).
+
+    multi-robot 컨벤션 — URDF joint naming = `joint{N}` (1-indexed, arm DOF 만큼).
+    `joint_id_map` 미주입 시 LinkOffsets 의 id key 가 SSOT — omx_f (5DOF) /
+    so101_6dof (6DOF) 등 robot type 무관 자동 동작. tcp_joint / 그리퍼 joint 는
+    LinkOffsets 에 들어가지 않으므로 자동 제외 (tcp_joint 는 캘리브레이션 reference
+    frame 으로 고정 — 한때 patch 시도했으나 detect↔IK self-consistency 로 cancel
+    out 됨, 2026-05-28 실측 확인).
 
     Args:
         source_urdf_path: 원본 .urdf 경로.
         offsets: LinkOffsets — joint id별 (link_trans m, link_rot rad rotvec).
-        joint_id_map: URDF joint name → motor id 매핑.
-            None이면 OMX_F 기본 (joint1→1, ..., joint5→5).
+        joint_id_map: URDF joint name → motor id 매핑. None 이면 offsets.ids 에서
+            `joint{N}` 컨벤션으로 자동 도출.
 
     Returns:
         patched URDF text (utf-8 encoding 가능).
     """
     if joint_id_map is None:
-        joint_id_map = _default_joint_id_map()
+        ids = sorted(set(offsets.trans.keys()) | set(offsets.rot.keys()))
+        joint_id_map = {f"joint{i}": i for i in ids}
 
     src = Path(source_urdf_path)
     tree = ET.parse(str(src))
@@ -117,29 +110,3 @@ def patch_urdf_text(
     if n_patched > 0:
         logger.debug(f"URDF patched: {n_patched} joints")
     return ET.tostring(root, encoding="unicode")
-
-
-def patched_urdf_path(source_urdf_path: str | Path) -> Path:
-    """patched URDF가 저장될 경로.
-
-    `<urdf_dir>/.patched/<original_name>.urdf` — .gitignore된 디렉토리.
-    """
-    src = Path(source_urdf_path)
-    return src.parent / ".patched" / src.name
-
-
-def write_patched_urdf(
-    source_urdf_path: str | Path,
-    offsets: LinkOffsets,
-    joint_id_map: dict[str, int] | None = None,
-) -> Path:
-    """patched URDF를 표준 경로(.patched/)에 저장하고 그 경로 반환.
-
-    offsets가 비어 있으면 원본 그대로 복사 (PyBullet이 한 경로만 가리키도록).
-    """
-    src = Path(source_urdf_path)
-    out = patched_urdf_path(src)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    text = patch_urdf_text(src, offsets, joint_id_map)
-    out.write_text(text, encoding="utf-8")
-    return out

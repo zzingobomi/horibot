@@ -5,7 +5,9 @@
 coach가 절대 각도로 "J4를 -10° 부근에서 추가 캡처" 식으로 안내할 수 있게 함.
 같은 분석을 next_pose_planner가 후보 자세 sampling base로 사용.
 
-대상 축: 5DOF arm (J1~J5). 임계값은 thresholds.JOINT_DIVERSITY_THRESHOLD_DEG.
+대상 축: arm DOF (caller 가 arm_motor_ids / joint_limits_rad 로 지정).
+omx_f (5DOF, J1~J5) / so101_6dof (6DOF, J1~J6) robot type 무관 동작.
+임계값은 thresholds.JOINT_DIVERSITY_THRESHOLD_DEG (길이 < arm DOF 면 fallback).
 """
 
 from __future__ import annotations
@@ -16,7 +18,8 @@ import numpy as np
 
 from . import thresholds as T
 
-# coach.py에서도 import 가능하도록 한 곳에 모음.
+# coach.py 에서도 import 가능하도록 한 곳에 모음. arm DOF > len(JOINT_NAMES_KO)
+# 면 fallback (`J{i+1}`) — so101 6DOF 같은 자리 자동 대응.
 JOINT_NAMES_KO: list[str] = [
     "J1 (base yaw)",
     "J2 (shoulder)",
@@ -57,15 +60,15 @@ def analyze(
     """캡처된 자세들의 axis별 분포 분석.
 
     Args:
-        joint_angles_per_pose: 각 캡처 자세의 [J1, J2, J3, J4, J5, ...] (rad).
+        joint_angles_per_pose: 각 캡처 자세의 [J1, J2, ..., JN] (rad).
             joint_offset 적용 *후* 값 (= URDF rad).
-        arm_motor_ids: 5DOF arm 모터 ID 리스트 (예: [1,2,3,4,5]).
+        arm_motor_ids: arm 모터 ID 리스트 (omx_f: [1..5], so101_6dof: [1..6]).
         joint_limits_rad: Kinematics에서 가져온 (lower, upper) tuple 리스트.
             arm_motor_ids와 같은 순서/길이.
 
     캡처 0개여도 동작 — std=0, suggested_deg는 모터 limit 양 끝에서 결정.
     """
-    n_axes = min(len(arm_motor_ids), len(joint_limits_rad), 5)
+    n_axes = min(len(arm_motor_ids), len(joint_limits_rad))
     thresholds = T.JOINT_DIVERSITY_THRESHOLD_DEG
 
     has_data = len(joint_angles_per_pose) > 0 and all(
@@ -76,7 +79,7 @@ def analyze(
     for i in range(n_axes):
         lim_min_deg = float(np.degrees(joint_limits_rad[i][0]))
         lim_max_deg = float(np.degrees(joint_limits_rad[i][1]))
-        name = JOINT_NAMES_KO[i]
+        name = JOINT_NAMES_KO[i] if i < len(JOINT_NAMES_KO) else f"J{i + 1}"
         thr = thresholds[i] if i < len(thresholds) else 15.0
 
         if has_data:

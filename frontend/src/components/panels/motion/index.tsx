@@ -6,7 +6,6 @@ import { Cpu } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PanelShell } from "@/components/shared/PanelShell";
-import { JointPanel } from "@/components/panels/JointPanel";
 import { MoveJControl } from "./MoveJ";
 import { MoveLControl } from "./MoveL";
 import { MoveCControl } from "./MoveC";
@@ -14,7 +13,6 @@ import { MovePControl } from "./MoveP";
 import { MoveTCPControl } from "./MoveTCP";
 
 const TABS = [
-  { value: "joint", label: "Joint", body: <JointPanel /> },
   { value: "move_j", label: "J", body: <MoveJControl /> },
   { value: "move_l", label: "L", body: <MoveLControl /> },
   { value: "move_c", label: "C", body: <MoveCControl /> },
@@ -30,7 +28,7 @@ export function MotionPanel(props: IDockviewPanelProps<object>) {
       panelId={props.api.id}
       api={props.api}
     >
-      <Tabs defaultValue="joint" className="flex flex-col gap-2 px-3 py-2">
+      <Tabs defaultValue="move_j" className="flex flex-col gap-2 px-3 py-2">
         <TabsList className="w-fit !bg-zinc-900/40 !border !border-zinc-800/60 !rounded !p-0.5 !h-auto">
           {TABS.map((t) => (
             <TabsTrigger

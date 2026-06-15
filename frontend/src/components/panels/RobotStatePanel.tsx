@@ -79,6 +79,11 @@ export function RobotStatePanel(props: IDockviewPanelProps<object>) {
     await moveJ.call({ joints: pose });
   }, [robotId, moveJ]);
 
+  const goRest = useCallback(async () => {
+    const pose = await loadPose(robotId, "rest");
+    await moveJ.call({ joints: pose });
+  }, [robotId, moveJ]);
+
   const toggleTorque = useCallback(async () => {
     const next = !torqueEnabled;
     const res = await enableSvc.call({ enable: next });
@@ -94,21 +99,29 @@ export function RobotStatePanel(props: IDockviewPanelProps<object>) {
       expandedHeight={400}
     >
       <Section label="Control">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-2">
           <PanelButton
-            variant={torqueEnabled ? "danger" : "primary"}
+            variant={torqueEnabled ? "primary" : "danger"}
             onClick={() => void toggleTorque()}
-            className="flex-1"
           >
-            Torque {torqueEnabled ? "OFF" : "ON"}
+            Torque {torqueEnabled ? "ON" : "OFF"}
           </PanelButton>
-          <PanelButton
-            variant="outline"
-            onClick={() => void goHome()}
-            className="flex-1"
-          >
-            Home
-          </PanelButton>
+          <div className="flex items-center gap-2">
+            <PanelButton
+              variant="outline"
+              onClick={() => void goHome()}
+              className="flex-1"
+            >
+              Home
+            </PanelButton>
+            <PanelButton
+              variant="outline"
+              onClick={() => void goRest()}
+              className="flex-1"
+            >
+              Rest
+            </PanelButton>
+          </div>
         </div>
       </Section>
 

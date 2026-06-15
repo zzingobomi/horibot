@@ -1,11 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
   Gamepad2,
   Settings,
-  Home,
-  Moon,
-  Power,
   PanelLeftClose,
   PanelLeftOpen,
   Bot,
@@ -14,11 +11,8 @@ import {
 } from "lucide-react";
 import { ConnectionStatus } from "@/components/shared/ConnectionStatus";
 import { cn } from "@/lib/utils";
-import { useService } from "@/framework";
-import { ServiceKey } from "@/constants/topics";
 import { useRobots } from "@/hooks/useRobots";
 import { useTasks } from "@/hooks/useTasks";
-import { loadPose } from "@/lib/robot/robotPoses";
 import type { RobotCapability } from "@/types/robot";
 
 const navItems = [
@@ -37,15 +31,10 @@ const CAPABILITY_LABELS: Record<RobotCapability, string> = {
 const COLLAPSED_KEY = "omx.sidebar.collapsed";
 
 export function Sidebar() {
-  // Sidebar 는 global (URL param 못 받음) — backend default robot
-  // (RobotRegistry().default(), enabled=true 첫 robot) 의 service / pose 사용.
-  // multi-robot 시 robot 페이지의 RobotStatePanel 이 명시 robot 의 동등 컨트롤 보유.
-  const { robots, defaultId } = useRobots();
-  const cfgSvc = useService(ServiceKey.MOTOR_GET_CONFIG, defaultId);
-  const enableSvc = useService(ServiceKey.MOTOR_ENABLE, defaultId);
-  const moveJ = useService(ServiceKey.MOTION_MOVE_J, defaultId);
-  const torqueEnabled = cfgSvc.data?.torque_enabled ?? false;
-
+  // Sidebar 는 navigation only. home / rest / torque 등 robot control 은
+  // robot 페이지의 RobotStatePanel 이 SSOT — URL `/robots/:id` 가 robot
+  // context 를 명시하므로 모호함 없음.
+  const { robots } = useRobots();
   const { tasks } = useTasks();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
@@ -55,22 +44,6 @@ export function Sidebar() {
   useEffect(() => {
     window.localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
-
-  const goHome = useCallback(async () => {
-    const pose = await loadPose(defaultId, "home");
-    await moveJ.call({ joints: pose });
-  }, [defaultId, moveJ]);
-
-  const goRest = useCallback(async () => {
-    const pose = await loadPose(defaultId, "rest");
-    await moveJ.call({ joints: pose });
-  }, [defaultId, moveJ]);
-
-  const toggleTorque = useCallback(async () => {
-    const next = !torqueEnabled;
-    const res = await enableSvc.call({ enable: next });
-    if (res.success) await cfgSvc.call({});
-  }, [torqueEnabled, enableSvc, cfgSvc]);
 
   return (
     <aside
@@ -220,51 +193,6 @@ export function Sidebar() {
           </div>
         )}
       </nav>
-
-      {/* 전역 로봇 컨트롤 */}
-      <div className="px-2 py-3 space-y-2 border-t">
-        {!collapsed && (
-          <p className="px-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-            Control
-          </p>
-        )}
-        <button
-          onClick={() => void goHome()}
-          title={collapsed ? "Go Home" : undefined}
-          className={cn(
-            "w-full flex items-center rounded-md py-2 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-            collapsed ? "justify-center px-2" : "gap-3 px-3",
-          )}
-        >
-          <Home className="h-4 w-4" />
-          {!collapsed && "Go Home"}
-        </button>
-        <button
-          onClick={() => void goRest()}
-          title={collapsed ? "Go Rest" : undefined}
-          className={cn(
-            "w-full flex items-center rounded-md py-2 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-            collapsed ? "justify-center px-2" : "gap-3 px-3",
-          )}
-        >
-          <Moon className="h-4 w-4" />
-          {!collapsed && "Go Rest"}
-        </button>
-        <button
-          onClick={() => void toggleTorque()}
-          title={collapsed ? (torqueEnabled ? "Torque ON" : "Torque OFF") : undefined}
-          className={cn(
-            "w-full flex items-center rounded-md py-2 text-sm transition-colors",
-            collapsed ? "justify-center px-2" : "gap-3 px-3",
-            torqueEnabled
-              ? "bg-green-500/10 text-green-600 hover:bg-green-500/20"
-              : "bg-red-500/20 text-red-600 font-medium hover:bg-red-500/30",
-          )}
-        >
-          <Power className="h-4 w-4" />
-          {!collapsed && (torqueEnabled ? "Torque ON" : "Torque OFF")}
-        </button>
-      </div>
 
       {/* 연결 상태 */}
       {!collapsed && (

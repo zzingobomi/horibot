@@ -211,7 +211,7 @@
     <visual>
       <origin xyz="-7.96855e-07 0.000218213 0.000949706" rpy="3.14159 0 -3.13794"/>
       <geometry>
-        <mesh filename="meshes/gripper_fixed.stl"/>
+        <mesh filename="meshes/wrist_roll_d405_holder.stl"/>
       </geometry>
       <material name="gripper_fixed_material">
         <color rgba="0.964706 0.964706 0.952941 1"/>
@@ -258,44 +258,8 @@
     <child link="gripper_back"/>
     <axis xyz="0 0 0"/>
   </joint>
-  <!-- Link camera_mount -->
-  <link name="camera_mount">
-    <inertial>
-      <origin xyz="-0.0224746 -0.00102293 -0.0255423" rpy="0 0 0"/>
-      <mass value="0.012"/>
-      <inertia ixx="5.52533e-06" ixy="9.5195e-08" ixz="-1.32316e-06" iyy="5.31978e-06" iyz="1.20372e-07" izz="2.25715e-06"/>
-    </inertial>
-    <!-- Part wrist_camera_mount -->
-    <visual>
-      <origin xyz="0.00815 -0.0181 -0" rpy="-1.5708 -1.5708 0"/>
-      <geometry>
-        <mesh filename="meshes/wrist_camera_mount.stl"/>
-      </geometry>
-      <material name="wrist_camera_mount_material">
-        <color rgba="0.235294 0.235294 0.235294 1"/>
-      </material>
-    </visual>
-  </link>
-  <!-- Link camera_body -->
-  <link name="camera_body">
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="1e-09"/>
-      <inertia ixx="1e-09" ixy="0" ixz="0" iyy="1e-09" iyz="0" izz="1e-09"/>
-    </inertial>
-    <!-- Part camera_uvc_25x32 -->
-    <visual>
-      <origin xyz="0 -0.0495931 -0.000795328" rpy="1.5708 0 1.5708"/>
-      <geometry>
-        <mesh filename="meshes/camera_uvc_25x32.stl"/>
-      </geometry>
-      <material name="camera_uvc_25x32_material">
-        <color rgba="0.235294 0.235294 0.235294 1"/>
-      </material>
-    </visual>
-  </link>
   <!-- Frame camera (dummy link + fixed joint) -->
-  <link name="camera">
+  <!-- <link name="camera">
     <origin xyz="0 0 0" rpy="0 -0 0"/>
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -308,23 +272,23 @@
     <parent link="camera_body"/>
     <child link="camera"/>
     <axis xyz="0 0 0"/>
-  </joint>
+  </joint> -->
   <!-- Joint from camera_mount to camera_body -->
-  <joint name="camera" type="fixed">
+  <!-- <joint name="camera" type="fixed">
     <origin xyz="-0.0299654 -0.0006 -0.0493488" rpy="3.14159 -0.436332 0"/>
     <parent link="camera_mount"/>
     <child link="camera_body"/>
     <axis xyz="0 0 1"/>
     <limit effort="3.3" velocity="5"/>
-  </joint>
+  </joint> -->
   <!-- Joint from gripper_fixed to camera_mount -->
-  <joint name="camera_mount" type="fixed">
+  <!-- <joint name="camera_mount" type="fixed">
     <origin xyz="-0.00301234 -0.0240112 -0.0234002" rpy="-1.57445 1.5708 0"/>
     <parent link="gripper_fixed"/>
     <child link="camera_mount"/>
     <axis xyz="0 0 1"/>
     <limit effort="3.3" velocity="5"/>
-  </joint>
+  </joint> -->
   <!-- Link gripper_jaw -->
   <link name="gripper_jaw">
     <inertial>

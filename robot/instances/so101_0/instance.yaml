@@ -1,8 +1,0 @@
-# 가짜 so101 instance (multi_robot_phase2_frontend.md §2 프로토타입).
-# enabled=false 라 backend motor/camera 노드 부팅 X — port 무관.
-
-motor:
-  port:
-    windows: "COM99"
-    linux: /dev/ttyACM99
-  baudrate: 1000000

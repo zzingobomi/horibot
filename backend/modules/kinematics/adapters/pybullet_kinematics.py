@@ -22,8 +22,8 @@ from typing import Sequence
 import numpy as np
 import pybullet as p
 
-from core.coords.link_coordinates import LinkCoordinates
 from core.coords.urdf_patcher import write_patched_urdf
+from modules.calibration.link_offsets import LinkOffsets
 from modules.kinematics.kinematics import (
     Position3,
     Quaternion,
@@ -48,57 +48,92 @@ class PybulletKinematics:
     """PyBullet 기반 Kinematics. ideal URDF 기구학 only (sag 없음)."""
 
     def __init__(self, urdf_path: str | Path):
-        """patched URDF 생성 후 PyBullet DIRECT 모드로 로드.
+        """생성 즉시 끝남 — URDF load 안 함. calibration_node 가 `apply_link_offsets`
+        + `initialize` 호출 (docs/storage_layer.md §7).
 
-        link_offsets.npz 가 있으면 URDF joint origin patch 적용된 사본을 사용
-        (`.patched/` 디렉토리). 없으면 mesh 경로만 절대화한 사본.
+        부팅 시 storage 의존 차단 — Kinematics 는 calibration 도메인 모름.
         """
+        self._urdf_path = Path(urdf_path)
         self._sim_lock = threading.Lock()
+        self._initialized = False
+        self._link_offsets: LinkOffsets = LinkOffsets()
 
-        link_offsets = LinkCoordinates().snapshot()
-        urdf_to_load = write_patched_urdf(urdf_path, link_offsets)
-        if not link_offsets.is_empty():
-            logger.info(f"patched URDF 로드: {urdf_to_load}")
-
-        self._client = p.connect(p.DIRECT)
-        p.setGravity(0, 0, -9.81, physicsClientId=self._client)
-
-        self._robot = p.loadURDF(
-            str(urdf_to_load),
-            useFixedBase=True,
-            physicsClientId=self._client,
-        )
-
+        self._client: int = -1
+        self._robot: int = -1
         self._joint_indices: list[int] = []
         self._ee_index: int = -1
         self._lower_limits: list[float] = []
         self._upper_limits: list[float] = []
         self._joint_ranges: list[float] = []
 
-        num_joints = p.getNumJoints(self._robot, physicsClientId=self._client)
-        for i in range(num_joints):
-            info = p.getJointInfo(self._robot, i, physicsClientId=self._client)
-            joint_type = info[2]
-            link_name: str = info[12].decode()
-            if joint_type == p.JOINT_REVOLUTE:
-                self._joint_indices.append(i)
-                lower = info[8]
-                upper = info[9]
-                if lower >= upper:
-                    lower, upper = -6.2832, 6.2832
-                self._lower_limits.append(float(lower))
-                self._upper_limits.append(float(upper))
-                self._joint_ranges.append(float(upper - lower))
-            if link_name == TCP_LINK_NAME:
-                self._ee_index = i
+    def apply_link_offsets(self, offsets: LinkOffsets) -> None:
+        """initialize() 호출 전에 link_offsets 주입. 이미 initialized 면 RuntimeError —
+        URDF patch 가 부팅 시 1회만 (docs/storage_layer.md §7 원칙 4).
+        """
+        if self._initialized:
+            raise RuntimeError(
+                "PybulletKinematics 이미 initialize 완료 — link_offsets 재주입 X "
+                "(런타임 reload 는 본 design 의 범위 밖)"
+            )
+        self._link_offsets = offsets
 
-        if self._ee_index == -1:
-            raise RuntimeError(f"{TCP_LINK_NAME} not found in URDF")
+    def initialize(self) -> None:
+        """URDF patch + PyBullet DIRECT 모드 로드 + joint info parse.
+
+        calibration_node 가 apply_link_offsets 직후 호출. 두 번 호출 시 no-op.
+        """
+        with self._sim_lock:
+            if self._initialized:
+                return
+
+            urdf_to_load = write_patched_urdf(self._urdf_path, self._link_offsets)
+            if not self._link_offsets.is_empty():
+                logger.info(f"patched URDF 로드: {urdf_to_load}")
+
+            self._client = p.connect(p.DIRECT)
+            p.setGravity(0, 0, -9.81, physicsClientId=self._client)
+
+            self._robot = p.loadURDF(
+                str(urdf_to_load),
+                useFixedBase=True,
+                physicsClientId=self._client,
+            )
+
+            num_joints = p.getNumJoints(self._robot, physicsClientId=self._client)
+            for i in range(num_joints):
+                info = p.getJointInfo(self._robot, i, physicsClientId=self._client)
+                joint_type = info[2]
+                link_name: str = info[12].decode()
+                if joint_type == p.JOINT_REVOLUTE:
+                    self._joint_indices.append(i)
+                    lower = info[8]
+                    upper = info[9]
+                    if lower >= upper:
+                        lower, upper = -6.2832, 6.2832
+                    self._lower_limits.append(float(lower))
+                    self._upper_limits.append(float(upper))
+                    self._joint_ranges.append(float(upper - lower))
+                if link_name == TCP_LINK_NAME:
+                    self._ee_index = i
+
+            if self._ee_index == -1:
+                raise RuntimeError(f"{TCP_LINK_NAME} not found in URDF")
+
+            self._initialized = True
 
     # ─── Kinematics Protocol ────────────────────────────────────
 
+    def _require_initialized(self) -> None:
+        if not self._initialized:
+            raise RuntimeError(
+                "PybulletKinematics 미초기화 — calibration_node 가 부팅 시 "
+                "apply_link_offsets + initialize 호출해야 함 "
+                "(docs/storage_layer.md §7)"
+            )
+
     @property
     def dof(self) -> int:
+        self._require_initialized()
         return len(self._joint_indices)
 
     @property
@@ -108,6 +143,7 @@ class PybulletKinematics:
     def fk(
         self, joint_angles: Sequence[float]
     ) -> tuple[Position3, Quaternion]:
+        self._require_initialized()
         with self._sim_lock:
             self._set_joint_positions(list(joint_angles))
             return self._get_ee_state()
@@ -118,6 +154,7 @@ class PybulletKinematics:
         target_quaternion: Quaternion | None,
         current_joint_angles: Sequence[float] | None = None,
     ) -> list[float] | None:
+        self._require_initialized()
         with self._sim_lock:
             n = len(self._joint_indices)
             rest = (

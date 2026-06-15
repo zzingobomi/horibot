@@ -19,7 +19,8 @@ from core.transport.messages.detector import (
 )
 from core.transport.messages.motion import MotionTcpPose
 from core.transport.topic_map import Service, Topic, topic_for
-from modules.calibration.loader import CalibrationData, load_calibration
+from modules.calibration.calibration_cache import CalibrationCache
+from modules.calibration.loader import CalibrationData
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
 from modules.detector.grounded_detector import GroundedDetector
 from modules.detector.yolo_detector import YoloDetector
@@ -55,20 +56,11 @@ class DetectorNode(ApplicationNode):
         self._frame_cache = FrameCache()
         self._joint_cache = JointStateCache()
 
-        # robot 별 상태
+        # robot 별 motor cfg (yaml 디스크 — storage 의존 X). calib 은 CalibrationCache
+        # 에서 매 호출 시 read — calibration_node 가 부팅 시 push.
         self._arm_cfgs_by_robot: dict[str, list[MotorConfig]] = {}
-        self._calibs_by_robot: dict[str, CalibrationData] = {}
         for rid in self.enabled_robot_ids:
             self._arm_cfgs_by_robot[rid] = load_motor_layout(rid).arm
-            calib = load_calibration(rid)
-            self._calibs_by_robot[rid] = calib
-            if not calib.is_ready():
-                logger.warning(
-                    "DetectorNode[%s]: 캘리브레이션 미완료 (intrinsic=%s, hand_eye=%s)",
-                    rid,
-                    calib.intrinsic is not None,
-                    calib.hand_eye is not None,
-                )
 
         # robot 별 depth frame 캐시
         self._depth_lock = threading.Lock()
@@ -161,12 +153,18 @@ class DetectorNode(ApplicationNode):
                     logger.debug("detection loop[%s] 오류: %s", rid, e)
             time.sleep(DETECTION_INTERVAL)
 
+    def _get_calib(self, robot_id: str) -> CalibrationData:
+        """CalibrationCache 에서 read — calibration_node 가 push 한 in-memory.
+        ready 안 됐으면 service handler 가 ServiceResponse.success=False 로 거부.
+        """
+        return CalibrationCache().get(robot_id)
+
     # ─── Service: YOLO + plane Z=0 ──────────────────────────
 
     def _handle_detect(
         self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[DetectResult]:
-        calib = self._calibs_by_robot[robot_id]
+        calib = self._get_calib(robot_id)
         if not calib.is_ready():
             return ServiceResponse(
                 success=False, message="캘리브레이션 미완료", data=None
@@ -264,7 +262,7 @@ class DetectorNode(ApplicationNode):
                 success=False, message="prompt 필요", data=None
             )
 
-        calib = self._calibs_by_robot[robot_id]
+        calib = self._get_calib(robot_id)
         if not calib.is_ready():
             return ServiceResponse(
                 success=False, message="캘리브레이션 미완료", data=None

@@ -1,3 +1,12 @@
+"""Calibration 의 runtime 데이터 모델 — Detector / PointCloudLayer 가 사용.
+
+storage 모름 — calibration_node 가 부팅 시 storage 에서 fetch 후 본 dataclass
+객체를 만들어 소비자 (DetectorNode 등) 에 set_calibration 으로 push.
+
+`load_calibration_from_npz(robot_id)` 함수는 Stage 3 마이그레이션 스크립트의
+도움이로 남겨둠 — 옛 npz → storage import 시 사용. 런타임 부팅 path 에선 호출 X.
+"""
+
 import logging
 import numpy as np
 from dataclasses import dataclass
@@ -34,7 +43,8 @@ class CalibrationData:
         return self.intrinsic is not None and self.hand_eye is not None
 
 
-def load_calibration(robot_id: str) -> CalibrationData:
+def load_calibration_from_npz(robot_id: str) -> CalibrationData:
+    """옛 npz 직접 load — Stage 3 마이그레이션 스크립트 전용. runtime 부팅 path X."""
     calib_dir = _calib_dir(robot_id)
     return CalibrationData(
         intrinsic=_load_intrinsic(calib_dir / "intrinsic.npz"),
@@ -44,7 +54,6 @@ def load_calibration(robot_id: str) -> CalibrationData:
 
 def _load_intrinsic(path: Path) -> IntrinsicData | None:
     if not path.exists():
-        logger.warning("intrinsic.npz 없음: %s", path)
         return None
     try:
         data = np.load(path)
@@ -54,7 +63,6 @@ def _load_intrinsic(path: Path) -> IntrinsicData | None:
         if "image_size" in data:
             w, h = data["image_size"].tolist()
             image_size = (int(w), int(h))
-        logger.info("intrinsic 로드 완료: %s", path)
         return IntrinsicData(
             camera_matrix=camera_matrix,
             dist_coeffs=dist_coeffs,
@@ -67,16 +75,13 @@ def _load_intrinsic(path: Path) -> IntrinsicData | None:
 
 def _load_hand_eye(path: Path) -> HandEyeData | None:
     if not path.exists():
-        logger.warning("hand_eye.npz 없음: %s", path)
         return None
     try:
         data = np.load(path)
         r_key = next((k for k in data.files if k.upper().startswith("R")), None)
         t_key = next((k for k in data.files if k.upper().startswith("T")), None)
         if r_key is None or t_key is None:
-            logger.error("hand_eye.npz 키 없음 (files=%s)", data.files)
             return None
-        logger.info("hand_eye 로드 완료: %s", path)
         return HandEyeData(R=data[r_key], t=data[t_key])
     except Exception as e:
         logger.error("hand_eye.npz 로드 실패 (%s): %s", path, e)

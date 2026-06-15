@@ -162,6 +162,8 @@ def main():
         instances[(name, None)] = create_node(name)
 
     # ─── 노드 시작 ────────────────────────────────────────────
+    # storage_layer.md §7 — 부팅 순서 강제 X. Storage 의존 노드 (Coordinates
+    # 사용하는 device 등) 는 storage 가 늦게 떠도 retry loop 으로 자동 연결.
     for (nt, rid), node in instances.items():
         node.start()
         if rid is None:

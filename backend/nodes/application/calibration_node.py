@@ -47,7 +47,31 @@ from modules.calibration import backup as calib_backup
 from modules.calibration import board as calib_board
 from modules.calibration import next_pose_planner
 from modules.calibration import thresholds as calib_thresholds
+from modules.calibration.calibration_cache import CalibrationCache
 from modules.calibration.link_offsets import LinkOffsets
+from modules.calibration.loader import CalibrationData, HandEyeData, IntrinsicData
+from modules.calibration.persistence_models import (
+    CalibrationResultRecord,
+    CalibrationRunRecord,
+    HandEyeResultRecord,
+    IntrinsicResultRecord,
+    JointOffsetResultRecord,
+    LinkOffsetResultRecord,
+    SagOffsetResultRecord,
+)
+from modules.calibration.result_models import (
+    HandEyeResultData,
+    IntrinsicResultData,
+    JointOffsetResultData,
+    LinkOffsetEntry as LinkOffsetResultEntry,
+    LinkOffsetResultData,
+    SagOffsetResultData,
+)
+from modules.calibration.storage_client import (
+    CalibrationStorageClient,
+    load_active_blocking,
+)
+from modules.kinematics.adapters.pybullet_kinematics import PybulletKinematics
 from modules.kinematics.adapters.sag_corrected import SagCorrectedKinematics
 
 logger = logging.getLogger(__name__)
@@ -122,6 +146,98 @@ class CalibrationNode(ApplicationNode):
             )
 
         self._preview_thread: threading.Thread | None = None
+        self._setup_thread: threading.Thread | None = None
+        self._storage = CalibrationStorageClient()
+
+    def _setup_runtime_calibration(self) -> None:
+        """부팅 시 background thread. Storage 대기 → 5종 fetch → 소비자에 push.
+
+        docs/storage_layer.md §7 ownership layer — Calibration Service (본 노드)
+        만 storage 앎. 다른 노드 / Coordinates / PybulletKinematics 는 본 push 받음.
+        """
+        for rid in self.enabled_robot_ids:
+            try:
+                self._push_calibration(rid)
+                logger.info("[%s] runtime calibration push 완료", rid)
+            except Exception:
+                logger.exception("[%s] runtime calibration setup 실패", rid)
+
+    def _push_calibration(self, robot_id: str) -> None:
+        """Atomic snapshot — 5종 다 fetch *후* push. partial state 차단
+        (docs/storage_layer.md §7). 한 kind fetch fail 시 전체 보류.
+        """
+        # ─── Phase 1: fetch all (storage 대기, partial 시점 X) ─────
+        joint_rec = load_active_blocking(robot_id, "joint_offset")
+        link_rec = load_active_blocking(robot_id, "link_offset")
+        sag_rec = load_active_blocking(robot_id, "sag")
+        intrinsic_rec = load_active_blocking(robot_id, "intrinsic")
+        hand_eye_rec = load_active_blocking(robot_id, "hand_eye")
+
+        # ─── Phase 2: snapshot 객체 만들기 (storage 의존 X) ─────────
+        joint_offsets = (
+            dict(joint_rec.result_data.offsets)
+            if joint_rec is not None and joint_rec.kind == "joint_offset"
+            else {}
+        )
+        if link_rec is not None and link_rec.kind == "link_offset":
+            link_offsets = LinkOffsets(
+                trans={
+                    e.joint_id: np.array(e.trans_m, dtype=np.float64)
+                    for e in link_rec.result_data.offsets
+                },
+                rot={
+                    e.joint_id: np.array(e.rot_rad, dtype=np.float64)
+                    for e in link_rec.result_data.offsets
+                },
+            )
+        else:
+            link_offsets = LinkOffsets()
+        sag_offsets = (
+            SagOffsets(k_rad_per_m=dict(sag_rec.result_data.k_rad_per_m))
+            if sag_rec is not None and sag_rec.kind == "sag"
+            else SagOffsets()
+        )
+        intrinsic = (
+            IntrinsicData(
+                camera_matrix=np.array(intrinsic_rec.result_data.camera_matrix, dtype=np.float64),
+                dist_coeffs=np.array(intrinsic_rec.result_data.dist_coeffs, dtype=np.float64),
+                image_size=(
+                    tuple(intrinsic_rec.result_data.image_size)  # type: ignore[arg-type]
+                    if intrinsic_rec.result_data.image_size is not None
+                    else None
+                ),
+            )
+            if intrinsic_rec is not None and intrinsic_rec.kind == "intrinsic"
+            else None
+        )
+        hand_eye = (
+            HandEyeData(
+                R=np.array(hand_eye_rec.result_data.R_cam2gripper, dtype=np.float64),
+                t=np.array(hand_eye_rec.result_data.t_cam2gripper, dtype=np.float64),
+            )
+            if hand_eye_rec is not None and hand_eye_rec.kind == "hand_eye"
+            else None
+        )
+
+        # ─── Phase 3: atomic push (consumer hot path 가 wait_ready 라 partial 노출 X) ─
+        JointCoordinates().set_offsets(robot_id, joint_offsets)
+        LinkCoordinates().set_offsets(robot_id, link_offsets)
+        SagCoordinates().set_offsets(robot_id, sag_offsets)
+
+        kinematics = self._registry.get_kinematics(robot_id)
+        assert isinstance(kinematics, SagCorrectedKinematics)
+        inner = kinematics._inner  # type: ignore[attr-defined]
+        assert isinstance(inner, PybulletKinematics)
+        if not inner._initialized:  # type: ignore[attr-defined]
+            inner.apply_link_offsets(link_offsets)
+            inner.initialize()
+        kinematics.reload_calibration()
+
+        cache = CalibrationCache()
+        cache.set(robot_id, CalibrationData(intrinsic=intrinsic, hand_eye=hand_eye))
+
+        # ─── Phase 4: ready signal — consumer hot path 의 wait_ready 풀림 ──
+        cache.signal_ready(robot_id)
 
     def start(self) -> None:
         for rid in self.enabled_robot_ids:
@@ -224,6 +340,15 @@ class CalibrationNode(ApplicationNode):
             if loaded > 0:
                 logger.info("[%s] 이전 Hand-Eye 포즈 %d개 복원됨", rid, loaded)
 
+        # 부팅 시 storage 에서 5종 fetch + 소비자에 push (background thread —
+        # main start 안 막힘. storage 늦게 떠도 retry).
+        self._setup_thread = threading.Thread(
+            target=self._setup_runtime_calibration,
+            daemon=True,
+            name="calib-setup",
+        )
+        self._setup_thread.start()
+
         logger.info("CalibrationNode 시작 (robots=%s)", self.enabled_robot_ids)
 
     # ─── 이미지 캡처 ─────────────────────────────────────────
@@ -294,12 +419,49 @@ class CalibrationNode(ApplicationNode):
                 data=None,
             )
 
-        path = _save_dir(robot_id) / "intrinsic.npz"
-        st.intrinsic.save(path)
+        # Storage commit + activate. docs/storage_layer.md §7 SSOT.
+        now = time.time()
+        run = CalibrationRunRecord(
+            robot_id=robot_id,
+            started_at=now,
+            ended_at=now,
+            algorithm="intrinsic_chessboard",
+            algorithm_params={"image_size": list(image_size)},
+        )
+        record = IntrinsicResultRecord(  # type: ignore[arg-type]
+            run_id=0,
+            robot_id=robot_id,
+            created_at=now,
+            sigma_rot=None,
+            sigma_t=None,
+            result_data=IntrinsicResultData(
+                camera_matrix=result.camera_matrix.tolist(),
+                dist_coeffs=result.dist_coeffs.tolist(),
+                image_size=[int(width), int(height)],
+            ),
+        )
+        try:
+            run_id, result_ids = self._storage.commit(run, [record], [])
+            self._storage.activate(result_ids[0])
+        except Exception as e:
+            logger.exception("[%s] intrinsic storage commit 실패", robot_id)
+            return ServiceResponse(
+                success=False, message=f"storage commit 실패: {e}", data=None
+            )
+
+        # in-memory push — CalibrationCache 의 IntrinsicData 갱신
+        self._push_calibration(robot_id)
+        logger.info(
+            "[%s] intrinsic COMMIT: run_id=%d, rms=%.4f, captured=%d",
+            robot_id,
+            run_id,
+            result.rms_error,
+            result.captured_count,
+        )
 
         return ServiceResponse(
             success=True,
-            message=f"저장 완료: {path}",
+            message=f"storage commit (run_id={run_id}, rms={result.rms_error:.4f})",
             data=IntrinsicSaveRes(
                 rms_error=result.rms_error,
                 camera_matrix=result.camera_matrix.tolist(),
@@ -736,151 +898,190 @@ class CalibrationNode(ApplicationNode):
     def _srv_handeye_commit(
         self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[HandeyeCommitRes]:
+        """BA 결과 → storage Run + Results (kind 별) + activate → in-memory push.
+
+        Stage 2c — 옛 disk save (npz) 대신 storage 단일 source. activate 마다
+        STORAGE_CALIBRATION_INVALIDATED publish (storage_node 가 담당).
+        push 는 `_push_calibration` 재호출 — storage 에서 fresh fetch (방금 활성화
+        된 새 record 받음).
+        """
         st = self._states[robot_id]
         if st.last_compute is None or st.hand_eye.result is None:
             return ServiceResponse(
                 success=False, message="먼저 COMPUTE를 실행하세요", data=None
             )
 
-        # 0) pre-commit snapshot — 현재 live disk 상태 통째로 백업 → rollback picker.
-        try:
-            calib_backup.snapshot(
-                calibration_dir=_save_dir(robot_id),
-                tag="pre-commit",
-                meta={
-                    "sigma_rot_deg": st.last_compute.get("sigma_rot_deg"),
-                    "sigma_t_mm": st.last_compute.get("sigma_t_mm"),
-                    "capture_count": len(st.hand_eye.poses),
-                    "ba_mode": st.last_compute.get("method"),
-                },
-            )
-        except Exception as e:
-            logger.warning("[%s] pre-commit snapshot 실패: %s", robot_id, e)
+        method = st.hand_eye.result.method
+        now = time.time()
+        joint_estimated = bool(st.last_compute.get("joint_offset_estimated"))
+        link_estimated = bool(st.last_compute.get("link_offset_estimated"))
+        sag_estimated = bool(st.last_compute.get("sag_offset_estimated"))
 
-        # 1) hand_eye.npz — BA 출력이 절대값이라 overwrite contract.
-        hand_eye_path = _save_dir(robot_id) / "hand_eye.npz"
-        st.hand_eye.save(hand_eye_path)
+        # ─── ResultRecord 빌드 (hand_eye 항상, 다른 kind 는 estimated 시) ──
+        results: list[CalibrationResultRecord] = []
 
-        # 2) joint_offsets — COMPUTE 시점 stash 한 absolute 만 사용.
-        # Bug A: 옛 commit_offsets(delta) 가 호출마다 existing + delta 누적해서
-        # COMMIT 두 번 누르면 double-add. commit_absolute(absolute) 로 통일 +
-        # 끝에서 last_compute invalidate → 두 번 클릭 == idempotent.
-        applied: dict[int, float] = {}
-        offset_msg = ""
-        if st.last_compute.get("joint_offset_estimated"):
-            absolute_by_id: dict[int, float] = st.last_compute["_joint_absolute_by_id"]
-            applied = JointCoordinates().commit_absolute(
-                absolute_by_id,
-                method=st.hand_eye.result.method,
+        # hand_eye — 항상 포함
+        R = st.hand_eye.result.R_cam2gripper
+        t = st.hand_eye.result.t_cam2gripper
+        results.append(
+            HandEyeResultRecord(  # type: ignore[arg-type]
+                run_id=0,  # storage 가 채움
                 robot_id=robot_id,
+                created_at=now,
+                sigma_rot=_optional_float(st.last_compute.get("sigma_rot_deg")),
+                sigma_t=_optional_float(st.last_compute.get("sigma_t_mm")),
+                result_data=HandEyeResultData(
+                    R_cam2gripper=R.tolist(),
+                    t_cam2gripper=np.asarray(t).reshape(3, 1).tolist(),
+                    method=method,
+                ),
             )
-            applied_deg = {
-                i: round(float(np.degrees(v)), 3) for i, v in applied.items()
-            }
-            offset_msg = f" + joint_offsets 갱신 (absolute, deg={applied_deg})"
-            logger.info("[%s] joint_offsets 즉시 적용: %s", robot_id, applied_deg)
+        )
 
-        # 3) link_offsets — BA 출력이 이미 absolute total.
-        link_msg = ""
-        link_applied_meta: list[dict] = []
-        restart_required = False
-        if st.last_compute.get("link_offset_estimated"):
+        applied_joint: dict[int, float] = {}
+        if joint_estimated:
+            applied_joint = dict(st.last_compute["_joint_absolute_by_id"])
+            results.append(
+                JointOffsetResultRecord(  # type: ignore[arg-type]
+                    run_id=0,
+                    robot_id=robot_id,
+                    created_at=now,
+                    result_data=JointOffsetResultData(
+                        offsets=dict(applied_joint),
+                        method=method,
+                    ),
+                )
+            )
+
+        link_entries: list[LinkOffsetResultEntry] = []
+        if link_estimated:
             trans_list = st.last_compute.get("link_trans_delta", [])
             rot_list = st.last_compute.get("link_rot_delta", [])
-            new_link = LinkOffsets(
-                trans={
-                    int(e["motor_id"]): np.array(
-                        [e["x_m"], e["y_m"], e["z_m"]], dtype=np.float64
+            rot_by_id = {int(e["motor_id"]): e for e in rot_list}
+            for tr in trans_list:
+                jid = int(tr["motor_id"])
+                rt = rot_by_id.get(jid, {"rx_rad": 0.0, "ry_rad": 0.0, "rz_rad": 0.0})
+                link_entries.append(
+                    LinkOffsetResultEntry(
+                        joint_id=jid,
+                        trans_m=[float(tr["x_m"]), float(tr["y_m"]), float(tr["z_m"])],
+                        rot_rad=[
+                            float(rt["rx_rad"]),
+                            float(rt["ry_rad"]),
+                            float(rt["rz_rad"]),
+                        ],
                     )
-                    for e in trans_list
-                },
-                rot={
-                    int(e["motor_id"]): np.array(
-                        [e["rx_rad"], e["ry_rad"], e["rz_rad"]], dtype=np.float64
-                    )
-                    for e in rot_list
-                },
-            )
-            link_applied = LinkCoordinates().commit_absolute(
-                new_link,
-                method=st.hand_eye.result.method,
-                robot_id=robot_id,
-            )
-            n_joints = len(link_applied.trans)
-            link_msg = f" + link_offsets 갱신 (absolute, n={n_joints}, 백엔드 재시작 후 FK/IK 적용)"
-            link_applied_meta = [
-                {
-                    "motor_id": int(jid),
-                    "trans_m": link_applied.get_trans(jid).tolist(),
-                    "rot_rad": link_applied.get_rot(jid).tolist(),
-                }
-                for jid in sorted(link_applied.trans.keys())
-            ]
-            restart_required = True
-            logger.info(
-                "[%s] link_offsets 디스크 적용 (absolute, 재시작 필요): n=%d",
-                robot_id,
-                n_joints,
+                )
+            results.append(
+                LinkOffsetResultRecord(  # type: ignore[arg-type]
+                    run_id=0,
+                    robot_id=robot_id,
+                    created_at=now,
+                    result_data=LinkOffsetResultData(
+                        offsets=link_entries,
+                        method=method,
+                    ),
+                )
             )
 
-        # 4) sag_offsets — BA 출력이 absolute total.
-        sag_msg = ""
-        sag_applied_meta: list[dict] = []
-        if st.last_compute.get("sag_offset_estimated"):
+        sag_dict: dict[int, float] = {}
+        if sag_estimated:
             sag_delta_list = st.last_compute.get("sag_offset_delta", [])
-            new_sag = SagOffsets(
-                k_rad_per_m={
-                    int(e["motor_id"]): float(e["k_rad_per_m"]) for e in sag_delta_list
-                },
-            )
-            sag_applied = SagCoordinates().commit_absolute(
-                new_sag,
-                method=st.hand_eye.result.method,
-                robot_id=robot_id,
-            )
-            st.kinematics._reload_caches()
-            sag_applied_meta = [
-                {
-                    "motor_id": int(jid),
-                    "k_rad_per_m": float(sag_applied.get_k(jid)),
-                }
-                for jid in sorted(sag_applied.k_rad_per_m.keys())
-            ]
-            n_sag = len(sag_applied.k_rad_per_m)
-            sag_msg = f" + sag_offsets 갱신 (absolute, n={n_sag}, 즉시 적용)"
-            logger.info(
-                "[%s] sag_offsets 즉시 적용: %s",
-                robot_id,
-                {m["motor_id"]: round(m["k_rad_per_m"], 5) for m in sag_applied_meta},
+            sag_dict = {
+                int(e["motor_id"]): float(e["k_rad_per_m"]) for e in sag_delta_list
+            }
+            results.append(
+                SagOffsetResultRecord(  # type: ignore[arg-type]
+                    run_id=0,
+                    robot_id=robot_id,
+                    created_at=now,
+                    result_data=SagOffsetResultData(
+                        k_rad_per_m=dict(sag_dict),
+                        method=method,
+                    ),
+                )
             )
 
-        # Response 준비 — last_compute 의 estimated 플래그를 invalidate 전에 캡처.
-        joint_estimated = st.last_compute.get("joint_offset_estimated", False)
-        link_estimated = st.last_compute.get("link_offset_estimated", False)
-        sag_estimated = st.last_compute.get("sag_offset_estimated", False)
+        # ─── Run record + storage commit (atomic INSERT) ────────────
+        run = CalibrationRunRecord(
+            robot_id=robot_id,
+            started_at=now,
+            ended_at=now,
+            algorithm=method,
+            algorithm_params={
+                "sigma_rot_deg": _optional_float(st.last_compute.get("sigma_rot_deg")),
+                "sigma_t_mm": _optional_float(st.last_compute.get("sigma_t_mm")),
+                "pose_count": len(st.hand_eye.poses),
+                "ba_mode": _optional_str(st.last_compute.get("method")),
+            },
+        )
+        try:
+            run_id, result_ids = self._storage.commit(run, results, [])
+        except Exception as e:
+            logger.exception("[%s] storage commit 실패", robot_id)
+            return ServiceResponse(
+                success=False, message=f"storage commit 실패: {e}", data=None
+            )
 
-        # Bug A fix: COMMIT 끝에 invalidate. 같은 compute 로 다시 누르면
-        # "먼저 COMPUTE 를 실행하세요" 응답 → disk 누적 부작용 0.
+        # ─── ACTIVATE 모든 새 result — storage_node 가 invalidation publish ──
+        for rid_ in result_ids:
+            try:
+                self._storage.activate(rid_)
+            except Exception:
+                logger.exception("[%s] activate 실패 (result_id=%d)", robot_id, rid_)
+
+        # ─── in-memory push — 방금 활성화된 새 record 가 fresh fetch ─────
+        self._push_calibration(robot_id)
+
+        # link offset 적용은 PybulletKinematics URDF patch 자리 — 부팅 시 1회.
+        # 따라서 link estimated 면 재시작 필요 (sag 는 runtime cache 갱신만으로 OK).
+        restart_required = link_estimated
+
+        logger.info(
+            "[%s] COMMIT: run_id=%d, result_ids=%s, sigma_rot=%s, sigma_t=%s",
+            robot_id,
+            run_id,
+            result_ids,
+            st.last_compute.get("sigma_rot_deg"),
+            st.last_compute.get("sigma_t_mm"),
+        )
+
+        # Bug A fix: COMMIT 끝에 invalidate. 같은 compute 로 다시 누르면 idempotent.
         st.last_compute = None
+
+        msg_parts = [f"storage commit (run_id={run_id})"]
+        if joint_estimated:
+            applied_deg = {i: round(float(np.degrees(v)), 3) for i, v in applied_joint.items()}
+            msg_parts.append(f"joint_offsets (deg={applied_deg})")
+        if link_estimated:
+            msg_parts.append(f"link_offsets (n={len(link_entries)}, 재시작 필요)")
+        if sag_estimated:
+            msg_parts.append(f"sag_offsets (n={len(sag_dict)}, 즉시 적용)")
 
         return ServiceResponse(
             success=True,
-            message=f"저장 완료: {hand_eye_path}{offset_msg}{link_msg}{sag_msg}",
+            message=" + ".join(msg_parts),
             data=HandeyeCommitRes(
-                path=str(hand_eye_path),
-                method=st.hand_eye.result.method,
+                path=f"storage:run/{run_id}",  # legacy path field 호환
+                method=method,
                 joint_offsets_applied=joint_estimated,
                 joint_offsets=[
                     JointOffsetEntry(motor_id=int(mid), offset_rad=float(off))
-                    for mid, off in sorted(applied.items())
+                    for mid, off in sorted(applied_joint.items())
                 ],
                 link_offsets_applied=link_estimated,
                 link_offsets=[
-                    LinkOffsetEntry.model_validate(m) for m in link_applied_meta
+                    LinkOffsetEntry(
+                        motor_id=e.joint_id,
+                        trans_m=list(e.trans_m),
+                        rot_rad=list(e.rot_rad),
+                    )
+                    for e in link_entries
                 ],
                 sag_offsets_applied=sag_estimated,
                 sag_offsets=[
-                    SagOffsetEntry.model_validate(m) for m in sag_applied_meta
+                    SagOffsetEntry(motor_id=int(mid), k_rad_per_m=float(k))
+                    for mid, k in sorted(sag_dict.items())
                 ],
                 restart_required=restart_required,
             ),
@@ -1040,7 +1241,7 @@ class CalibrationNode(ApplicationNode):
         st = self._states[robot_id]
         st.hand_eye.load(_save_dir(robot_id) / "hand_eye.npz")
         st.intrinsic.load(_save_dir(robot_id) / "intrinsic.npz")
-        st.kinematics._reload_caches()
+        st.kinematics.reload_calibration()
         # 안전상 compute 결과도 무효화 (옛 absolute 가 현 disk 와 맞지 않음).
         st.last_compute = None
 

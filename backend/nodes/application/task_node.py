@@ -8,7 +8,7 @@ from core.transport.messages.task import TaskStepIdReq
 from core.transport.topic_map import Service, Topic
 from core.cache.joint_state_cache import JointStateCache
 from modules.motor.motor_config import load_motor_layout
-from modules.calibration.loader import load_calibration
+from modules.calibration.calibration_cache import CalibrationCache
 from modules.llm import prompt_parser
 from modules.llm.prompt_parser import parse_pick_place
 from modules.task.step import Task, task_tree
@@ -53,14 +53,10 @@ class TaskNode(ApplicationNode):
         self._gripper_cfg = layout.gripper
         self._joint_cache = JointStateCache()
 
-        calib = load_calibration(default_rid)
-        if not calib.is_ready():
-            logger.warning(
-                "TaskNode: 캘리브레이션 미완료 — DetectStep 사용 불가 "
-                "(intrinsic=%s, hand_eye=%s)",
-                calib.intrinsic is not None,
-                calib.hand_eye is not None,
-            )
+        # CalibrationCache 의 in-memory state — calibration_node 가 부팅 시 push.
+        # 부팅 시 cache empty 이지만 task 실행 시점엔 채워져 있음 (calibration_node
+        # 부팅 완료 후). TaskRunner 는 cache reference 들고 매 step 호출 시 fresh.
+        calib = CalibrationCache().get(default_rid)
 
         self._runner = TaskRunner(
             node=self,

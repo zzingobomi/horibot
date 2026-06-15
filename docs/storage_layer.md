@@ -263,46 +263,118 @@ calibration_captures (
 
 scans/meshes 만 진짜 ObjectStore 사용. nature 가 Artifact 큰 binary 라.
 
-## 7. 노드 측 패턴
+## 7. 라이프사이클 + ownership layer
 
-### 캘 — 싱글톤 캐시 + invalidation 구독 (캘 특유)
+### Layer 분리 — Storage 의존 vs Calibration 의존
 
-storage_node 가 데이터 제공하고, 다른 노드는 **싱글톤 캐시 + invalidation 구독** 으로 동기화. 우리 codebase 의 `JointCoordinates` / `LinkCoordinates` / `SagCoordinates` 가 npz 1회 로드 + `_reload_caches()` 패턴 쓰는 거와 동일한 모양 — npz 자리에 Zenoh service 호출이 들어감.
+서로 다른 자리:
+
+| Layer | 의존 | 누가 |
+|---|---|---|
+| **Infrastructure** | Storage Node | 모든 노드 (간접) |
+| **Domain Service** | Storage gateway 책임 (캘 5종 fetch/commit/activate) | `calibration_node` 하나만 |
+| **Consumer** | Calibration 데이터 (intrinsic / link / sag / joint / hand_eye) | `Coordinates` / `PybulletKinematics` / `Detector` / `Motor` 등 |
+
+핵심 원칙 (Stage 2 design 결정):
+
+1. **Calibration 소비자는 Storage 모름** — 코드에 `storage.get_*` 호출 0.
+2. **CalibrationService (= calibration_node) 만 Storage 앎** — 한 자리 gateway.
+3. **Calibration 은 push / DI 방식 전달** — calibration_node 가 소비자에 `set_offsets(...)` 또는 `apply_link_offsets(...)` 호출.
+4. **PybulletKinematics 는 offset 주입 후 1회 초기화** — `kin.apply_link_offsets(offsets)` → `kin.initialize()` 패턴. URDF patch 자리.
+5. **런타임 calibration reload 는 범위 밖** — 캘 자주 변경되는 데이터 X. "캘 수행 → 새 calibration → 재시작" 이 정상 운영.
+
+### 왜 이게 중요한가 — cascading lazy 의 진짜 원인
+
+본 design 잡기 전 패턴:
+```
+Coordinates lazy → 또 storage 호출 발견 → LinkCoordinates lazy → 또 발견 → PybulletKinematics lazy → ...
+```
+
+이건 *증상 치료*. 진짜 root cause = **소비자 가 storage 직접 호출** = layer 위반. owner 한 자리로 좁히면 cascade 자체가 사라짐.
+
+### Assumption
+
+- **Storage Node 는 필수 인프라.** Calibration 소비자가 Ready 되려면 calibration_node 의 push 받아야 → 결과적으로 Storage 필요.
+- 다른 노드는 calibration 가 준비될 때까지 **대기** (state = WAITING_CALIBRATION) — fail X.
+- **부팅 순서는 강제하지 않음.** Motor Pi 가 PC 보다 먼저 켜져도 OK.
+- Storage 가 나중에 시작되어도 calibration_node 가 자동 연결, 다른 노드에 push.
+- *cache-first 가 아니라 SSOT-first*. cache 는 hot path 성능용 in-memory copy.
+
+본 가정의 진짜 의미 — calibration 데이터는 *git pull 지옥 없애기* 목적으로 중앙화한 운영 데이터. PC 꺼져 있을 때 Pi 단독 운영 요구사항 없음 (캘 없으면 Motor 가 raw↔rad / IK 못함 = 의미 있는 동작 X). 분산 fallback / version / conflict 자리 다 사라짐.
+
+### 흐름
+
+```
+calibration_node 부팅
+  ↓ Storage 연결 시도 (retry loop, 1초 간격)
+  ↓ 발견
+  ↓ 5종 STORAGE_GET_ACTIVE_CALIBRATION
+  ↓ Coordinates / PybulletKinematics / Detector 등 소비자에 push
+  ↓ topic 발행 (frontend / 다른 노드 구독)
+  ↓
+  state = READY
+
+다른 노드 (motor / motion / detector / pointcloud 등)
+  ↓ state = WAITING_CALIBRATION
+  ↓ calibration_node 의 push 받음
+  ↓ 자기 의존 init (PybulletKinematics URDF patch 등)
+  ↓
+  state = READY
+```
+
+분산 시나리오:
+```
+09:00 Motor Pi 부팅 → WAITING (PC 안 떠 있음)
+09:05 PC 부팅 → storage_node 등장
+09:05:01 Motor Pi 자동 연결 → 캘 load → Ready
+```
+
+부팅 순서 무관 — Motor Pi 가 PC 보다 먼저 켜져도 *대기* 만. 운영 재부팅 / 크래시 / 네트워크 지연 다 회복 가능.
+
+### 첫 부팅 robot — storage 에 active 없음
+
+so101 처럼 캘 한 번도 안 한 robot — storage 응답이 `found=false` (timeout / unreachable 와 다른 정상 상태).
+
+- Coordinates 의 메모리 cache = empty
+- default 캘 (identity matrix / joint offset 0) 로 ready
+- UI 강하게 "캘 안 됨, 캘 먼저 실행" 경고
+
+### Invalidation 구독 — runtime data 변경 알림
+
+ACTIVATE 마다 storage_node 가 `STORAGE_CALIBRATION_INVALIDATED` publish. 구독한 노드 (Coordinates 등) 가 storage 다시 호출 → 메모리 cache refresh.
 
 ```python
 # 의사 코드
 class CalibrationCache:  # 각 노드의 싱글톤
-    def __init__(self, base_node):
-        self._data = base_node.call_service(STORAGE_GET_ACTIVE_CALIBRATION, ...)
-        base_node.create_subscriber(STORAGE_CALIBRATION_INVALIDATED, self._on_invalidated)
+    def __init__(self, transport):
+        self._data = self._fetch_with_retry()
+        transport.subscribe_topic(
+            STORAGE_CALIBRATION_INVALIDATED,
+            CalibrationInvalidated,
+            self._on_invalidated,
+        )
 
     def _on_invalidated(self, msg):
-        self._data = base_node.call_service(STORAGE_GET_ACTIVE_CALIBRATION, ...)
+        if msg.robot_id == self.robot_id and msg.kind == self.kind:
+            self._data = self._fetch_with_retry()
 ```
 
-#### Invalidation 트리거 — ACTIVATE 만
-
-- `COMMIT` (Run + Result + Captures INSERT, Result.is_active=false) → invalidation 발생 X
-- `ACTIVATE` (Result.is_active=true 토글) → `STORAGE_CALIBRATION_INVALIDATED` publish → 노드들 refetch
+cache 의 의미 — *runtime hot path 의 성능* (매 IK 호출마다 SQL X). authoritative 데이터는 storage. cache = SSOT 의 in-memory copy, last-known 보존 X.
 
 ### 다른 entity — ad-hoc 호출, cache 없음
 
-scans/meshes/task_runs 는 런타임에 모든 노드가 사용하지 않음. 사용 시점에만 호출 (캡처/빌드/실행 종료).
+scans/meshes/task_runs 는 런타임에 모든 노드가 사용하지 않음. 사용 시점에만 호출 (캡처/빌드/실행 종료). cache 패턴 / invalidation 강제 X.
 
-→ 캐시 패턴 / invalidation 강제 X. 더 단순.
+### 빠진 자리들 — cache-first / fallback / version
 
-### Gateway 못 찾을 때 — bounded retry + spill fallback (캘에만)
+이전 design (spill_cache / 30초 retry / legacy npz fallback / version 비교) 는 모두 "Storage 없어도 단독 운영" 가정의 잔여물. 본 모델에선:
 
-| 시나리오 | 동작 |
-|---|---|
-| storage_node 정상 | service 호출 → 응답 받음 → 메모리 캐시 + spill 디스크에 저장 (`~/.cache/horibot/<robot_id>/calibration_<kind>.json`) |
-| storage_node 부팅 안 됨 (30초 retry) | 30초 후 spill 디스크에서 load → 노드 부팅 진행 + UI 에 "NAS unreachable, last-known cache" 경고 |
-| 첫 부팅 (spill 없음) + gateway 없음 | default 캘 (identity matrix 등) 으로 부팅 + UI 강하게 "캘 안 됨" 경고 |
-| **write/commit/activate** | gateway 필수 — 없으면 error. stale 캐시로 write 받기 시작하면 일관성 깨짐 |
+- ❌ spill cache (`~/.cache/horibot/...`) — Storage 필수라 의미 없음
+- ❌ legacy npz fallback — Stage 3 마이그레이션 1회면 storage 가 source
+- ❌ version 컬럼 / conflict resolution — SSOT 라 충돌 자리 자체 없음
+- ❌ "storage 안 떠도 노드 부팅 진행" — Storage 필수 = 대기
 
-부수 효과 — NAS 가 "필수 인프라" 아니라 "있으면 좋은 인프라". NAS 정비 / 재부팅 동안에도 시스템 운영 가능.
-
-scans/meshes/task_runs 는 fallback 없음 — 캐시 없는 entity 라 spill 패턴이 의미 없음.
+write/commit/activate 도 Storage 필수 (본래 design 유지). stale 캐시로 write 받기 시작하면 일관성 깨지는 자리는 본 모델에 아예 없음 — cache 가 last-known 아니라 SSOT-mirror 라.
 
 ## 8. Backend 추상화 — Strategy/Adapter 패턴
 
@@ -397,7 +469,7 @@ backend 갈 때 — adapter 파일 추가 + host yaml URI 만 바꿈. 다른 노
 
 | Phase | Generic 토대 | Entity 추가 |
 |---|---|---|
-| **1** | `storage_node` + `RdbStore`/`ObjectStore` Protocol + Factory + Sqlite/Filesystem/Memory adapter + spill fallback + 노드 측 cache 패턴 | **캘 5종** (3 테이블: runs/results/captures) |
+| **1** | `storage_node` + `RdbStore`/`ObjectStore` Protocol + Factory + Sqlite/Filesystem/Memory adapter + 노드 측 cache 패턴 (서비스 대기 + retry) | **캘 5종** (3 테이블: runs/results/captures) |
 | **2** | (변경 X, 재사용. ObjectStore 진짜 사용 시작) | scans / meshes / scan_sessions / task_runs (append-only, cache 없음) |
 | **3** | Postgres/MinIO adapter 추가 (URI 만 변경) | (entity 변경 X) |
 
@@ -415,7 +487,7 @@ Phase 1 의 generic 토대가 Phase 2/3 에서 그대로 재사용. Phase 2 는 
 - ✅ 1차 entity: **캘 5종만** — 3 테이블 (`calibration_runs` / `calibration_results` / `calibration_captures`)
 - ✅ Service: `STORAGE_GET_ACTIVE_CALIBRATION` / `STORAGE_LIST_CALIBRATIONS` / `STORAGE_COMMIT_CALIBRATION` / `STORAGE_ACTIVATE_CALIBRATION`
 - ✅ Topic: `STORAGE_CALIBRATION_INVALIDATED`
-- ✅ 노드 측 패턴: 싱글톤 캐시 + invalidation + spill fallback (캘에만)
+- ✅ 노드 측 패턴 (§7): Storage 필수 가정 + 서비스 대기 (retry loop) + 싱글톤 cache + invalidation 구독. spill / version / fallback 없음.
 - ✅ commit/activate 분리 UI flow (rollback first-class, capture race 해결)
 - ✅ ObjectStore 인터페이스 작고 보수적 (4 method)
 - ✅ host yaml storage URI 박기 — host_mock=`memory://`, host_dev/host_pc=`sqlite:///` + `file:///`
@@ -461,19 +533,86 @@ Phase 1 의 generic 토대가 Phase 2/3 에서 그대로 재사용. Phase 2 는 
 | `robot/instances/<id>/scans/` / `meshes/` 로컬 폴더 (gitignored) | 파일시스템 | ObjectStore (`scans/<robot_id>/<session>/scan_<id>.npz` 등) |
 | task 실행 history 휘발성 | topic publish 만 | RDB `task_runs` 테이블 + history view |
 
-## 11. 남은 open 문제 — 다음 논의
+## 11. 구현 진행 상태 (2026-06-15 session)
 
-### Phase 1 (캘) specific
+### Stage 1 — storage 인프라 ✅ commit `62232a9`
 
-- **Service contract** — service key 이름 (`STORAGE_*` prefix 통일), request/response Pydantic 모델 정의
-- **Pydantic 모델** — `CalibrationRunRecord` / `CalibrationResultRecord` / `CalibrationCaptureRecord` field 정확히
-- **마이그레이션 스크립트** — 기존 npz → 3 테이블 import. captures 정보 없는 옛 npz 는 빈 captures + placeholder run 으로
-- **storage_node 의 host yaml 등록** — `host_dev.yaml` / `host_pc.yaml` / `host_mock.yaml` 의 application 노드 그룹
-- **calibration_node 와의 책임 경계** — calibration_node 가 capture/COMPUTE 책임, storage_node 가 COMMIT/ACTIVATE/list 책임. 서로의 service 호출 경로 명확히
-- **Activate granularity** — Run 단위로 hand_eye + sag 한 묶음 ACTIVATE vs Result 별 individual. Phase 1 = individual 부터, group activate 는 미래 (run_id 보존되어 있으니 미래 확장 자연)
-- **UI flow** — list 패널, ACTIVATE 버튼, 현재 활성 강조, Run 별 grouping view, captures detail drill-down
+- `modules/storage/`:
+  - `models.py` 삭제 (캘 record 가 `modules/calibration/persistence_models.py` 로 이동, ownership layer 분리)
+  - `transport.py` — `StorageTransport` (generic, entity 어휘 0) — typed Zenoh service call envelope + topic subscribe helper
+  - `rdb/store.py` (Protocol), `rdb/adapters/{sqlite, memory}.py`
+  - `object_store/store.py` (Protocol, 4 method), `object_store/adapters/{filesystem, memory}.py`
+  - `factory.py` (URI 분기 — MLflow 식), `registry.py` (singleton)
+- `modules/calibration/persistence_models.py` — DB row shape 의 discriminated union (`CalibrationResultRecord = Annotated[Union[HandEyeResultRecord | ...], discriminator="kind"]`). kind ↔ result_data shape invariant 를 Pydantic 차원 강제.
+- `modules/calibration/result_models.py` — 계산 결과 shape (`HandEyeResultData` / `IntrinsicResultData` / ...).
+- `nodes/application/storage_node.py` — ApplicationNode, Zenoh service handler 4 + invalidation topic publish.
+- `topic_map.py` / `node_registry.py` / `api_contract.py` / host yaml (`dev` / `mock` / `pc`) 등록.
+
+### Stage 2 — calibration_node 통합 ⏳ (현재 uncommitted, 사용자가 commit 예정)
+
+ownership layer 정리 (docs §7):
+```
+Storage              ← SQLite (~/.local/horibot/storage.db)
+   ↓
+Calibration Node     ← 부팅 시 fetch + 소비자 push, write path 책임
+   ↓ push
+JointCoordinates / LinkCoordinates / SagCoordinates / PybulletKinematics / CalibrationCache
+```
+
+완료된 자리:
+- **Coordinates 3종** (`joint` / `link` / `sag`) — `set_offsets(robot_id, offsets)` DI method. storage 호출 0. lazy 패턴 X (소유자 = calibration_node).
+- **`PybulletKinematics`** — `__init__` 에서 URDF load 안 함. `apply_link_offsets(offsets)` + `initialize()` 분리. hot path 에 `_require_initialized()` raise.
+- **`SagCorrectedKinematics`** — `__init__` 에서 cache build X (empty). `reload_calibration()` public method — calibration_node 가 호출.
+- **`CalibrationCache`** (`modules/calibration/calibration_cache.py`) — intrinsic + hand_eye 공유 자료실. **ready Event** 보유 (`wait_ready` / `signal_ready` / `is_ready`) — atomic snapshot 보장.
+- **`calibration_node._setup_runtime_calibration`** — background thread, robot 별 `_push_calibration(rid)` 호출. **atomic snapshot** — 5종 다 fetch 후 push (partial state 차단).
+- **`_srv_intrinsic_save` / `_srv_handeye_commit`** — storage commit + activate + `_push_calibration` 재호출. SSOT.
+- **`StorageTransport` + `CalibrationStorageClient`** (`modules/calibration/storage_client.py`) — entity 별 client (Phase 2 entity 도 같은 transport 위에 자기 client).
+- **bridge router / task_node / tsdf_builder / detector_node** — `load_calibration` 호출 → `CalibrationCache().get(rid)` swap.
+
+### Stage 2 남은 자리 (Stage 2d cleanup)
+
+본 commit 후 다음 자리에서 이어서:
+
+- **`.history/` + `backup.py` 제거** — `_srv_handeye_commit` 에서 `calib_backup.snapshot(...)` 호출 이미 제거됨. 단 `backup.py` 파일 + `CALIB_BACKUP_LIST` / `CALIB_BACKUP_RESTORE` 서비스 자체는 살아있음 (frontend Rollback 탭 호환 위해). Stage 4 frontend swap 후 제거.
+- **`loader.py::load_calibration_from_npz`** — 옛 npz 직접 load. Stage 3 마이그레이션 스크립트 전용. 부팅 path 에서 호출 X.
+- **`hand_eye_path = ... ; st.hand_eye.save(hand_eye_path)`** — 이미 제거됨. legacy npz disk save 0.
+- **`handeye_poses.npz`** — capture session 의 working state (자세 임시 보존, 재시작 후 복원용). storage 와 별개 — 유지.
+
+### Stage 3 — 마이그레이션 스크립트 (pending, omx_f_0 대상)
+
+- `backend/scripts/migrate_calibration_to_storage.py` 신설
+- `omx_f_0` 의 5종 npz (`robot/instances/omx_f_0/calibration/*.npz`) 읽음 → `CalibrationRunRecord` + 5 `*ResultRecord` 빌드 → `storage.commit` + `storage.activate`.
+- captures 정보 없음 → `captures=[]` (Evidence 자리는 Phase 2 에서 가져옴).
+- **so101_6dof_0 은 skip** — 옛 캘 없음. 첫 캘은 hardware 자리에서 새로 진행.
+- 1회 실행. 다음 부팅 시 storage 에서 fetch + push → 옛 omx_f_0 캘 운영.
+
+### Stage 4 — Frontend UI (pending, 다음 세션 핵심)
+
+frontend 변경 0 — backend 만 변경. 다음 자리:
+
+1. **`HandeyeCommitRes.path`** — `"storage:run/3"` 식 새 형식. frontend 가 *파일 경로* 표기로 사용 중인지 확인 → "run #3" 식으로 변경 (또는 그대로 둠).
+
+2. **`STORAGE_CALIBRATION_INVALIDATED` topic 구독** — frontend 의 `BridgeClient` 가 본 topic 받으면 `/robots/{rid}/calibration/results` HTTP refetch + 패널 갱신. 현재 frontend 가 invalidation 받아 refetch 안 함 → page reload 시점에만 fresh.
+
+3. **list / ACTIVATE 패널 (new)** — `STORAGE_LIST_CALIBRATIONS(robot_id, kind, limit)` 호출 → history list 표시. `STORAGE_ACTIVATE_CALIBRATION(result_id)` 버튼. 현재 활성 강조 (is_active=true row).
+   - 캘 패널의 새 탭 또는 기존 Rollback 탭 swap.
+   - kind 별 (intrinsic / hand_eye / joint_offset / link_offset / sag) tab 또는 통합 list + filter.
+
+4. **Rollback 탭 swap** — `CALIB_BACKUP_LIST` / `CALIB_BACKUP_RESTORE` (`.history/` 의존) → `STORAGE_LIST_CALIBRATIONS` + `STORAGE_ACTIVATE_CALIBRATION`. 그 후 backend 의 `backup.py` 제거 가능.
+
+5. **`pnpm gen:types`** — backend `/openapi.json` 의 `x-contract` 가 5종 ResultData + 5종 ResultRecord + Storage service 4 + invalidation topic 다 포함. frontend codegen 실행 → `contract.ts` / `types.ts` 갱신.
 
 ### Phase 2 / 3 generic — 미리 박지 말 것
 
 - scans/meshes/task_runs 의 schema/service/Protocol method — Phase 2 진입 시 논의
+- 캘 raw image (Artifact 계층) — Phase 2 진입 시 도입 (§6 매핑)
 - NAS Postgres/MinIO adapter 의 connection pool / transaction 정책 — Phase 3 진입 시 논의
+
+## 12. 다음 세션 anchor
+
+본 commit 후 picking up:
+
+1. **검증** (집에서 hardware) — host_dev 부팅, so101 첫 캘 (intrinsic capture/save → handeye capture/compute/commit) → 재부팅 후 storage 에서 fetch + 운영 확인.
+2. **Stage 3 마이그레이션 스크립트** 작성 (`omx_f_0` 의 옛 npz import).
+3. **Stage 4 frontend** — 우선 `pnpm gen:types` 실행, `BridgeClient` 의 invalidation 구독 + refetch, list/ACTIVATE 패널 추가.
+4. **Stage 2d cleanup** — Stage 4 끝나면 `backup.py` + `CALIB_BACKUP_*` 서비스 제거.

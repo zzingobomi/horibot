@@ -30,7 +30,7 @@ import numpy as np
 import open3d as o3d
 
 from core.coords.joint_coordinates import JointCoordinates
-from modules.calibration.loader import load_calibration
+from modules.calibration.calibration_cache import CalibrationCache
 from modules.motor.motor_config import MotorConfig
 
 logger = logging.getLogger(__name__)
@@ -77,9 +77,9 @@ def build_mesh(
             f"scan {MIN_SCANS}개 이상 필요. 현재: {len(scans)}"
         )
 
-    calib = load_calibration(robot_id)
+    calib = CalibrationCache().get(robot_id)
     if calib.hand_eye is None:
-        raise RuntimeError("hand_eye.npz 없음 — 캘리브 먼저 진행")
+        raise RuntimeError("hand_eye 캘 없음 — 캘리브 먼저 진행")
 
     T_ee_cam = np.eye(4)
     T_ee_cam[:3, :3] = calib.hand_eye.R

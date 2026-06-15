@@ -56,7 +56,12 @@ class SagCorrectedKinematics:
         self._link_coords = link_coords
         self._sag_coords = sag_coords
         self._cache_lock = threading.Lock()
-        self._reload_caches()
+        # 부팅 시 caches 는 empty (sag 비활성). calibration_node 가 set_offsets 후
+        # `reload_calibration()` 호출하면 link/sag array 실제 값으로 채워짐.
+        self._link_trans_array = np.zeros((_ARM_DOF, 3), dtype=np.float64)
+        self._link_rot_array = np.zeros((_ARM_DOF, 3), dtype=np.float64)
+        self._sag_k_array = np.zeros((len(_SAG_JOINT_IDS),), dtype=np.float64)
+        self._sag_enabled = False
 
     # ─── Kinematics Protocol ────────────────────────────────────
 
@@ -110,11 +115,12 @@ class SagCorrectedKinematics:
 
     # ─── sag 보정 / 캐시 ──────────────────────────────────────────
 
-    def _reload_caches(self) -> None:
-        """LinkCoordinates / SagCoordinates 에서 array 재로드.
+    def reload_calibration(self) -> None:
+        """calibration_node 가 LinkCoordinates / SagCoordinates 갱신 후 호출.
 
-        COMMIT 후 외부에서 호출하면 재시작 없이 반영. 단 LinkCoordinates 는 URDF
-        patch 영향도라 inner kinematics 도 재로드 필요 (실용상 process 재시작 권장).
+        link offset 의 URDF patch 부분은 inner (PybulletKinematics) 가 부팅 시
+        1회 적용 — 본 reload 는 sag array + link rotvec/trans array (sag 보정 계산에
+        사용) 만 갱신. URDF 자체는 재로드 X (런타임 reload 는 본 design 의 범위 밖).
         """
         with self._cache_lock:
             link_offsets = self._link_coords.snapshot()

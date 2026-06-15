@@ -1,13 +1,11 @@
-"""URDF link origin offset 의 런타임 진입점. robot_id 차원 도입 (multi_robot §4.5).
+"""URDF link origin offset 의 런타임 진입점.
 
-[JointCoordinates](backend/core/coords/joint_coordinates.py) 와 같은 dict[robot_id] 패턴.
-state: `dict[robot_id] -> LinkOffsets`.
+[JointCoordinates](backend/core/coords/joint_coordinates.py) 와 같은 dict[robot_id]
+패턴. storage 모름 — calibration_node 가 owner, `set_offsets` 로 주입.
 
-joint_offsets 와 다른 점은 동일:
-    - 값이 *2종* (link_trans (3,) m, link_rot (3,) rad rotvec) per joint
-    - 사용처가 *URDF patch* (PybulletKinematics 부팅 시 urdf_patcher 호출에 들어감)
-    - **commit_offsets semantics: overwrite (절대값 덮어쓰기)**
-      (BA 의 link_t 는 absolute total — accuracy_squeeze_plan §1.6)
+PybulletKinematics URDF patch 는 부팅 시 1회 — calibration_node 가 link offsets
+주입 후 PybulletKinematics 의 `apply_link_offsets` + `initialize` 호출.
+docs/storage_layer.md §7.
 """
 
 from __future__ import annotations
@@ -18,14 +16,9 @@ import threading
 import numpy as np
 
 from core.robot.robot_registry import RobotRegistry
-from modules.calibration import link_offsets as link_offsets_io
 from modules.calibration.link_offsets import LinkOffsets
 
 logger = logging.getLogger(__name__)
-
-
-def _link_offsets_path(robot_id: str):
-    return RobotRegistry().get(robot_id).calibration_dir / "link_offsets.npz"
 
 
 class LinkCoordinates:
@@ -46,19 +39,22 @@ class LinkCoordinates:
         self._initialized = True
         self._cache_lock = threading.Lock()
         self._offsets_by_robot: dict[str, LinkOffsets] = {}
-        for cfg in RobotRegistry().enabled_robots():
-            path = cfg.calibration_dir / "link_offsets.npz"
-            offsets = link_offsets_io.load(path)
-            self._offsets_by_robot[cfg.robot_id] = offsets
-            if not offsets.is_empty():
-                n = max(len(offsets.trans), len(offsets.rot))
-                logger.info(f"link_offsets[{cfg.robot_id}] 적용: {n} joints")
 
     def _resolve(self, robot_id: str | None) -> str:
         return robot_id if robot_id is not None else RobotRegistry().default_robot_id()
 
     def _empty(self) -> LinkOffsets:
         return LinkOffsets(trans={}, rot={})
+
+    def set_offsets(self, robot_id: str, offsets: LinkOffsets) -> None:
+        """calibration_node 가 storage 에서 load 후 주입."""
+        with self._cache_lock:
+            self._offsets_by_robot[robot_id] = LinkOffsets(
+                trans=dict(offsets.trans), rot=dict(offsets.rot)
+            )
+        if not offsets.is_empty():
+            n = max(len(offsets.trans), len(offsets.rot))
+            logger.info(f"link_offsets[{robot_id}] 적용: {n} joints")
 
     def snapshot(self, robot_id: str | None = None) -> LinkOffsets:
         rid = self._resolve(robot_id)
@@ -78,40 +74,3 @@ class LinkCoordinates:
         rid = self._resolve(robot_id)
         with self._cache_lock:
             return self._offsets_by_robot.get(rid, self._empty()).get_rot(jid)
-
-    def commit_absolute(
-        self,
-        offsets: LinkOffsets,
-        method: str,
-        robot_id: str | None = None,
-    ) -> LinkOffsets:
-        """COMMIT 시 atomic 갱신: 디스크 *overwrite* + 메모리 reload (PC 내부 한정).
-
-        Overwrite semantics — `offsets` 는 absolute total 값. cumulative 가산 X.
-        URDF patch 자체는 부팅 시 1회 — link offset 갱신 후 FK/IK 반영은 PyBullet
-        재시작 필요 (caller 가 restart_required 표시).
-        다른 머신 전파는 git pull + 재시작.
-        """
-        rid = self._resolve(robot_id)
-        link_offsets_io.save(_link_offsets_path(rid), offsets, method=method)
-        with self._cache_lock:
-            self._offsets_by_robot[rid] = LinkOffsets(
-                trans=dict(offsets.trans),
-                rot=dict(offsets.rot),
-            )
-        return self.snapshot(rid)
-
-    def reload(self, robot_id: str | None = None) -> LinkOffsets:
-        """디스크에서 다시 로드 → 메모리 갱신 (rollback 후 호출).
-
-        주의: URDF patch 는 부팅 시점 적용이라 reload 만으로는 FK/IK 에 반영 X.
-        rollback 후 link offset 효과 보려면 PyBullet 재시작 필요.
-        """
-        rid = self._resolve(robot_id)
-        loaded = link_offsets_io.load(_link_offsets_path(rid))
-        with self._cache_lock:
-            self._offsets_by_robot[rid] = LinkOffsets(
-                trans=dict(loaded.trans),
-                rot=dict(loaded.rot),
-            )
-        return self.snapshot(rid)

@@ -34,7 +34,7 @@ def get_default_kinematics() -> SagCorrectedKinematics:
     `Kinematics` Protocol 만족 (SagCorrectedKinematics 가 구현체) — `.fk()` /
     `.ik()` / `.fk_to_matrix()` / `.joint_limits()` / `.self_collision()` +
     `.dof` / `.tcp_link_name` property. SagCoordinates COMMIT 후 캐시 재로드는
-    어댑터의 `_reload_caches()`.
+    어댑터의 `reload_calibration()`.
     """
     kin = RobotRegistry().get_kinematics()
     # Kinematics Protocol 만 만족 (Pyright 위해 SagCorrectedKinematics 로 narrow).

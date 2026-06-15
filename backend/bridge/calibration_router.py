@@ -4,7 +4,8 @@ from fastapi.responses import JSONResponse
 from bridge.schemas import CalibrationResults, JointOffsetSchema
 from core.coords.joint_coordinates import JointCoordinates
 from core.robot.robot_registry import RobotRegistry
-from modules.calibration.loader import load_calibration, to_json
+from modules.calibration.calibration_cache import CalibrationCache
+from modules.calibration.loader import to_json
 
 calibration_router = APIRouter(tags=["calibration"])
 
@@ -31,7 +32,7 @@ async def get_calibration_results(robot_id: str):
     except KeyError:
         raise HTTPException(status_code=404, detail=f"robot '{robot_id}' 없음")
 
-    data = load_calibration(robot_id)
+    data = CalibrationCache().get(robot_id)
     if not data.is_ready():
         return JSONResponse(
             content={"error": "Calibration data is not ready"}, status_code=400

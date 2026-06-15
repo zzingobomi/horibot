@@ -90,6 +90,7 @@ class RobotConfig:
     type_dir: Path
     urdf_path: Path
     type_motors_yaml: Path
+    type_motion_yaml: Path
 
     # instance-level paths — robot/instances/<robot_id>/
     instance_dir: Path
@@ -130,6 +131,7 @@ class RobotRegistry:
         self._kinematics: dict[str, object] = {}  # Kinematics — lazy import 회피
         self._motor_backends: dict[str, object] = {}  # MotorBackend
         self._camera_captures: dict[str, object] = {}  # CameraCapture
+        self._motion_configs: dict[str, object] = {}  # MotionConfig
         self._factory_lock = threading.Lock()
         self._load()
 
@@ -250,6 +252,7 @@ class RobotRegistry:
             type_dir=type_dir,
             urdf_path=type_dir / "urdf" / f"{robot_type}.urdf",
             type_motors_yaml=type_dir / "motors.yaml",
+            type_motion_yaml=type_dir / "motion.yaml",
             instance_dir=instance_dir,
             instance_yaml=instance_dir / "instance.yaml",
             robot_poses_yaml=instance_dir / "robot_poses.yaml",
@@ -356,6 +359,16 @@ class RobotRegistry:
         raise ValueError(
             f"unknown motor_backend: {cfg.motor_backend!r} (robot_id={robot_id})"
         )
+
+    def get_motion_config(self, robot_id: str | None = None):
+        """robot/<type>/motion.yaml 의 MotionConfig — Ruckig 한계 SSOT."""
+        return self._get_or_build(self._motion_configs, robot_id, self._build_motion_config)
+
+    def _build_motion_config(self, robot_id: str):
+        from modules.kinematics.motion_config import load_motion_config
+
+        cfg = self.get(robot_id)
+        return load_motion_config(cfg.type_motion_yaml)
 
     def get_camera_capture(self, robot_id: str | None = None) -> Any:
         """cfg.camera_backend = "realsense" → RealsenseCapture() / "opencv" / "mujoco" 미구현.

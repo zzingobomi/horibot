@@ -62,21 +62,40 @@ class MotionNode(DeviceNode):
         self._joint_cache = JointStateCache()
         self._joint_cache.subscribe(self)
 
-        # arm_profile 가 motors.yaml 에 있으면 TrajectoryRunner 의 restore 기준값을
-        # 그 값으로 — motor_node start baseline 과 동일. 없으면 constructor default
-        # (Dynamixel OMX 가 기존 150/40 그대로 쓰던 자리).
-        runner_kwargs: dict[str, int] = {}
-        if layout.arm_profile is not None:
-            runner_kwargs["default_profile_vel"] = layout.arm_profile.velocity
-            runner_kwargs["default_profile_acc"] = layout.arm_profile.acceleration
+        # robot/<type>/motion.yaml SSOT — Ruckig 한계 (joint+cartesian). 5DOF/6DOF
+        # 무관 같은 코드 경로 (motion.yaml 가 robot 별로 자기 joint 만 등재).
+        from typing import cast
+        from core.robot.robot_registry import RobotRegistry
+        from modules.kinematics.motion_config import MotionConfig
+
+        motion_cfg = cast(MotionConfig, RobotRegistry().get_motion_config(robot_id))
+
+        # arm motor 순서대로 joint_limits dict 를 array 로 변환 — TrajectoryRunner 가
+        # array index = arm motor index 가정. dict-by-name 이라 5→6DOF 추가 시 yaml
+        # 만 늘리면 됨.
+        missing = [cfg.name for cfg in self._arm_cfgs if cfg.name not in motion_cfg.joint_limits]
+        if missing:
+            raise ValueError(
+                f"motion.yaml: arm joint {missing} 의 joint_limits 누락 "
+                f"(robot={robot_id})"
+            )
+        j_max_vel = [motion_cfg.joint_limits[cfg.name].max_velocity for cfg in self._arm_cfgs]
+        j_max_acc = [motion_cfg.joint_limits[cfg.name].max_acceleration for cfg in self._arm_cfgs]
+        j_max_jerk = [motion_cfg.joint_limits[cfg.name].max_jerk for cfg in self._arm_cfgs]
 
         self._runner = TrajectoryRunner(
             n_arm=self._n_arm,
-            set_profile=self._set_arm_profile,
+            joint_max_velocity=j_max_vel,
+            joint_max_acceleration=j_max_acc,
+            joint_max_jerk=j_max_jerk,
+            cartesian_max_velocity=motion_cfg.cartesian_limits.max_trans_vel,
+            cartesian_max_acceleration=motion_cfg.cartesian_limits.max_trans_acc,
+            cartesian_max_jerk=motion_cfg.cartesian_limits.max_trans_jerk,
+            release_profile=self._release_profile,
+            restore_profile=self._restore_profile,
             publish_cmd=self._publish_cmd,
             publish_state=self._publish_traj_state,
             move_tcp=self._motion.move_tcp,
-            **runner_kwargs,
         )
 
         self.create_service(
@@ -342,13 +361,26 @@ class MotionNode(DeviceNode):
             ),
         )
 
-    def _set_arm_profile(self, velocity: int, acceleration: int) -> bool:
+    def _release_profile(self) -> bool:
+        """raw 0,0 → motor cap 해제 (Ruckig 가 직접 trajectory shape 만든다)."""
         res = self.call_service(
             self.r(Service.MOTOR_SET_PROFILE_ALL),
             MotorSetProfileAllReq(
                 ids=self._arm_ids,
-                velocity=velocity,
-                acceleration=acceleration,
+                velocity=0,
+                acceleration=0,
+            ),
+            EmptyData,
+        )
+        return res.success
+
+    def _restore_profile(self) -> bool:
+        """각 모터의 motors.yaml `profile` (dps SSOT) 복원 — moveJ/L 종료 시."""
+        res = self.call_service(
+            self.r(Service.MOTOR_SET_PROFILE_ALL),
+            MotorSetProfileAllReq(
+                ids=self._arm_ids,
+                restore_defaults=True,
             ),
             EmptyData,
         )

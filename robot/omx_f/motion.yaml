@@ -1,0 +1,42 @@
+# OMX_F (Dynamixel XL430/XL330, 5DOF) — Ruckig 한계 SSOT.
+# TrajectoryRunner 가 moveJ / moveL / moveC / moveP 보간 시 입력으로 사용.
+# 단위: SI (rad/s, rad/s², rad/s³, m/s, m/s², m/s³). dict-by-joint-name —
+# motors.yaml `motors[].name` 과 일치.
+#
+# motors.yaml 의 `profile` (motor register slam guard) 와는 별개 layer:
+# - profile = vendor register, slider/teleop 안전망
+# - motion = Ruckig 입력, moveJ/L 도중의 진짜 속도
+# (CLAUDE.md "두 종류의 속도 제약" 참조)
+#
+# 이전 trajectory_runner.py 하드코드 값 (XL430 ~41 rpm ≈ 4.3 rad/s 의 ~35% 수준)
+# 을 그대로 옮김 — 운영 검증 끝난 baseline.
+
+joint_limits:
+  joint1:
+    max_velocity: 1.5      # rad/s (XL430 base yaw)
+    max_acceleration: 3.0  # rad/s²
+    max_jerk: 10.0         # rad/s³
+  joint2:
+    max_velocity: 1.5      # XL430 shoulder (중력 부하 보수적)
+    max_acceleration: 3.0
+    max_jerk: 10.0
+  joint3:
+    max_velocity: 1.5      # XL430 elbow
+    max_acceleration: 3.0
+    max_jerk: 10.0
+  joint4:
+    max_velocity: 2.5      # XL330 wrist pitch (작은 모터, 빠름)
+    max_acceleration: 5.0
+    max_jerk: 20.0
+  joint5:
+    max_velocity: 2.5      # XL330 wrist roll
+    max_acceleration: 5.0
+    max_jerk: 20.0
+
+cartesian_limits:
+  # 저속 (<0.08 m/s) 에서 J3 P=1500 static friction → stick-slip chatter.
+  # 0.10 이 idle/run 균형점 — 운영 검증 끝난 baseline (이전 _C_MAX_VEL 그대로).
+  max_trans_vel: 0.10
+  max_trans_acc: 0.25
+  max_trans_jerk: 1.00
+  # 회전 한계는 5DOF position-only IK 시 미사용 (motion_config default 사용).

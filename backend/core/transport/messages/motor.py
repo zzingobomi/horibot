@@ -93,11 +93,17 @@ class MotorSetProfileReq(StrictModel):
 
 
 class MotorSetProfileAllReq(StrictModel):
-    """ids=None 이면 driver.motor_ids 전체 적용."""
+    """ids=None 이면 driver.motor_ids 전체 적용.
+
+    `restore_defaults=True` 면 velocity/acceleration 무시 + 각 모터의 motors.yaml
+    `profile` (dps) 적용. TrajectoryRunner 가 moveJ/L/C/P 종료 시 호출 — release
+    (raw 0,0) 의 반대 동작.
+    """
 
     ids: list[int] | None = None
     velocity: int = 0
     acceleration: int = 0
+    restore_defaults: bool = False
 
 
 # ─── Service: MOTOR_GET_CONFIG ────────────────────────────────────────

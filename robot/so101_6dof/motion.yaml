@@ -1,0 +1,41 @@
+# so101_6dof (Feetech STS3215/STS3250, 6DOF + gripper) — Ruckig 한계 SSOT.
+# TrajectoryRunner 가 moveJ / moveL / moveC / moveP 보간 시 입력으로 사용.
+# 단위: SI (rad/s, rad/s², rad/s³, m/s, m/s², m/s³). dict-by-joint-name —
+# motors.yaml `motors[].name` 과 일치 (gripper = joint7 은 moveJ 비대상 → 등재 X).
+#
+# 1차 baseline — OMX 의 운영 검증 값 (~1.5 rad/s = ~86°/s) 을 STS3215/3250 사양
+# 에 맞춰 같은 비율 (sts 최대 약 45 rpm ≈ 4.7 rad/s 의 ~35%) 로 시작. 실 hardware
+# 부팅 후 진동/sag 보고 튜닝.
+
+joint_limits:
+  joint1:
+    max_velocity: 1.5      # rad/s (STS3215 base yaw)
+    max_acceleration: 3.0
+    max_jerk: 10.0
+  joint2:
+    max_velocity: 1.2      # STS3250 shoulder — 무거우므로 보수적
+    max_acceleration: 2.5
+    max_jerk: 8.0
+  joint3:
+    max_velocity: 1.5      # STS3215 elbow
+    max_acceleration: 3.0
+    max_jerk: 10.0
+  joint4:
+    max_velocity: 2.0      # STS3215 wrist pitch
+    max_acceleration: 4.0
+    max_jerk: 15.0
+  joint5:                  # NEW wrist yaw (ts_flake mod)
+    max_velocity: 2.0      # STS3215
+    max_acceleration: 4.0
+    max_jerk: 15.0
+  joint6:                  # wrist roll, D405 cantilever
+    max_velocity: 2.0
+    max_acceleration: 4.0
+    max_jerk: 15.0
+
+cartesian_limits:
+  # OMX 와 동일 baseline — TCP space 는 robot 무관 사용자 체감 동일하게.
+  max_trans_vel: 0.10
+  max_trans_acc: 0.25
+  max_trans_jerk: 1.00
+  # 6DOF 의 회전 한계 — full orientation IK 활성화 시 적용 (현재 미사용).

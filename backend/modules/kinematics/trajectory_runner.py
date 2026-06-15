@@ -15,23 +15,9 @@ logger = logging.getLogger(__name__)
 
 TRAJ_DT = 1.0 / 50   # 50 Hz
 
-# ── Cartesian 경로 제약 ────────────────────────────────────────
-# 저속(<0.08 m/s)에서 J3 P=1500이 static friction을 강하게 밀어내며 stick-slip
-# chatter 유발 → 원복. 0.10이 idle/run 균형점.
-_C_MAX_VEL = 0.10    # m/s
-_C_MAX_ACC = 0.25    # m/s²
-_C_MAX_JERK = 1.00    # m/s³
-
-
-# ── Joint 제약 (id 순서: 1,2,3,4,5) ────────────────────────────
-# XL430(1~3): max ~41 rpm ≈ 4.3 rad/s
-# XL330(4~5): max ~61 rpm ≈ 6.4 rad/s
-# 안정성 / 정밀도 우선 세팅 (soft motion profile)
-# - velocity ~35% 수준 제한
-# - acceleration / jerk 추가 감속으로 부드러운 움직임 보장
-_J_MAX_VEL = [1.5, 1.5, 1.5, 2.5, 2.5]
-_J_MAX_ACC = [3.0, 3.0, 3.0, 5.0, 5.0]
-_J_MAX_JERK = [10.0, 10.0, 10.0, 20.0, 20.0]
+# Cartesian / joint Ruckig limit 은 더 이상 하드코드 X — robot/<type>/motion.yaml SSOT.
+# motion_node 가 load 해서 TrajectoryRunner ctor 에 주입. Cartesian 저속 chatter
+# (J3 P=1500 stick-slip) 회피용 최소 0.10 m/s 는 motion.yaml 코멘트로 박힘.
 
 _MOVEP_MIN_DIST = 1e-4   # 너무 가까운 waypoint 제거
 
@@ -47,7 +33,10 @@ _CART_HOLD_STEPS = 25
 # ── 콜백 타입 ──────────────────────────────────────────────────
 PublishCmdFn = Callable[[list[float]], None]
 PublishStateFn = Callable[[TrajStatus, float], None]
-SetProfileFn = Callable[[int, int], bool]
+# release: motor register profile 을 raw 0,0 (= no cap) 으로 풀어 Ruckig 가
+# 직접 명령. restore: 각 모터의 motors.yaml `profile` (dps) 복원.
+ReleaseProfileFn = Callable[[], bool]
+RestoreProfileFn = Callable[[], bool]
 MoveTcpFn = Callable[[Position3, list[float]], list[float] | None]
 
 # ═══════════════════════════════════════════════════════════════
@@ -146,21 +135,37 @@ class SplinePath(CartesianPath):
 class TrajectoryRunner:
     def __init__(
         self,
-        n_arm:               int,
-        set_profile:         SetProfileFn,
-        publish_cmd:         PublishCmdFn,
-        publish_state:       PublishStateFn,
-        move_tcp:            MoveTcpFn,
-        default_profile_vel: int = 150,
-        default_profile_acc: int = 40,
+        n_arm:                      int,
+        joint_max_velocity:         list[float],
+        joint_max_acceleration:     list[float],
+        joint_max_jerk:             list[float],
+        cartesian_max_velocity:     float,
+        cartesian_max_acceleration: float,
+        cartesian_max_jerk:         float,
+        release_profile:            ReleaseProfileFn,
+        restore_profile:            RestoreProfileFn,
+        publish_cmd:                PublishCmdFn,
+        publish_state:              PublishStateFn,
+        move_tcp:                   MoveTcpFn,
     ) -> None:
+        if not (len(joint_max_velocity) == len(joint_max_acceleration) == len(joint_max_jerk) == n_arm):
+            raise ValueError(
+                f"TrajectoryRunner: joint limit 배열 길이가 n_arm={n_arm} 와 안 맞음. "
+                f"vel={len(joint_max_velocity)} acc={len(joint_max_acceleration)} "
+                f"jerk={len(joint_max_jerk)}"
+            )
         self._n_arm = n_arm
-        self._set_profile = set_profile
+        self._j_max_vel = list(joint_max_velocity)
+        self._j_max_acc = list(joint_max_acceleration)
+        self._j_max_jerk = list(joint_max_jerk)
+        self._c_max_vel = cartesian_max_velocity
+        self._c_max_acc = cartesian_max_acceleration
+        self._c_max_jerk = cartesian_max_jerk
+        self._release_profile = release_profile
+        self._restore_profile = restore_profile
         self._publish_cmd = publish_cmd
         self._publish_state = publish_state
         self._move_tcp = move_tcp
-        self._default_vel = default_profile_vel
-        self._default_acc = default_profile_acc
 
         self._thread:  threading.Thread | None = None
         self._stop_ev: threading.Event = threading.Event()
@@ -202,7 +207,7 @@ class TrajectoryRunner:
 
     def _cartesian_loop(self, path: CartesianPath, start_angles: list[float]) -> None:
         label = path.label
-        ok = self._set_profile(0, 0)
+        ok = self._release_profile()
         if not ok:
             logger.warning(f"{label}: profile 비활성화 실패 — 계속 진행")
 
@@ -215,9 +220,9 @@ class TrajectoryRunner:
         inp.target_position = [path.total_length]
         inp.target_velocity = [0.0]
         inp.target_acceleration = [0.0]
-        inp.max_velocity = [_C_MAX_VEL]
-        inp.max_acceleration = [_C_MAX_ACC]
-        inp.max_jerk = [_C_MAX_JERK]
+        inp.max_velocity = [self._c_max_vel]
+        inp.max_acceleration = [self._c_max_acc]
+        inp.max_jerk = [self._c_max_jerk]
 
         q_filt = list(start_angles)
         last_raw: list[float] = list(start_angles)
@@ -323,12 +328,12 @@ class TrajectoryRunner:
                     time.sleep(sleep_time)
 
         finally:
-            ok = self._set_profile(self._default_vel, self._default_acc)
+            ok = self._restore_profile()
             if not ok:
                 logger.warning(f"{label}: profile 복원 실패")
 
     def _joint_loop(self, start_angles: list[float], target_angles: list[float]) -> None:
-        ok = self._set_profile(0, 0)
+        ok = self._release_profile()
         if not ok:
             logger.warning("MoveJ: profile 비활성화 실패 — 계속 진행")
 
@@ -342,9 +347,9 @@ class TrajectoryRunner:
         inp.target_position = target_angles
         inp.target_velocity = [0.0] * n
         inp.target_acceleration = [0.0] * n
-        inp.max_velocity = list(_J_MAX_VEL)
-        inp.max_acceleration = list(_J_MAX_ACC)
-        inp.max_jerk = list(_J_MAX_JERK)
+        inp.max_velocity = list(self._j_max_vel)
+        inp.max_acceleration = list(self._j_max_acc)
+        inp.max_jerk = list(self._j_max_jerk)
 
         first_result = otg.update(inp, out)
         est_duration = out.trajectory.duration
@@ -395,7 +400,7 @@ class TrajectoryRunner:
                     time.sleep(sleep_time)
 
         finally:
-            ok = self._set_profile(self._default_vel, self._default_acc)
+            ok = self._restore_profile()
             if not ok:
                 logger.warning("MoveJ: profile 복원 실패")
 

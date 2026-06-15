@@ -28,17 +28,10 @@ logger = logging.getLogger(__name__)
 
 STATE_PUBLISH_HZ = 20  # 초당 상태 발행 횟수
 
-# Gripper 관련 상수
+# Gripper open/close raw position
 GRIPPER_OPEN_RAW = 2600
 GRIPPER_CLOSE_RAW = 1800  # current 제한이 있으므로 여유있게
 GRIPPER_CURRENT_DEFAULT = 200  # mA, 기본 파지력
-
-# Gripper 부드러운 동작 — start() 시 한 번 설정해서 영구 적용.
-# Dynamixel default = 0 (= 최대 속도로 즉시 = "휙"). >0이면 trapezoidal ramp.
-# profile_velocity 단위: 0.229 rpm (XL 시리즈) → 80 ≈ 18 rpm = full stroke ~1.5s
-# profile_acceleration 단위: 214.577 rpm/s²
-GRIPPER_PROFILE_VELOCITY = 80
-GRIPPER_PROFILE_ACCELERATION = 30
 
 
 class MotorNode(DeviceNode):
@@ -105,8 +98,7 @@ class MotorNode(DeviceNode):
         if self.connected:
             self._apply_position_pid()
             self.driver.torque_enable_all()
-            self._apply_arm_smooth_profile()
-            self._apply_gripper_smooth_profile()
+            self._apply_profiles()
             self.torque_enabled = True
             self.log("info", f"모터 노드 시작 ({self.port})")
 
@@ -124,41 +116,38 @@ class MotorNode(DeviceNode):
         if self.connected:
             self.driver.disconnect()
 
-    def _apply_arm_smooth_profile(self) -> None:
-        """arm 모터들에 motors.yaml::arm_profile 적용 — slider/teleop slam 방지.
-        TrajectoryRunner 가 moveJ/L/C/P 진입 시 0,0 으로 풀고 종료 시 복원.
+    def _apply_profiles(self, target_ids: list[int] | None = None) -> None:
+        """모터별 motors.yaml `profile` 적용 — slider/teleop slam 방지 baseline.
+
+        TrajectoryRunner 가 moveJ/L/C/P 진입 시 release (raw 0,0) 로 풀고 종료 시
+        이 함수로 복원. dps 단위 → adapter 가 vendor 별 raw 변환.
+
+        target_ids=None → 모든 모터. profile 이 None 인 모터는 skip (SDK default 유지).
         """
-        profile = self._layout.arm_profile
-        if profile is None:
+        targets = (
+            [cfg for cfg in self.motor_cfgs if cfg.id in target_ids]
+            if target_ids is not None
+            else self.motor_cfgs
+        )
+        vel_map: dict[int, float] = {}
+        acc_map: dict[int, float] = {}
+        for cfg in targets:
+            if cfg.profile is None:
+                continue
+            vel_map[cfg.id] = cfg.profile.velocity_dps
+            acc_map[cfg.id] = cfg.profile.acceleration_dpss
+        if not vel_map:
             return
-        vel_map = {cfg.id: profile.velocity for cfg in self._arm_cfgs}
-        acc_map = {cfg.id: profile.acceleration for cfg in self._arm_cfgs}
         try:
-            self.driver.set_profile_accelerations_sync(acc_map)
-            self.driver.set_profile_velocities_sync(vel_map)
+            self.driver.write_profile_accelerations_dpss(acc_map)
+            self.driver.write_profile_velocities_dps(vel_map)
             self.log(
                 "info",
-                f"arm 부드러운 profile 적용: vel={profile.velocity} "
-                f"acc={profile.acceleration}",
+                f"모터 profile 적용: {len(vel_map)}개 "
+                f"(motors.yaml `profile` per-motor dps SSOT)",
             )
         except Exception as e:
-            logger.warning(f"arm profile 설정 실패: {e}")
-
-    def _apply_gripper_smooth_profile(self) -> None:
-        try:
-            self.driver.set_profile_velocity(
-                self._gripper_cfg.id, GRIPPER_PROFILE_VELOCITY
-            )
-            self.driver.set_profile_acceleration(
-                self._gripper_cfg.id, GRIPPER_PROFILE_ACCELERATION
-            )
-            logger.info(
-                "그리퍼 부드러운 profile 적용: vel=%d acc=%d",
-                GRIPPER_PROFILE_VELOCITY,
-                GRIPPER_PROFILE_ACCELERATION,
-            )
-        except Exception as e:
-            logger.warning(f"그리퍼 profile 설정 실패: {e}")
+            logger.warning(f"motor profile 설정 실패: {e}")
 
     def _apply_position_pid(self) -> None:
         for cfg in self.motor_cfgs:
@@ -254,12 +243,9 @@ class MotorNode(DeviceNode):
             else:
                 for mid in self.driver.motor_ids:
                     self.driver.reboot(mid)
-            # reboot은 profile_velocity/acceleration도 리셋(=0). 부드러운 default 복원.
-            arm_ids = {cfg.id for cfg in self._arm_cfgs}
-            if motor_id is None or motor_id in arm_ids:
-                self._apply_arm_smooth_profile()
-            if motor_id is None or motor_id == self._gripper_cfg.id:
-                self._apply_gripper_smooth_profile()
+            # reboot은 profile_velocity/acceleration도 리셋(=0). per-motor default 복원.
+            target_ids = None if motor_id is None else [motor_id]
+            self._apply_profiles(target_ids)
             return ServiceResponse(success=True, message="ok", data=EmptyData())
         except Exception as e:
             return ServiceResponse(success=False, message=str(e), data=None)
@@ -283,10 +269,15 @@ class MotorNode(DeviceNode):
         d = req.data
         target_ids = d.ids if d.ids is not None else list(self.driver.motor_ids)
         try:
-            vel_map = {mid: d.velocity for mid in target_ids}
-            acc_map = {mid: d.acceleration for mid in target_ids}
-            self.driver.set_profile_accelerations_sync(acc_map)
-            self.driver.set_profile_velocities_sync(vel_map)
+            if d.restore_defaults:
+                # 각 모터의 motors.yaml `profile` 적용 (dps SSOT).
+                self._apply_profiles(target_ids)
+            else:
+                # 단일 raw 값 일괄 적용 (release sentinel 0,0 / 임시 override).
+                vel_map = {mid: d.velocity for mid in target_ids}
+                acc_map = {mid: d.acceleration for mid in target_ids}
+                self.driver.set_profile_accelerations_sync(acc_map)
+                self.driver.set_profile_velocities_sync(vel_map)
             return ServiceResponse(success=True, message="ok", data=EmptyData())
         except Exception as e:
             return ServiceResponse(success=False, message=str(e), data=None)

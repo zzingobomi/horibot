@@ -14,6 +14,15 @@ from modules.motor.motor_config import MotorConfig
 from modules.motor.backend import MotorCommError
 
 
+# ─── Profile dps ↔ raw 변환 상수 (STS3215 / STS3250 공통) ──────
+# STS register:
+#   Goal_Velocity unit = step/s, 1 step = 360°/4096 ≈ 0.088 °/s per raw
+#   Goal_Acceleration unit = 100 × step/s² ≈ 8.79 °/s² per raw
+# raw = round(dps / DPS_PER_RAW). caller 가 음수 안 넣어야 함.
+_STS_VEL_DPS_PER_RAW = 0.0879
+_STS_ACC_DPSS_PER_RAW = 8.79
+
+
 class FeetechBackend:
     """`scservo_sdk` adapter. MotorBackend Protocol 만족."""
 
@@ -68,6 +77,14 @@ class FeetechBackend:
 
     def write_profile_accelerations(self, acc: dict[int, int]) -> None:
         self._driver.set_profile_accelerations_sync(acc)
+
+    def write_profile_velocities_dps(self, vel_dps: dict[int, float]) -> None:
+        raw = {mid: max(0, round(dps / _STS_VEL_DPS_PER_RAW)) for mid, dps in vel_dps.items()}
+        self._driver.set_profile_velocities_sync(raw)
+
+    def write_profile_accelerations_dpss(self, acc_dpss: dict[int, float]) -> None:
+        raw = {mid: max(0, round(dpss / _STS_ACC_DPSS_PER_RAW)) for mid, dpss in acc_dpss.items()}
+        self._driver.set_profile_accelerations_sync(raw)
 
     def configure_pid(
         self,

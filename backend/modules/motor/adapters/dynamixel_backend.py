@@ -17,6 +17,15 @@ from modules.motor.motor_config import MotorConfig
 from modules.motor.backend import MotorCommError
 
 
+# ─── Profile dps ↔ raw 변환 상수 (XL430 / XL330 공통) ──────────
+# X-series Protocol 2.0:
+#   Profile_Velocity unit = 0.229 rev/min = 0.229 × 360/60 = 1.374 °/s per raw
+#   Profile_Acceleration unit = 214.577 rev/min² = 214.577 × 360/3600 = 21.46 °/s² per raw
+# raw = round(dps / DPS_PER_RAW). 음수 / fractional 입력은 caller 책임.
+_DXL_VEL_DPS_PER_RAW = 1.374
+_DXL_ACC_DPSS_PER_RAW = 21.46
+
+
 class DynamixelBackend:
     """`dynamixel-sdk` adapter. MotorBackend Protocol 만족."""
 
@@ -69,6 +78,14 @@ class DynamixelBackend:
 
     def write_profile_accelerations(self, acc: dict[int, int]) -> None:
         self._driver.set_profile_accelerations_sync(acc)
+
+    def write_profile_velocities_dps(self, vel_dps: dict[int, float]) -> None:
+        raw = {mid: max(0, round(dps / _DXL_VEL_DPS_PER_RAW)) for mid, dps in vel_dps.items()}
+        self._driver.set_profile_velocities_sync(raw)
+
+    def write_profile_accelerations_dpss(self, acc_dpss: dict[int, float]) -> None:
+        raw = {mid: max(0, round(dpss / _DXL_ACC_DPSS_PER_RAW)) for mid, dpss in acc_dpss.items()}
+        self._driver.set_profile_accelerations_sync(raw)
 
     def configure_pid(
         self,

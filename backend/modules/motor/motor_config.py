@@ -17,6 +17,24 @@ class MotorKind(StrEnum):
 
 
 @dataclass
+class MotorProfile:
+    """모터 register 의 motion profile (slam guard, slider/teleop 안전망).
+
+    physical 단위 (°/s, °/s²) — vendor 별 단위 차이는 MotorBackend adapter 가 흡수.
+    OMX (Dynamixel X-series) / SO-101 (Feetech STS) 가 같은 dps 숫자로 같은 물리
+    동작 — multi_robot_architecture.md §3.3 의 "wire protocol 차이 흡수" 가 단위
+    레벨까지 확장된 자리.
+
+    TrajectoryRunner 가 moveJ/L/C/P 진입 시 release_profile() (raw 0,0) 로 풀고
+    종료 시 restore_profile() 로 모터마다 이 값을 복원 — 그 사이 Ruckig 가 직접
+    명령 (motor cap 없이 trajectory shape 보존).
+    """
+
+    velocity_dps: float
+    acceleration_dpss: float
+
+
+@dataclass
 class MotorConfig:
     id: int
     name: str
@@ -27,6 +45,7 @@ class MotorConfig:
     limit_max: int
     reverse: bool
     kind: MotorKind = MotorKind.ARM
+    profile: MotorProfile | None = None
     pid_p: int | None = None
     pid_i: int | None = None
     pid_d: int | None = None
@@ -44,23 +63,6 @@ class PortConfig:
 
 
 @dataclass
-class ArmProfileConfig:
-    """arm 모터들의 부드러운 motion profile baseline.
-
-    motor_node start 시 적용 → slider/teleop slam 방지. TrajectoryRunner 가
-    moveJ/L/C/P 진입 시 0,0 (= no cap, Ruckig 직접 명령) 으로 풀고 종료 시
-    이 baseline 으로 복원.
-
-    단위 — Feetech STS: velocity = steps/sec (1 step = 360°/4096),
-           acceleration = 100·steps/sec². ex) 500/20 ≈ 44°/s, 176°/s² ramp.
-    Dynamixel XL430: velocity = 0.229 rpm, acceleration = 214.577 rpm/s².
-    """
-
-    velocity: int
-    acceleration: int
-
-
-@dataclass
 class MotorLayout:
     """robot 의 모터 layout — port + 전체 motors + arm/gripper 분류.
 
@@ -73,7 +75,6 @@ class MotorLayout:
 
     port: PortConfig
     motors: list[MotorConfig]
-    arm_profile: ArmProfileConfig | None = None
 
     def __post_init__(self) -> None:
         grippers = [m for m in self.motors if m.kind == MotorKind.GRIPPER]
@@ -95,7 +96,7 @@ class MotorLayout:
 def load_motor_layout(robot_id: str | None = None) -> MotorLayout:
     """robot_type 의 motors.yaml + robot_id 의 instance.yaml 합쳐서 로드.
 
-    type-level (motors 리스트, joint limit, gear ratio, PID, kind) → robot/<type>/motors.yaml
+    type-level (motors 리스트, joint limit, gear ratio, PID, kind, profile) → robot/<type>/motors.yaml
     instance-level (USB port, baud) → robot/instances/<robot_id>/instance.yaml
     multi_robot_architecture.md §5.1.2 split 기준.
 
@@ -117,19 +118,18 @@ def load_motor_layout(robot_id: str | None = None) -> MotorLayout:
         linux=motor_inst["port"]["linux"],
     )
 
-    arm_profile_raw = type_raw.get("arm_profile")
-    arm_profile = (
-        ArmProfileConfig(
-            velocity=int(arm_profile_raw["velocity"]),
-            acceleration=int(arm_profile_raw["acceleration"]),
-        )
-        if arm_profile_raw
-        else None
-    )
-
     motors: list[MotorConfig] = []
     for m in type_raw["motors"]:
         pid = m.get("pid") or {}
+        profile_raw = m.get("profile")
+        profile = (
+            MotorProfile(
+                velocity_dps=float(profile_raw["velocity_dps"]),
+                acceleration_dpss=float(profile_raw["acceleration_dpss"]),
+            )
+            if profile_raw
+            else None
+        )
         motors.append(
             MotorConfig(
                 id=m["id"],
@@ -141,10 +141,11 @@ def load_motor_layout(robot_id: str | None = None) -> MotorLayout:
                 limit_max=m["limit"]["max"],
                 reverse=m.get("reverse", False),
                 kind=MotorKind(m.get("kind", "arm")),
+                profile=profile,
                 pid_p=pid.get("p"),
                 pid_i=pid.get("i"),
                 pid_d=pid.get("d"),
             )
         )
 
-    return MotorLayout(port=port, motors=motors, arm_profile=arm_profile)
+    return MotorLayout(port=port, motors=motors)

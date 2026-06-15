@@ -1,8 +1,14 @@
 # Type-level motor spec for OMX_F. 같은 type 의 모든 instance 가 공유.
 # Instance-specific (USB port, baud) 는 robot/instances/<robot_id>/instance.yaml.
 # multi_robot_architecture.md §5.1.2 split 기준 참조.
-
-# Default: XL430 P=640/I=0/D=3600, XL330 P=400/I=0/D=0.
+#
+# `profile` (slam guard, slider/teleop 안전망) = motor register 단위 X, physical
+# 단위 (dps = °/s, dpss = °/s²) SSOT. DynamixelBackend adapter 가 vendor raw
+# (0.229 rev/min, 214.577 rev/min²) 로 변환. SO-101 의 Feetech 와 같은 dps 숫자
+# 가 같은 물리 동작.
+#
+# Default PID (XL430 P=640/I=0/D=3600, XL330 P=400/I=0/D=0) 는 Dynamixel Wizard
+# 실측 기준. 중력 부하 큰 J2/J3 만 P=1500 으로 강화.
 
 motors:
   - id: 1
@@ -11,9 +17,12 @@ motors:
     mode: "position"
     home: 2048
     limit:
-      min: 0 # -180°
-      max: 4095 #  180°
+      min: 0     # -180°
+      max: 4095  # +180°
     reverse: false
+    profile:
+      velocity_dps: 80.0      # 부드러운 baseline (base yaw)
+      acceleration_dpss: 400.0
     pid: # base, 중력 무관
       p: 640
       i: 0
@@ -25,9 +34,12 @@ motors:
     mode: "position"
     home: 2048
     limit:
-      min: 1024 # -90°
-      max: 3072 #  90°
+      min: 1024  # -90°
+      max: 3072  # +90°
     reverse: false
+    profile:
+      velocity_dps: 60.0      # shoulder — 중력 부하 큼, 살짝 보수적
+      acceleration_dpss: 300.0
     pid: # shoulder, 중력 부하 큼
       p: 1500
       i: 0
@@ -39,9 +51,12 @@ motors:
     mode: "position"
     home: 2048
     limit:
-      min: 1024 # -90°
-      max: 3072 #  90°
+      min: 1024  # -90°
+      max: 3072  # +90°
     reverse: false
+    profile:
+      velocity_dps: 70.0      # elbow
+      acceleration_dpss: 350.0
     pid: # elbow, 중력 부하 큼
       p: 1500
       i: 0
@@ -56,6 +71,9 @@ motors:
       min: 1024
       max: 3072
     reverse: false
+    profile:
+      velocity_dps: 100.0     # wrist pitch — 작은 모터, 빠르게 OK
+      acceleration_dpss: 500.0
     pid: # wrist
       p: 800
       i: 0
@@ -70,6 +88,9 @@ motors:
       min: 0
       max: 4095
     reverse: false
+    profile:
+      velocity_dps: 100.0     # wrist roll — D405 cantilever, 너무 빠르면 진동
+      acceleration_dpss: 500.0
     pid: # wrist roll, D405 cantilevered 부하 댐핑 위해 D 추가
       p: 800
       i: 0
@@ -85,6 +106,9 @@ motors:
       min: 1800
       max: 2600
     reverse: false
+    profile:
+      velocity_dps: 90.0      # gripper — finger slam 방지 (이전 raw 80 = 110°/s 보다 조금 더 부드러움)
+      acceleration_dpss: 400.0
     pid:
       p: 800
       i: 0

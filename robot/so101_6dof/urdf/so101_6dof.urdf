@@ -158,7 +158,7 @@
         <mesh filename="meshes/wrist_yaw_back.stl"/>
       </geometry>
       <material name="wrist_yaw_back_material">
-        <color rgba="0.756863 0.180392 0.121569 1"/>
+        <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
   </link>
@@ -196,7 +196,7 @@
         <mesh filename="meshes/wrist_yaw_front.stl"/>
       </geometry>
       <material name="wrist_yaw_front_material">
-        <color rgba="0.756863 0.180392 0.121569 1"/>
+        <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
   </link>
@@ -214,7 +214,7 @@
         <mesh filename="meshes/wrist_roll_d405_holder.stl"/>
       </geometry>
       <material name="gripper_fixed_material">
-        <color rgba="0.964706 0.964706 0.952941 1"/>
+        <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
     <!-- Part sts3215_7 -->
@@ -257,38 +257,7 @@
     <parent link="gripper_fixed"/>
     <child link="gripper_back"/>
     <axis xyz="0 0 0"/>
-  </joint>
-  <!-- Frame camera (dummy link + fixed joint) -->
-  <!-- <link name="camera">
-    <origin xyz="0 0 0" rpy="0 -0 0"/>
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="1e-9"/>
-      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
-    </inertial>
-  </link>
-  <joint name="camera_frame" type="fixed">
-    <origin xyz="0.0134 0.000203456 -0.000397664" rpy="-0 0 0"/>
-    <parent link="camera_body"/>
-    <child link="camera"/>
-    <axis xyz="0 0 0"/>
-  </joint> -->
-  <!-- Joint from camera_mount to camera_body -->
-  <!-- <joint name="camera" type="fixed">
-    <origin xyz="-0.0299654 -0.0006 -0.0493488" rpy="3.14159 -0.436332 0"/>
-    <parent link="camera_mount"/>
-    <child link="camera_body"/>
-    <axis xyz="0 0 1"/>
-    <limit effort="3.3" velocity="5"/>
-  </joint> -->
-  <!-- Joint from gripper_fixed to camera_mount -->
-  <!-- <joint name="camera_mount" type="fixed">
-    <origin xyz="-0.00301234 -0.0240112 -0.0234002" rpy="-1.57445 1.5708 0"/>
-    <parent link="gripper_fixed"/>
-    <child link="camera_mount"/>
-    <axis xyz="0 0 1"/>
-    <limit effort="3.3" velocity="5"/>
-  </joint> -->
+  </joint>  
   <!-- Link gripper_jaw -->
   <link name="gripper_jaw">
     <inertial>
@@ -303,7 +272,7 @@
         <mesh filename="meshes/gripper_jaw.stl"/>
       </geometry>
       <material name="gripper_jaw_material">
-        <color rgba="0.964706 0.964706 0.952941 1"/>
+        <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
   </link>
@@ -321,7 +290,7 @@
     <parent link="wrist_yaw_front"/>
     <child link="gripper_fixed"/>
     <axis xyz="0 0 1"/>
-    <limit effort="3.3" velocity="5" lower="-2.97071" upper="2.85869"/>
+    <limit effort="3.3" velocity="5" lower="0" upper="3.14159"/>
   </joint>
   <!-- Joint from wrist_yaw_back to wrist_yaw_front -->
   <joint name="joint5" type="revolute">
@@ -329,7 +298,7 @@
     <parent link="wrist_yaw_back"/>
     <child link="wrist_yaw_front"/>
     <axis xyz="0 0 1"/>
-    <limit effort="3.3" velocity="5" lower="-1.54481" upper="1.52697"/>
+    <limit effort="3.3" velocity="5" lower="-1.51844" upper="1.51844"/>
   </joint>
   <!-- Joint from under_arm to wrist_yaw_back -->
   <joint name="joint4" type="revolute">
@@ -337,7 +306,7 @@
     <parent link="under_arm"/>
     <child link="wrist_yaw_back"/>
     <axis xyz="0 0 1"/>
-    <limit effort="3.3" velocity="5" lower="-1.46608" upper="1.64061"/>
+    <limit effort="3.3" velocity="5" lower="-1.22173" upper="1.22173"/>
   </joint>
   <!-- Joint from upper_arm to under_arm -->
   <joint name="joint3" type="revolute">
@@ -345,7 +314,7 @@
     <parent link="upper_arm"/>
     <child link="under_arm"/>
     <axis xyz="0 0 1"/>
-    <limit effort="3.3" velocity="5" lower="-1.68948" upper="1.5708"/>
+    <limit effort="3.3" velocity="5" lower="-2.0944" upper="0"/>
   </joint>
   <!-- Joint from base_rotation to upper_arm -->
   <joint name="joint2" type="revolute">
@@ -353,7 +322,7 @@
     <parent link="base_rotation"/>
     <child link="upper_arm"/>
     <axis xyz="0 0 1"/>
-    <limit effort="3.3" velocity="5" lower="-1.74533" upper="1.74533"/>
+    <limit effort="3.3" velocity="5" lower="0" upper="2.0944"/>
   </joint>
   <!-- Joint from base to base_rotation -->
   <joint name="joint1" type="revolute">
@@ -361,7 +330,7 @@
     <parent link="base"/>
     <child link="base_rotation"/>
     <axis xyz="0 0 1"/>
-    <limit effort="3.3" velocity="5" lower="-1.91986" upper="1.91986"/>
+    <limit effort="3.3" velocity="5" lower="-1.5708" upper="1.5708"/>
   </joint>
   <joint name="tcp_joint" type="fixed">
     <parent link="gripper_center"/>

@@ -62,9 +62,17 @@ class MotorBackend(Protocol):
         """ids 의 torque enable/disable. ids=[] no-op."""
         ...
 
-    # ─── Profile (max velocity / acceleration) ────────────
+    # ─── Profile — raw API ────────────────────────────────
+    # raw int 단위. vendor 별 의미 다름 (Dynamixel 0.229 rev/min, Feetech step/s).
+    # 운영 코드는 _dps 변형 선호 — release (0,0) sentinel 시점에만 raw API 직접 호출.
     def write_profile_velocities(self, vel: dict[int, int]) -> None: ...
     def write_profile_accelerations(self, acc: dict[int, int]) -> None: ...
+
+    # ─── Profile — dps API (physical 단위 SSOT) ───────────
+    # °/s, °/s² 입력. adapter 가 모터 family 별 raw 변환. caller (motor_node /
+    # trajectory_runner) 는 robot 무관 같은 숫자가 같은 물리 동작이라 가정 가능.
+    def write_profile_velocities_dps(self, vel_dps: dict[int, float]) -> None: ...
+    def write_profile_accelerations_dpss(self, acc_dpss: dict[int, float]) -> None: ...
 
     # ─── PID ──────────────────────────────────────────────
     def configure_pid(

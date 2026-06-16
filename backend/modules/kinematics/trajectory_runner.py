@@ -42,6 +42,7 @@ _CART_SETTLE_STEPS = 5
 # 실측 encoder(= 아직 수렴 중인 위치)에서 출발해서 모터 momentum과 충돌 → 떨림.
 _CART_HOLD_STEPS = 25
 
+
 # ── 콜백 타입 ──────────────────────────────────────────────────
 PublishCmdFn = Callable[[list[float]], None]
 PublishStateFn = Callable[[TrajStatus, float], None]

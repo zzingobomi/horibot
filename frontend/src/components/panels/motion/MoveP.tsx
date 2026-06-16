@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PanelButton } from "@/components/shared/PanelButton";
 import { useService, useTopic } from "@/framework";
 import { ServiceKey, Topic } from "@/constants/topics";
@@ -13,6 +13,10 @@ interface WaypointRow {
 }
 
 let _nextId = 1;
+
+function roundMm(v: number): number {
+  return Math.round(v * 100) / 100;
+}
 
 export function MovePControl() {
   const tcpSvc = useService(ServiceKey.MOTION_GET_TCP);
@@ -39,11 +43,7 @@ export function MovePControl() {
               ? r
               : {
                   ...r,
-                  pos: [
-                    Math.round(mm[0] * 10) / 10,
-                    Math.round(mm[1] * 10) / 10,
-                    Math.round(mm[2] * 10) / 10,
-                  ],
+                  pos: [roundMm(mm[0]), roundMm(mm[1]), roundMm(mm[2])],
                 },
           ),
         );
@@ -55,6 +55,21 @@ export function MovePControl() {
     },
     [tcpSvc],
   );
+
+  // 탭 mount 시 모든 row 를 현재 TCP 로 자동 sync — 모든 점 동일 = backend
+  // 의 `_MOVEP_MIN_DIST` 필터로 차단. 사용자가 명시적으로 다른 점들을 입력해야 함.
+  const initRef = useRef(false);
+  useEffect(() => {
+    if (initRef.current) return;
+    initRef.current = true;
+    void (async () => {
+      const res = await tcpSvc.call({});
+      if (!res.success) return;
+      const mm = mToMmVec3(res.data.position);
+      const pt: Vector3Tuple = [roundMm(mm[0]), roundMm(mm[1]), roundMm(mm[2])];
+      setRows((prev) => prev.map((r) => ({ ...r, pos: [...pt] })));
+    })();
+  }, [tcpSvc]);
 
   const handleExecute = async () => {
     if (rows.length < 2) {
@@ -83,7 +98,7 @@ export function MovePControl() {
               <div key={ax}>
                 <span className="text-zinc-500">{ax}: </span>
                 <span className="text-zinc-300">
-                  {mToMmVec3(tcpPose.position)[i].toFixed(1)}
+                  {mToMmVec3(tcpPose.position)[i].toFixed(2)}
                 </span>
               </div>
             ))}

@@ -67,12 +67,16 @@ ABB 의 EGM (Externally Guided Motion) / KUKA 의 RSI (Robot Sensor Interface) /
 
 | 작업 | 상세 | 상태 |
 |---|---|---|
-| **신규** `MOTION_SPEED_TCP` | `SpeedTcpReq {linear, angular, frame: "base" \| "tcp"}`. Ruckig `ControlInterface.Velocity` + 100ms timeout + idle grace 0.5s 자동 정지. server-side `PybulletKinematics.tcp_twist_to_joint_vel` 가 Jacobian pseudo-inverse (frame 변환 포함). dof<6 자리 linear-only fallback. | ✅ |
-| **신규** `MOTION_SPEED_J` | `SpeedJReq {velocities}` (arm dof). joint velocity 직접 추적. dof mismatch 시 ValueError. | ✅ |
-| **rename** `MOVE_TCP` → `SERVO_TCP` | `ServoTcpReq {position, quaternion?}` — 6DOF orientation 옵션 (None = position-only). `MotionCommand` 패턴 정식 편입 (기존 dict-API `_srv_move_tcp` 폐기). frontend `ServoTCP.tsx` (Euler XYZ deg + orientation toggle). | ✅ |
+| **신규** `MOTION_SPEED_TCP` (backend) | `SpeedTcpReq {linear, angular, frame: "base" \| "tcp"}`. Ruckig `ControlInterface.Velocity` + 100ms timeout + idle grace 0.5s 자동 정지. server-side `PybulletKinematics.tcp_twist_to_joint_vel` 가 Jacobian pseudo-inverse (frame 변환 포함). dof<6 자리 linear-only fallback. | ✅ |
+| **신규** `MOTION_SPEED_J` (backend) | `SpeedJReq {velocities}` (arm dof). joint velocity 직접 추적. dof mismatch 시 ValueError. | ✅ |
+| **rename** `MOVE_TCP` → `SERVO_TCP` (backend) | `ServoTcpReq {position, quaternion?}` — 6DOF orientation 옵션 (None = position-only). `MotionCommand` 패턴 정식 편입 (기존 dict-API `_srv_move_tcp` 폐기). | ✅ |
 | **gamepad rewrite** | capability gate (enabled + `"gamepad"` 정확히 1개, N>1 fail-fast). LT deadman + Back mode 토글 + Start frame 토글. TCP mode 6DOF twist, Joint mode 6축 매핑. 모든 버튼 (X/Y/A/B). | ✅ |
+| **frontend 모션패널 — Trajectory 4 탭** | `MoveJ.tsx` / `MoveL.tsx` / `MoveC.tsx` / `MoveP.tsx`. 단발 절대 target. 탭 mount 시 자동 sync (탭 reset → 0 명령 위험 차단), 소수점 `toFixed(2)` 통일. | ✅ |
+| **frontend 모션패널 — Velocity 2 탭 (Jog)** | `SpeedJ.tsx` (joint별 −/+ 버튼 hold = 50Hz `MOTION_SPEED_J` publish) / `SpeedTcp.tsx` (6DOF twist 버튼 hold + base/tcp frame 토글). 손 떼면 backend 100ms deadman timeout 자동 정지 — 게임패드 LT hold 와 동일 메커니즘. **2026-06-16 추가 (`MOTION_SPEED_TCP`/`MOTION_SPEED_J` backend Phase 1 시점에 빠져 있던 자리)**. | ✅ |
 | **host config 등록** | `host_pc.yaml` / `host_dev.yaml` 에 gamepad 추가. host_mock 은 의도적 제외 (frontend UX 자리, 실 펜던트 의미 X). robots 는 enabled robot 과 일치 (`so101_6dof_0`). | ✅ |
 | **robots.yaml** | `so101_6dof_0.capabilities` 에 `"gamepad"` 추가. OMX 안 줌 (5DOF 펜던트 부적합). | ✅ |
+
+**Servo 계층 (ServoTcp / ServoJ) 은 frontend 모션패널에서 빠짐.** ServoJ 는 Phase 3 보류 (driver 없음). ServoTcp 는 정의상 *외부 컨트롤러 50Hz+ chase* 가정이라 단발 패널 자리 의미 미스매치 — 한때 만들어졌던 `frontend/src/components/panels/motion/ServoTCP.tsx` 는 2026-06-16 제거. 운영 caller = 게임패드 (`GamepadNode`) + 미래 RL/외부 driver 만.
 
 ### Phase 1 구현 중 발견된 trauma (mock 검증으로 잡힌 자리, hardware 안 가도 됐음)
 

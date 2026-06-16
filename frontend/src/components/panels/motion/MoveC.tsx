@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PanelButton } from "@/components/shared/PanelButton";
 import { useService, useTopic } from "@/framework";
 import { ServiceKey, Topic } from "@/constants/topics";
@@ -13,6 +13,10 @@ const POINT_LABELS: Record<PointKey, string> = {
 };
 
 const AXES = ["X", "Y", "Z"] as const;
+
+function roundMm(v: number): number {
+  return Math.round(v * 100) / 100;
+}
 
 export function MoveCControl() {
   const tcpSvc = useService(ServiceKey.MOTION_GET_TCP);
@@ -33,11 +37,7 @@ export function MoveCControl() {
         const mm = mToMmVec3(res.data.position);
         setPoints((prev) => ({
           ...prev,
-          [key]: [
-            Math.round(mm[0] * 10) / 10,
-            Math.round(mm[1] * 10) / 10,
-            Math.round(mm[2] * 10) / 10,
-          ],
+          [key]: [roundMm(mm[0]), roundMm(mm[1]), roundMm(mm[2])],
         }));
         setError(null);
       } else {
@@ -46,6 +46,21 @@ export function MoveCControl() {
     },
     [tcpSvc],
   );
+
+  // 탭 mount 시 via/end 둘 다 현재 TCP 로 자동 sync — start=via=end 면 backend
+  // 가 "3점이 일직선" 에러로 차단. 사용자가 명시적으로 두 점을 입력해야 의미 있음.
+  const initRef = useRef(false);
+  useEffect(() => {
+    if (initRef.current) return;
+    initRef.current = true;
+    void (async () => {
+      const res = await tcpSvc.call({});
+      if (!res.success) return;
+      const mm = mToMmVec3(res.data.position);
+      const pt: Vector3Tuple = [roundMm(mm[0]), roundMm(mm[1]), roundMm(mm[2])];
+      setPoints({ via: pt, end: pt });
+    })();
+  }, [tcpSvc]);
 
   const handleExecute = async () => {
     setError(null);
@@ -71,7 +86,7 @@ export function MoveCControl() {
             {AXES.map((ax, i) => (
               <div key={ax}>
                 <span className="text-zinc-500">{ax}: </span>
-                <span className="text-zinc-300">{tcpMm[i].toFixed(1)}</span>
+                <span className="text-zinc-300">{tcpMm[i].toFixed(2)}</span>
               </div>
             ))}
           </div>

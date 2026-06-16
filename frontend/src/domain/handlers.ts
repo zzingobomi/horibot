@@ -9,8 +9,7 @@
  * `onTopic<K>` 가 generated `TopicPayloadMap[K]` 로 자동 typed.
  */
 import { onConnect, onTopic } from "@/framework";
-import { bridge } from "@/api/bridge";
-import { ServiceKey, Topic } from "@/constants/topics";
+import { Topic } from "@/constants/topics";
 import { useSystemStore } from "@/domain/stores/system";
 import { useTaskResultStore, type StepResultPayload } from "@/domain/stores/taskResult";
 import { usePointCloudStore } from "@/domain/stores/pointCloud";
@@ -19,9 +18,9 @@ import { usePointCloudStore } from "@/domain/stores/pointCloud";
 let unsubPointCloud: (() => void) | null = null;
 
 onConnect(() => {
-  // 모터 config 1회 fetch — 응답은 framework store 자동 cache. 사용처는
-  // `useService(ServiceKey.MOTOR_GET_CONFIG).data` 로 read.
-  void bridge.callService(ServiceKey.MOTOR_GET_CONFIG, {});
+  // MOTOR_GET_CONFIG prefetch 는 useFrameworkBootstrap 가 robot-explicit 으로
+  // 처리 (robots loaded + WS connected 둘 다 충족 시점). 여기선 bridge default
+  // robot 가 race 로 wrong id 가 될 수 있어 호출 X.
 
   // PointCloud 는 binary 토픽 — bootstrap 가 BINARY_TOPICS 는 skip 하므로 store 자체 attach.
   if (unsubPointCloud) unsubPointCloud();

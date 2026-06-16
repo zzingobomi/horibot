@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import * as SliderPrimitive from "@radix-ui/react-slider";
 import { PanelButton } from "@/components/shared/PanelButton";
@@ -28,11 +28,22 @@ export function MoveJControl() {
     setTargetDeg((prev) => {
       const next = { ...prev };
       currentJoints.forEach((j) => {
-        next[j.id] = Math.round(j.degree * 10) / 10;
+        next[j.id] = Math.round(j.degree * 100) / 100;
       });
       return next;
     });
   }, [currentJoints]);
+
+  // 탭 mount 시 1회 자동 sync — 탭 unmount/remount 시 target 이 0 으로 reset 되어
+  // 사용자가 [실행] 누르면 모든 joint 가 0° 로 큰 동작하는 위험 차단.
+  const initRef = useRef(false);
+  useEffect(() => {
+    if (initRef.current) return;
+    if (currentJoints.length === 0) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    applyCurrentJointAngles();
+    initRef.current = true;
+  }, [currentJoints, applyCurrentJointAngles]);
 
   const handleExecute = async () => {
     setError(null);
@@ -64,7 +75,7 @@ export function MoveJControl() {
                 <div className="text-[11px] text-zinc-300">{j.name}</div>
                 {current && (
                   <div className="text-[9px] text-zinc-600 tabular-nums">
-                    {current.degree.toFixed(1)}°
+                    {current.degree.toFixed(2)}°
                   </div>
                 )}
               </div>

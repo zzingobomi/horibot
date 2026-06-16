@@ -1,9 +1,13 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import URDFLoader from "urdf-loader";
 import type { URDFRobot } from "urdf-loader";
 import { BASE_URL } from "@/constants";
-import { TCP_LINK_NAME, useMotorConfigs } from "@/lib/robot/config";
+import {
+  TCP_LINK_NAME,
+  useMotorConfigs,
+  type MotorConfigItem,
+} from "@/lib/robot/config";
 import type { RobotBasePose } from "@/types/robot";
 
 interface URDFRobotProps {
@@ -57,6 +61,19 @@ function disposeMaterials(robot: URDFRobot) {
   });
 }
 
+function applyJoints(
+  robot: URDFRobot,
+  cfgs: MotorConfigItem[],
+  angles: number[],
+) {
+  cfgs.forEach((cfg, i) => {
+    const angle = angles[i];
+    if (angle !== undefined && robot.joints?.[cfg.name]) {
+      robot.setJointValue(cfg.name, angle);
+    }
+  });
+}
+
 export function RobotModel({
   jointAngles,
   robotType = "omx_f",
@@ -71,6 +88,11 @@ export function RobotModel({
   const motorCfgs = useMotorConfigs(robotId);
   const groupRef = useRef<THREE.Group>(null);
   const robotRef = useRef<URDFRobot>(null);
+  // URDF 로드 완료를 reactive state 로 lift — robotRef 는 imperative 라 effect
+  // dep 가 못 됨. 이 flag 가 false→true 되면 joint/opacity/visibility effect
+  // 들이 re-run 하면서 URDF mount 직후 최신 상태로 동기화. 안 두면 URDF 가
+  // 늦게 로드된 자리는 다음 topic update 까지 default pose 로 잠시 보인다.
+  const [robotReady, setRobotReady] = useState(false);
   const onTCPMatrixRef = useRef(onTCPMatrix);
   useEffect(() => {
     onTCPMatrixRef.current = onTCPMatrix;
@@ -83,6 +105,18 @@ export function RobotModel({
   useEffect(() => {
     opacityRef.current = opacity;
   }, [opacity]);
+
+  // URDF load callback (async) 안에서 *현재* joint state 를 적용하려면 ref 로
+  // stash 해야 함 — effect closure 의 값은 마운트 시점 snapshot.
+  // scene 에 add 하기 전에 joint 적용 = 한 프레임 default pose flash 차단.
+  const motorCfgsRef = useRef(motorCfgs);
+  const jointAnglesRef = useRef(jointAngles);
+  useEffect(() => {
+    motorCfgsRef.current = motorCfgs;
+  }, [motorCfgs]);
+  useEffect(() => {
+    jointAnglesRef.current = jointAngles;
+  }, [jointAngles]);
 
   // URDF 로드.
   //
@@ -136,12 +170,17 @@ export function RobotModel({
       (robot: URDFRobot) => {
         if (cancelled) return;
         robotRef.current = robot;
+        // scene 에 add 하기 *전에* 최신 joint 적용 — 안 그러면 한 프레임 동안
+        // URDF default pose (모든 joint=0) 가 보임. Three.js 가 add 직후 다음
+        // 프레임에 렌더 → 그 시점에 이미 setJointValue 끝나 있어야 깨끗하다.
+        applyJoints(robot, motorCfgsRef.current, jointAnglesRef.current);
         currentGroup?.add(robot);
         if (robot.links) {
           const names = Object.keys(robot.links).sort();
           onLinksLoaded?.(names);
         }
         emitTCP(robot, onTCPMatrixRef.current);
+        setRobotReady(true);
       },
       undefined,
       (err: unknown) => console.error("[URDFRobot] load error:", err),
@@ -155,6 +194,7 @@ export function RobotModel({
         currentGroup.remove(robotRef.current);
         robotRef.current = null;
       }
+      setRobotReady(false);
     };
   }, [robotType, onLinksLoaded]);
 
@@ -165,29 +205,25 @@ export function RobotModel({
   // 직접 두면: emit → 부모 setState → 리렌더 → 새 onTCPMatrix → dep 변경 →
   // effect 재실행 → emit → ... 무한 루프 → React reconciler stall → 라우팅까지
   // 막힘. emitTCP 는 latest callback ref 로만 호출하고 dep 은 jointAngles 만.
+  //
+  // robotReady 도 dep — URDF 가 늦게 로드된 자리에서 mount 직후 최신 joint
+  // 적용 (안 두면 다음 topic update 50ms 까지 URDF default pose 잠깐 보임).
   useEffect(() => {
     const robot = robotRef.current;
     if (!robot) return;
-
-    motorCfgs.forEach((cfg, i) => {
-      const angle = jointAngles[i];
-      if (angle !== undefined && robot.joints?.[cfg.name]) {
-        robot.setJointValue(cfg.name, angle);
-      }
-    });
-
+    applyJoints(robot, motorCfgs, jointAngles);
     emitTCP(robot, onTCPMatrixRef.current);
-  }, [jointAngles, motorCfgs]);
+  }, [jointAngles, motorCfgs, robotReady]);
 
   // 전체 visible
   useEffect(() => {
     if (robotRef.current) robotRef.current.visible = visible;
-  }, [visible]);
+  }, [visible, robotReady]);
 
   // Opacity (focus 모드 dim others)
   useEffect(() => {
     if (robotRef.current) applyOpacity(robotRef.current, opacity);
-  }, [opacity]);
+  }, [opacity, robotReady]);
 
   // 링크별 visibility
   useEffect(() => {
@@ -198,7 +234,7 @@ export function RobotModel({
       const link = robot.links[name];
       if (link) link.visible = vis;
     });
-  }, [linkVisibility]);
+  }, [linkVisibility, robotReady]);
 
   // World transform: base_pose 적용 (z-up world) + URDF 자체는 z-up→y-up 보정.
   // 부모 group 이 base_pose, 자식 group 이 URDF 회전.

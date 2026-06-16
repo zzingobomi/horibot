@@ -18,7 +18,7 @@
  */
 import { useEffect } from "react";
 import { bridge, topicFor } from "@/api/bridge";
-import { Topic, BINARY_TOPICS } from "@/constants/topics";
+import { ServiceKey, Topic, BINARY_TOPICS } from "@/constants/topics";
 import { useRobots } from "@/hooks/useRobots";
 import { useFrameworkStore } from "./store";
 import { topicHandlers } from "./topic";
@@ -32,6 +32,7 @@ export function onConnect(handler: () => void): void {
 
 export function useFrameworkBootstrap(): void {
   const { robots } = useRobots();
+  const connected = useFrameworkStore((s) => s.bridgeConnected);
 
   // (1) bridge 연결 — mount 1회.
   useEffect(() => {
@@ -83,4 +84,24 @@ export function useFrameworkBootstrap(): void {
 
     return () => unsubs.forEach((u) => u());
   }, [robots]);
+
+  // (3) per-robot 서비스 캐시 prefetch — MOTOR_GET_CONFIG 는 motor layout SSOT 라
+  // frontend 의 모든 robot-scoped panel 이 의존. WS open + robots 로드 둘 다
+  // 충족 후 호출해야 함:
+  //  - WS 닫힌 자리 호출 = `_send` drop (5초 후 timeout 으로 cache 가 fail 로 fix)
+  //  - robots 로드 전 호출 = bridge.defaultRobotId fallback 으로 wrong robot id
+  //    expand (예: omx_f_0 disabled 인데 omx_f_0 로 호출 → 캐시 영원히 비어 있음
+  //    → motorCfgs=[] → jointAngles=[] → URDF default pose 영구)
+  // 이전엔 handlers.ts onConnect 에서 defaultRobotId 로 1회 호출했지만 race
+  // 발생 → robot-explicit 호출 + 두 조건 충족 시점으로 이동.
+  useEffect(() => {
+    if (!connected) return;
+    for (const r of robots.filter((r) => r.enabled)) {
+      void bridge.callService(
+        ServiceKey.MOTOR_GET_CONFIG,
+        {},
+        { robotId: r.id },
+      );
+    }
+  }, [robots, connected]);
 }

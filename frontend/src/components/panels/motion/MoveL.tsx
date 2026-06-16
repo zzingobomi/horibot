@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as SliderPrimitive from "@radix-ui/react-slider";
 import { PanelButton } from "@/components/shared/PanelButton";
 import { useService, useTopic } from "@/framework";
@@ -7,6 +7,10 @@ import { mmToMVec3, mToMmVec3 } from "@/lib/robot/utils";
 import type { Vector3Tuple } from "three";
 
 const AXES = ["X", "Y", "Z"] as const;
+
+function roundMm(v: number): number {
+  return Math.round(v * 100) / 100;
+}
 
 export function MoveLControl() {
   const tcpSvc = useService(ServiceKey.MOTION_GET_TCP);
@@ -22,16 +26,22 @@ export function MoveLControl() {
     const res = await tcpSvc.call({});
     if (res.success) {
       const mm = mToMmVec3(res.data.position);
-      setTargetMm([
-        Math.round(mm[0] * 10) / 10,
-        Math.round(mm[1] * 10) / 10,
-        Math.round(mm[2] * 10) / 10,
-      ]);
+      setTargetMm([roundMm(mm[0]), roundMm(mm[1]), roundMm(mm[2])]);
       setError(null);
     } else {
       setError("TCP 읽기 실패");
     }
   }, [tcpSvc]);
+
+  // 탭 mount 시 1회 자동 sync — target 이 [0,0,0] 으로 reset 되어 사용자가 [실행]
+  // 누르면 base origin 으로 큰 동작하는 위험 차단.
+  const initRef = useRef(false);
+  useEffect(() => {
+    if (initRef.current) return;
+    initRef.current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void handleSync();
+  }, [handleSync]);
 
   const handleExecute = async () => {
     setError(null);
@@ -55,7 +65,7 @@ export function MoveLControl() {
             {mToMmVec3(tcpPose.position).map((v, i) => (
               <div key={AXES[i]}>
                 <span className="text-zinc-500">{AXES[i]}: </span>
-                <span className="text-zinc-300">{v.toFixed(1)}</span>
+                <span className="text-zinc-300">{v.toFixed(2)}</span>
               </div>
             ))}
           </div>

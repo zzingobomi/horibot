@@ -42,13 +42,6 @@ _CART_SETTLE_STEPS = 5
 # 실측 encoder(= 아직 수렴 중인 위치)에서 출발해서 모터 momentum과 충돌 → 떨림.
 _CART_HOLD_STEPS = 25
 
-# Cartesian-space velocity Ruckig (SpeedTcp primary smoothing layer) 의 rotation
-# limits. linear 자리는 motion.yaml `cartesian_limits` SSOT, rotation 은 아직
-# motion.yaml 에 없어 hardcode. 운영 후 motion.yaml 의 cartesian_limits 에
-# max_rot_* 필드 추가하며 hardcode 폐기.
-_CART_ROT_MAX_VEL = 1.0   # rad/s
-_CART_ROT_MAX_ACC = 2.5   # rad/s²
-_CART_ROT_MAX_JERK = 10.0  # rad/s³
 
 
 # ── 콜백 타입 ──────────────────────────────────────────────────
@@ -519,13 +512,10 @@ class TrajectoryRunner:
         매 step:
           1. caller 가 set_speed_joint / set_speed_tcp 로 갱신한 target velocity 읽기.
              VELOCITY_INPUT_TIMEOUT 지나도 갱신 X → target=0 (deadman 2차선).
-          2. SpeedTcp 면 cartesian Ruckig 으로 twist 자체를 jerk-limited 으로 ramp →
-             smoothed twist → encoder angles 기준 Jacobian → joint velocity. 산업 표준
-             cartesian-space smoothing primary, joint Ruckig 은 saturation 보호.
-          3. SpeedJ 면 joint target_velocity 직접 (cartesian 자리 무관).
-          4. joint Ruckig 가 jerk-limited 으로 target_velocity 추종 + new position 산출.
-          5. publish_cmd(new_position).
-          6. 정지 상태 (target=0 + 실 vel≈0) 가 충분히 지속되면 자연 종료.
+          2. SpeedTcp 면 현재 joint angles + tcp_twist → joint velocity 변환 (Jacobian).
+          3. Ruckig 가 jerk-limited 으로 target_velocity 추종 + new position 산출.
+          4. publish_cmd(new_position).
+          5. 정지 상태 (target=0 + 실 vel≈0) 가 충분히 지속되면 자연 종료.
         """
         ok = self._release_profile()
         if not ok:
@@ -536,32 +526,6 @@ class TrajectoryRunner:
         inp = InputParameter(n)
         out = OutputParameter(n)
         inp.control_interface = ControlInterface.Velocity
-
-        # ─── Cartesian-space Ruckig (SpeedTcp 의 primary smoothing) ─────
-        # 6D = [linear x/y/z, angular x/y/z]. user twist input 자체를 jerk-limited
-        # 으로 ramp → 매 step output 을 Jacobian 에 통과 → joint vel. joint-space
-        # Ruckig 만으론 정지→명령 jump 자리 *각 모터 PID 응답 lag*가 cartesian 방향성
-        # 깨뜨림 (wrist 빠른 STS3215 먼저 reacts → EE Z drift first → shoulder
-        # STS3250 catchup 후 정상 +X). cartesian primary 가 *모든 모터에 ramp 명령*
-        # → PID transient 영향 cartesian space 에서 균일화.
-        cart_otg = Ruckig(6, TRAJ_DT)
-        cart_inp = InputParameter(6)
-        cart_out = OutputParameter(6)
-        cart_inp.control_interface = ControlInterface.Velocity
-        cart_inp.current_position = [0.0] * 6
-        cart_inp.current_velocity = [0.0] * 6
-        cart_inp.current_acceleration = [0.0] * 6
-        cart_inp.target_velocity = [0.0] * 6
-        cart_inp.target_acceleration = [0.0] * 6
-        cart_inp.max_velocity = (
-            [self._c_max_vel] * 3 + [_CART_ROT_MAX_VEL] * 3
-        )
-        cart_inp.max_acceleration = (
-            [self._c_max_acc] * 3 + [_CART_ROT_MAX_ACC] * 3
-        )
-        cart_inp.max_jerk = (
-            [self._c_max_jerk] * 3 + [_CART_ROT_MAX_JERK] * 3
-        )
 
         start = self._get_joint_angles()
         if start is None:
@@ -596,40 +560,19 @@ class TrajectoryRunner:
                 timed_out = age > VELOCITY_INPUT_TIMEOUT
                 if timed_out:
                     target = [0.0] * n
-                    # SpeedTcp 자리에서 timeout 자리도 cartesian Ruckig 감속.
-                    # caller 가 명령 멈춤 → twist target = 0 → cartesian Ruckig
-                    # 가 jerk-limited 으로 감속 (joint Ruckig 도 동일). 직접 0
-                    # publish 아닌 ramp-down → 자연 deadman.
-                    cart_inp.target_velocity = [0.0] * 6
-                    cart_otg.update(cart_inp, cart_out)
-                    cart_inp.current_velocity = list(cart_out.new_velocity)
-                    cart_inp.current_acceleration = list(cart_out.new_acceleration)
                 elif tcp_twist is not None:
                     linear, angular, frame = tcp_twist
-                    # ── Cartesian smoothing (primary) ────────────────
-                    # user twist input 자체를 jerk-limited 으로 ramp. 정지→명령
-                    # jump 자리에서 *모든 모터에 동시 ramp 명령* → PID transient
-                    # 영향 cartesian space 에서 균일화.
-                    cart_inp.target_velocity = list(linear) + list(angular)
-                    cart_otg.update(cart_inp, cart_out)
-                    smoothed = list(cart_out.new_velocity)
-                    cart_inp.current_velocity = smoothed
-                    cart_inp.current_acceleration = list(cart_out.new_acceleration)
-
-                    smoothed_linear = smoothed[:3]
-                    smoothed_angular = smoothed[3:]
-
-                    # ── Closed-loop Jacobian — 입력 = encoder reading ─
-                    # Ruckig belief 가 아닌 실 encoder. belief drift 자리 차단.
+                    # Closed-loop Jacobian — 입력 = 실 encoder reading.
+                    # cartesian smoothing 은 revert (찔끔찔끔 burst 자리에 ramp
+                    # cycle 이 도리어 transient 누적 만듦 — joint Ruckig 의 빠른
+                    # ramp 가 짧은 burst 에 더 자연). pendant jog semantics 는
+                    # frontend explicit stop event 로 시도 (이번 PR).
                     encoder = self._get_joint_angles()
                     angles_for_jacobian = (
                         list(encoder) if encoder else list(inp.current_position)
                     )
                     joint_vel = self._tcp_twist_to_joint_vel(
-                        smoothed_linear,
-                        smoothed_angular,
-                        angles_for_jacobian,
-                        frame,
+                        linear, angular, angles_for_jacobian, frame
                     )
                     if joint_vel is None:
                         # Jacobian 못 풂 (singularity 등) → 안전 정지.
@@ -637,12 +580,6 @@ class TrajectoryRunner:
                     else:
                         target = list(joint_vel)
                 else:
-                    # SpeedJ 자리 — cartesian 무관. 다음 SpeedTcp 진입 시 clean
-                    # start 위해 cartesian Ruckig 도 0 으로 ramp 유지.
-                    cart_inp.target_velocity = [0.0] * 6
-                    cart_otg.update(cart_inp, cart_out)
-                    cart_inp.current_velocity = list(cart_out.new_velocity)
-                    cart_inp.current_acceleration = list(cart_out.new_acceleration)
                     target = target_joint
 
                 inp.target_velocity = target

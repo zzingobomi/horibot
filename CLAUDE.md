@@ -29,6 +29,7 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 - [multi_robot_cross_calibration.md](docs/multi_robot_cross_calibration.md) — 두 robot base 사이 transform 캘 (6번째 종) design + hand-measure fallback + so101 도착 후 follow-up
 - [storage_layer.md](docs/storage_layer.md) — 영속성 layer design (storage_node Zenoh gateway + RdbStore/ObjectStore Protocol, bridge 와 동일 패턴). Phase 1 = 캘 5종 + SQLite/fs (git push/pull 동기화 사라짐), Phase 2 scans/meshes/task_runs, Phase 3 NAS Postgres/MinIO
 - [llm_preload_race_debug.md](docs/llm_preload_race_debug.md) — LLM/Grounding DINO preload meta-tensor race 진단 + 검증 plan (10회+ 깔짝 fix 박제 anchor, reproduction script 가 fix 보다 먼저)
+- [motion_taxonomy.md](docs/motion_taxonomy.md) — Horibot motion primitive 분류 + UR/ABB/KUKA 산업 표준 매핑 + Phase 1 채택 결정 (SpeedTcp/SpeedJ 신규 + MoveTcp→ServoTcp rename + gamepad mini 펜던트). **다음 implement session anchor**
 - [roadmap.md](docs/roadmap.md) — 진행 중/예정 작업
 
 ## 자주 쓰는 명령어

@@ -579,8 +579,9 @@ class CalibrationNode(ApplicationNode):
         R_arr = np.array([p.R_target2cam for p in poses], dtype=np.float64)
         raw_arr = np.array([p.raw_motor_positions for p in poses], dtype=np.float64)
         cfg = self._registry.get(robot_id)
+        # motor_id (1-based, yaml SSOT) → array index (0-based, raw[:, axis])
         rep = _obs.analyze_pose_data(
-            R_arr, raw_arr, wrist_roll_axis=cfg.wrist_roll_motor_index
+            R_arr, raw_arr, wrist_roll_axis=cfg.wrist_roll_motor_id - 1
         )
         v = rep.verdict()
         # verdict 첫 글자만 ('A'/'B'/'mid')

@@ -663,7 +663,7 @@ class StorageListRunsRes(StrictModel):
 5. **so101 link_offset 캘 본격 진입 시점에** — §13.6 (5.5) 의 omx 하드코딩 anchor 처리:
    - `fk_chain.py` (omx 5DOF literal numpy array) 일반화 — pinocchio / KDL / Drake 의 URDF parse → numpy FK chain build 패턴 산업 표준 리서치 먼저.
    - `sag_corrected._ARM_DOF=5` (fk_chain 묶임).
-   - `observability.wrist_roll_axis=4` default — `robots.yaml::wrist_roll_motor_index` per-robot config 추가 + `RobotConfig` 노출 + caller 명시 주입 + observability default 제거.
+   - `observability.wrist_roll_axis=4` default — `robots.yaml::wrist_roll_motor_id` per-robot config 추가 + `RobotConfig` 노출 + caller 명시 주입 + observability default 제거.
 
 **(보류) 검증 필요 자리** (§13.6):
 - (5.1) PyBullet 가 `loadURDF` 후 URDF 파일 다시 안 봄 확인 — `.patched/` 폐기 + tempfile 패턴 의존. fk / ik 동작 확인 (수렴 + EE pos 정상).
@@ -769,7 +769,7 @@ YAML (캘 값, SSOT) → xacro/template render → URDF string → parser → in
 - (5.5) **omx 5DOF 하드코딩 잔재 정리** (2026-06-15 사용자 짚어주기) — 본 storage_layer 작업과 별개 multi-robot 일반화 자리. 발견 자리:
   - [backend/modules/kinematics/fk_chain.py](../backend/modules/kinematics/fk_chain.py) — `JOINT_ORIGINS` / `JOINT_AXES` / `EE_ORIGIN` / `N_JOINTS=5` 가 omx_f URDF geometry 의 *literal numpy array*. BA + sag 가 이걸 씀 (PybulletKinematics 아닌 별도 numpy FK — BA 가 매 LM iteration 마다 link_offset 변수로 호출하려 PyBullet 우회). **so101 link_offset 캘 진입 시 omx geometry 위에서 풀어버림 = 완전 잘못된 결과.**
   - [backend/modules/kinematics/adapters/sag_corrected.py:39](../backend/modules/kinematics/adapters/sag_corrected.py#L39) — `_ARM_DOF: int = 5` 모듈 상수. fk_chain 의 `apply_gravity_sag` 가 5-element array 전제라 sag_corrected 단독 일반화 불가 — fk_chain 과 묶인 자리.
-  - [backend/modules/calibration/observability.py:58](../backend/modules/calibration/observability.py#L58) — `wrist_roll_axis: int = 4` default = OMX-F joint5 (motor index 4, 0-indexed). `analyze_pose_data` caller (`calibration_node._srv_handeye_capture`) 가 명시 주입 안 함 — so101 가 omx 가정 사용. fix = `robots.yaml::wrist_roll_motor_index` per-robot config 추가 + `RobotRegistry::RobotConfig` 노출 + caller 가 `cfg.wrist_roll_motor_index` 주입 + observability default 제거.
+  - [backend/modules/calibration/observability.py:58](../backend/modules/calibration/observability.py#L58) — `wrist_roll_axis: int = 4` default = OMX-F joint5 (motor index 4, 0-indexed). `analyze_pose_data` caller (`calibration_node._srv_handeye_capture`) 가 명시 주입 안 함 — so101 가 omx 가정 사용. fix = `robots.yaml::wrist_roll_motor_id` (1-based) per-robot config 추가 + `RobotRegistry::RobotConfig` 노출 + caller 가 `cfg.wrist_roll_motor_id - 1` 주입 + observability default 제거.
 
   **fix 면적**:
   - (a) **fk_chain.py 일반화** = 큼 (~100+ LOC). 산업 표준 리서치 필요 — pinocchio / KDL / Drake 의 "URDF parse → numpy FK kinematics chain build" 패턴 어떻게 하는지 분석 후 결정 ([feedback-research-before-decide](../memory/feedback_research_before_decide.md)). BA 의 매 LM iteration FK 호출 hot path 라 성능 / 정확성 양쪽 검토.

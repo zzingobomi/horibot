@@ -104,10 +104,11 @@ class RobotConfig:
     # robots.yaml 의 `pose_recommend_strategy` SSOT. None 이면 default = "geometry".
     pose_recommend_strategy: str = "geometry"
 
-    # Hand-Eye observability metric 의 wrist roll axis (0-indexed motor index).
-    # robots.yaml SSOT — robot 별 wrist roll 위치가 달라서 (OMX-F=4, SO-101=5)
-    # observability.analyze_pose_data 가 명시 주입 받음 ([observability.py:54]).
-    wrist_roll_motor_index: int = 0
+    # Hand-Eye observability metric 의 wrist roll 모터 ID (1-based, motor 라벨과 일치).
+    # robots.yaml SSOT — robot 별 wrist roll 위치가 달라서 (OMX-F=5, SO-101=6).
+    # observability.analyze_pose_data 는 array index (0-based) 를 받으니 caller 가
+    # `motor_id - 1` 변환해서 주입 ([calibration_node._publish_observability_state]).
+    wrist_roll_motor_id: int = 0
 
 
 class RobotRegistry:
@@ -218,18 +219,18 @@ class RobotRegistry:
                 f"가능: 'geometry' | 'joint_perturbation'"
             )
 
-        wrist_roll_raw = entry.get("wrist_roll_motor_index")
+        wrist_roll_raw = entry.get("wrist_roll_motor_id")
         if wrist_roll_raw is None:
             raise ValueError(
-                f"robot '{robot_id}' wrist_roll_motor_index 필수 "
-                f"(0-indexed motor index). OMX-F=4, SO-101=5."
+                f"robot '{robot_id}' wrist_roll_motor_id 필수 "
+                f"(1-based motor ID, motor 라벨과 일치). OMX-F=5, SO-101=6."
             )
-        if not isinstance(wrist_roll_raw, int) or wrist_roll_raw < 0:
+        if not isinstance(wrist_roll_raw, int) or wrist_roll_raw < 1:
             raise ValueError(
-                f"robot '{robot_id}' wrist_roll_motor_index="
-                f"{wrist_roll_raw!r} 는 non-negative int 이어야 함."
+                f"robot '{robot_id}' wrist_roll_motor_id="
+                f"{wrist_roll_raw!r} 는 1 이상 int 이어야 함 (1-based)."
             )
-        wrist_roll_motor_index = int(wrist_roll_raw)
+        wrist_roll_motor_id = int(wrist_roll_raw)
 
         caps_raw = entry.get("capabilities", []) or []
         if not isinstance(caps_raw, list):
@@ -270,7 +271,7 @@ class RobotRegistry:
             camera_backend=cast(CameraBackendName, camera_backend),
             capabilities=tuple(caps),
             pose_recommend_strategy=pose_recommend_strategy,
-            wrist_roll_motor_index=wrist_roll_motor_index,
+            wrist_roll_motor_id=wrist_roll_motor_id,
             type_dir=type_dir,
             urdf_path=type_dir / "urdf" / f"{robot_type}.urdf",
             type_motors_yaml=type_dir / "motors.yaml",

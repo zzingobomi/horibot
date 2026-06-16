@@ -542,6 +542,13 @@ class TrajectoryRunner:
         inp.max_jerk = list(self._j_max_jerk)
 
         IDLE_GRACE_S = 0.5  # 마지막 input 후 추가 idle 허용 — 짧은 끊김 시 즉시 종료 방지.
+
+        # 진단: jog 시작 transient (target 0→nonzero) 첫 30 cycle (=600ms) log.
+        # backend output 이 깨끗한지 (target_velocity 일관 + Ruckig out_velocity
+        # jerk-limited ramp) 검증. 깨끗하면 잔존 drift = 모터 PID/gravity 자리.
+        transient_log_remaining = 0
+        prev_target_zero = True
+
         try:
             self._publish_state(TrajStatus.RUNNING, 0.0)
             while True:
@@ -584,11 +591,27 @@ class TrajectoryRunner:
 
                 inp.target_velocity = target
 
+                # 진단: target 0→nonzero 전환 시 transient log 시작.
+                target_zero_now = all(abs(t) < 1e-6 for t in target)
+                if prev_target_zero and not target_zero_now:
+                    transient_log_remaining = 30
+                prev_target_zero = target_zero_now
+
                 result = otg.update(inp, out)
                 if result == Result.Error:
                     logger.error("Speed* Ruckig 오류")
                     self._publish_state(TrajStatus.FAILED, 0.0)
                     return
+
+                if transient_log_remaining > 0:
+                    cyc = 30 - transient_log_remaining
+                    logger.info(
+                        "[transient cyc=%02d] target=%s out_v=%s",
+                        cyc,
+                        [round(t, 4) for t in target],
+                        [round(v, 4) for v in out.new_velocity],
+                    )
+                    transient_log_remaining -= 1
 
                 self._publish_cmd(list(out.new_position))
 

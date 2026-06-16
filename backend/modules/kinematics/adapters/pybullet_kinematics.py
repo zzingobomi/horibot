@@ -294,33 +294,8 @@ class PybulletKinematics:
         if not np.all(np.isfinite(joint_vel)):
             return None
 
-        # ─── 진단 로그 — Jacobian frame 검증 ───────────────────────
-        # twist input (base frame) vs J @ pinv(J) @ twist (Jacobian 의 frame
-        # 에서 본 같은 motion). full-rank J 면 V_recovered ≈ twist 정확 — 다르면
-        # frame mismatch (PyBullet J 가 *world frame* 아닌 다른 frame 의심).
-        # tcp 모드 자리는 caller 에서 ee_R 곱한 후라 base 와 분리 검증 안 됨.
-        # SO-101 6DOF 의 "+X 명령 → Z drift" 증상 root cause 진단 자리.
-        # NaN/0 input 자리는 의미 없는 출력이므로 작은 magnitude skip.
-        if frame == "base" and float(np.linalg.norm(twist)) > 1e-6:
-            v_recovered = J @ joint_vel
-            twist_norm = np.linalg.norm(twist)
-            error = v_recovered - twist
-            error_rel = float(np.linalg.norm(error)) / float(twist_norm)
-            if error_rel > 1e-3:  # 0.1% 이상 mismatch 면 frame 의심
-                logger.warning(
-                    "[Jacobian-frame] twist_in=%s V_recovered=%s err_rel=%.4f "
-                    "(>1e-3 → frame mismatch 또는 singular)",
-                    np.round(twist, 5).tolist(),
-                    np.round(v_recovered, 5).tolist(),
-                    error_rel,
-                )
-            else:
-                logger.info(
-                    "[Jacobian-frame] OK twist=%s V_recovered=%s err_rel=%.6f",
-                    np.round(twist, 5).tolist(),
-                    np.round(v_recovered, 5).tolist(),
-                    error_rel,
-                )
+        # 진단 — Jacobian frame 검증 결과 OK (err_rel=0.000000 모든 cycle).
+        # transient log 를 깔끔히 보려고 비활성. 필요 시 재활성.
 
         return joint_vel.tolist()
 

@@ -294,9 +294,6 @@ class PybulletKinematics:
         if not np.all(np.isfinite(joint_vel)):
             return None
 
-        # 진단 — Jacobian frame 검증 결과 OK (err_rel=0.000000 모든 cycle).
-        # transient log 를 깔끔히 보려고 비활성. 필요 시 재활성.
-
         return joint_vel.tolist()
 
     # ─── 내부 ──────────────────────────────────────────────────

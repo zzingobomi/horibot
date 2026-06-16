@@ -522,11 +522,13 @@ class TrajectoryRunner:
           3. Ruckig 가 jerk-limited 으로 target_velocity 추종 + new position 산출.
           4. publish_cmd(new_position).
           5. 정지 상태 (target=0 + 실 vel≈0) 가 충분히 지속되면 자연 종료.
-        """
-        ok = self._release_profile()
-        if not ok:
-            logger.warning("Speed*: profile 비활성화 실패 — 계속 진행")
 
+        ※ MoveJ/L/C/P 와 다름 — *release_profile 호출 안 함*. motors.yaml 의
+          default profile (vel/acc cap) 을 *유지* → 모터 자체의 *trapezoidal
+          profile* 이 Ruckig output 을 *부드럽게 추종*. jog 의 transient drift
+          (Feetech PID lag 자리) 를 *모터 내장 layer* 로 흡수. MoveJ/L/C/P 는
+          큰 motion + Ruckig 가 전체 trajectory generate 라 cap 풀어야 자유.
+        """
         n = self._n_arm
         otg = Ruckig(n, TRAJ_DT)
         inp = InputParameter(n)
@@ -563,7 +565,6 @@ class TrajectoryRunner:
         start = self._get_joint_angles()
         if start is None:
             logger.warning("Speed*: 시작 joint state 없음 — streamer 종료")
-            self._restore_profile()
             return
         inp.current_position = list(start)
         inp.current_velocity = [0.0] * n
@@ -575,13 +576,6 @@ class TrajectoryRunner:
         inp.max_jerk = list(self._j_max_jerk)
 
         IDLE_GRACE_S = 0.5  # 마지막 input 후 추가 idle 허용 — 짧은 끊김 시 즉시 종료 방지.
-
-        # 진단: jog 시작 transient (target 0→nonzero) 첫 30 cycle (=600ms) log.
-        # backend output 이 깨끗한지 (target_velocity 일관 + Ruckig out_velocity
-        # jerk-limited ramp) 검증. 깨끗하면 잔존 drift = 모터 PID/gravity 자리.
-        transient_log_remaining = 0
-        prev_target_zero = True
-
         try:
             self._publish_state(TrajStatus.RUNNING, 0.0)
             while True:
@@ -642,27 +636,11 @@ class TrajectoryRunner:
 
                 inp.target_velocity = target
 
-                # 진단: target 0→nonzero 전환 시 transient log 시작.
-                target_zero_now = all(abs(t) < 1e-6 for t in target)
-                if prev_target_zero and not target_zero_now:
-                    transient_log_remaining = 30
-                prev_target_zero = target_zero_now
-
                 result = otg.update(inp, out)
                 if result == Result.Error:
                     logger.error("Speed* Ruckig 오류")
                     self._publish_state(TrajStatus.FAILED, 0.0)
                     return
-
-                if transient_log_remaining > 0:
-                    cyc = 30 - transient_log_remaining
-                    logger.info(
-                        "[transient cyc=%02d] target=%s out_v=%s",
-                        cyc,
-                        [round(t, 4) for t in target],
-                        [round(v, 4) for v in out.new_velocity],
-                    )
-                    transient_log_remaining -= 1
 
                 self._publish_cmd(list(out.new_position))
 
@@ -680,9 +658,9 @@ class TrajectoryRunner:
                 if sleep_t > 0:
                     time.sleep(sleep_t)
         finally:
-            ok = self._restore_profile()
-            if not ok:
-                logger.warning("Speed*: profile 복원 실패")
+            # release_profile 호출 안 했음 — restore 도 X. motors.yaml default
+            # profile 유지로 모터 trapezoidal smooth motion 활성 (jog 전용 fix).
+            pass
 
     # ─── 정적 유틸 ────────────────────────────────────────────
 

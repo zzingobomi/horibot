@@ -18,10 +18,6 @@ import { usePointCloudStore } from "@/domain/stores/pointCloud";
 let unsubPointCloud: (() => void) | null = null;
 
 onConnect(() => {
-  // MOTOR_GET_CONFIG prefetch 는 useFrameworkBootstrap 가 robot-explicit 으로
-  // 처리 (robots loaded + WS connected 둘 다 충족 시점). 여기선 bridge default
-  // robot 가 race 로 wrong id 가 될 수 있어 호출 X.
-
   // PointCloud 는 binary 토픽 — bootstrap 가 BINARY_TOPICS 는 skip 하므로 store 자체 attach.
   if (unsubPointCloud) unsubPointCloud();
   unsubPointCloud = usePointCloudStore.getState()._attach();

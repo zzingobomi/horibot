@@ -92,8 +92,6 @@ export function useFrameworkBootstrap(): void {
   //  - robots 로드 전 호출 = bridge.defaultRobotId fallback 으로 wrong robot id
   //    expand (예: omx_f_0 disabled 인데 omx_f_0 로 호출 → 캐시 영원히 비어 있음
   //    → motorCfgs=[] → jointAngles=[] → URDF default pose 영구)
-  // 이전엔 handlers.ts onConnect 에서 defaultRobotId 로 1회 호출했지만 race
-  // 발생 → robot-explicit 호출 + 두 조건 충족 시점으로 이동.
   useEffect(() => {
     if (!connected) return;
     for (const r of robots.filter((r) => r.enabled)) {

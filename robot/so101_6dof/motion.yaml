@@ -8,37 +8,36 @@
 # 부팅 후 진동/sag 보고 튜닝.
 
 joint_limits:
-  # 진단용 임시 통일 — SpeedTcp 의 "툭 처짐 → 앞으로" transient 가 joint별
-  # jerk/acc 불균형 (J2 8.0 vs wrist 15.0) 때문인지 분리. 통일 후에도 증상
-  # 그대로면 Jacobian/Servo loop 구조 issue 로 확정.
+  # SpeedTcp 자리는 motors.yaml default profile 유지 (release_profile 안 호출).
+  # 모터 trapezoidal profile 이 Ruckig output 부드럽게 추종 → joint jerk 적당히.
+  # MoveJ/L/C/P 는 release_profile 그대로라 joint Ruckig 만 제약.
   joint1:
     max_velocity: 1.5
     max_acceleration: 3.0
-    max_jerk: 10.0
+    max_jerk: 15.0
   joint2:
     max_velocity: 1.5
     max_acceleration: 3.0
-    max_jerk: 10.0
+    max_jerk: 15.0
   joint3:
     max_velocity: 1.5
     max_acceleration: 3.0
-    max_jerk: 10.0
+    max_jerk: 15.0
   joint4:
     max_velocity: 1.5
     max_acceleration: 3.0
-    max_jerk: 10.0
+    max_jerk: 15.0
   joint5:
     max_velocity: 1.5
     max_acceleration: 3.0
-    max_jerk: 10.0
+    max_jerk: 15.0
   joint6:
     max_velocity: 1.5
     max_acceleration: 3.0
-    max_jerk: 10.0
+    max_jerk: 15.0
 
 cartesian_limits:
-  # OMX 와 동일 baseline — TCP space 는 robot 무관 사용자 체감 동일하게.
   max_trans_vel: 0.10
-  max_trans_acc: 0.25
-  max_trans_jerk: 1.00
+  max_trans_acc: 0.3
+  max_trans_jerk: 3.0
   # 6DOF 의 회전 한계 — full orientation IK 활성화 시 적용 (현재 미사용).

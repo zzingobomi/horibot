@@ -137,11 +137,6 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
         _calibration.MultiStartReq,
         _calibration.MultiStartRes,
     ),
-    Service.CALIB_BACKUP_LIST: (EmptyData, _calibration.BackupListRes),
-    Service.CALIB_BACKUP_RESTORE: (
-        _calibration.BackupRestoreReq,
-        _calibration.BackupRestoreRes,
-    ),
     # ─ Storage (Phase 1 — 캘 4 service)
     Service.STORAGE_GET_ACTIVE_CALIBRATION: (
         _storage.StorageGetActiveReq,

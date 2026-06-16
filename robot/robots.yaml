@@ -18,6 +18,9 @@ robots:
     # Hand-Eye 캘 추천 자세 전략. 5DOF (wrist yaw 없음) 라 임의 R IK 못 풀림 →
     # joint space perturbation (FK only). geometry (6DOF anchor + IK) 는 SO-101 에서.
     pose_recommend_strategy: joint_perturbation
+    # Hand-Eye observability 의 wrist roll axis (0-indexed motor index).
+    # OMX-F: J5 (5DOF 의 마지막 = wrist roll) → motor index 4.
+    wrist_roll_motor_index: 4
     base_pose:                   # World frame 의 robot base 위치 (m, x/y/z).
       x: 0.0
       y: 0.0
@@ -42,6 +45,9 @@ robots:
     camera_backend: realsense         # D405. 1차엔 camera_node 안 띄움 (host_pi_motor 에 camera device_node 없음)
     # 6DOF — wrist yaw 있어 임의 R IK 풀림. SO-101 빌드 가이드의 next pose 추천 전략.
     pose_recommend_strategy: geometry
+    # Hand-Eye observability 의 wrist roll axis (0-indexed motor index).
+    # SO-101 6DOF: J6 (6DOF 의 마지막 = wrist roll) → motor index 5.
+    wrist_roll_motor_index: 5
     # OMX 우측에 배치 (World frame, m).
     base_pose:
       x: 0.4

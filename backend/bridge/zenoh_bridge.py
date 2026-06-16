@@ -83,7 +83,7 @@ async def lifespan(app: FastAPI):
     logger.info("Zenoh 구독 정리 완료")
 
 
-app = FastAPI(title="OMX Bridge", lifespan=lifespan)
+app = FastAPI(title="Horibot Bridge", lifespan=lifespan)
 
 ROBOT_DIR = Path(__file__).parents[2] / "robot"
 app.mount("/robot", StaticFiles(directory=str(ROBOT_DIR)), name="robot")
@@ -239,9 +239,7 @@ def custom_openapi() -> dict:
 app.openapi = custom_openapi  # type: ignore[assignment]
 
 _extra_origins = [
-    o.strip()
-    for o in os.getenv("BRIDGE_CORS_ORIGINS", "").split(",")
-    if o.strip()
+    o.strip() for o in os.getenv("BRIDGE_CORS_ORIGINS", "").split(",") if o.strip()
 ]
 
 app.add_middleware(
@@ -334,9 +332,7 @@ def setup_zenoh_subscribers() -> None:
 
                 return handler
 
-            _zenoh_subs.append(
-                session.declare_subscriber(topic, make_handler(topic))
-            )
+            _zenoh_subs.append(session.declare_subscriber(topic, make_handler(topic)))
 
     # 카메라 raw bytes — MJPEG `/robots/<robot_id>/camera/stream` HTTP 라우트
     # 로 별도 송출. contract 의 PUBLIC_BINARY_TOPICS 에 없음 (별도 라우트).
@@ -349,9 +345,7 @@ def setup_zenoh_subscribers() -> None:
 
             return handler
 
-        _zenoh_subs.append(
-            session.declare_subscriber(topic, make_camera_handler(rid))
-        )
+        _zenoh_subs.append(session.declare_subscriber(topic, make_camera_handler(rid)))
 
     # contract 의 binary 토픽은 WS binary frame 으로 직송.
     for template in _ALWAYS_SUBSCRIBE_BINARY:

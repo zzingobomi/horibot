@@ -98,6 +98,7 @@ def main() -> None:
     from modules.kinematics.registry import RobotRegistry
 
     kin = RobotRegistry().get_kinematics("omx_f_0")
+    fk_chain = RobotRegistry().get_fk_chain("omx_f_0")
 
     def fk_fn(angles):
         R, t = kin.fk_to_matrix(list(angles))
@@ -111,12 +112,14 @@ def main() -> None:
         R_target2cam=R_tc,
         t_target2cam=t_tc,
         X_init=(seed_R, seed_t),
+        fk_chain=fk_chain,
     )
     r_s1_irls = bundle_adjust_hand_eye_physical_sag_irls(
         joint_angles_per_pose=joint_angles,
         R_target2cam=R_tc,
         t_target2cam=t_tc,
         X_init=(seed_R, seed_t),
+        fk_chain=fk_chain,
     )
 
     # S2: perturb pose7
@@ -128,12 +131,14 @@ def main() -> None:
         R_target2cam=R_p,
         t_target2cam=t_p,
         X_init=(seed_R, seed_t),
+        fk_chain=fk_chain,
     )
     r_s2_irls = bundle_adjust_hand_eye_physical_sag_irls(
         joint_angles_per_pose=joint_angles,
         R_target2cam=R_p,
         t_target2cam=t_p,
         X_init=(seed_R, seed_t),
+        fk_chain=fk_chain,
     )
 
     def row(name, res, w_idx=None):

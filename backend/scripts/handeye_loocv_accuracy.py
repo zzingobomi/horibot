@@ -80,6 +80,7 @@ def main() -> None:
     from modules.kinematics.registry import RobotRegistry
 
     kin = RobotRegistry().get_kinematics("omx_f_0")
+    fk_chain = RobotRegistry().get_fk_chain("omx_f_0")
 
     def fk_fn(angles):
         R, t = kin.fk_to_matrix(list(angles))
@@ -93,6 +94,7 @@ def main() -> None:
         R_target2cam=R_tc,
         t_target2cam=t_tc,
         X_init=(seed_R, seed_t),
+        fk_chain=fk_chain,
     )
     sigma_rot_full = float(np.sqrt(np.mean(res_full.residual_rot_deg**2)))
     sigma_t_full = float(np.sqrt(np.mean(res_full.residual_t_mm**2)))
@@ -118,6 +120,7 @@ def main() -> None:
             R_target2cam=[R_tc[j] for j in keep],
             t_target2cam=[t_tc[j] for j in keep],
             X_init=(seed_R, seed_t),
+            fk_chain=fk_chain,
         )
         R_x = res_lo.R_cam2gripper
         t_x = res_lo.t_cam2gripper

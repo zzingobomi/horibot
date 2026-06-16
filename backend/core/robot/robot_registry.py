@@ -104,6 +104,11 @@ class RobotConfig:
     # robots.yaml 의 `pose_recommend_strategy` SSOT. None 이면 default = "geometry".
     pose_recommend_strategy: str = "geometry"
 
+    # Hand-Eye observability metric 의 wrist roll axis (0-indexed motor index).
+    # robots.yaml SSOT — robot 별 wrist roll 위치가 달라서 (OMX-F=4, SO-101=5)
+    # observability.analyze_pose_data 가 명시 주입 받음 ([observability.py:54]).
+    wrist_roll_motor_index: int = 0
+
 
 class RobotRegistry:
     """robots.yaml 싱글톤. 부팅 시 1회 load + validation.
@@ -132,7 +137,10 @@ class RobotRegistry:
         self._motor_backends: dict[str, object] = {}  # MotorBackend
         self._camera_captures: dict[str, object] = {}  # CameraCapture
         self._motion_configs: dict[str, object] = {}  # MotionConfig
-        self._factory_lock = threading.Lock()
+        self._fk_chains: dict[str, object] = {}  # FkChain (BA + sag hot path)
+        # RLock — `_build_kinematics` 가 안에서 `get_fk_chain` 호출 같이 factory
+        # 끼리 의존하는 자리에서 reentrant 필요 (non-reentrant Lock 이면 deadlock).
+        self._factory_lock = threading.RLock()
         self._load()
 
     def _load(self) -> None:
@@ -210,6 +218,19 @@ class RobotRegistry:
                 f"가능: 'geometry' | 'joint_perturbation'"
             )
 
+        wrist_roll_raw = entry.get("wrist_roll_motor_index")
+        if wrist_roll_raw is None:
+            raise ValueError(
+                f"robot '{robot_id}' wrist_roll_motor_index 필수 "
+                f"(0-indexed motor index). OMX-F=4, SO-101=5."
+            )
+        if not isinstance(wrist_roll_raw, int) or wrist_roll_raw < 0:
+            raise ValueError(
+                f"robot '{robot_id}' wrist_roll_motor_index="
+                f"{wrist_roll_raw!r} 는 non-negative int 이어야 함."
+            )
+        wrist_roll_motor_index = int(wrist_roll_raw)
+
         caps_raw = entry.get("capabilities", []) or []
         if not isinstance(caps_raw, list):
             raise ValueError(
@@ -249,6 +270,7 @@ class RobotRegistry:
             camera_backend=cast(CameraBackendName, camera_backend),
             capabilities=tuple(caps),
             pose_recommend_strategy=pose_recommend_strategy,
+            wrist_roll_motor_index=wrist_roll_motor_index,
             type_dir=type_dir,
             urdf_path=type_dir / "urdf" / f"{robot_type}.urdf",
             type_motors_yaml=type_dir / "motors.yaml",
@@ -330,13 +352,33 @@ class RobotRegistry:
         if cfg.kinematics_backend == "pybullet":
             inner = PybulletKinematics(cfg.urdf_path)
             return SagCorrectedKinematics(
-                inner, LinkCoordinates(), SagCoordinates()
+                inner,
+                LinkCoordinates(),
+                SagCoordinates(),
+                self.get_fk_chain(robot_id),
             )
         if cfg.kinematics_backend == "mujoco":
             raise NotImplementedError(
                 f"mujoco Kinematics — Phase 2+ (robot_id={robot_id})"
             )
         raise ValueError(f"unknown kinematics_backend: {cfg.kinematics_backend!r} (robot_id={robot_id})")
+
+    def get_fk_chain(self, robot_id: str | None = None):
+        """FkChain — BA / sag 의 numpy FK chain (link_offset variable 자리).
+
+        PybulletKinematics 와 별개 — BA hot path 가 PyBullet 의 정적 limit 우회.
+        per-robot 캐시. arm motor names = `MotorLayout.arm()` 의 `.name`.
+        """
+        return self._get_or_build(self._fk_chains, robot_id, self._build_fk_chain)
+
+    def _build_fk_chain(self, robot_id: str):
+        from modules.kinematics.fk_chain import FkChain
+        from modules.motor.motor_config import load_motor_layout
+
+        cfg = self.get(robot_id)
+        layout = load_motor_layout(robot_id)
+        arm_joint_names = [m.name for m in layout.arm]
+        return FkChain(cfg.urdf_path, arm_joint_names)
 
     def get_motor_backend(self, robot_id: str | None = None):
         """cfg.motor_backend = "dynamixel" → DynamixelBackend / "feetech" → FeetechBackend."""

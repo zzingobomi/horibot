@@ -55,7 +55,7 @@ def analyze_pose_data(
     R_target2cam: np.ndarray,
     raw_positions: np.ndarray,
     *,
-    wrist_roll_axis: int = 4,
+    wrist_roll_axis: int,
 ) -> ObservabilityReport:
     """in-memory R/t + raw 로 진단 (npz 의존성 X).
 
@@ -65,7 +65,8 @@ def analyze_pose_data(
     Args:
         R_target2cam: (N, 3, 3) board → cam rotation
         raw_positions: (N, J) Dynamixel raw. raw[:, wrist_roll_axis] 가 wrist roll.
-        wrist_roll_axis: wrist roll motor index. OMX-F=4 (joint5). 다른 robot 에서 다름.
+        wrist_roll_axis: wrist roll motor index (0-indexed). robot 별로 다름 —
+            `robots.yaml::wrist_roll_motor_index` SSOT. caller 가 RobotConfig 에서 주입.
     """
     R = np.asarray(R_target2cam)
     raw = np.asarray(raw_positions)
@@ -118,10 +119,16 @@ def analyze_pose_data(
     )
 
 
-def analyze(npz_path: Path) -> ObservabilityReport:
-    """thin wrapper — npz path 로딩 후 analyze_pose_data 호출."""
+def analyze(npz_path: Path, *, wrist_roll_axis: int) -> ObservabilityReport:
+    """thin wrapper — npz path 로딩 후 analyze_pose_data 호출.
+
+    wrist_roll_axis 는 caller 가 명시 (robot 별로 다름 — OMX-F=4 / SO-101=5).
+    main() CLI 는 omx_f_0 hardcode 라 4 명시.
+    """
     d = np.load(str(npz_path), allow_pickle=True)
-    return analyze_pose_data(d["R_target2cam"], d["raw_positions"])
+    return analyze_pose_data(
+        d["R_target2cam"], d["raw_positions"], wrist_roll_axis=wrist_roll_axis
+    )
 
 
 def main() -> None:
@@ -134,7 +141,7 @@ def main() -> None:
     default_path = (
         repo_root / "robot/instances/omx_f_0/calibration/handeye_poses.npz"
     )
-    rep = analyze(default_path)
+    rep = analyze(default_path, wrist_roll_axis=4)  # CLI 는 omx_f_0 hardcode
 
     print("=== Hand-Eye Observability Diagnosis ===")
     print(f"source              : {default_path.name}")

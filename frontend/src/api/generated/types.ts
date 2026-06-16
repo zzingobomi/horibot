@@ -174,44 +174,6 @@ export interface components {
             suggestion_text: string;
         };
         /**
-         * BackupEntry
-         * @description `.history/` 안 한 snapshot 의 picker 표시용 메타.
-         *
-         *     sigma_*\/capture_count/ba_mode 는 commit 시점에 박힘. tag 는 "pre-commit" /
-         *     "pre-restore" 등 origin 구분.
-         */
-        BackupEntry: {
-            /** Timestamp */
-            timestamp: string;
-            /** Tag */
-            tag: string;
-            /** Sigma Rot Deg */
-            sigma_rot_deg?: number | null;
-            /** Sigma T Mm */
-            sigma_t_mm?: number | null;
-            /** Capture Count */
-            capture_count?: number | null;
-            /** Ba Mode */
-            ba_mode?: string | null;
-        };
-        /** BackupListRes */
-        BackupListRes: {
-            /** Snapshots */
-            snapshots: components["schemas"]["BackupEntry"][];
-        };
-        /** BackupRestoreReq */
-        BackupRestoreReq: {
-            /** Timestamp */
-            timestamp: string;
-        };
-        /** BackupRestoreRes */
-        BackupRestoreRes: {
-            /** Restored Timestamp */
-            restored_timestamp: string;
-            /** Restart Required */
-            restart_required: boolean;
-        };
-        /**
          * BasePoseSchema
          * @description World frame 의 robot base pose (m + deg).
          */
@@ -472,8 +434,6 @@ export interface components {
         };
         /** HandeyeCommitRes */
         HandeyeCommitRes: {
-            /** Path */
-            path: string;
             /** Method */
             method: string;
             /** Joint Offsets Applied */
@@ -1072,9 +1032,6 @@ export interface components {
          * @description OpenAPI schema export only — auto-built from api_contract.
          */
         OpenApiSchemaRegistry: {
-            BackupListRes?: components["schemas"]["BackupListRes"] | null;
-            BackupRestoreReq?: components["schemas"]["BackupRestoreReq"] | null;
-            BackupRestoreRes?: components["schemas"]["BackupRestoreRes"] | null;
             CalibrationInvalidated?: components["schemas"]["CalibrationInvalidated"] | null;
             CameraStatus?: components["schemas"]["CameraStatus"] | null;
             DetectorState?: components["schemas"]["DetectorState"] | null;

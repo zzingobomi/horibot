@@ -4,6 +4,7 @@ import logging
 import time
 from pathlib import Path
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from scipy.stats import median_abs_deviation
 
@@ -22,6 +23,9 @@ from .bundle_adjust import (
 )
 from .coach import diagnose
 from .se3 import make_T
+
+if TYPE_CHECKING:
+    from modules.kinematics.fk_chain import FkChain
 
 # sag 모델은 J2, J3에만 적용 (motor id 2, 3). bundle_adjust의 sag_k_rad_per_m
 # (2,) 배열의 순서와 일치. sag_corrected.py 의 _SAG_JOINT_IDS와 같은 정의.
@@ -74,7 +78,11 @@ _COMPARE_METHODS = [
 
 
 class HandEyeCalibration:
-    def __init__(self):
+    def __init__(self, fk_chain: "FkChain"):
+        """fk_chain 명시 주입 — 확장 BA / 물리 sag BA 가 link_offset variable 박는 자리.
+        caller (calibration_node) 가 `RobotRegistry.get_fk_chain(robot_id)` 로 받음.
+        """
+        self._fk_chain = fk_chain
         self._next_id: int = 0
         self.poses: list[Pose] = []
         self.result: HandEyeResult | None = None
@@ -513,8 +521,8 @@ class HandEyeCalibration:
             logger.exception("BA 실패: %s", e)
             return None
 
-    @staticmethod
     def _run_ba_extended_lists(
+        self,
         *,
         ja_list: list[list[float]],
         R_tc_list: list[np.ndarray],
@@ -530,13 +538,14 @@ class HandEyeCalibration:
                     np.asarray(t, dtype=np.float64).reshape(3) for t in t_tc_list
                 ],
                 X_init=(seed.R_cam2gripper, seed.t_cam2gripper),
+                fk_chain=self._fk_chain,
             )
         except Exception as e:
             logger.exception("확장 BA 실패: %s", e)
             return None
 
-    @staticmethod
     def _run_ba_physical_sag_lists(
+        self,
         *,
         ja_list: list[list[float]],
         R_tc_list: list[np.ndarray],
@@ -560,6 +569,7 @@ class HandEyeCalibration:
                     np.asarray(t, dtype=np.float64).reshape(3) for t in t_tc_list
                 ],
                 X_init=(seed.R_cam2gripper, seed.t_cam2gripper),
+                fk_chain=self._fk_chain,
             )
         except Exception as e:
             logger.exception("물리 sag BA (IRLS) 실패: %s", e)

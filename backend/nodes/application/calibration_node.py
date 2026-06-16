@@ -11,14 +11,9 @@ from core.coords.joint_coordinates import JointCoordinates
 from core.coords.link_coordinates import LinkCoordinates
 from core.robot.robot_registry import RobotRegistry
 from core.coords.sag_coordinates import SagCoordinates
-from core.coords.tool_coordinates import ToolCoordinates
 from modules.calibration.sag_offsets import SagOffsets
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.calibration import (
-    BackupEntry,
-    BackupListRes,
-    BackupRestoreReq,
-    BackupRestoreRes,
     HandeyeCaptureRes,
     HandeyeCommitRes,
     HandeyeListPosesRes,
@@ -43,7 +38,6 @@ from modules.motor.motor_config import MotorConfig, load_motor_layout
 from modules.camera.stream import frame_to_base64
 from modules.calibration.intrinsic import IntrinsicCalibration
 from modules.calibration.hand_eye import HandEyeCalibration, Pose
-from modules.calibration import backup as calib_backup
 from modules.calibration import board as calib_board
 from modules.calibration import next_pose_planner
 from modules.calibration import thresholds as calib_thresholds
@@ -92,10 +86,6 @@ def _optional_float(v: object) -> float | None:
     return float(v) if isinstance(v, (int, float)) else None
 
 
-def _optional_int(v: object) -> int | None:
-    return int(v) if isinstance(v, (int, float)) else None
-
-
 def _optional_str(v: object) -> str | None:
     return str(v) if v is not None else None
 
@@ -127,7 +117,7 @@ class CalibrationNode(ApplicationNode):
         for rid in self.enabled_robot_ids:
             arm_cfgs = load_motor_layout(rid).arm
             intrinsic = IntrinsicCalibration()
-            hand_eye = HandEyeCalibration()
+            hand_eye = HandEyeCalibration(self._registry.get_fk_chain(rid))
             kinematics = self._registry.get_kinematics(rid)
             assert isinstance(kinematics, SagCorrectedKinematics)
 
@@ -311,18 +301,6 @@ class CalibrationNode(ApplicationNode):
                 MultiStartReq,
                 MultiStartRes,
                 lambda req, _rid=rid: self._srv_handeye_multi_start(req, _rid),
-            )
-            self.create_service(
-                topic_for(Service.CALIB_BACKUP_LIST, rid),
-                EmptyData,
-                BackupListRes,
-                lambda req, _rid=rid: self._srv_backup_list(req, _rid),
-            )
-            self.create_service(
-                topic_for(Service.CALIB_BACKUP_RESTORE, rid),
-                BackupRestoreReq,
-                BackupRestoreRes,
-                lambda req, _rid=rid: self._srv_backup_restore(req, _rid),
             )
 
         super().start()
@@ -600,7 +578,10 @@ class CalibrationNode(ApplicationNode):
             return
         R_arr = np.array([p.R_target2cam for p in poses], dtype=np.float64)
         raw_arr = np.array([p.raw_motor_positions for p in poses], dtype=np.float64)
-        rep = _obs.analyze_pose_data(R_arr, raw_arr)
+        cfg = self._registry.get(robot_id)
+        rep = _obs.analyze_pose_data(
+            R_arr, raw_arr, wrist_roll_axis=cfg.wrist_roll_motor_index
+        )
         v = rep.verdict()
         # verdict 첫 글자만 ('A'/'B'/'mid')
         v_short = "A" if v.startswith("A") else ("B" if v.startswith("B") else "mid")
@@ -1062,7 +1043,6 @@ class CalibrationNode(ApplicationNode):
             success=True,
             message=" + ".join(msg_parts),
             data=HandeyeCommitRes(
-                path=f"storage:run/{run_id}",  # legacy path field 호환
                 method=method,
                 joint_offsets_applied=joint_estimated,
                 joint_offsets=[
@@ -1200,63 +1180,6 @@ class CalibrationNode(ApplicationNode):
                 sigma_t_mm=float(best_t) if best_t is not None else None,
                 improvement_rot_deg=improvement_rot,
                 improvement_t_mm=improvement_t,
-            ),
-        )
-
-    # ─── Backup / Rollback ───────────────────────────────────
-    def _srv_backup_list(
-        self, _req: ServiceRequest[EmptyData], robot_id: str
-    ) -> ServiceResponse[BackupListRes]:
-        infos = calib_backup.list_snapshots(_save_dir(robot_id))
-        entries = [
-            BackupEntry(
-                timestamp=i.timestamp,
-                tag=i.tag,
-                sigma_rot_deg=_optional_float(i.meta.get("sigma_rot_deg")),
-                sigma_t_mm=_optional_float(i.meta.get("sigma_t_mm")),
-                capture_count=_optional_int(i.meta.get("capture_count")),
-                ba_mode=_optional_str(i.meta.get("ba_mode")),
-            )
-            for i in infos
-        ]
-        return ServiceResponse(
-            success=True,
-            message=f"snapshots={len(entries)}",
-            data=BackupListRes(snapshots=entries),
-        )
-
-    def _srv_backup_restore(
-        self, req: ServiceRequest[BackupRestoreReq], robot_id: str
-    ) -> ServiceResponse[BackupRestoreRes]:
-        try:
-            info = calib_backup.restore(_save_dir(robot_id), req.data.timestamp)
-        except FileNotFoundError as e:
-            return ServiceResponse(success=False, message=str(e), data=None)
-
-        # 메모리 reload — joint/sag/tool 은 즉시 반영. link 는 URDF patch 라 재시작 필요.
-        JointCoordinates().reload(robot_id)
-        LinkCoordinates().reload(robot_id)
-        SagCoordinates().reload(robot_id)
-        ToolCoordinates().reload(robot_id)
-        st = self._states[robot_id]
-        st.hand_eye.load(_save_dir(robot_id) / "hand_eye.npz")
-        st.intrinsic.load(_save_dir(robot_id) / "intrinsic.npz")
-        st.kinematics.reload_calibration()
-        # 안전상 compute 결과도 무효화 (옛 absolute 가 현 disk 와 맞지 않음).
-        st.last_compute = None
-
-        logger.info(
-            "[%s] calibration snapshot 복원 완료: timestamp=%s, restart_required=True",
-            robot_id,
-            info.timestamp,
-        )
-
-        return ServiceResponse(
-            success=True,
-            message=f"snapshot {info.timestamp} 복원 완료 (URDF 재적용 위해 백엔드 재시작 필요)",
-            data=BackupRestoreRes(
-                restored_timestamp=info.timestamp,
-                restart_required=True,
             ),
         )
 

@@ -29,6 +29,9 @@ pi-motor = [
     "pybullet>=3.2.0",
     "ruckig>=0.17.3",
     "scipy>=1.17.1",
+    # URDF parse — sag_corrected 의 FkChain (BA hot path 자체 numpy chain build,
+    # parse 만 위임). camera Pi 는 fk_chain 사용 X 라 그룹 분리.
+    "yourdfpy>=0.0.60",
 ]
 
 pi-camera = [
@@ -55,6 +58,8 @@ pc = [
     "transformers>=4.45.0,<4.57",
     "accelerate>=0.34.0",
     "pillow>=10.0.0",
+    # URDF parse — BA 의 FkChain (calibration_node).
+    "yourdfpy>=0.0.60",
     # CUDA 13 빌드 — host nvidia driver(13.2)와 매치. cu130 index 에서 받음
     # (tool.uv.sources 참고). transitive 의존성으로 끌려오면 source 매핑이
     # 안 먹어 CPU wheel 로 떨어지므로 명시적 pin.

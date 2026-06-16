@@ -6,8 +6,8 @@ multi_robot_architecture.md §3.2 참조.
 보정은 한 번만 작성 + 양쪽 다 적용. inner 가 *ideal* URDF 기구학이라 unit test
 용이 (sag 끄고 inner 만으로 검증 가능).
 
-link_offset 은 inner 의 URDF patch 로 이미 처리됨 — 여기서는 sag (J2/J3 자세 의존
-중력 처짐) 만 wrap.
+link_offset 은 inner 의 URDF patch 로 이미 처리됨 — 여기서는 sag (자세 의존
+중력 처짐) 만 wrap. 자체 numpy FK 는 `FkChain` 인스턴스에 위임.
 """
 
 from __future__ import annotations
@@ -20,10 +20,7 @@ import numpy as np
 
 from core.coords.link_coordinates import LinkCoordinates
 from core.coords.sag_coordinates import SagCoordinates
-from modules.kinematics.fk_chain import (
-    actual_to_commanded,
-    apply_gravity_sag,
-)
+from modules.kinematics.fk_chain import FkChain
 from modules.kinematics.kinematics import (
     Kinematics,
     Position3,
@@ -34,9 +31,13 @@ from modules.kinematics.kinematics import (
 logger = logging.getLogger(__name__)
 
 # sag 모델은 J2, J3 에만 적용 (motor id 2, 3). J1/J4/J5 의 sag 는 측정 noise
-# 수준이라 모델 단순성 위해 제외.
-_SAG_JOINT_IDS: list[int] = [2, 3]
-_ARM_DOF: int = 5
+# 수준이라 모델 단순성 위해 제외. 본 hardcode 는 OMX-F 가정 — SO-101 sag 캘
+# 진입 시 robot 별 일반화 필요 (storage_layer.md §13.6 (5.5)(a) follow-up).
+_SAG_JOINT_MOTOR_IDS: list[int] = [2, 3]
+# 위 motor id 를 arm 안 0-indexed position 으로 변환. arm motor id 가 1-base
+# 연속이라는 가정 (motors.yaml 컨벤션) — 어긋나면 fk_chain.apply_gravity_sag
+# 의 sag_joint_indices 인자에 명시 매핑 필요.
+_SAG_JOINT_ARM_INDICES: list[int] = [i - 1 for i in _SAG_JOINT_MOTOR_IDS]
 
 
 class SagCorrectedKinematics:
@@ -51,16 +52,21 @@ class SagCorrectedKinematics:
         inner: Kinematics,
         link_coords: LinkCoordinates,
         sag_coords: SagCoordinates,
+        fk_chain: FkChain,
     ):
         self._inner = inner
         self._link_coords = link_coords
         self._sag_coords = sag_coords
+        self._fk_chain = fk_chain
         self._cache_lock = threading.Lock()
         # 부팅 시 caches 는 empty (sag 비활성). calibration_node 가 set_offsets 후
         # `reload_calibration()` 호출하면 link/sag array 실제 값으로 채워짐.
-        self._link_trans_array = np.zeros((_ARM_DOF, 3), dtype=np.float64)
-        self._link_rot_array = np.zeros((_ARM_DOF, 3), dtype=np.float64)
-        self._sag_k_array = np.zeros((len(_SAG_JOINT_IDS),), dtype=np.float64)
+        n_arm = fk_chain.n_arm
+        self._link_trans_array = np.zeros((n_arm, 3), dtype=np.float64)
+        self._link_rot_array = np.zeros((n_arm, 3), dtype=np.float64)
+        self._sag_k_array = np.zeros(
+            (len(_SAG_JOINT_MOTOR_IDS),), dtype=np.float64
+        )
         self._sag_enabled = False
 
     # ─── Kinematics Protocol ────────────────────────────────────
@@ -123,17 +129,18 @@ class SagCorrectedKinematics:
         사용) 만 갱신. URDF 자체는 재로드 X (런타임 reload 는 본 design 의 범위 밖).
         """
         with self._cache_lock:
+            n_arm = self._fk_chain.n_arm
             link_offsets = self._link_coords.snapshot()
             self._link_trans_array = np.array(
-                [link_offsets.get_trans(i + 1) for i in range(_ARM_DOF)],
+                [link_offsets.get_trans(i + 1) for i in range(n_arm)],
                 dtype=np.float64,
             )
             self._link_rot_array = np.array(
-                [link_offsets.get_rot(i + 1) for i in range(_ARM_DOF)],
+                [link_offsets.get_rot(i + 1) for i in range(n_arm)],
                 dtype=np.float64,
             )
             sag = self._sag_coords.snapshot()
-            self._sag_k_array = sag.as_array_for_joints(_SAG_JOINT_IDS)
+            self._sag_k_array = sag.as_array_for_joints(_SAG_JOINT_MOTOR_IDS)
             self._sag_enabled = bool(
                 self._sag_k_array.size > 0
                 and float(np.max(np.abs(self._sag_k_array))) > 1e-12
@@ -141,34 +148,38 @@ class SagCorrectedKinematics:
             if self._sag_enabled:
                 ks = ", ".join(
                     f"J{jid}={k:+.5f}"
-                    for jid, k in zip(_SAG_JOINT_IDS, self._sag_k_array)
+                    for jid, k in zip(_SAG_JOINT_MOTOR_IDS, self._sag_k_array)
                 )
                 logger.info(f"SagCorrectedKinematics sag 적용: {ks}")
 
     def _commanded_to_actual(self, joint_angles: list[float]) -> list[float]:
         """모터 encoder reading(commanded) → 실제 link end 의 URDF angle (actual)."""
         with self._cache_lock:
-            if not self._sag_enabled or len(joint_angles) < _ARM_DOF:
+            n_arm = self._fk_chain.n_arm
+            if not self._sag_enabled or len(joint_angles) < n_arm:
                 return list(joint_angles)
-            arm = np.asarray(joint_angles[:_ARM_DOF], dtype=np.float64)
-            actual = apply_gravity_sag(
+            arm = np.asarray(joint_angles[:n_arm], dtype=np.float64)
+            actual = self._fk_chain.apply_gravity_sag(
                 arm,
                 self._sag_k_array,
+                _SAG_JOINT_ARM_INDICES,
                 self._link_trans_array,
                 self._link_rot_array,
             )
-            return list(actual) + list(joint_angles[_ARM_DOF:])
+            return list(actual) + list(joint_angles[n_arm:])
 
     def _actual_to_commanded(self, joint_angles: list[float]) -> list[float]:
         """IK 결과(actual, URDF static FK target) → 모터 명령 commanded. 1차 근사."""
         with self._cache_lock:
-            if not self._sag_enabled or len(joint_angles) < _ARM_DOF:
+            n_arm = self._fk_chain.n_arm
+            if not self._sag_enabled or len(joint_angles) < n_arm:
                 return list(joint_angles)
-            arm = np.asarray(joint_angles[:_ARM_DOF], dtype=np.float64)
-            commanded = actual_to_commanded(
+            arm = np.asarray(joint_angles[:n_arm], dtype=np.float64)
+            commanded = self._fk_chain.actual_to_commanded(
                 arm,
                 self._sag_k_array,
+                _SAG_JOINT_ARM_INDICES,
                 self._link_trans_array,
                 self._link_rot_array,
             )
-            return list(commanded) + list(joint_angles[_ARM_DOF:])
+            return list(commanded) + list(joint_angles[n_arm:])

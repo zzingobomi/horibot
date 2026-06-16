@@ -32,13 +32,21 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import cv2
 import numpy as np
 from scipy.optimize import least_squares
 
 from .se3 import make_T
+from modules.kinematics.fk_chain import gravity_torque_lumped
+
+if TYPE_CHECKING:
+    from modules.kinematics.fk_chain import FkChain
+
+# OMX-F sag joint 의 arm 안 0-indexed position. J2/J3 = motor id 2, 3 → 0/1-indexed 1, 2.
+# SO-101 sag 캘 진입 시 일반화 (storage_layer.md §13.6 (5.5)(a) follow-up).
+_OMX_SAG_JOINT_ARM_INDICES: list[int] = [1, 2]
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +274,7 @@ def bundle_adjust_hand_eye_extended(
     R_target2cam: list[np.ndarray],
     t_target2cam: list[np.ndarray],
     X_init: tuple[np.ndarray, np.ndarray],
+    fk_chain: "FkChain",
     joint_offset_reg: float = DEFAULT_JOINT_OFFSET_REG,
     link_trans_reg: float = DEFAULT_LINK_TRANS_REG,
     link_rot_reg: float = DEFAULT_LINK_ROT_REG,
@@ -273,15 +282,16 @@ def bundle_adjust_hand_eye_extended(
 ) -> BundleAdjustExtendedResult:
     """joint_offset + link_trans + link_rot + R/t 동시 BA.
 
-    `fk_fn` 인자 없음 — `modules.kinematics.fk_chain.fk_chain`을 내부 호출. URDF의
-    joint origin이 변수로 풀려야 하는데 PyBullet은 URDF 로드 후 동적 변경 불가
-    이므로 numpy chain만 사용.
+    `fk_chain` (FkChain 인스턴스) 명시 주입 — URDF 의 joint origin 이 변수로 풀려야
+    하는데 PyBullet 은 URDF 로드 후 동적 변경 불가라 numpy chain. caller (예:
+    HandEyeCalibration) 가 `RobotRegistry.get_fk_chain(robot_id)` 로 받음.
 
     Args:
-        joint_angles_per_pose: shape (N, J=5) — 캡처 시점 URDF rad
+        joint_angles_per_pose: shape (N, J) — 캡처 시점 URDF rad (J = fk_chain.n_arm).
             (= raw_to_rad + 현재 joint_offsets 적용 후).
         R/t_target2cam: PnP로 얻은 체커보드 포즈.
         X_init: cv2.calibrateHandEye seed.
+        fk_chain: per-robot FkChain — URDF parse 결과 기반 arm chain.
         *_reg: regularization weights. 기본값은 reg sweep으로 검증됨.
             link_trans_reg=1.0 → ~15mm 부근 자유, link_rot_reg=1.0 → ~2° 부근 자유.
         max_nfev: LM iteration 상한.
@@ -294,14 +304,12 @@ def bundle_adjust_hand_eye_extended(
         (LinkCoordinates.commit_offsets가 2026-05-28 overwrite로 fix됨,
         참조: docs/accuracy_squeeze_plan.md §1.6).
     """
-    from modules.kinematics.fk_chain import N_JOINTS, fk_chain
-
     N = len(joint_angles_per_pose)
     assert N == len(R_target2cam) == len(t_target2cam), "포즈 리스트 길이 불일치"
     if N < 3:
         raise ValueError(f"BA 최소 3 포즈 필요 (받은 {N}개)")
 
-    J = N_JOINTS
+    J = fk_chain.n_arm
     assert all(len(a) == J for a in joint_angles_per_pose), (
         f"포즈마다 joint angle 수가 {J}이어야 함"
     )
@@ -338,7 +346,7 @@ def bundle_adjust_hand_eye_extended(
         T_x = make_T(R_x, t_x)
         out: list[np.ndarray] = []
         for i in range(N):
-            R_gb, t_gb = fk_chain(angles_arr[i] + offset, link_t, link_r)
+            R_gb, t_gb = fk_chain.fk(angles_arr[i] + offset, link_t, link_r)
             T_gb = make_T(R_gb, t_gb)
             out.append(T_gb @ T_x @ T_tc_list[i])
         return out
@@ -467,45 +475,38 @@ def bundle_adjust_hand_eye_physical_sag(
     R_target2cam: list[np.ndarray],
     t_target2cam: list[np.ndarray],
     X_init: tuple[np.ndarray, np.ndarray],
+    fk_chain: "FkChain",
     joint_offset_reg: float = DEFAULT_JOINT_OFFSET_REG,
     link_trans_reg: float = DEFAULT_LINK_TRANS_REG,
     link_rot_reg: float = DEFAULT_LINK_ROT_REG,
     sag_k_reg: float = DEFAULT_SAG_K_REG,
     max_nfev: int = 5000,
 ) -> BundleAdjustPhysicalSagResult:
-    """확장 BA + 물리 sag (43 DOF).
+    """확장 BA + 물리 sag (43 DOF for OMX-F 5DOF / 51 DOF for SO-101 6DOF).
 
     `bundle_adjust_hand_eye_extended`와 동일 구조 + sag_k_rad_per_m 2개 추가.
-    sag는 J2/J3에만 적용 (`apply_gravity_sag` 참고).
+    sag 는 J2/J3 (motor id 2,3 = arm idx 1,2) 에만 적용 (OMX-F 가정).
+    SO-101 sag 캘 진입 시 sag joint 일반화 (storage_layer.md §13.6 (5.5)(a)
+    follow-up).
 
-    변수 layout:
-      [0:5]    joint_offset (rad)
-      [5:20]   link_translation (5×3, m)
-      [20:35]  link_rotation (5×3, rad rotvec)
-      [35:37]  sag_k (J2, J3) (rad / (m·g_unit))
-      [37:40]  rod (cam2gripper)
-      [40:43]  t (cam2gripper, m)
+    변수 layout (J = fk_chain.n_arm):
+      [0:J]            joint_offset (rad)
+      [J:J+3J]         link_translation (J×3, m)
+      [J+3J:J+6J]      link_rotation (J×3, rad rotvec)
+      [J+6J:J+6J+2]    sag_k (J2, J3) (rad / (m·g_unit))
+      [J+6J+2:J+6J+5]  rod (cam2gripper)
+      [J+6J+5:J+6J+8]  t (cam2gripper, m)
 
-    Args/Returns: extended와 동일하되 result에 sag_k_rad_per_m + max_sag_deg 추가.
-
-    σ_rot 0.65° / σ_t 7.9mm 달성 (32 포즈 검증). lumped mass 모델이므로 k가
+    σ_rot 0.65° / σ_t 7.9mm 달성 (32 포즈 검증). lumped mass 모델이므로 k 가
     (effective stiffness × effective mass) 비율을 통째로 흡수 → URDF mass 부정확성
-    (D405 카메라 무게 누락 등)에 robust.
+    (D405 카메라 무게 누락 등) 에 robust.
     """
-    from modules.kinematics.fk_chain import (
-        N_JOINTS,
-        apply_gravity_sag,
-        fk_chain,
-        fk_chain_with_axes,
-        gravity_torque_lumped,
-    )
-
     N = len(joint_angles_per_pose)
     assert N == len(R_target2cam) == len(t_target2cam), "포즈 리스트 길이 불일치"
     if N < 3:
         raise ValueError(f"BA 최소 3 포즈 필요 (받은 {N}개)")
 
-    J = N_JOINTS
+    J = fk_chain.n_arm
     assert all(len(a) == J for a in joint_angles_per_pose), (
         f"포즈마다 joint angle 수가 {J}이어야 함"
     )
@@ -544,10 +545,14 @@ def bundle_adjust_hand_eye_physical_sag(
         T_x = make_T(R_x, t_x)
         out: list[np.ndarray] = []
         for i in range(N):
-            a_corr = apply_gravity_sag(
-                angles_arr[i] + offset, sag_k, link_t, link_r
+            a_corr = fk_chain.apply_gravity_sag(
+                angles_arr[i] + offset,
+                sag_k,
+                _OMX_SAG_JOINT_ARM_INDICES,
+                link_t,
+                link_r,
             )
-            R_gb, t_gb = fk_chain(a_corr, link_t, link_r)
+            R_gb, t_gb = fk_chain.fk(a_corr, link_t, link_r)
             T_gb = make_T(R_gb, t_gb)
             out.append(T_gb @ T_x @ T_tc_list[i])
         return out
@@ -614,12 +619,13 @@ def bundle_adjust_hand_eye_physical_sag(
 
     # 캡처 자세들의 최대 sag (deg) — UI/디버깅 표시용
     max_sag = np.zeros(2, dtype=np.float64)
+    sag_idx_J2, sag_idx_J3 = _OMX_SAG_JOINT_ARM_INDICES
     for i in range(N):
-        _, ee_pos, jo, ja = fk_chain_with_axes(
+        _, ee_pos, jo, ja = fk_chain.fk_with_axes(
             angles_arr[i] + offset_opt, link_t_opt, link_r_opt
         )
-        tau2 = gravity_torque_lumped(ee_pos, jo[1], ja[1])
-        tau3 = gravity_torque_lumped(ee_pos, jo[2], ja[2])
+        tau2 = gravity_torque_lumped(ee_pos, jo[sag_idx_J2], ja[sag_idx_J2])
+        tau3 = gravity_torque_lumped(ee_pos, jo[sag_idx_J3], ja[sag_idx_J3])
         s2 = abs(np.degrees(sag_k_opt[0] * tau2))
         s3 = abs(np.degrees(sag_k_opt[1] * tau3))
         max_sag[0] = max(max_sag[0], s2)
@@ -654,6 +660,7 @@ def bundle_adjust_hand_eye_physical_sag_irls(
     R_target2cam: list[np.ndarray],
     t_target2cam: list[np.ndarray],
     X_init: tuple[np.ndarray, np.ndarray],
+    fk_chain: "FkChain",
     joint_offset_reg: float = DEFAULT_JOINT_OFFSET_REG,
     link_trans_reg: float = DEFAULT_LINK_TRANS_REG,
     link_rot_reg: float = DEFAULT_LINK_ROT_REG,
@@ -663,7 +670,7 @@ def bundle_adjust_hand_eye_physical_sag_irls(
     huber_kappa_factor: float = DEFAULT_HUBER_KAPPA_FACTOR,
     max_nfev: int = 5000,
 ) -> BundleAdjustPhysicalSagResult:
-    """_physical_sag 의 IRLS+Huber 버전. _physical_sag 와 동일 43 DOF + outer loop.
+    """_physical_sag 의 IRLS+Huber 버전. _physical_sag 와 동일 DOF + outer loop.
 
     각 outer iter:
       1. sqrt(w_i) 로 per-pose 잔차에 weight (6N 부분만, reg 항은 weight 안 곱)
@@ -672,20 +679,12 @@ def bundle_adjust_hand_eye_physical_sag_irls(
       4. σ̂ = MAD(r)/0.6745, κ = 1.345·σ̂, w_i = min(1, κ/r_i)
       5. 잔차 cost change < cost_rel_tol 면 수렴
     """
-    from modules.kinematics.fk_chain import (
-        N_JOINTS,
-        apply_gravity_sag,
-        fk_chain,
-        fk_chain_with_axes,
-        gravity_torque_lumped,
-    )
-
     N = len(joint_angles_per_pose)
     assert N == len(R_target2cam) == len(t_target2cam), "포즈 리스트 길이 불일치"
     if N < 3:
         raise ValueError(f"BA 최소 3 포즈 필요 (받은 {N}개)")
 
-    J = N_JOINTS
+    J = fk_chain.n_arm
     assert all(len(a) == J for a in joint_angles_per_pose), (
         f"포즈마다 joint angle 수가 {J}이어야 함"
     )
@@ -725,10 +724,14 @@ def bundle_adjust_hand_eye_physical_sag_irls(
         T_x = make_T(R_x, t_x)
         out: list[np.ndarray] = []
         for i in range(N):
-            a_corr = apply_gravity_sag(
-                angles_arr[i] + offset, sag_k, link_t, link_r
+            a_corr = fk_chain.apply_gravity_sag(
+                angles_arr[i] + offset,
+                sag_k,
+                _OMX_SAG_JOINT_ARM_INDICES,
+                link_t,
+                link_r,
             )
-            R_gb, t_gb = fk_chain(a_corr, link_t, link_r)
+            R_gb, t_gb = fk_chain.fk(a_corr, link_t, link_r)
             T_gb = make_T(R_gb, t_gb)
             out.append(T_gb @ T_x @ T_tc_list[i])
         return out
@@ -839,12 +842,13 @@ def bundle_adjust_hand_eye_physical_sag_irls(
         t_norms[i] = float(np.linalg.norm(T[:3, 3] - mean_pos))
 
     max_sag = np.zeros(2, dtype=np.float64)
+    sag_idx_J2, sag_idx_J3 = _OMX_SAG_JOINT_ARM_INDICES
     for i in range(N):
-        _, ee_pos, jo, ja = fk_chain_with_axes(
+        _, ee_pos, jo, ja = fk_chain.fk_with_axes(
             angles_arr[i] + offset_opt, link_t_opt, link_r_opt
         )
-        tau2 = gravity_torque_lumped(ee_pos, jo[1], ja[1])
-        tau3 = gravity_torque_lumped(ee_pos, jo[2], ja[2])
+        tau2 = gravity_torque_lumped(ee_pos, jo[sag_idx_J2], ja[sag_idx_J2])
+        tau3 = gravity_torque_lumped(ee_pos, jo[sag_idx_J3], ja[sag_idx_J3])
         s2 = abs(np.degrees(sag_k_opt[0] * tau2))
         s3 = abs(np.degrees(sag_k_opt[1] * tau3))
         max_sag[0] = max(max_sag[0], s2)

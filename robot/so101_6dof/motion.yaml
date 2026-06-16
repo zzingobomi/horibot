@@ -8,30 +8,33 @@
 # 부팅 후 진동/sag 보고 튜닝.
 
 joint_limits:
+  # 진단용 임시 통일 — SpeedTcp 의 "툭 처짐 → 앞으로" transient 가 joint별
+  # jerk/acc 불균형 (J2 8.0 vs wrist 15.0) 때문인지 분리. 통일 후에도 증상
+  # 그대로면 Jacobian/Servo loop 구조 issue 로 확정.
   joint1:
-    max_velocity: 1.5      # rad/s (STS3215 base yaw)
+    max_velocity: 1.5
     max_acceleration: 3.0
     max_jerk: 10.0
   joint2:
-    max_velocity: 1.2      # STS3250 shoulder — 무거우므로 보수적
-    max_acceleration: 2.5
-    max_jerk: 8.0
+    max_velocity: 1.5
+    max_acceleration: 3.0
+    max_jerk: 10.0
   joint3:
-    max_velocity: 1.5      # STS3215 elbow
+    max_velocity: 1.5
     max_acceleration: 3.0
     max_jerk: 10.0
   joint4:
-    max_velocity: 2.0      # STS3215 wrist pitch
-    max_acceleration: 4.0
-    max_jerk: 15.0
-  joint5:                  # NEW wrist yaw (ts_flake mod)
-    max_velocity: 2.0      # STS3215
-    max_acceleration: 4.0
-    max_jerk: 15.0
-  joint6:                  # wrist roll, D405 cantilever
-    max_velocity: 2.0
-    max_acceleration: 4.0
-    max_jerk: 15.0
+    max_velocity: 1.5
+    max_acceleration: 3.0
+    max_jerk: 10.0
+  joint5:
+    max_velocity: 1.5
+    max_acceleration: 3.0
+    max_jerk: 10.0
+  joint6:
+    max_velocity: 1.5
+    max_acceleration: 3.0
+    max_jerk: 10.0
 
 cartesian_limits:
   # OMX 와 동일 baseline — TCP space 는 robot 무관 사용자 체감 동일하게.

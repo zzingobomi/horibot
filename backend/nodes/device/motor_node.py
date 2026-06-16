@@ -26,7 +26,10 @@ from modules.motor.backend import MotorCommError
 
 logger = logging.getLogger(__name__)
 
-STATE_PUBLISH_HZ = 20  # 초당 상태 발행 횟수
+STATE_PUBLISH_HZ = 50  # 초당 상태 발행 횟수. SpeedTcp closed-loop Jacobian
+# (50Hz _velocity_loop) 가 stale encoder reading 안 보도록 같은 rate 로 매칭.
+# Feetech bulk read 가 7 motor (SO-101) 자리 ~수 ms 수준 → 50Hz 감당 가능.
+# 부하 시 driver log 에 read latency 경고 — 그 자리는 20Hz 로 환원 검토.
 
 # Gripper open/close raw position
 GRIPPER_OPEN_RAW = 2600

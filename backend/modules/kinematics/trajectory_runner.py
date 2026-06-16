@@ -560,8 +560,17 @@ class TrajectoryRunner:
                     target = [0.0] * n
                 elif tcp_twist is not None:
                     linear, angular, frame = tcp_twist
+                    # Closed-loop Jacobian — 입력 = 실 encoder reading (Ruckig
+                    # belief 아님). open-loop 였던 자리는 모터 PID lag 로 belief
+                    # 가 actual 보다 앞서 있어 *belief 기준 +X joint vel* 이 실
+                    # 자세에서 실행될 때 cartesian motion 왜곡 (transient 처짐).
+                    # encoder 미수신 시 belief fallback.
+                    encoder = self._get_joint_angles()
+                    angles_for_jacobian = (
+                        list(encoder) if encoder else list(inp.current_position)
+                    )
                     joint_vel = self._tcp_twist_to_joint_vel(
-                        linear, angular, list(inp.current_position), frame
+                        linear, angular, angles_for_jacobian, frame
                     )
                     if joint_vel is None:
                         # Jacobian 못 풂 (singularity 등) → 안전 정지.

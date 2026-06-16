@@ -76,6 +76,14 @@ all = [
 [tool.uv]
 default-groups = ["dev", "all"]
 
+# yourdfpy 0.0.60 가 trimesh[easy] 를 강제로 끌어오면서 embreex 가 transitive 로
+# 들어옴. embreex 는 aarch64 wheel/sdist 가 없어 Pi (pi-motor 그룹) 에서 resolve
+# 실패. embreex 자체는 trimesh 의 Embree ray-cast 가속이고 yourdfpy 는 URDF parse
+# 용도라 안 깔려도 무해 → x86_64/AMD64 에서만 요구하도록 marker override.
+override-dependencies = [
+    "embreex ; platform_machine == 'x86_64' or platform_machine == 'AMD64'",
+]
+
 # PyTorch CUDA wheel — PyPI default 가 CPU 빌드를 주는 걸 피하려고 명시적 index.
 # Pi 머신(pi-motor/pi-camera 그룹)은 torch 의존이 없어 이 source 영향 없음.
 # cu130: CUDA 13 빌드. host 의 nvidia driver(13.2) 와 매치. RTX 3060 OK.

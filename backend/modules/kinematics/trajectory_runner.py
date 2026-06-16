@@ -11,6 +11,7 @@ from ruckig import (
     OutputParameter,
     Result,
     Ruckig,
+    Synchronization,
 )
 from scipy.interpolate import CubicSpline
 
@@ -449,6 +450,8 @@ class TrajectoryRunner:
         otg = Ruckig(n, TRAJ_DT)
         inp = InputParameter(n)
         out = OutputParameter(n)
+        # MoveJ — Phase sync 로 모든 joint 동시 도착 + 같은 ratio 진행.
+        inp.synchronization = Synchronization.Phase
         inp.current_position = start_angles
         inp.current_velocity = [0.0] * n
         inp.current_acceleration = [0.0] * n
@@ -534,6 +537,13 @@ class TrajectoryRunner:
         inp = InputParameter(n)
         out = OutputParameter(n)
         inp.control_interface = ControlInterface.Velocity
+        # ★ root cause fix (2026-06-17): Phase synchronization — 모든 joint 이
+        # *같은 phase 로 ramp* → target ratio 가 매 cycle 100% 유지 → cartesian
+        # direction 이 transient 전체에서 일관. default (Synchronization.No) 였을
+        # 때 각 joint independent jerk-limited ramp 으로 *큰 target (J2=0.30)*
+        # 이 *작은 target (J3=0.16)* 보다 ramp 늦어져 *out_v ratio ≠ target
+        # ratio* → cartesian Z drift. 시뮬레이션 검증 — cycle 0 부터 ratio 정확.
+        inp.synchronization = Synchronization.Phase
 
         # ─── Cartesian-space Ruckig (SpeedTcp primary smoothing) ────────
         # log 분석 (2026-06-17) — joint Ruckig 만으론 *각 joint independent
@@ -547,6 +557,7 @@ class TrajectoryRunner:
         cart_inp = InputParameter(6)
         cart_out = OutputParameter(6)
         cart_inp.control_interface = ControlInterface.Velocity
+        cart_inp.synchronization = Synchronization.Phase
         cart_inp.current_position = [0.0] * 6
         cart_inp.current_velocity = [0.0] * 6
         cart_inp.current_acceleration = [0.0] * 6

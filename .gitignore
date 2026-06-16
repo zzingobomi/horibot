@@ -67,3 +67,12 @@ robot/instances/*/logs/
 # .history/<timestamp>_<tag>/ — pre-commit / pre-restore snapshot 누적.
 # PC 머신 한 곳에서만 쌓임. 분산 머신은 live npz 만 git pull 로 동기.
 robot/instances/*/calibration/.history/
+
+# ─── Storage layer (docs/storage_layer.md) ─────────────────────
+# DB (storage/horibot.db) 는 git tracked — 다른 PC 에서 같은 캘 데이터로 테스트.
+# blobs/ (대용량 mesh / scan binary) 는 ignored — 머신별 + 큰 자료.
+# SQLite WAL/SHM 임시 파일도 ignored.
+storage/blobs/
+storage/*.db-wal
+storage/*.db-shm
+storage/*.db-journal

@@ -31,9 +31,13 @@ application_nodes:
 # 영속성 인프라 (docs/storage_layer.md). PC 만 storage_node 띄움 — 모터/카메라
 # Pi 는 application_nodes 비어있어 init() 호출 X. Phase 3 NAS 도입 시
 # postgresql:// / s3:// 로 URI 만 교체.
+#
+# Path = project root (repo 안). `${PROJECT_ROOT}` 가 factory._expand 에서 절대경로로
+# 치환됨. DB 는 git tracked (다른 PC 에서 같은 캘 데이터 쓰게), blobs/ 는 git ignored
+# (mesh / 큰 binary 자리, .gitignore 박혀 있음).
 storage:
-  rdb_uri:    "sqlite:///~/.local/horibot/storage.db"
-  object_uri: "file:///~/.local/horibot/blobs"
+  rdb_uri:    "sqlite:///${PROJECT_ROOT}/storage/horibot.db"
+  object_uri: "file:///${PROJECT_ROOT}/storage/blobs"
 
 bridge:
   enabled: true

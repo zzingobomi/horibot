@@ -10,6 +10,8 @@ from core.coords.joint_coordinates import JointCoordinates
 from core.coords.tool_coordinates import ToolCoordinates
 from core.robot.robot_registry import RobotRegistry
 from core.transport.device_node import DeviceNode
+from modules.calibration.applier import CalibrationApplier
+from modules.calibration.calibration_cache import CalibrationCache
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.motion import (
     MotionTcpPose,
@@ -160,6 +162,28 @@ class MotionNode(DeviceNode):
         self.create_service(
             self.r(Service.MOTION_STOP), EmptyData, EmptyData, self._srv_stop
         )
+
+    # ─── Lifecycle (cross-process calibration apply) ───────────
+
+    def start(self) -> None:
+        """부팅 시 storage 에서 active calibration fetch + 자기 process 의 runtime
+        객체 (Coordinates 3종 + PybulletKinematics) 에 apply 후 heartbeat 시작.
+
+        분산 자리 — calibration_node 가 PC, motion_node 는 모터 Pi. PC 의
+        calibration_node 는 자기 process 객체만 mutate 함 → 모터 Pi 의
+        PybulletKinematics 는 그 push 못 받음. 본 메서드가 *cross-process leg* —
+        모터 Pi process 에서 직접 storage 호출해 자기 객체 init (docs/storage_layer.md §7).
+
+        storage 미연결 자리는 `fetch_active` 안의 `load_active_blocking` 가 무한 retry —
+        PC 가 늦게 떠도 자동 연결. storage 의 응답 found=false (첫 부팅 robot) 자리는
+        default empty offsets/identity → PybulletKinematics 가 unpatched URDF 로 init.
+        """
+        # DeviceNode 는 robot_id 필수 — BaseNode 의 Optional 타입을 좁힘.
+        assert self.robot_id is not None, "DeviceNode 의 robot_id 누락"
+        cache = CalibrationCache()
+        snapshot = cache.fetch_active(self.robot_id)
+        CalibrationApplier.apply(self.robot_id, snapshot)
+        super().start()
 
     # ─── Tool offset 변환 유틸 ─────────────────────────────────
     #

@@ -25,10 +25,10 @@ application_nodes:
   - gamepad
 
 # 영속성 인프라 (docs/storage_layer.md). storage_node 가 application_nodes 에
-# 있을 때 필수.
+# 있을 때 필수. Path = project root (host_pc.yaml 의 설명 참조).
 storage:
-  rdb_uri:    "sqlite:///~/.local/horibot/storage.db"
-  object_uri: "file:///~/.local/horibot/blobs"
+  rdb_uri:    "sqlite:///${PROJECT_ROOT}/storage/horibot.db"
+  object_uri: "file:///${PROJECT_ROOT}/storage/blobs"
 
 bridge:
   enabled: true

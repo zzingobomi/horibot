@@ -1,3 +1,14 @@
+"""Gamepad driver — SDL hot-plug 이벤트 기반.
+
+부재 자리는 zero-cost (`pygame.event.get()` 빈 큐만 훑음). 런타임 hot-plug 은
+SDL 가 OS 의 device-change 알림 (Windows WM_DEVICECHANGE / Linux udev /
+macOS IOKit) 받아 `JOYDEVICEADDED` / `JOYDEVICEREMOVED` 이벤트를 큐잉 — 우리는
+poll 마다 이벤트 큐만 비우면서 연결/해제 처리. polling 기반 `quit() + init()`
+사이클은 사용 X (CPU/GIL 점유).
+
+시작 시 이미 꽂혀 있는 자리도 동일 경로 — `pygame.joystick.init()` 이 SDL 에
+기존 디바이스용 `JOYDEVICEADDED` 를 큐잉하므로 첫 poll 에서 연결 처리.
+"""
 import logging
 from dataclasses import dataclass, field
 import pygame
@@ -38,6 +49,9 @@ class GamepadDriver:
     # ─── Public ────────────────────────────────────────────────────────────
 
     def init(self) -> None:
+        # pygame.init() — SDL video subsystem 까지 켜는 게 Windows 의 hot-plug
+        # 알림 (hidden message window 통한 WM_DEVICECHANGE) 에 필요. joystick
+        # subsystem 만 켜도 대부분 동작하지만 플랫폼 의존 위험 회피 차원에서 full init.
         pygame.init()
         pygame.joystick.init()
         self._initialized = True
@@ -58,17 +72,15 @@ class GamepadDriver:
         if not self._initialized:
             return state
 
-        pygame.event.pump()
+        # SDL 이벤트 큐 소비. 미연결 자리에서 이 자리만 도는 게 전부 — device
+        # enum / quit-init 사이클 X. event.get() 이 내부적으로 pump 까지 함.
+        for event in pygame.event.get():
+            if event.type == pygame.JOYDEVICEADDED:
+                self._handle_device_added(event.device_index)
+            elif event.type == pygame.JOYDEVICEREMOVED:
+                self._handle_device_removed(event.instance_id)
 
         if self._joystick is None:
-            self._try_connect()
-
-        if self._joystick is None:
-            return state
-
-        if not self._joystick.get_init():
-            logger.info("조이스틱 연결 해제 감지")
-            self._release_joystick()
             return state
 
         try:
@@ -106,26 +118,38 @@ class GamepadDriver:
 
         return state
 
-    # ─── Internal ─────────────────────────────────────────────────────────────
+    # ─── Internal — SDL hot-plug 이벤트 핸들러 ──────────────────────────────
 
-    def _try_connect(self) -> None:
-        pygame.joystick.quit()
-        pygame.joystick.init()
-
-        if pygame.joystick.get_count() == 0:
+    def _handle_device_added(self, device_index: int) -> None:
+        # mini pendant 컨벤션 — 동시에 1개. 이미 연결된 자리에서 추가 디바이스는 무시.
+        if self._joystick is not None:
+            logger.debug(
+                f"JOYDEVICEADDED({device_index}) 무시 — 이미 패드 연결됨"
+            )
             return
-
         try:
-            joy = pygame.joystick.Joystick(0)
+            joy = pygame.joystick.Joystick(device_index)
             joy.init()
             self._joystick = joy
             self._prev_buttons = {}
             logger.info(
                 f"조이스틱 연결: {joy.get_name()} "
-                f"(축 {joy.get_numaxes()}개, 버튼 {joy.get_numbuttons()}개, 햇 {joy.get_numhats()}개)"
+                f"(축 {joy.get_numaxes()}개, 버튼 {joy.get_numbuttons()}개, "
+                f"햇 {joy.get_numhats()}개)"
             )
         except Exception as e:
-            logger.debug(f"조이스틱 초기화 실패: {e}")
+            logger.warning(f"조이스틱 초기화 실패 (idx={device_index}): {e}")
+
+    def _handle_device_removed(self, instance_id: int) -> None:
+        if self._joystick is None:
+            return
+        try:
+            if self._joystick.get_instance_id() == instance_id:
+                logger.info("조이스틱 연결 해제")
+                self._release_joystick()
+        except Exception:
+            # 객체 상태 corrupted 자리 — 그냥 release
+            self._release_joystick()
 
     def _release_joystick(self) -> None:
         if self._joystick is not None:

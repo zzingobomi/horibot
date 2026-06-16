@@ -106,11 +106,13 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
     Service.MOTOR_GET_CONFIG: (EmptyData, _motor.MotorGetConfigRes),
     # ─ Motion
     Service.MOTION_GET_TCP: (EmptyData, _motion.MotionTcpPose),
-    Service.MOTION_MOVE_TCP: (_motion.MoveTcpReq, EmptyData),
     Service.MOTION_MOVE_J: (_motion.MoveJReq, EmptyData),
     Service.MOTION_MOVE_L: (_motion.MoveLReq, EmptyData),
     Service.MOTION_MOVE_C: (_motion.MoveCReq, EmptyData),
     Service.MOTION_MOVE_P: (_motion.MovePReq, EmptyData),
+    Service.MOTION_SERVO_TCP: (_motion.ServoTcpReq, EmptyData),
+    Service.MOTION_SPEED_TCP: (_motion.SpeedTcpReq, EmptyData),
+    Service.MOTION_SPEED_J: (_motion.SpeedJReq, EmptyData),
     Service.MOTION_STOP: (EmptyData, EmptyData),
     # ─ Perception (Grounding DINO)
     Service.PERCEPTION_GROUNDED_DETECT: (

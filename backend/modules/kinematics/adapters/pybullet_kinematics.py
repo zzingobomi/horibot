@@ -231,6 +231,70 @@ class PybulletKinematics:
         # 단순 stub: 항상 False (collision 없음 가정).
         return False
 
+    def tcp_twist_to_joint_vel(
+        self,
+        linear: Sequence[float],
+        angular: Sequence[float],
+        joint_angles: Sequence[float],
+        frame: str,
+    ) -> list[float] | None:
+        """TCP twist → joint velocity (Jacobian pseudo-inverse).
+
+        `frame`:
+          - `"base"` — twist 가 base 좌표계 (world axes)
+          - `"tcp"`  — twist 가 EE-local 좌표계, world 로 회전 후 J^+ 곱.
+
+        dof < 6 (예: OMX-F 5DOF) 면 angular 무시 + linear-only 3xN J 만 사용 —
+        wrist yaw 부재로 임의 orientation 추적 불가하므로 underdetermined 안 만듦.
+        Singularity 자리 (J^TJ 가 ill-conditioned) → None 반환 → caller 가 안전 정지.
+        """
+        self._require_initialized()
+        n = len(self._joint_indices)
+        if len(joint_angles) < n:
+            return None
+        with self._sim_lock:
+            self._set_joint_positions(list(joint_angles))
+            zeros = [0.0] * n
+            lin_J, ang_J = p.calculateJacobian(
+                self._robot,
+                self._ee_index,
+                [0.0, 0.0, 0.0],
+                list(joint_angles[:n]),
+                zeros,
+                zeros,
+                physicsClientId=self._client,
+            )
+            ee_quat = self._get_ee_state()[1]
+            ee_R = np.asarray(
+                p.getMatrixFromQuaternion(
+                    ee_quat, physicsClientId=self._client
+                )
+            ).reshape(3, 3)
+
+        lin_J_np = np.asarray(lin_J)  # (3, n)
+        ang_J_np = np.asarray(ang_J)  # (3, n)
+
+        linear_arr = np.asarray(linear, dtype=np.float64)
+        angular_arr = np.asarray(angular, dtype=np.float64)
+        if frame == "tcp":
+            linear_arr = ee_R @ linear_arr
+            angular_arr = ee_R @ angular_arr
+
+        if n < 6:
+            J = lin_J_np
+            twist = linear_arr
+        else:
+            J = np.vstack([lin_J_np, ang_J_np])
+            twist = np.concatenate([linear_arr, angular_arr])
+
+        try:
+            joint_vel = np.linalg.pinv(J) @ twist
+        except np.linalg.LinAlgError:
+            return None
+        if not np.all(np.isfinite(joint_vel)):
+            return None
+        return joint_vel.tolist()
+
     # ─── 내부 ──────────────────────────────────────────────────
 
     def _set_joint_positions(self, joint_angles: list[float]) -> None:

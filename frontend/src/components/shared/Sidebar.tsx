@@ -21,8 +21,16 @@ const navItems = [
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
-// 단일 source — backend RobotCapability Literal 과 sync.
-const CAPABILITY_LABELS: Record<RobotCapability, string> = {
+// Sidebar mode sub-route 자리 — UI page mode 만. backend RobotCapability 의
+// 부분집합 (gamepad 같은 도구성 capability 는 sidebar mode 아님 — backend
+// 가 target robot 정할 때만 사용).
+type SidebarMode = Extract<RobotCapability, "move" | "calibrate" | "scan">;
+const SIDEBAR_MODES: ReadonlySet<RobotCapability> = new Set([
+  "move",
+  "calibrate",
+  "scan",
+]);
+const CAPABILITY_LABELS: Record<SidebarMode, string> = {
   move: "Move",
   calibrate: "Calibrate",
   scan: "Scan",
@@ -141,22 +149,24 @@ export function Sidebar() {
                       <span className="text-[10px] text-yellow-500/60">viz</span>
                     )}
                   </div>
-                  {r.capabilities.map((cap) => (
-                    <NavLink
-                      key={cap}
-                      to={`/robots/${r.id}/${cap}`}
-                      className={({ isActive }) =>
-                        cn(
-                          "flex items-center gap-2 ml-7 mr-2 px-3 py-1.5 rounded-md text-sm transition-colors",
-                          isActive
-                            ? "bg-accent text-accent-foreground font-medium"
-                            : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                        )
-                      }
-                    >
-                      <span>{CAPABILITY_LABELS[cap]}</span>
-                    </NavLink>
-                  ))}
+                  {r.capabilities
+                    .filter((cap): cap is SidebarMode => SIDEBAR_MODES.has(cap))
+                    .map((cap) => (
+                      <NavLink
+                        key={cap}
+                        to={`/robots/${r.id}/${cap}`}
+                        className={({ isActive }) =>
+                          cn(
+                            "flex items-center gap-2 ml-7 mr-2 px-3 py-1.5 rounded-md text-sm transition-colors",
+                            isActive
+                              ? "bg-accent text-accent-foreground font-medium"
+                              : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                          )
+                        }
+                      >
+                        <span>{CAPABILITY_LABELS[cap]}</span>
+                      </NavLink>
+                    ))}
                 </div>
               ),
             )}

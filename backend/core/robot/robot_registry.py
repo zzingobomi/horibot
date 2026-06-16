@@ -46,7 +46,9 @@ CameraBackendName = Literal["realsense", "opencv", "mujoco"]
 # Robot mode sub-route 의 sidebar / route enablement 결정 (frontend Phase 2 UX —
 # multi_robot_phase2_frontend.md). camera 가 depth 인지 RGB 인지에 따라 scan 가능
 # 여부가 달라짐 — robots.yaml capabilities 가 SSOT.
-RobotCapability = Literal["move", "calibrate", "scan"]
+# "gamepad" — mini 펜던트 (motion_taxonomy.md Phase 1) 가 SpeedTcp/SpeedJ 발행할
+# robot. 6DOF + cartesian jog 자연한 robot 에만 (SO-101). OMX-F 5DOF 부적합.
+RobotCapability = Literal["move", "calibrate", "scan", "gamepad"]
 
 _VALID_MOTOR_BACKENDS = frozenset(get_args(MotorBackendName))
 _VALID_KINEMATICS_BACKENDS = frozenset(get_args(KinematicsBackendName))

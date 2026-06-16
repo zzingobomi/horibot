@@ -7,7 +7,7 @@ type 자동 생성 → frontend/src/api/generated/types.ts.
 
 모듈 구성:
 - base       — StrictModel / EmptyData / ServiceRequest[T] / ServiceResponse[T]
-- motion     — move_j / move_l / move_c / move_p / move_tcp / get_tcp / stop
+- motion     — move_j / move_l / move_c / move_p / servo_tcp / speed_tcp / speed_j / get_tcp / stop
 - motor      — motor state / cmd schema
 - camera     — CameraStatus / DepthFrameHeader (binary 페이로드의 JSON 헤더)
 - detector   — detect request / response, detector state

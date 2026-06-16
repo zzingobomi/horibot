@@ -22,6 +22,7 @@ application_nodes:
   - task
   - detector
   - pointcloud
+  - gamepad
 
 # 영속성 인프라 (docs/storage_layer.md). storage_node 가 application_nodes 에
 # 있을 때 필수.

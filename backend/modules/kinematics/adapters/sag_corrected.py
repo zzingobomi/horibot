@@ -119,6 +119,22 @@ class SagCorrectedKinematics:
         # sag 가 self-collision 거리에는 미미 → inner 그대로
         return self._inner.self_collision(joint_angles)
 
+    def tcp_twist_to_joint_vel(
+        self,
+        linear: Sequence[float],
+        angular: Sequence[float],
+        joint_angles: Sequence[float],
+        frame: str,
+    ) -> list[float] | None:
+        """SpeedTcp 의 streamer 가 호출. sag 보정은 1차 근사로 inner 만 — 자세
+        변화 빠른 chase 자리라 sag 의 second-order 영향은 무시 (정확도는 외부
+        caller 의 짧은 cycle 로 흡수)."""
+        delegate = getattr(self._inner, "tcp_twist_to_joint_vel", None)
+        if delegate is None:
+            return None
+        actual = self._commanded_to_actual(list(joint_angles))
+        return delegate(linear, angular, actual, frame)
+
     # ─── sag 보정 / 캐시 ──────────────────────────────────────────
 
     def reload_calibration(self) -> None:

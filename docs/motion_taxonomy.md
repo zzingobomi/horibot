@@ -63,16 +63,26 @@ ABB 의 EGM (Externally Guided Motion) / KUKA 의 RSI (Robot Sensor Interface) /
 
 ## Horibot 채택 결정
 
-### Phase 1 — 한 PR 에 묶음 (다음 implement session)
+### Phase 1 — 구현 완료 (2026-06-16)
 
-| 작업 | 상세 |
-|---|---|
-| **신규** `MOTION_SPEED_TCP` | `SpeedTcpReq {linear: [vx,vy,vz], angular: [wx,wy,wz], frame: "tcp" \| "base"}`. server 가 Ruckig velocity 모드로 추종 + 100ms timeout 정지. |
-| **신규** `MOTION_SPEED_J` | `SpeedJReq {velocities: list[float]}` (arm dof 길이). joint velocity 직접 추적 + timeout. |
-| **rename** `MOVE_TCP` → `SERVO_TCP` | 의미 정합. `MoveTcpReq` → `ServoTcpReq`. `motion_modes.move_tcp` → `servo_tcp`. frontend `MoveTCP.tsx` UI 라벨 / caller 갱신. `generated/contract.ts` 재생성. |
-| **gamepad rewrite** | `SpeedTcp`/`SpeedJ` 사용 mini 펜던트. capability gate (`"gamepad" in capabilities`). target = enabled+capable 1개, N>1 시 fail-fast. mode 토글 (TCP/Joint jog). frame 토글 (TCP/base). deadman (LT hold). B = `CALIB_HANDEYE_CAPTURE`. |
-| **host config 등록** | `host_pc.yaml` / `host_dev.yaml` / `host_mock.yaml` 에 gamepad_node 추가. |
-| **robots.yaml** | `so101_6dof_0.capabilities` 에 `"gamepad"` 추가. OMX 는 안 줌 (5DOF 펜던트 부적합). |
+| 작업 | 상세 | 상태 |
+|---|---|---|
+| **신규** `MOTION_SPEED_TCP` | `SpeedTcpReq {linear, angular, frame: "base" \| "tcp"}`. Ruckig `ControlInterface.Velocity` + 100ms timeout + idle grace 0.5s 자동 정지. server-side `PybulletKinematics.tcp_twist_to_joint_vel` 가 Jacobian pseudo-inverse (frame 변환 포함). dof<6 자리 linear-only fallback. | ✅ |
+| **신규** `MOTION_SPEED_J` | `SpeedJReq {velocities}` (arm dof). joint velocity 직접 추적. dof mismatch 시 ValueError. | ✅ |
+| **rename** `MOVE_TCP` → `SERVO_TCP` | `ServoTcpReq {position, quaternion?}` — 6DOF orientation 옵션 (None = position-only). `MotionCommand` 패턴 정식 편입 (기존 dict-API `_srv_move_tcp` 폐기). frontend `ServoTCP.tsx` (Euler XYZ deg + orientation toggle). | ✅ |
+| **gamepad rewrite** | capability gate (enabled + `"gamepad"` 정확히 1개, N>1 fail-fast). LT deadman + Back mode 토글 + Start frame 토글. TCP mode 6DOF twist, Joint mode 6축 매핑. 모든 버튼 (X/Y/A/B). | ✅ |
+| **host config 등록** | `host_pc.yaml` / `host_dev.yaml` 에 gamepad 추가. host_mock 은 의도적 제외 (frontend UX 자리, 실 펜던트 의미 X). robots 는 enabled robot 과 일치 (`so101_6dof_0`). | ✅ |
+| **robots.yaml** | `so101_6dof_0.capabilities` 에 `"gamepad"` 추가. OMX 안 줌 (5DOF 펜던트 부적합). | ✅ |
+
+### Phase 1 구현 중 발견된 trauma (mock 검증으로 잡힌 자리, hardware 안 가도 됐음)
+
+`backend/tests/test_motion_{speed,e2e,gamepad}.py` 37 test 가 잡은 자리:
+
+1. **`TrajectoryRunner._launch` 가 velocity state wipe** — `set_speed_joint` 직후 `_ensure_velocity_streamer` 의 `_launch` 가 `self.stop()` 호출 → `_vel_last_set` 0 reset → streamer 첫 step 에서 timeout 즉시 종료. `_stop_thread` / `_reset_velocity_state` 분리로 fix.
+2. **`JointStateCache.subscribe` default robot mismatch** — `subscribe(self)` 가 default robot 토픽 구독. motion_node 가 다른 robot 으로 떠도 default 만 봄. `robot_id=self.robot_id` 명시.
+3. **`MotionModes` / `_kinematics` default = so101** — motion_node 가 다른 robot 자리에서 dof / Jacobian mismatch. `MotionModes(robot_id=...)` + `RobotRegistry().get_kinematics(robot_id)`.
+4. **PyBullet dof (arm + gripper) vs streamer (arm-only) length mismatch** — `calculateJacobian` 호출 시 silent crash → SpeedTcp publish 0. motion_node 에서 zero-pad / slice.
+5. **host_mock 의 robots ↔ robots.yaml enabled mismatch** — host config 의 robot 이 disabled 면 calibration 이 그 robot 의 kinematics initialize 안 함 → motion_node 의 fk 호출 시 RuntimeError. host_mock 의 robots 를 enabled robot 과 일치.
 
 ### Phase 2 — 실제 써본 후 평가
 

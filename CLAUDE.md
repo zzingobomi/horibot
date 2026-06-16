@@ -204,13 +204,35 @@ PEP 735 `[dependency-groups]`로 역할별 분리:
 - `RobotRegistry` ([backend/core/robot/robot_registry.py](backend/core/robot/robot_registry.py)) — `robot/robots.yaml` 의 single source of truth. `get(robot_id)` 로 `RobotConfig` (모든 path / 설정), `get_kinematics(robot_id)` / `get_motor_backend(robot_id)` / `get_camera_capture(robot_id)` factory (per-robot 인스턴스 캐시). `default()` / `default_robot_id()` 가 N=1 편의.
 - `*Coordinates` 싱글톤 — `JointCoordinates` / `LinkCoordinates` / `SagCoordinates` ([backend/core/](backend/core/)). 각각 npz 1회 로드 후 메모리 캐시. raw↔rad / URDF patch / sag stiffness를 노출.
 
-### Motion 파이프라인
+### Motion 파이프라인 — 3 계층 motion primitive
 
-`MotionNode` ([backend/nodes/device/motion_node.py](backend/nodes/device/motion_node.py))가 `move_j` / `move_l` / `move_c` / `move_p` / `move_tcp` 서비스 수신. 검증/실행은 `MotionCommand` 서브클래스로 분리. 실제 보간은 `TrajectoryRunner` ([backend/modules/kinematics/trajectory_runner.py](backend/modules/kinematics/trajectory_runner.py))가 **Ruckig** jerk-limited 프로파일로 처리하고 `omx/motion/state/trajectory`에 진행 발행. 조인트 명령은 `publish_cmd` 콜백 → `MOTOR_CMD_JOINT` 토픽 (urdf→raw 변환 시 joint_offset 자동 차감).
+[`MotionNode`](backend/nodes/device/motion_node.py) 가 산업 표준 3 계층 (motion_taxonomy.md) 의 motion primitive service 수신:
 
-**MotionNode와 MotorNode는 같은 머신(모터 Pi)에 배치** — TrajectoryRunner가 100Hz로 publish하는 명령이 네트워크를 넘지 않게 해야 trajectory 끊김/지터를 막을 수 있음. PyBullet IK도 같은 머신.
+| 계층 | Joint | Cartesian | 의미 |
+|---|---|---|---|
+| **Trajectory-planned** (Ruckig position mode) | `MOTION_MOVE_J` | `MOTION_MOVE_L` / `MOTION_MOVE_C` / `MOTION_MOVE_P` | 단발 target → jerk-limited 프로파일 |
+| **Servo** (planner 우회 chase) | (보류) | `MOTION_SERVO_TCP` | 외부가 빠른 rate (50Hz+) 로 절대 target 갱신 → 즉시 IK + direct publish |
+| **Velocity** (jog, deadman timeout) | `MOTION_SPEED_J` | `MOTION_SPEED_TCP` | twist/joint velocity 추종 → 100ms 갱신 끊김 시 자동 감속 정지 |
 
-아암은 운동학적으로 **5DOF** (모터 ID 1–5), ID 6은 그리퍼로 `core.common.GRIPPER_ID`로 필터링. 단위 변환은 [backend/core/units.py](backend/core/units.py) — Dynamixel raw는 `0..4095`, 중심 `2048`(=0°).
+검증/실행은 `MotionCommand` 서브클래스 (`MoveJ/L/C/P/ServoTcp`) — trajectory 자리는 [`TrajectoryRunner`](backend/modules/kinematics/trajectory_runner.py) 가 **Ruckig** 으로 처리, velocity 자리는 같은 runner 의 `_velocity_loop` 가 `ControlInterface.Velocity` 모드로 jerk-limited 추종 + watchdog timeout. 모두 `publish_cmd` 콜백 → `MOTOR_CMD_JOINT` 토픽 (urdf→raw 변환 시 joint_offset 자동 차감). `MOTION_STATE_TRAJ` 에 진행 publish.
+
+**SpeedTcp 의 frame** — `"base"` (world axes) / `"tcp"` (EE-local). server (`PybulletKinematics.tcp_twist_to_joint_vel`) 가 Jacobian pseudo-inverse + frame 변환. `dof<6` (5DOF robot) 자리는 linear-only fallback (angular row 제거).
+
+**MotionNode와 MotorNode는 같은 머신(모터 Pi)에 배치** — TrajectoryRunner가 50Hz로 publish하는 명령이 네트워크를 넘지 않게 해야 trajectory 끊김/지터를 막을 수 있음. PyBullet IK도 같은 머신.
+
+robot dof 는 `MotorLayout.arm` 길이 (motors.yaml SSOT — OMX-F=5, SO-101=6). Dynamixel raw 단위 (`0..4095`, 중심 `2048`) 와 URDF rad 의 변환은 [backend/core/units.py](backend/core/units.py). gripper 는 `MotorLayout.gripper` 별도.
+
+### Gamepad mini 펜던트
+
+[`GamepadNode`](backend/nodes/application/gamepad_node.py) — `robots.yaml::capabilities` 에 `"gamepad"` 있는 enabled robot 정확히 1개로 자동 매칭 (N>1 fail-fast). 6DOF + cartesian jog 자연 robot 자리만 (SO-101). 8BitDo Ultimate 2C 50Hz polling:
+
+- **LT (hold) = deadman** — 안 누름 = motion publish X, server-side 100ms timeout 으로 자동 정지 (ISO 10218 enabling switch 등가)
+- **Back** = TCP ↔ Joint mode 토글, **Start** = base ↔ tcp frame 토글 (TCP mode 자리만)
+- **TCP mode**: 왼스틱 X/Y → linear, 오른스틱 X/Y → angular yaw/pitch, LB/RB → angular roll, D-Pad → linear Z
+- **Joint mode**: 6축 스틱/트리거 → SpeedJ 6-vector
+- **X**=토크 토글 / **Y**=홈 / **A**=그리퍼 / **B**=캘 캡처
+
+8BitDo 의 실 pygame button index 가 [`mapper.py`](backend/modules/gamepad/mapper.py) 가정 매핑과 일치하는지는 hand-on 검증 자리 (controller / OS / driver 종속).
 
 ### Task 시스템 — typed Slot lego DSL
 

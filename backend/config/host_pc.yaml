@@ -26,6 +26,7 @@ application_nodes:
   - task
   - detector
   - pointcloud
+  - gamepad
 
 # 영속성 인프라 (docs/storage_layer.md). PC 만 storage_node 띄움 — 모터/카메라
 # Pi 는 application_nodes 비어있어 init() 호출 X. Phase 3 NAS 도입 시

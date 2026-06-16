@@ -12,6 +12,8 @@ class GamepadState:
     connected: bool = False
 
     # Axes
+    left_x:  float = 0.0
+    left_y:  float = 0.0
     right_x: float = 0.0
     right_y: float = 0.0
     lt:      float = 0.0
@@ -72,6 +74,10 @@ class GamepadDriver:
         try:
             state.connected = True
 
+            state.left_x = self._apply_deadzone(
+                self._get_axis(M.AXIS_LEFT_X))
+            state.left_y = self._apply_deadzone(
+                self._get_axis(M.AXIS_LEFT_Y))
             state.right_x = self._apply_deadzone(
                 self._get_axis(M.AXIS_RIGHT_X))
             state.right_y = self._apply_deadzone(

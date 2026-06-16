@@ -1,279 +1,300 @@
-"""
-입력 매핑:
-  D-Pad X/Y       → TCP X/Y  (1mm/step, 버튼 repeat)
-  Right Stick X/Y → TCP X/Y  (아날로그, 기울기 비례 속도)
-  LB / RB         → TCP Z-/Z+ (버튼 repeat)
-  LT / RT         → TCP Z-/Z+ (아날로그)
-  X               → 토크 ON/OFF
-  Y               → 홈 이동
-  B               → TODO: 캡처
+"""Mini pendant — SO-101 6DOF jog. SpeedTcp / SpeedJ 만 발행 (velocity primitive).
+
+motion_taxonomy.md Phase 1 의 gamepad enabling. 산업 펜던트 컨벤션:
+- 6DOF twist (3 linear + 3 angular) → cartesian jog
+- joint velocity 벡터 → joint jog
+- enabling switch (deadman, ISO 10218-1) → LT trigger hold
+
+매핑 (8BitDo Ultimate 2C):
+
+  공통:
+    X         = 토크 토글
+    Y         = 홈 (MoveJ to 0)
+    A         = 그리퍼 토글
+    B         = 캘 캡처 (CALIB_HANDEYE_CAPTURE) — 캘 모드 자리
+    Back      = mode 토글 (TCP ↔ Joint jog)
+    Start     = frame 토글 (base ↔ tcp) — TCP mode 자리만
+    LT (hold) = deadman. 안 누름 = motion publish X (server timeout 자동 정지)
+
+  TCP jog mode (cartesian twist):
+    왼스틱 X       → linear  +X (좌우)
+    왼스틱 Y       → linear  +Y (전후, stick up = +Y)
+    D-Pad 좌우     → linear  +X  (1m/s scale 보조)
+    D-Pad 상하     → linear  +Z
+    오른스틱 X     → angular +Wz (yaw)
+    오른스틱 Y     → angular +Wx (pitch, stick up = +Wx)
+    LB / RB        → angular -Wy / +Wy (roll)
+
+  Joint jog mode (joint velocity vector):
+    왼스틱 X       → J1
+    왼스틱 Y       → J2
+    오른스틱 X     → J3
+    오른스틱 Y     → J4
+    LB / RB        → J5- / J5+
+    D-Pad 상하     → J6
+
+Capability gate — robots.yaml::capabilities 에 "gamepad" 있는 enabled robot 정확히 1개.
+N>1 이면 RuntimeError. 0 이면 start() no-op.
 """
 
-import time
-import threading
+from __future__ import annotations
+
 import logging
+import threading
+import time
 
 from core.transport.application_node import ApplicationNode
-from core.transport.topic_map import Service
 from core.transport.messages.base import EmptyData
+from core.transport.messages.calibration import HandeyeCaptureRes
 from core.transport.messages.motion import (
     JointDegree,
-    MotionTcpPose,
     MoveJReq,
-    MoveTcpReq,
+    SpeedJReq,
+    SpeedTcpReq,
 )
 from core.transport.messages.motor import (
     MotorEnableReq,
     MotorEnableRes,
     MotorGripperReq,
 )
-from modules.motor.motor_config import load_motor_layout
-from modules.gamepad.driver import GamepadDriver, GamepadState
+from core.transport.topic_map import Service
 from modules.gamepad import mapper as M
+from modules.gamepad.driver import GamepadDriver, GamepadState
+from modules.motor.motor_config import load_motor_layout
 
 logger = logging.getLogger(__name__)
-
-logger = logging.getLogger(__name__)
-
-# ─── 버튼 repeat 타이밍 ───────────────────────────────────────────────────────
-REPEAT_INITIAL_DELAY = 0.4
-REPEAT_INTERVAL = 0.02  # 반복 간격 (초) ≈ 50Hz
-
-# ─── 이동 스텝 ────────────────────────────────────────────────────────────────
-DPAD_STEP = 0.001  # D-Pad 1회 이동 (1mm)
-ANALOG_MAX = 0.002  # 스틱/트리거 최대 속도 (m/tick, 50Hz 기준)
 
 POLL_HZ = 50
+POLL_DT = 1.0 / POLL_HZ
 
+# Velocity scale — 펜던트 max 입력 (스틱 1.0 또는 트리거 1.0) 시의 robot 속도.
+# 산업 펜던트 jog 안전 권장치 정도. 실 운용 시 ergonomics 보고 motion.yaml SSOT 화 검토.
+TCP_LINEAR_MAX = 0.08   # m/s
+TCP_ANGULAR_MAX = 0.8   # rad/s
+JOINT_VEL_MAX = 0.6     # rad/s (per joint)
 
-class ButtonRepeater:
-    def __init__(
-        self,
-        initial_delay: float = REPEAT_INITIAL_DELAY,
-        interval: float = REPEAT_INTERVAL,
-    ) -> None:
-        self._initial_delay = initial_delay
-        self._interval = interval
-        self._press_time: float | None = None
-        self._next_repeat: float | None = None
+# Deadman 임계. LT 트리거가 이 이상이어야 motion publish (LT 0..1 normalized).
+DEADMAN_THRESHOLD = 0.3
 
-    def update(self, is_held: bool, now: float) -> bool:
-        if not is_held:
-            self._press_time = None
-            self._next_repeat = None
-            return False
-
-        if self._press_time is None:
-            # 새로 눌림 → 즉시 1회
-            self._press_time = now
-            self._next_repeat = now + self._initial_delay
-            return True
-
-        # press_time != None 이면 _next_repeat 도 같이 set 됐음 — 동기 set.
-        assert self._next_repeat is not None
-        if now >= self._next_repeat:
-            self._next_repeat = now + self._interval
-            return True
-
-        return False
+GAMEPAD_CAPABILITY = "gamepad"
 
 
 class GamepadNode(ApplicationNode):
-    """Application 노드 — robot 무관 UI. transition: default robot 만 조작.
-
-    multi-robot 시 어떤 robot 조작할지는 frontend UI 결정 후 service 호출 시
-    명시 (별도 자리, Step DSL robot_id 와 결 같음).
-    """
+    """Mini pendant — capability='gamepad' robot 1개에 SpeedTcp / SpeedJ 발행."""
 
     def __init__(self) -> None:
         super().__init__("gamepad_node")
 
         self._driver = GamepadDriver()
-        self._torque_on = True
         self._last_connected: bool = False
 
-        default_rid = self._registry.default().robot_id
-        self._arm_cfgs = load_motor_layout(default_rid).arm
-        self._tcp_position: list[float] | None = None
+        # ─── capability gate ─────────────────────────────────────
+        # enabled + gamepad capability 정확히 1개. 0 = disable, 2+ = fail-fast.
+        candidates = [
+            c for c in self._registry.enabled_robots()
+            if GAMEPAD_CAPABILITY in c.capabilities
+        ]
+        if len(candidates) > 1:
+            raise RuntimeError(
+                f"GamepadNode: capability='gamepad' robot 이 2개 이상 "
+                f"({[c.robot_id for c in candidates]}). "
+                f"robots.yaml 의 capabilities 에서 1개로 줄여야 함."
+            )
+        self._target_robot_id: str | None = (
+            candidates[0].robot_id if candidates else None
+        )
+
+        # robot 별 arm_cfgs — joint 개수 / id 조회용.
+        self._arm_cfgs = (
+            load_motor_layout(self._target_robot_id).arm
+            if self._target_robot_id else []
+        )
+        self._n_arm = len(self._arm_cfgs)
+
+        # 모드 / frame / 토글 상태.
+        self._mode: str = "tcp"  # "tcp" | "joint"
+        self._frame: str = "base"  # "base" | "tcp"
+        self._torque_on = True
         self._gripper_open = False
 
-        # D-Pad 4방향 repeater
-        self._rep_hat_right = ButtonRepeater()
-        self._rep_hat_left = ButtonRepeater()
-        self._rep_hat_up = ButtonRepeater()
-        self._rep_hat_down = ButtonRepeater()
-
-        # LB / RB repeater
-        self._rep_lb = ButtonRepeater()
-        self._rep_rb = ButtonRepeater()
-
+        # Lifecycle
         self._running = False
         self._thread: threading.Thread | None = None
 
-    # ─── Lifecycle ────────────────────────────────────────────────────────────
+    # ─── Lifecycle ────────────────────────────────────────────────
 
     def start(self) -> None:
+        super().start()
+        if self._target_robot_id is None:
+            self.log("info", "GamepadNode: capability='gamepad' robot 없음 — 비활성")
+            return
+        self.log("info", f"GamepadNode: target robot = {self._target_robot_id}")
         self._running = True
         self._thread = threading.Thread(
             target=self._loop, daemon=True, name="gamepad_poll"
         )
         self._thread.start()
-        logger.info("GamepadNode 시작")
 
     def stop(self) -> None:
         self._running = False
         if self._thread:
             self._thread.join(timeout=2.0)
-        logger.info("GamepadNode 종료")
+        super().stop()
 
-    # ─── Main loop ────────────────────────────────────────────────────────────
+    # ─── Topic key helper (target robot scoped) ───────────────────
+
+    def _t(self, template: str) -> str:
+        """target robot 의 robot_id 로 template expand. None 자리는 호출 X."""
+        assert self._target_robot_id is not None
+        return template.format(robot_id=self._target_robot_id)
+
+    # ─── Main loop ────────────────────────────────────────────────
 
     def _loop(self) -> None:
         self._driver.init()
-
         try:
             while self._running:
                 t0 = time.monotonic()
-                now = t0
 
                 state = self._driver.poll()
-
                 if state.connected != self._last_connected:
-                    if state.connected:
-                        self.log("info", "조이스틱 연결됨")
-                        self._sync_tcp()
-                    else:
-                        self.log("info", "조이스틱 연결 해제")
-                        self._tcp_position = None
+                    self.log(
+                        "info",
+                        "조이스틱 연결됨" if state.connected else "조이스틱 연결 해제",
+                    )
                     self._last_connected = state.connected
 
                 if state.connected:
-                    self._handle_buttons(state, now)
-                    self._handle_movement(state, now)
+                    self._handle_buttons(state)
+                    if state.lt >= DEADMAN_THRESHOLD:
+                        self._handle_motion(state)
+                    # deadman released — motion publish X. server side 100ms timeout
+                    # 으로 streamer 가 jerk-limited 자동 정지.
 
                 elapsed = time.monotonic() - t0
-                sleep_t = (1.0 / POLL_HZ) - elapsed
+                sleep_t = POLL_DT - elapsed
                 if sleep_t > 0:
                     time.sleep(sleep_t)
         finally:
             self._driver.quit()
 
-    def _sync_tcp(self) -> bool:
-        res = self.call_service(
-            self.r(Service.MOTION_GET_TCP), EmptyData(), MotionTcpPose
-        )
-        if res.success and res.data is not None and res.data.position:
-            self._tcp_position = list(res.data.position)
-            return True
-        logger.debug("TCP 동기화 실패")
-        self._tcp_position = None
-        return False
+    # ─── Buttons ──────────────────────────────────────────────────
 
-    # ─── Button handling ──────────────────────────────────────────────────────
-
-    def _handle_buttons(self, state: GamepadState, now: float) -> None:
+    def _handle_buttons(self, state: GamepadState) -> None:
         pressed = state.buttons_pressed
 
-        # X: 토크 ON/OFF
         if M.BTN_X in pressed:
-            self._torque_on = not self._torque_on
-            res = self.call_service(
-                self.r(Service.MOTOR_ENABLE),
-                MotorEnableReq(enable=self._torque_on),
-                MotorEnableRes,
-            )
-            if res.success:
-                self.log("info", f"토크 {'ON' if self._torque_on else 'OFF'}")
-                self._sync_tcp()
-            else:
-                logger.warning(
-                    f"토크 {'ON' if self._torque_on else 'OFF'} 실패: {res.message}")
-                self._torque_on = not self._torque_on
-
-        # Y: 홈 이동
+            self._toggle_torque()
         if M.BTN_Y in pressed:
             self._go_home()
-
-        # A: 그리퍼 open/close
         if M.BTN_A in pressed:
             self._toggle_gripper()
-
-        # B: 캡처 (TODO)
         if M.BTN_B in pressed:
-            logger.debug("캡처 버튼 — TODO")
+            self._calib_capture()
+        if M.BTN_BACK in pressed:
+            self._mode = "joint" if self._mode == "tcp" else "tcp"
+            self.log("info", f"jog 모드 → {self._mode.upper()}")
+        if M.BTN_START in pressed and self._mode == "tcp":
+            self._frame = "tcp" if self._frame == "base" else "base"
+            self.log("info", f"TCP jog frame → {self._frame.upper()}")
 
-    # ─── Movement ─────────────────────────────────────────────────────────────
+    # ─── Motion (LT held) ─────────────────────────────────────────
 
-    def _handle_movement(self, state: GamepadState, now: float) -> None:
-        dx, dy, dz = 0.0, 0.0, 0.0
-
-        # ── D-Pad (버튼 repeat) ───────────────────────────────────────────────
-        hat_x, hat_y = state.hat
-
-        if self._rep_hat_right.update(hat_x > 0, now):
-            dy -= DPAD_STEP
-        if self._rep_hat_left.update(hat_x < 0, now):
-            dy += DPAD_STEP
-        if self._rep_hat_up.update(hat_y > 0, now):
-            dx += DPAD_STEP
-        if self._rep_hat_down.update(hat_y < 0, now):
-            dx -= DPAD_STEP
-
-        # ── Right Stick (아날로그 XY) ─────────────────────────────────────────
-        dx += -state.right_y * ANALOG_MAX
-        dy += -state.right_x * ANALOG_MAX
-
-        # ── LB/RB (버튼 repeat Z) ─────────────────────────────────────────────
-        if self._rep_rb.update(M.BTN_RB in state.buttons_held, now):
-            dz += DPAD_STEP
-        if self._rep_lb.update(M.BTN_LB in state.buttons_held, now):
-            dz -= DPAD_STEP
-
-        # ── LT/RT (아날로그 Z) ────────────────────────────────────────────────
-        if state.rt > M.TRIGGER_THRESHOLD:
-            dz += (state.rt - M.TRIGGER_THRESHOLD) / \
-                (1.0 - M.TRIGGER_THRESHOLD) * ANALOG_MAX
-        if state.lt > M.TRIGGER_THRESHOLD:
-            dz -= (state.lt - M.TRIGGER_THRESHOLD) / \
-                (1.0 - M.TRIGGER_THRESHOLD) * ANALOG_MAX
-
-        if abs(dx) < 1e-9 and abs(dy) < 1e-9 and abs(dz) < 1e-9:
+    def _handle_motion(self, state: GamepadState) -> None:
+        # defensive deadman — `_loop` 가 이미 검사하지만 외부 caller (test/직접 호출)
+        # 자리에서도 안전. LT 안 누름 = 무조건 motion publish X.
+        if state.lt < DEADMAN_THRESHOLD:
             return
+        if self._mode == "tcp":
+            self._publish_tcp_jog(state)
+        else:
+            self._publish_joint_jog(state)
 
-        self._move_tcp_delta(dx, dy, dz)
+    def _publish_tcp_jog(self, state: GamepadState) -> None:
+        # Linear:
+        #   왼스틱 X         = +X
+        #   왼스틱 Y (up = -) = +Y  (stick up → +Y)
+        #   D-Pad ←/→        = +X 보조
+        #   D-Pad ↑/↓        = +Z
+        hat_x, hat_y = state.hat
+        vx = state.left_x * TCP_LINEAR_MAX + float(hat_x) * TCP_LINEAR_MAX
+        vy = -state.left_y * TCP_LINEAR_MAX
+        vz = float(hat_y) * TCP_LINEAR_MAX
+        # clamp
+        vx = max(-TCP_LINEAR_MAX, min(TCP_LINEAR_MAX, vx))
 
-    # ─── TCP delta move ───────────────────────────────────────────────────────
+        # Angular:
+        #   오른스틱 X = +Wz (yaw)
+        #   오른스틱 Y = +Wx (pitch, stick up → +Wx)
+        #   RB / LB     = +Wy / -Wy (roll)
+        wz = state.right_x * TCP_ANGULAR_MAX
+        wx = -state.right_y * TCP_ANGULAR_MAX
+        wy = 0.0
+        if M.BTN_RB in state.buttons_held:
+            wy += TCP_ANGULAR_MAX
+        if M.BTN_LB in state.buttons_held:
+            wy -= TCP_ANGULAR_MAX
 
-    def _move_tcp_delta(self, dx: float, dy: float, dz: float) -> None:
-        if self._tcp_position is None:
-            if not self._sync_tcp():
-                return
-        # _sync_tcp 가 True 면 self._tcp_position 채워짐 — pyright 보강용 assert.
-        assert self._tcp_position is not None
-
-        target = [
-            self._tcp_position[0] + dx,
-            self._tcp_position[1] + dy,
-            self._tcp_position[2] + dz,
-        ]
-
-        res = self.call_service(
-            self.r(Service.MOTION_MOVE_TCP),
-            MoveTcpReq(position=target),
+        # 5DOF robot 자리는 server (Jacobian) 가 angular 무시. 우리는 그대로 보냄.
+        self.call_service(
+            self._t(Service.MOTION_SPEED_TCP),
+            SpeedTcpReq(
+                linear=[vx, vy, vz],
+                angular=[wx, wy, wz],
+                frame=self._frame,  # type: ignore[arg-type]
+            ),
             EmptyData,
         )
 
-        if res.success:
-            self._tcp_position = target
-        else:
-            logger.debug(f"move_tcp 실패: {res.message} — TCP 재동기화")
-            self._sync_tcp()
+    def _publish_joint_jog(self, state: GamepadState) -> None:
+        # joint 매핑 (위에서부터 1-base):
+        #   J1 = 왼스틱 X
+        #   J2 = -왼스틱 Y (stick up = +J2)
+        #   J3 = 오른스틱 X
+        #   J4 = -오른스틱 Y
+        #   J5 = RB - LB
+        #   J6 = D-Pad ↑/↓
+        hat_x, hat_y = state.hat
+        rb = 1.0 if M.BTN_RB in state.buttons_held else 0.0
+        lb = 1.0 if M.BTN_LB in state.buttons_held else 0.0
 
-    # ─── Home ─────────────────────────────────────────────────────────────────
+        joint_axes: list[float] = [
+            state.left_x,
+            -state.left_y,
+            state.right_x,
+            -state.right_y,
+            rb - lb,
+            float(hat_y),
+        ]
+        # robot dof 만큼만 (5DOF 면 처음 5개).
+        velocities = [a * JOINT_VEL_MAX for a in joint_axes[: self._n_arm]]
+
+        self.call_service(
+            self._t(Service.MOTION_SPEED_J),
+            SpeedJReq(velocities=velocities),
+            EmptyData,
+        )
+
+    # ─── Discrete actions ─────────────────────────────────────────
+
+    def _toggle_torque(self) -> None:
+        self._torque_on = not self._torque_on
+        res = self.call_service(
+            self._t(Service.MOTOR_ENABLE),
+            MotorEnableReq(enable=self._torque_on),
+            MotorEnableRes,
+        )
+        if res.success:
+            self.log("info", f"토크 {'ON' if self._torque_on else 'OFF'}")
+        else:
+            self._torque_on = not self._torque_on  # 롤백
+            logger.warning(
+                f"토크 토글 실패: {res.message}"
+            )
 
     def _go_home(self) -> None:
         res = self.call_service(
-            self.r(Service.MOTION_MOVE_J),
+            self._t(Service.MOTION_MOVE_J),
             MoveJReq(
                 joints=[
                     JointDegree(id=cfg.id, degree=0.0)
@@ -284,21 +305,31 @@ class GamepadNode(ApplicationNode):
         )
         if res.success:
             self.log("info", "홈 이동")
-            self._tcp_position = None
         else:
             logger.warning(f"홈 이동 실패: {res.message}")
-
-    # ─── Gripper toggle ────────────────────────────────────────────────────────
 
     def _toggle_gripper(self) -> None:
         self._gripper_open = not self._gripper_open
         res = self.call_service(
-            self.r(Service.MOTOR_GRIPPER),
-            MotorGripperReq(action="open" if self._gripper_open else "close"),
+            self._t(Service.MOTOR_GRIPPER),
+            MotorGripperReq(
+                action="open" if self._gripper_open else "close"
+            ),
             EmptyData,
         )
         if res.success:
             self.log("info", f"그리퍼 {'열기' if self._gripper_open else '닫기'}")
         else:
-            self._gripper_open = not self._gripper_open  # 실패 시 롤백
+            self._gripper_open = not self._gripper_open  # 롤백
             logger.warning(f"그리퍼 실패: {res.message}")
+
+    def _calib_capture(self) -> None:
+        res = self.call_service(
+            self._t(Service.CALIB_HANDEYE_CAPTURE),
+            EmptyData(),
+            HandeyeCaptureRes,
+        )
+        if res.success:
+            self.log("info", "Hand-Eye 캡처")
+        else:
+            logger.debug(f"캡처 실패: {res.message}")

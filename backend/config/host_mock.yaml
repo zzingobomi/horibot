@@ -6,6 +6,10 @@
 # mock_camera  → MockCameraNode (합성 JPEG 30fps, depth payload X)
 # application 노드 (calibration / task / detector / pointcloud) 그대로 — topic 기반이라
 # mock motor/camera 만 swap 하면 동일 코드 경로로 동작.
+#
+# robots — robots.yaml 의 enabled robot 과 일치해야 calibration_node 가 kinematics
+# initialize 한 robot 으로 motion 도 동작. (host config 의 robots 와 enabled 의
+# mismatch 자리에선 PybulletKinematics._require_initialized 가 fail.)
 host_name: mock
 
 zenoh:
@@ -13,7 +17,7 @@ zenoh:
   connect: []
 
 robots:
-  - omx_f_0
+  - so101_6dof_0
 
 device_nodes:
   - mock_motor
@@ -26,6 +30,7 @@ application_nodes:
   - task
   - detector
   - pointcloud
+# gamepad — frontend UX 검증 mock 자리엔 실 펜던트 의미 X. 실 hardware 자리에만.
 
 # Memory backend — 매번 fresh, 영속화 X. mock 은 frontend UX 검증용이라
 # 캘 데이터 누적이 의도 X.

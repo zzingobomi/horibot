@@ -10,14 +10,14 @@ import { MoveJControl } from "./MoveJ";
 import { MoveLControl } from "./MoveL";
 import { MoveCControl } from "./MoveC";
 import { MovePControl } from "./MoveP";
-import { MoveTCPControl } from "./MoveTCP";
+import { ServoTCPControl } from "./ServoTCP";
 
 const TABS = [
   { value: "move_j", label: "J", body: <MoveJControl /> },
   { value: "move_l", label: "L", body: <MoveLControl /> },
   { value: "move_c", label: "C", body: <MoveCControl /> },
   { value: "move_p", label: "P", body: <MovePControl /> },
-  { value: "move_tcp", label: "TCP", body: <MoveTCPControl /> },
+  { value: "servo_tcp", label: "Servo", body: <ServoTCPControl /> },
 ];
 
 export function MotionPanel(props: IDockviewPanelProps<object>) {

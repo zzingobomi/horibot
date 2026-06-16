@@ -59,11 +59,13 @@ export const ServiceKey = {
   MOTOR_SET_PROFILE: "horibot/{robot_id}/motor/srv/set_profile",
   MOTOR_GET_CONFIG: "horibot/{robot_id}/motor/srv/get_config",
   MOTION_GET_TCP: "horibot/{robot_id}/motion/srv/get_tcp",
-  MOTION_MOVE_TCP: "horibot/{robot_id}/motion/srv/move_tcp",
   MOTION_MOVE_J: "horibot/{robot_id}/motion/srv/move_j",
   MOTION_MOVE_L: "horibot/{robot_id}/motion/srv/move_l",
   MOTION_MOVE_C: "horibot/{robot_id}/motion/srv/move_c",
   MOTION_MOVE_P: "horibot/{robot_id}/motion/srv/move_p",
+  MOTION_SERVO_TCP: "horibot/{robot_id}/motion/srv/servo_tcp",
+  MOTION_SPEED_TCP: "horibot/{robot_id}/motion/srv/speed_tcp",
+  MOTION_SPEED_J: "horibot/{robot_id}/motion/srv/speed_j",
   MOTION_STOP: "horibot/{robot_id}/motion/srv/stop",
   PERCEPTION_GROUNDED_DETECT: "horibot/{robot_id}/perception/srv/grounded_detect",
   CALIB_INTRINSIC_CAPTURE: "horibot/{robot_id}/calib/srv/intrinsic/capture",
@@ -109,11 +111,13 @@ export type ServiceMap = {
   "horibot/{robot_id}/motor/srv/set_profile": { req: components["schemas"]["MotorSetProfileReq"]; res: Record<string, never> };
   "horibot/{robot_id}/motor/srv/get_config": { req: Record<string, never>; res: components["schemas"]["MotorGetConfigRes"] };
   "horibot/{robot_id}/motion/srv/get_tcp": { req: Record<string, never>; res: components["schemas"]["MotionTcpPose"] };
-  "horibot/{robot_id}/motion/srv/move_tcp": { req: components["schemas"]["MoveTcpReq"]; res: Record<string, never> };
   "horibot/{robot_id}/motion/srv/move_j": { req: components["schemas"]["MoveJReq"]; res: Record<string, never> };
   "horibot/{robot_id}/motion/srv/move_l": { req: components["schemas"]["MoveLReq"]; res: Record<string, never> };
   "horibot/{robot_id}/motion/srv/move_c": { req: components["schemas"]["MoveCReq"]; res: Record<string, never> };
   "horibot/{robot_id}/motion/srv/move_p": { req: components["schemas"]["MovePReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motion/srv/servo_tcp": { req: components["schemas"]["ServoTcpReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motion/srv/speed_tcp": { req: components["schemas"]["SpeedTcpReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motion/srv/speed_j": { req: components["schemas"]["SpeedJReq"]; res: Record<string, never> };
   "horibot/{robot_id}/motion/srv/stop": { req: Record<string, never>; res: Record<string, never> };
   "horibot/{robot_id}/perception/srv/grounded_detect": { req: components["schemas"]["GroundedDetectReq"]; res: components["schemas"]["GroundedDetectionResult"] };
   "horibot/{robot_id}/calib/srv/intrinsic/capture": { req: Record<string, never>; res: components["schemas"]["IntrinsicCaptureRes"] };

@@ -55,12 +55,17 @@ class Service:
     CAMERA_SET_DEPTH_STREAM = "horibot/{robot_id}/camera/srv/set_depth_stream"
 
     # ─── Motion ────────────────────────────────────────────
+    # Trajectory-planned (단발 target → Ruckig jerk-limited profile)
     MOTION_GET_TCP = "horibot/{robot_id}/motion/srv/get_tcp"
-    MOTION_MOVE_TCP = "horibot/{robot_id}/motion/srv/move_tcp"
     MOTION_MOVE_J = "horibot/{robot_id}/motion/srv/move_j"
     MOTION_MOVE_L = "horibot/{robot_id}/motion/srv/move_l"
     MOTION_MOVE_C = "horibot/{robot_id}/motion/srv/move_c"
     MOTION_MOVE_P = "horibot/{robot_id}/motion/srv/move_p"
+    # Servo (외부가 빠른 rate 로 절대 target → planner 우회 IK + direct publish)
+    MOTION_SERVO_TCP = "horibot/{robot_id}/motion/srv/servo_tcp"
+    # Velocity (외부 twist/joint velocity → server jerk-limited 추종, deadman timeout)
+    MOTION_SPEED_TCP = "horibot/{robot_id}/motion/srv/speed_tcp"
+    MOTION_SPEED_J = "horibot/{robot_id}/motion/srv/speed_j"
     MOTION_STOP = "horibot/{robot_id}/motion/srv/stop"
 
     # ─── System ────────────────────────────────────────────

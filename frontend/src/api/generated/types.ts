@@ -986,14 +986,6 @@ export interface components {
             waypoints: number[][];
         };
         /**
-         * MoveTcpReq
-         * @description target_pos (user frame). motion 핸들러가 tool_offset 보정 후 IK.
-         */
-        MoveTcpReq: {
-            /** Position */
-            position: number[];
-        };
-        /**
          * MultiStartReq
          * @description Multi-start BA 명시 트리거 — random init 다중 시도 → 가장 좋은 σ 선택.
          *
@@ -1063,7 +1055,6 @@ export interface components {
             MoveJReq?: components["schemas"]["MoveJReq"] | null;
             MoveLReq?: components["schemas"]["MoveLReq"] | null;
             MovePReq?: components["schemas"]["MovePReq"] | null;
-            MoveTcpReq?: components["schemas"]["MoveTcpReq"] | null;
             MultiStartReq?: components["schemas"]["MultiStartReq"] | null;
             MultiStartRes?: components["schemas"]["MultiStartRes"] | null;
             PointcloudBuildMeshReq?: components["schemas"]["PointcloudBuildMeshReq"] | null;
@@ -1083,6 +1074,9 @@ export interface components {
             PointcloudState?: components["schemas"]["PointcloudState"] | null;
             RecommendationFailReq?: components["schemas"]["RecommendationFailReq"] | null;
             RecommendationFailRes?: components["schemas"]["RecommendationFailRes"] | null;
+            ServoTcpReq?: components["schemas"]["ServoTcpReq"] | null;
+            SpeedJReq?: components["schemas"]["SpeedJReq"] | null;
+            SpeedTcpReq?: components["schemas"]["SpeedTcpReq"] | null;
             StorageActivateReq?: components["schemas"]["StorageActivateReq"] | null;
             StorageActivateRes?: components["schemas"]["StorageActivateRes"] | null;
             StorageCommitReq?: components["schemas"]["StorageCommitReq"] | null;
@@ -1261,7 +1255,7 @@ export interface components {
             /** Enabled */
             enabled: boolean;
             /** Capabilities */
-            capabilities: ("move" | "calibrate" | "scan")[];
+            capabilities: ("move" | "calibrate" | "scan" | "gamepad")[];
             base_pose: components["schemas"]["BasePoseSchema"];
             /** Urdf Url */
             urdf_url: string;
@@ -1335,6 +1329,51 @@ export interface components {
             timestamp: number;
             /** Num Frames */
             num_frames: number;
+        };
+        /**
+         * ServoTcpReq
+         * @description 절대 TCP target 직접 IK + publish (planner 우회).
+         *
+         *     `quaternion` None → position-only IK (5DOF / 6DOF 무관 — orientation 무시).
+         *     6DOF robot 에서만 quaternion 의미 — 5DOF (OMX-F) 면 orientation 필드 무시.
+         */
+        ServoTcpReq: {
+            /** Position */
+            position: number[];
+            /** Quaternion */
+            quaternion?: number[] | null;
+        };
+        /**
+         * SpeedJReq
+         * @description joint velocity 벡터 추종. server 가 timeout 까지 추종.
+         *
+         *     `velocities` 길이 = robot arm dof (OMX-F=5, SO-101=6). dof 불일치 시 fail.
+         */
+        SpeedJReq: {
+            /** Velocities */
+            velocities: number[];
+        };
+        /**
+         * SpeedTcpReq
+         * @description TCP twist 추종 (linear 3 + angular 3). server 가 timeout 까지 추종.
+         *
+         *     `frame`:
+         *       - `"base"` — twist 벡터가 base 좌표계 (world axes)
+         *       - `"tcp"`  — twist 벡터가 현재 EE-local 좌표계
+         *
+         *     OMX-F (5DOF) 자리는 angular 무시 (linear-only).
+         */
+        SpeedTcpReq: {
+            /** Linear */
+            linear: number[];
+            /** Angular */
+            angular: number[];
+            /**
+             * Frame
+             * @default base
+             * @enum {string}
+             */
+            frame: "base" | "tcp";
         };
         /** StorageActivateReq */
         StorageActivateReq: {

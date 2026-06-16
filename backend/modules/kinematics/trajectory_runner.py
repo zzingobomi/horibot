@@ -42,6 +42,12 @@ _CART_SETTLE_STEPS = 5
 # 실측 encoder(= 아직 수렴 중인 위치)에서 출발해서 모터 momentum과 충돌 → 떨림.
 _CART_HOLD_STEPS = 25
 
+# Cartesian-space velocity Ruckig (SpeedTcp primary smoothing layer) 의 rotation
+# limits. linear 는 motion.yaml cartesian_limits SSOT.
+_CART_ROT_MAX_VEL = 1.0
+_CART_ROT_MAX_ACC = 2.5
+_CART_ROT_MAX_JERK = 10.0
+
 
 
 # ── 콜백 타입 ──────────────────────────────────────────────────
@@ -527,6 +533,33 @@ class TrajectoryRunner:
         out = OutputParameter(n)
         inp.control_interface = ControlInterface.Velocity
 
+        # ─── Cartesian-space Ruckig (SpeedTcp primary smoothing) ────────
+        # log 분석 (2026-06-17) — joint Ruckig 만으론 *각 joint independent
+        # jerk-limited ramp* 자리에서 *target_velocity magnitude 다름* (J2=0.30
+        # vs J3=0.16) → 같은 max_jerk 에서 *작은 target 먼저 cruise 도달*, 큰
+        # target 가속 중. transient out_v ratio ≠ target ratio → cartesian
+        # direction 깨짐. cartesian smoothing 이 *twist 자체를 ramp* → 매 cycle
+        # Jacobian 환산 시 *joint target_velocity 자체가 *cartesian space 비례
+        # 유지*. joint Ruckig 는 *target 변화에 jerk-limited 대응 + saturation 보호*.
+        cart_otg = Ruckig(6, TRAJ_DT)
+        cart_inp = InputParameter(6)
+        cart_out = OutputParameter(6)
+        cart_inp.control_interface = ControlInterface.Velocity
+        cart_inp.current_position = [0.0] * 6
+        cart_inp.current_velocity = [0.0] * 6
+        cart_inp.current_acceleration = [0.0] * 6
+        cart_inp.target_velocity = [0.0] * 6
+        cart_inp.target_acceleration = [0.0] * 6
+        cart_inp.max_velocity = (
+            [self._c_max_vel] * 3 + [_CART_ROT_MAX_VEL] * 3
+        )
+        cart_inp.max_acceleration = (
+            [self._c_max_acc] * 3 + [_CART_ROT_MAX_ACC] * 3
+        )
+        cart_inp.max_jerk = (
+            [self._c_max_jerk] * 3 + [_CART_ROT_MAX_JERK] * 3
+        )
+
         start = self._get_joint_angles()
         if start is None:
             logger.warning("Speed*: 시작 joint state 없음 — streamer 종료")
@@ -567,19 +600,31 @@ class TrajectoryRunner:
                 timed_out = age > VELOCITY_INPUT_TIMEOUT
                 if timed_out:
                     target = [0.0] * n
+                    # SpeedTcp 자리 timeout 도 cartesian Ruckig ramp down. caller
+                    # 가 명령 멈춤 → twist target = 0 → 자연 deadman ramp.
+                    cart_inp.target_velocity = [0.0] * 6
+                    cart_otg.update(cart_inp, cart_out)
+                    cart_inp.current_velocity = list(cart_out.new_velocity)
+                    cart_inp.current_acceleration = list(cart_out.new_acceleration)
                 elif tcp_twist is not None:
                     linear, angular, frame = tcp_twist
-                    # Closed-loop Jacobian — 입력 = 실 encoder reading.
-                    # cartesian smoothing 은 revert (찔끔찔끔 burst 자리에 ramp
-                    # cycle 이 도리어 transient 누적 만듦 — joint Ruckig 의 빠른
-                    # ramp 가 짧은 burst 에 더 자연). pendant jog semantics 는
-                    # frontend explicit stop event 로 시도 (이번 PR).
+                    # ── Cartesian smoothing (primary) ─────────────────
+                    # twist 자체를 jerk-limited 으로 ramp → 매 cycle smoothed
+                    # twist 를 Jacobian 환산. joint target_velocity 가 cartesian
+                    # 비례 유지 → transient direction 일관.
+                    cart_inp.target_velocity = list(linear) + list(angular)
+                    cart_otg.update(cart_inp, cart_out)
+                    smoothed = list(cart_out.new_velocity)
+                    cart_inp.current_velocity = smoothed
+                    cart_inp.current_acceleration = list(cart_out.new_acceleration)
+
+                    # ── Closed-loop Jacobian @ encoder reading ────────
                     encoder = self._get_joint_angles()
                     angles_for_jacobian = (
                         list(encoder) if encoder else list(inp.current_position)
                     )
                     joint_vel = self._tcp_twist_to_joint_vel(
-                        linear, angular, angles_for_jacobian, frame
+                        smoothed[:3], smoothed[3:], angles_for_jacobian, frame
                     )
                     if joint_vel is None:
                         # Jacobian 못 풂 (singularity 등) → 안전 정지.
@@ -587,6 +632,12 @@ class TrajectoryRunner:
                     else:
                         target = list(joint_vel)
                 else:
+                    # SpeedJ 자리 — cartesian 무관. 다음 SpeedTcp 진입 시 clean
+                    # start 위해 cartesian Ruckig 0 으로 ramp.
+                    cart_inp.target_velocity = [0.0] * 6
+                    cart_otg.update(cart_inp, cart_out)
+                    cart_inp.current_velocity = list(cart_out.new_velocity)
+                    cart_inp.current_acceleration = list(cart_out.new_acceleration)
                     target = target_joint
 
                 inp.target_velocity = target

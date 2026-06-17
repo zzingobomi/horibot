@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import cv2
 import numpy as np
@@ -141,49 +140,6 @@ class IntrinsicCalibration:
             "intrinsic 캘리브 완료: RMS=%.4f, coverage=%d/9 cells",
             rms,
             len(self.coverage_cells),
-        )
-        return self.result
-
-    def save(self, path: str | Path) -> bool:
-        if self.result is None:
-            logger.warning("저장할 intrinsic 결과 없음")
-            return False
-
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        cells_arr = (
-            np.asarray(self.result.coverage_cells, dtype=np.int32)
-            if self.result.coverage_cells
-            else np.empty((0, 2), dtype=np.int32)
-        )
-        np.savez(
-            str(path),
-            camera_matrix=self.result.camera_matrix,
-            dist_coeffs=self.result.dist_coeffs,
-            rms_error=self.result.rms_error,
-            image_size=self.result.image_size,
-            coverage_cells=cells_arr,
-        )
-        logger.info("intrinsic 저장: %s", path)
-        return True
-
-    def load(self, path: str | Path) -> IntrinsicResult | None:
-        path = Path(path)
-        if not path.exists():
-            return None
-
-        data = np.load(str(path))
-        cells: list[tuple[int, int]] = []
-        if "coverage_cells" in data.files:
-            cells_arr = data["coverage_cells"]
-            cells = [(int(gx), int(gy)) for gx, gy in cells_arr]
-        self.result = IntrinsicResult(
-            camera_matrix=data["camera_matrix"],
-            dist_coeffs=data["dist_coeffs"],
-            rms_error=float(data["rms_error"]),
-            image_size=tuple(data["image_size"]),
-            captured_count=0,
-            coverage_cells=cells,
         )
         return self.result
 

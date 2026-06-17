@@ -3,13 +3,55 @@ import { ModeDockview, type PanelSpec } from "./ModeDockview";
 import { useCalibrationStore } from "@/domain/stores/calibration";
 
 const PANELS: PanelSpec[] = [
-  { id: "robot-state", component: "robotState", title: "Robot State", width: 260, height: 270 },
-  { id: "calibration", component: "calibration", title: "Calibration", width: 260, height: 260 },
-  { id: "calibration-camera", component: "calibrationCamera", title: "Calibration Camera", width: 520, height: 420 },
-  { id: "hand-eye", component: "handEye", title: "Hand-Eye", width: 320, height: 640 },
-  { id: "intrinsic", component: "intrinsic", title: "Intrinsic", width: 280, height: 420 },
-  { id: "calibration-history", component: "calibrationHistory", title: "Calibration History", width: 380, height: 400 },
-  { id: "scene-controls", component: "sceneControls", title: "Scene Controls", width: 260, height: 300 },
+  {
+    id: "robot-state",
+    component: "robotState",
+    title: "Robot State",
+    width: 260,
+    height: 270,
+  },
+  {
+    id: "calibration",
+    component: "calibration",
+    title: "Calibration",
+    width: 260,
+    height: 260,
+  },
+  {
+    id: "calibration-camera",
+    component: "calibrationCamera",
+    title: "Calibration Camera",
+    width: 520,
+    height: 420,
+  },
+  {
+    id: "hand-eye",
+    component: "handEye",
+    title: "Hand-Eye",
+    width: 320,
+    height: 640,
+  },
+  {
+    id: "intrinsic",
+    component: "intrinsic",
+    title: "Intrinsic",
+    width: 280,
+    height: 420,
+  },
+  {
+    id: "calibration-history",
+    component: "calibrationHistory",
+    title: "Calibration History",
+    width: 380,
+    height: 400,
+  },
+  {
+    id: "motion",
+    component: "motion",
+    title: "Motion",
+    width: 320,
+    height: 360,
+  },
 ];
 
 export function RobotCalibrateMode() {

@@ -36,8 +36,8 @@ from core.cache.frame_cache import FrameCache
 from core.cache.joint_state_cache import JointStateCache
 from modules.motor.motor_config import MotorConfig, load_motor_layout
 from modules.camera.stream import frame_to_base64
-from modules.calibration.intrinsic import IntrinsicCalibration
-from modules.calibration.hand_eye import HandEyeCalibration, Pose
+from modules.calibration.intrinsic import IntrinsicCalibration, IntrinsicResult
+from modules.calibration.hand_eye import HandEyeCalibration, HandEyeResult, Pose
 from modules.calibration import board as calib_board
 from modules.calibration import next_pose_planner
 from modules.calibration import thresholds as calib_thresholds
@@ -112,7 +112,8 @@ class CalibrationNode(ApplicationNode):
         self._frame_cache = FrameCache()
         self._joint_cache = JointStateCache()
 
-        # robot 별 상태
+        # robot 별 상태 — intrinsic/hand_eye result 는 부팅 시 _push_calibration 가
+        # storage 에서 fetch 후 채움 (file load X). storage 가 SSOT.
         self._states: dict[str, _RobotState] = {}
         for rid in self.enabled_robot_ids:
             arm_cfgs = load_motor_layout(rid).arm
@@ -120,13 +121,6 @@ class CalibrationNode(ApplicationNode):
             hand_eye = HandEyeCalibration(self._registry.get_fk_chain(rid))
             kinematics = self._registry.get_kinematics(rid)
             assert isinstance(kinematics, SagCorrectedKinematics)
-
-            path = _save_dir(rid) / "intrinsic.npz"
-            loaded = intrinsic.load(path)
-            if loaded:
-                logger.info("[%s] Intrinsic 로드 완료: %s", rid, path)
-            else:
-                logger.warning("[%s] Intrinsic 파일 없음", rid)
 
             self._states[rid] = _RobotState(
                 arm_cfgs=arm_cfgs,
@@ -225,6 +219,35 @@ class CalibrationNode(ApplicationNode):
 
         cache = CalibrationCache()
         cache.set(robot_id, CalibrationData(intrinsic=intrinsic, hand_eye=hand_eye))
+
+        # _states[rid] 의 in-memory result 도 storage record 로 sync — preview loop
+        # / recommendation 가 st.intrinsic.result / st.hand_eye.result 직접 읽음.
+        # CalibrationCache 만 채우면 부팅 시 _states 가 None 으로 남음 (storage refactor
+        # 의 빈 자리 — file load 폐기 후 한 번 동기화 path 필요).
+        st = self._states[robot_id]
+        if intrinsic is not None:
+            st.intrinsic.result = IntrinsicResult(
+                camera_matrix=intrinsic.camera_matrix,
+                dist_coeffs=intrinsic.dist_coeffs,
+                rms_error=0.0,
+                image_size=intrinsic.image_size or (0, 0),
+                captured_count=0,
+                coverage_cells=[],
+            )
+        else:
+            st.intrinsic.result = None
+        if (
+            hand_eye is not None
+            and hand_eye_rec is not None
+            and isinstance(hand_eye_rec.result_data, HandEyeResultData)
+        ):
+            st.hand_eye.result = HandEyeResult(
+                R_cam2gripper=hand_eye.R,
+                t_cam2gripper=hand_eye.t,
+                method=hand_eye_rec.result_data.method,
+            )
+        else:
+            st.hand_eye.result = None
 
         # ─── Phase 4: ready signal — consumer hot path 의 wait_ready 풀림 ──
         cache.signal_ready(robot_id)

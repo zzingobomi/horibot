@@ -1,4 +1,5 @@
-# 카메라 Pi (192.168.0.102). omx_f_0 의 camera (D405 USB 직결).
+# 카메라 Pi (192.168.0.102). so101_6dof_0 의 camera (D405 USB 직결).
+# 2026-06-17: OMX detach 후 D405 도 SO-101 으로 양도. omx_f_0 → so101_6dof_0.
 #
 # 시작 예:
 #   # pyrealsense2는 사전에 소스 빌드해서 별도 설치
@@ -17,7 +18,7 @@ zenoh:
   #   - "tcp/0.0.0.0:7447"
 
 robots:
-  - omx_f_0
+  - so101_6dof_0
 
 device_nodes:
   - camera

@@ -6,12 +6,14 @@
  */
 import { Camera } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
+import { useParams } from "react-router-dom";
 import { CameraFeed } from "@/components/shared/CameraFeed";
 import { PanelShell } from "@/components/shared/PanelShell";
 import { CheckerboardOverlay } from "./parts/CheckerboardOverlay";
 import { useCalibrationStore } from "@/domain/stores/calibration";
 
 export function CameraPanel(props: IDockviewPanelProps<object>) {
+  const { id: robotId } = useParams<{ id: string }>();
   const preview = useCalibrationStore((s) => s.preview);
   const previewStale = useCalibrationStore((s) => s.previewStale);
 
@@ -29,6 +31,7 @@ export function CameraPanel(props: IDockviewPanelProps<object>) {
       >
         <CameraFeed
           className="!rounded-none w-full h-full"
+          robotId={robotId}
           overlay={<CheckerboardOverlay preview={preview} stale={previewStale} />}
         />
       </div>

@@ -10,6 +10,11 @@ class Topic:
 
     # ─── Motion ────────────────────────────────────────────
     MOTION_STATE_TRAJ = "horibot/{robot_id}/motion/state/trajectory"
+    # Jog stream (frontend / gamepad 50Hz publish — motion_taxonomy.md §Jog).
+    # service 50Hz RTT 회피 위해 topic publish (fire-and-forget). backend
+    # JogJCommand / JogTcpCommand 가 ref latch + 적분 + IK + publish_cmd.
+    MOTION_JOG_TCP_STREAM = "horibot/{robot_id}/motion/cmd/jog_tcp_stream"
+    MOTION_JOG_J_STREAM = "horibot/{robot_id}/motion/cmd/jog_j_stream"
 
     # ─── System ────────────────────────────────────────────
     SYSTEM_HEARTBEAT = "horibot/system/heartbeat"
@@ -31,15 +36,19 @@ class Topic:
     DETECTOR_STATE = "horibot/{robot_id}/detector/state"
     PERCEPTION_GROUNDED_STATE = "horibot/{robot_id}/perception/state/grounded"
 
-    # ─── PointCloud ────────────────────────────────────────
-    POINTCLOUD_STREAM = "horibot/{robot_id}/pointcloud/stream"
-    POINTCLOUD_SNAPSHOT = "horibot/{robot_id}/pointcloud/snapshot"
-    POINTCLOUD_STATE = "horibot/{robot_id}/pointcloud/state"
+    # ─── Scene3D — RGBD primitive ──────────────────────────
+    SCENE3D_STREAM = "horibot/{robot_id}/scene3d/stream"
+    SCENE3D_STATE = "horibot/{robot_id}/scene3d/state"
 
     # ─── Storage (global — robot_id 가 payload 에 포함) ────
     # 캘 INVALIDATED — ACTIVATE 마다 1회. payload=(robot_id, kind). 각 노드의
     # CalibrationCache 가 구독해 refetch 트리거. docs/storage_layer.md §7.
     STORAGE_CALIBRATION_INVALIDATED = "horibot/storage/state/calibration_invalidated"
+
+    # ─── Reconstruction (global) ───────────────────────────
+    # build 진행 중 stage / percent / message publish. ScanTask 의
+    # BuildReconstruction step 자리 progress bar 자리 사용.
+    RECONSTRUCTION_PROGRESS = "horibot/reconstruction/state/progress"
 
 
 class Service:
@@ -61,11 +70,13 @@ class Service:
     MOTION_MOVE_L = "horibot/{robot_id}/motion/srv/move_l"
     MOTION_MOVE_C = "horibot/{robot_id}/motion/srv/move_c"
     MOTION_MOVE_P = "horibot/{robot_id}/motion/srv/move_p"
-    # Servo (외부가 빠른 rate 로 절대 target → planner 우회 IK + direct publish)
+    # Servo (외부 controller — RL/Vision — 절대 target → direct IK + publish)
     MOTION_SERVO_TCP = "horibot/{robot_id}/motion/srv/servo_tcp"
-    # Velocity (외부 twist/joint velocity → server jerk-limited 추종, deadman timeout)
-    MOTION_SPEED_TCP = "horibot/{robot_id}/motion/srv/speed_tcp"
-    MOTION_SPEED_J = "horibot/{robot_id}/motion/srv/speed_j"
+    MOTION_SERVO_J = "horibot/{robot_id}/motion/srv/servo_j"
+    # Jog (human/manual velocity — frontend/gamepad → backend latch + 적분).
+    # service 자리 = 자동화 tool / test 자리 단발 호출, topic stream 자리 = 50Hz 자리.
+    MOTION_JOG_TCP = "horibot/{robot_id}/motion/srv/jog_tcp"
+    MOTION_JOG_J = "horibot/{robot_id}/motion/srv/jog_j"
     MOTION_STOP = "horibot/{robot_id}/motion/srv/stop"
 
     # ─── System ────────────────────────────────────────────
@@ -112,15 +123,28 @@ class Service:
     STORAGE_COMMIT_CALIBRATION = "horibot/storage/srv/calibration/commit"
     STORAGE_ACTIVATE_CALIBRATION = "horibot/storage/srv/calibration/activate"
 
-    # ─── PointCloud ────────────────────────────────────────
-    POINTCLOUD_CONFIGURE = "horibot/{robot_id}/pointcloud/srv/configure"
-    POINTCLOUD_NEW_SESSION = "horibot/{robot_id}/pointcloud/srv/new_session"
-    POINTCLOUD_CAPTURE = "horibot/{robot_id}/pointcloud/srv/capture"
-    POINTCLOUD_LIST_SESSIONS = "horibot/{robot_id}/pointcloud/srv/list_sessions"
-    POINTCLOUD_LIST_SCANS = "horibot/{robot_id}/pointcloud/srv/list_scans"
-    POINTCLOUD_DELETE_SCAN = "horibot/{robot_id}/pointcloud/srv/delete_scan"
-    POINTCLOUD_BUILD_MESH = "horibot/{robot_id}/pointcloud/srv/build_mesh"
-    POINTCLOUD_LIST_MESHES = "horibot/{robot_id}/pointcloud/srv/list_meshes"
+    # ─── Storage Phase 2 — scan workflow ───────────────────
+    # scan_sessions / scans / reconstructions. append-only blob + immutable
+    # metadata row. ScanTask + ReconstructionNode 자리 caller.
+    STORAGE_NEW_SCAN_SESSION = "horibot/storage/srv/scan/new_session"
+    STORAGE_LIST_SCAN_SESSIONS = "horibot/storage/srv/scan/list_sessions"
+    STORAGE_DELETE_SCAN_SESSION = "horibot/storage/srv/scan/delete_session"
+    STORAGE_PUT_SCAN = "horibot/storage/srv/scan/put"
+    STORAGE_LIST_SCANS = "horibot/storage/srv/scan/list"
+    STORAGE_DELETE_SCAN = "horibot/storage/srv/scan/delete"
+    STORAGE_GET_BLOB = "horibot/storage/srv/blob/get"  # generic (scan / reconstruction)
+    STORAGE_PUT_RECONSTRUCTION = "horibot/storage/srv/reconstruction/put"
+    STORAGE_LIST_RECONSTRUCTIONS = "horibot/storage/srv/reconstruction/list"
+    STORAGE_DELETE_RECONSTRUCTION = "horibot/storage/srv/reconstruction/delete"
+
+    # ─── Reconstruction (global — heavy compute) ───────────
+    # ScanTask 의 BuildReconstruction step 자리 caller. session 안 모든 scan
+    # fetch + ICP + PoseGraph + TSDF + mesh + storage put 자리.
+    RECONSTRUCTION_BUILD = "horibot/reconstruction/srv/build"
+
+    # ─── Scene3D — RGBD primitive (snapshot + stream) ──────
+    SCENE3D_SNAPSHOT = "horibot/{robot_id}/scene3d/srv/snapshot"
+    SCENE3D_SET_STREAM = "horibot/{robot_id}/scene3d/srv/set_stream"
 
 
 def topic_for(template: str, robot_id: str) -> str:

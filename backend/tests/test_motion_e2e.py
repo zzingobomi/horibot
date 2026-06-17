@@ -42,8 +42,11 @@ ROBOT_ID = "so101_6dof_0"
 # host_mock 의 robot. mock_motor 는 6축 arm + 1 gripper (so101_6dof motors.yaml).
 MOTOR_CMD_TOPIC = f"horibot/{ROBOT_ID}/motor/cmd/joint"
 SERVO_TCP_SVC = f"horibot/{ROBOT_ID}/motion/srv/servo_tcp"
-SPEED_J_SVC = f"horibot/{ROBOT_ID}/motion/srv/speed_j"
-SPEED_TCP_SVC = f"horibot/{ROBOT_ID}/motion/srv/speed_tcp"
+SERVO_J_SVC = f"horibot/{ROBOT_ID}/motion/srv/servo_j"
+JOG_TCP_SVC = f"horibot/{ROBOT_ID}/motion/srv/jog_tcp"
+JOG_J_SVC = f"horibot/{ROBOT_ID}/motion/srv/jog_j"
+JOG_TCP_STREAM = f"horibot/{ROBOT_ID}/motion/cmd/jog_tcp_stream"
+JOG_J_STREAM = f"horibot/{ROBOT_ID}/motion/cmd/jog_j_stream"
 MOVE_J_SVC = f"horibot/{ROBOT_ID}/motion/srv/move_j"
 GET_TCP_SVC = f"horibot/{ROBOT_ID}/motion/srv/get_tcp"
 STOP_SVC = f"horibot/{ROBOT_ID}/motion/srv/stop"
@@ -247,116 +250,106 @@ def test_servo_tcp_with_orientation_6dof(zsession):
     assert res.get("success"), f"ServoTcp(6DOF) 실패: {res}"
 
 
-def test_speed_j_streams_then_auto_stops(zsession):
-    """SpeedJ — 50Hz 갱신 동안 MOTOR_CMD_JOINT 가 연속 흘러나옴 + 끊김 → 100ms 후 정지."""
+def test_jog_j_stream_streams(zsession):
+    """JogJ topic stream — 50Hz velocity publish → backend latch + 적분 → motor cmd."""
     collector = CmdCollector(zsession)
     time.sleep(0.1)
     collector.reset()
     try:
-        # 200ms 동안 5Hz 로 갱신 (실제 gamepad 50Hz 보다 느려도 100ms timeout 안)
         end = time.time() + 0.2
         while time.time() < end:
-            res = call_service(
+            publish_topic(
                 zsession,
-                SPEED_J_SVC,
-                {"velocities": [0.2, 0.0, 0.0, 0.0, 0.0, 0.0]},  # SO-101 = 6축
+                JOG_J_STREAM,
+                {"velocities": [0.5, 0.0, 0.0, 0.0, 0.0, 0.0]},
             )
-            assert res.get("success"), f"SpeedJ 실패: {res}"
-            time.sleep(0.05)
-
-        time.sleep(0.1)  # streamer 더 받기
+            time.sleep(0.02)
+        time.sleep(0.1)
         n_during = len(collector.samples)
-        assert n_during >= 3, (
-            f"SpeedJ 동안 publish 부족: {n_during} (target 0.2 rad/s, ~200ms)"
-        )
-
-        # J1 (motor id=1) position 이 증가 방향
+        assert n_during >= 3, f"JogJ stream publish 부족: {n_during}"
         first_j1 = collector.samples[0]["joints"][0]["position"]
         last_j1 = collector.samples[-1]["joints"][0]["position"]
-        assert last_j1 != first_j1, (
-            f"J1 motor cmd 변화 없음: {first_j1} → {last_j1}"
-        )
-
-        # 갱신 끊김 → timeout (100ms) + idle grace (500ms) + margin 후 publish 멈춤.
-        time.sleep(1.5)
-        n_settled = len(collector.samples)
-        time.sleep(0.5)
-        n_after = len(collector.samples)
-        assert n_after == n_settled, (
-            f"streamer 자연 종료 후 추가 publish: {n_settled} → {n_after}"
+        assert last_j1 > first_j1, (
+            f"JogJ stream 후 J1 단조 증가 안 함: {first_j1} → {last_j1}"
         )
     finally:
         collector.close()
 
 
-def test_speed_tcp_6dof_full(zsession):
-    """SpeedTcp on 6DOF (SO-101) — linear + angular twist 모두 Jacobian 풀림.
-
-    raw motor step 분해능 (4096/2π) 자리에서 변화 보이려면 충분히 큰 velocity 와
-    시간 필요 — 작은 변화는 raw 단위에서 0 으로 quantize.
-    """
+def test_jog_tcp_stream_6dof(zsession):
+    """JogTcp topic stream — twist input → backend SE(3) 적분 → IK → motor cmd."""
     collector = CmdCollector(zsession)
     time.sleep(0.1)
     collector.reset()
     try:
-        end = time.time() + 0.5
+        end = time.time() + 0.3
         while time.time() < end:
-            res = call_service(
+            publish_topic(
                 zsession,
-                SPEED_TCP_SVC,
+                JOG_TCP_STREAM,
                 {
-                    "linear": [0.0, 0.0, 0.05],  # +Z 5cm/s
+                    "linear": [0.0, 0.0, 0.05],
                     "angular": [0.0, 0.0, 0.0],
                     "frame": "base",
                 },
             )
-            assert res.get("success"), f"SpeedTcp 실패: {res}"
             time.sleep(0.02)
         time.sleep(0.1)
-
         assert len(collector.samples) >= 3, (
-            f"SpeedTcp 동안 publish 부족: {len(collector.samples)}"
+            f"JogTcp stream publish 부족: {len(collector.samples)}"
         )
-        # 자세 변화가 있어야 (Jacobian 이 some joint vel 추출).
         first = collector.samples[0]["joints"]
         last = collector.samples[-1]["joints"]
         deltas = [abs(la["position"] - fa["position"]) for la, fa in zip(last, first)]
-        assert max(deltas) > 0, (
-            f"SpeedTcp 후 모든 joint position 동일: {deltas}"
-        )
+        assert max(deltas) > 0, f"JogTcp stream 후 motor 변화 0: {deltas}"
     finally:
         collector.close()
 
 
-def test_speed_tcp_tcp_frame_passthrough(zsession):
-    """SpeedTcp frame='tcp' — server 가 EE rotation 으로 twist 변환. 호출 성공."""
-    res = call_service(
+def test_jog_tcp_stream_tcp_frame_passthrough(zsession):
+    """JogTcp frame='tcp' — backend SE(3) 적분 자리 tcp frame 통과."""
+    publish_topic(
         zsession,
-        SPEED_TCP_SVC,
+        JOG_TCP_STREAM,
         {
             "linear": [0.01, 0.0, 0.0],
             "angular": [0.0, 0.0, 0.0],
             "frame": "tcp",
         },
     )
-    assert res.get("success"), f"SpeedTcp frame=tcp 실패: {res}"
-    time.sleep(1.0)
-    call_service(zsession, STOP_SVC, {})
+    time.sleep(0.2)
 
 
 def test_move_j_regression(zsession):
-    """MoveJ 가 Phase 1 변경에 regression 없는지 — trajectory_runner.run_joint 동작."""
+    """MoveJ 가 회귀 없는지 — trajectory_runner.run_joint 동작."""
+    # 이전 test 자리 J1 잔여 위치 자리에 무관하게 robust 자리. 먼저 J1 home (0°)
+    # 자리 보내고, 그 후 5° 자리 target 자리 → 단조 증가 자리 보장.
+    call_service(
+        zsession,
+        MOVE_J_SVC,
+        {
+            "joints": [
+                {"id": 1, "degree": 0.0},
+                {"id": 2, "degree": 0.0},
+                {"id": 3, "degree": 0.0},
+                {"id": 4, "degree": 0.0},
+                {"id": 5, "degree": 0.0},
+                {"id": 6, "degree": 0.0},
+            ]
+        },
+    )
+    time.sleep(2.0)
+
     collector = CmdCollector(zsession)
     time.sleep(0.1)
     collector.reset()
     try:
-        # 작은 각도 이동 — mock_motor 가 cmd 받으면 즉시 갱신.
         res = call_service(
             zsession,
             MOVE_J_SVC,
             {
                 "joints": [
-                    {"id": 1, "degree": 5.0},
+                    {"id": 1, "degree": 10.0},
                     {"id": 2, "degree": 0.0},
                     {"id": 3, "degree": 0.0},
                     {"id": 4, "degree": 0.0},
@@ -366,12 +359,11 @@ def test_move_j_regression(zsession):
             },
         )
         assert res.get("success"), f"MoveJ 실패: {res}"
-        time.sleep(1.5)  # trajectory 완료 대기
+        time.sleep(2.0)
 
         assert len(collector.samples) >= 5, (
             f"MoveJ 동안 publish 부족: {len(collector.samples)}"
         )
-        # J1 motor 가 5도 (= raw delta) 만큼 이동했어야.
         first_j1 = collector.samples[0]["joints"][0]["position"]
         last_j1 = collector.samples[-1]["joints"][0]["position"]
         assert last_j1 > first_j1, f"MoveJ J1 이동 안 함: {first_j1} → {last_j1}"
@@ -408,61 +400,16 @@ def test_move_l_regression(zsession):
         collector.close()
 
 
-def test_speed_tcp_invalid_frame_rejected(zsession):
-    """SpeedTcp frame literal validation — base/tcp 외 값은 pydantic 가 reject."""
+def test_jog_tcp_invalid_frame_rejected(zsession):
+    """JogTcp frame literal validation — base/tcp 외 값은 pydantic 가 reject."""
     res = call_service(
         zsession,
-        SPEED_TCP_SVC,
+        JOG_TCP_SVC,
         {"linear": [0.01, 0, 0], "angular": [0, 0, 0], "frame": "world"},
     )
     assert not res.get("success"), (
         f"invalid frame='world' 가 통과됨: {res}"
     )
-
-
-def test_stop_resets_velocity_state(zsession):
-    """SpeedJ 후 stop → 다음 SpeedJ 가 깨끗이 시작 (residual state X)."""
-    # 1차: SpeedJ 흘리기
-    end = time.time() + 0.1
-    while time.time() < end:
-        call_service(
-            zsession,
-            SPEED_J_SVC,
-            {"velocities": [0.3, 0, 0, 0, 0, 0]},
-        )
-        time.sleep(0.02)
-    # stop 명시 — _reset_velocity_state 동작
-    res = call_service(zsession, STOP_SVC, {})
-    assert res.get("success")
-    time.sleep(0.5)  # streamer 완전 종료
-
-    # 2차: 새 SpeedJ — residual target=[0.3,...] 가 영향 미치면 안 됨.
-    collector = CmdCollector(zsession)
-    time.sleep(0.1)
-    collector.reset()
-    try:
-        end = time.time() + 0.15
-        while time.time() < end:
-            call_service(
-                zsession,
-                SPEED_J_SVC,
-                {"velocities": [0, 0, 0, 0, 0, 0.3]},  # 이번엔 J6
-            )
-            time.sleep(0.02)
-        time.sleep(0.1)
-
-        # J6 만 움직이고 J1 (이전 target) 은 그대로여야.
-        first = collector.samples[0]["joints"]
-        last = collector.samples[-1]["joints"]
-        # joint id=1 (J1)
-        j1_delta = abs(last[0]["position"] - first[0]["position"])
-        j6_delta = abs(last[5]["position"] - first[5]["position"])
-        assert j6_delta > j1_delta, (
-            f"stop 후 새 SpeedJ 가 residual 영향 — J1 delta={j1_delta} "
-            f"J6 delta={j6_delta}"
-        )
-    finally:
-        collector.close()
 
 
 def test_servo_tcp_during_trajectory_interrupts(zsession):
@@ -496,3 +443,106 @@ def test_servo_tcp_during_trajectory_interrupts(zsession):
     time.sleep(0.5)
     # stop 명시
     call_service(zsession, STOP_SVC, {})
+
+
+# ─── Servo (absolute target stream) tests ─────────────────────────────
+
+
+def publish_topic(session, topic: str, data: dict) -> None:
+    """fire-and-forget topic publish — bridge 가 같은 wire 로 forward."""
+    session.put(topic, json.dumps(data).encode())
+
+
+def test_servo_j_absolute_target_publishes(zsession):
+    """ServoJ — 절대 joint target → 직접 publish (RL replay 자리)."""
+    res = call_service(
+        zsession,
+        SERVO_J_SVC,
+        {"positions": [0.0] * 6},
+    )
+    assert res.get("success"), f"ServoJ service 호출 실패: {res}"
+
+
+def test_servo_j_dof_mismatch_rejected(zsession):
+    """ServoJ — positions 길이가 arm dof 와 다르면 reject."""
+    res = call_service(
+        zsession,
+        SERVO_J_SVC,
+        {"positions": [0.0] * 5},
+    )
+    assert not res.get("success"), (
+        f"잘못된 dof (5 != 6) 가 통과됨: {res}"
+    )
+
+
+# ─── Jog (velocity stream, backend latch) tests ───────────────────────
+
+
+def test_jog_j_idle_then_resume_fresh_latch(zsession):
+    """JogJ — publish 끊김 후 다시 시작 자리 fresh latch (인코더 - ref drift 차단).
+
+    SpeedJ 와 달리 deadman ramp 자리 X — 마지막 target 머무름 + 다음 hold 시
+    backend 가 joint_cache 에서 새로 latch.
+    """
+    # 1차 hold — publish 적분.
+    for _ in range(5):
+        publish_topic(
+            zsession,
+            JOG_J_STREAM,
+            {"velocities": [0.3] + [0] * 5},
+        )
+        time.sleep(0.02)
+    time.sleep(0.4)  # IDLE_RESET_S=0.2 초과
+
+    # 2차 hold — fresh latch. 같은 자리 다시 시작.
+    collector = CmdCollector(zsession)
+    time.sleep(0.1)
+    collector.reset()
+    try:
+        for _ in range(5):
+            publish_topic(
+                zsession,
+                JOG_J_STREAM,
+                {"velocities": [0.3] + [0] * 5},
+            )
+            time.sleep(0.02)
+        time.sleep(0.1)
+        # 2차 hold 자리 publish 흐름 정상 — J1 단조 증가 (적분 정상 동작).
+        assert len(collector.samples) >= 2
+        first_j1 = collector.samples[0]["joints"][0]["position"]
+        last_j1 = collector.samples[-1]["joints"][0]["position"]
+        assert last_j1 > first_j1, (
+            f"JogJ 2차 hold 자리 단조 증가 안 함: {first_j1} → {last_j1}"
+        )
+    finally:
+        collector.close()
+
+
+def test_jog_j_service_also_works(zsession):
+    """JogJ — service 호출 자리 (단발, 자동화 tool / test 호출)."""
+    res = call_service(
+        zsession,
+        JOG_J_SVC,
+        {"velocities": [0.0] * 6},
+    )
+    assert res.get("success"), f"JogJ service 호출 실패: {res}"
+
+
+def test_jog_j_dof_mismatch_rejected(zsession):
+    """JogJ — velocities 길이가 arm dof 와 다르면 reject."""
+    res = call_service(
+        zsession,
+        JOG_J_SVC,
+        {"velocities": [0.0] * 5},
+    )
+    assert not res.get("success")
+
+
+def test_jog_tcp_service_also_works(zsession):
+    """JogTcp — service 호출 자리 (단발)."""
+    res = call_service(
+        zsession,
+        JOG_TCP_SVC,
+        {"linear": [0.0] * 3, "angular": [0.0] * 3, "frame": "base"},
+    )
+    assert res.get("success"), f"JogTcp service 호출 실패: {res}"

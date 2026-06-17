@@ -44,21 +44,23 @@ from nodes.application.gamepad_node import (  # noqa: E402
 
 
 class FakeCalls:
-    """call_service 호출 인자 캡처."""
+    """call_service / publish 호출 인자 캡처. (key|topic, data) 쌍 자리."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
 
-    def __call__(self, key: str, data, res_cls, timeout: float = 5.0):
+    def call_service(self, key: str, data, res_cls, timeout: float = 5.0):
         self.calls.append((key, data))
 
-        # 적절한 success 응답 반환 — handler 가 _torque 등 토글 시 롤백 안 하게.
         class _Res:
             success = True
             message = "ok"
             data = None
 
         return _Res()
+
+    def publish(self, topic: str, data) -> None:
+        self.calls.append((topic, data))
 
 
 @pytest.fixture
@@ -71,7 +73,8 @@ def node(monkeypatch):
     )
 
     fake = FakeCalls()
-    monkeypatch.setattr(n, "call_service", fake)
+    monkeypatch.setattr(n, "call_service", fake.call_service)
+    monkeypatch.setattr(n, "publish", fake.publish)
     return n, fake
 
 
@@ -134,7 +137,7 @@ def test_tcp_jog_left_stick_maps_to_linear_xy(node):
     n._publish_tcp_jog(_state(left_x=1.0, left_y=-1.0))
     assert len(fake.calls) == 1
     key, req = fake.calls[0]
-    assert "speed_tcp" in key
+    assert "jog_tcp_stream" in key
     # stick 가득 → linear = (max, max, 0), angular = (0, 0, 0)
     assert req.linear == pytest.approx([TCP_LINEAR_MAX, TCP_LINEAR_MAX, 0.0])
     assert req.angular == pytest.approx([0.0, 0.0, 0.0])
@@ -203,7 +206,7 @@ def test_joint_jog_stick_mapping(node):
         )
     )
     req = fake.calls[-1][1]
-    assert "speed_j" in fake.calls[-1][0]
+    assert "jog_j_stream" in fake.calls[-1][0]
     assert len(req.velocities) == 6  # SO-101 6DOF
     # 모두 +JOINT_VEL_MAX 방향.
     expected = [JOINT_VEL_MAX] * 6

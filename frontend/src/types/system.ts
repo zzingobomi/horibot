@@ -12,6 +12,7 @@ import type { components } from "@/api/generated/types";
 
 export type SystemMetrics = components["schemas"]["SystemMetrics"];
 export type TasksResponse = components["schemas"]["TasksResponse"];
+export type TaskInfo = components["schemas"]["TaskInfo"];
 export type LogMessage = components["schemas"]["LogMessage"];
 
 export type NodeStatus = "running" | "error" | "stopped";

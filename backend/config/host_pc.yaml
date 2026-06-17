@@ -25,7 +25,8 @@ application_nodes:
   - calibration
   - task
   - detector
-  - pointcloud
+  - scene3d
+  - reconstruction
   - gamepad
 
 # 영속성 인프라 (docs/storage_layer.md). PC 만 storage_node 띄움 — 모터/카메라

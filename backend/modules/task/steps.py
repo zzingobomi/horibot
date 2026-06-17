@@ -34,8 +34,23 @@ from core.transport.messages.detector import (
 )
 from core.transport.messages.motion import JointDegree, MoveJReq, MoveLReq
 from core.transport.messages.motor import MotorGripperReq
+from core.transport.messages.reconstruction import (
+    ReconstructionBuildReq,
+    ReconstructionBuildRes,
+)
+from core.transport.messages.scene3d import (
+    Scene3DSnapshotReq,
+    Scene3DSnapshotRes,
+)
+from core.transport.messages.storage import (
+    StorageNewScanSessionReq,
+    StorageNewScanSessionRes,
+    StoragePutScanReq,
+    StoragePutScanRes,
+)
 from core.robot.robot_poses import load_pose
 from core.transport.topic_map import Service
+from modules.scan_workflow import blob as scan_blob
 from modules.task.schema import Detection, Position3, Slot, SlotOr
 from modules.task.step import Step, StepContext
 
@@ -417,6 +432,140 @@ class BreakIf(Step[None]):
         if ctx.resolve(self.condition):
             logger.debug("BreakIf truthy → break [%s]", self.label)
             raise _BreakLoop()
+
+
+# ─── Scan workflow steps — NewSession / CaptureScan / BuildReconstruction ─
+
+
+@dataclass(kw_only=True)
+class NewSession(Step[int]):
+    """STORAGE_NEW_SCAN_SESSION 호출 → session_row_id 반환.
+
+    out: Slot[int] = session_row_id. CaptureScan / BuildReconstruction 의 session
+    인자에 전달. ScanTask 의 첫 step.
+
+    session_label: storage 의 ScanSessionRecord.label (사용자 친화). Step 의
+    base label 과 별개 (base label = frontend tree display).
+    """
+
+    session_label: str | None = None
+
+    def execute(self, ctx: StepContext) -> int:
+        from core.robot.robot_registry import RobotRegistry
+
+        robot_id = ctx.node.robot_id or RobotRegistry().default_robot_id()
+        res = ctx.call_service(
+            Service.STORAGE_NEW_SCAN_SESSION,
+            StorageNewScanSessionReq(robot_id=robot_id, label=self.session_label),
+            StorageNewScanSessionRes,
+        )
+        if not res.success or res.data is None:
+            raise RuntimeError(f"NEW_SCAN_SESSION 실패: {res.message}")
+        sid = res.data.session.id
+        assert sid is not None
+        logger.info(
+            "NewSession id=%d (robot=%s)  [%s]", sid, robot_id, self.label
+        )
+        return sid
+
+
+@dataclass(kw_only=True)
+class CaptureScan(Step[int]):
+    """SCENE3D_SNAPSHOT → blob encode → STORAGE_PUT_SCAN. out: scan_row_id.
+
+    session: NewSession 의 out (session_row_id). ForEach body 안에서 outer
+    NewSession 의 slot 자리 자연 — ctx.results 가 같은 dict.
+    """
+
+    session: Slot[int]
+    num_frames: int = 10
+
+    def execute(self, ctx: StepContext) -> int:
+        session_row_id = ctx.resolve(self.session)
+        if not isinstance(session_row_id, int):
+            raise TypeError(
+                f"CaptureScan.session: int 기대, "
+                f"{type(session_row_id).__name__}"
+            )
+
+        snap_res = ctx.call_service(
+            Service.SCENE3D_SNAPSHOT,
+            Scene3DSnapshotReq(num_frames=self.num_frames),
+            Scene3DSnapshotRes,
+            timeout=15.0,
+        )
+        if not snap_res.success or snap_res.data is None:
+            raise RuntimeError(f"SCENE3D_SNAPSHOT 실패: {snap_res.message}")
+        snap = snap_res.data
+
+        blob_bytes = scan_blob.encode(snap.color_bgr_jpeg, snap.depth_z16_zstd)
+        put_res = ctx.call_service(
+            Service.STORAGE_PUT_SCAN,
+            StoragePutScanReq(
+                session_row_id=session_row_id,
+                blob_bytes=blob_bytes,
+                num_frames=snap.num_frames,
+                width=snap.intrinsic.width,
+                height=snap.intrinsic.height,
+                fx=snap.intrinsic.fx,
+                fy=snap.intrinsic.fy,
+                cx=snap.intrinsic.cx,
+                cy=snap.intrinsic.cy,
+                depth_scale=snap.intrinsic.depth_scale,
+                motor_positions=snap.motor_positions,
+                arm_motor_ids=snap.arm_motor_ids,
+            ),
+            StoragePutScanRes,
+            timeout=15.0,
+        )
+        if not put_res.success or put_res.data is None:
+            raise RuntimeError(f"STORAGE_PUT_SCAN 실패: {put_res.message}")
+        scan_row_id = put_res.data.scan.id
+        assert scan_row_id is not None
+        logger.info(
+            "CaptureScan: session=%d, scan_id=%d, row_id=%d  [%s]",
+            session_row_id, put_res.data.scan.scan_id, scan_row_id, self.label,
+        )
+        return scan_row_id
+
+
+@dataclass(kw_only=True)
+class BuildReconstruction(Step[int]):
+    """RECONSTRUCTION_BUILD — multi-view ICP + PoseGraph + TSDF + mesh extract.
+
+    long compute (5-30s) — timeout 90s. progress 자리 RECONSTRUCTION_PROGRESS
+    topic publish (frontend BuildReconstruction step 자리 progress bar 자리).
+    """
+
+    session: Slot[int]
+    voxel_size: float | None = None
+
+    def execute(self, ctx: StepContext) -> int:
+        session_row_id = ctx.resolve(self.session)
+        if not isinstance(session_row_id, int):
+            raise TypeError(
+                f"BuildReconstruction.session: int 기대, "
+                f"{type(session_row_id).__name__}"
+            )
+        res = ctx.call_service(
+            Service.RECONSTRUCTION_BUILD,
+            ReconstructionBuildReq(
+                session_row_id=session_row_id,
+                voxel_size=self.voxel_size,
+            ),
+            ReconstructionBuildRes,
+            timeout=90.0,
+        )
+        if not res.success or res.data is None:
+            raise RuntimeError(f"RECONSTRUCTION_BUILD 실패: {res.message}")
+        recon_row_id = res.data.reconstruction.id
+        assert recon_row_id is not None
+        logger.info(
+            "BuildReconstruction: session=%d, recon=%d, verts=%d  [%s]",
+            session_row_id, recon_row_id, res.data.reconstruction.vertex_count,
+            self.label,
+        )
+        return recon_row_id
 
 
 @dataclass(kw_only=True)

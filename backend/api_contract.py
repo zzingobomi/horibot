@@ -31,7 +31,8 @@ from core.transport.messages import (
     detector as _detector,
     motion as _motion,
     motor as _motor,
-    pointcloud as _pointcloud,
+    reconstruction as _reconstruction,
+    scene3d as _scene3d,
     storage as _storage,
     system as _system,
     task as _task,
@@ -65,8 +66,8 @@ PUBLIC_TOPICS: dict[str, TopicPayload] = {
     # Detector / Perception
     Topic.DETECTOR_STATE: _detector.DetectorState,
     Topic.PERCEPTION_GROUNDED_STATE: _detector.GroundedDetectionResult,
-    # PointCloud
-    Topic.POINTCLOUD_STATE: _pointcloud.PointcloudState,
+    # Scene3D — RGBD primitive sensor 상태
+    Topic.SCENE3D_STATE: _scene3d.Scene3DState,
     # ── free-form 면제 자리 (typed_messaging.md §마이그레이션 사유) ──
     # 동적 dict 페이로드. 프론트는 unknown / any 로 받음.
     Topic.TASK_STATE: None,
@@ -80,6 +81,8 @@ PUBLIC_TOPICS: dict[str, TopicPayload] = {
     Topic.CALIB_HANDEYE_OBSERVABILITY: _calibration.HandeyeObservabilityState,
     # Storage — ACTIVATE 마다 1회. frontend list 패널이 활성 row 갱신 트리거.
     Topic.STORAGE_CALIBRATION_INVALIDATED: _storage.CalibrationInvalidated,
+    # Reconstruction — BuildReconstruction step 자리 progress bar 자리.
+    Topic.RECONSTRUCTION_PROGRESS: _reconstruction.ReconstructionProgress,
     # ── Internal (의도적 미등재) ──
     # Topic.CAMERA_DEPTH_FRAME    — pointcloud_node 만 구독 (binary)
 }
@@ -90,8 +93,23 @@ PUBLIC_TOPICS: dict[str, TopicPayload] = {
 # 프론트는 자체 decoder 사용 (frontend/src/api/bridge.ts).
 
 PUBLIC_BINARY_TOPICS: set[str] = {
-    Topic.POINTCLOUD_STREAM,
+    Topic.SCENE3D_STREAM,
     # ── CAMERA_STREAM_RAW 는 MJPEG `/camera/stream` HTTP 별도 라우트 ──
+}
+
+
+# ─── Frontend → backend topic publishes ────────────────────────────────
+# 방향이 *한 쪽* — frontend 가 publish 만 하는 토픽 (50Hz servo stream 자리).
+# - frontend 는 typed publish 가능해야 → contract.ts emit 필요 → PUBLIC 분류
+# - bridge `_ALWAYS_SUBSCRIBE` 는 *backend publish 를 frontend mirror* 자리라
+#   여기 토픽 자기 자신을 구독하면 echo loop. 분리 set 으로 제외.
+# 새 자리 추가 시: 본 dict 1줄. bridge 자동 forward (subscribe 자리 X).
+
+PUBLIC_PUBLISH_TOPICS: dict[str, TopicPayload] = {
+    # Jog streams — frontend / gamepad 50Hz publish, backend motion_node 직접 subscribe.
+    # docs/motion_taxonomy.md §Jog — LeRobot delta-pose 패턴 (backend latch + 적분).
+    Topic.MOTION_JOG_TCP_STREAM: _motion.JogTcpReq,
+    Topic.MOTION_JOG_J_STREAM: _motion.JogJReq,
 }
 
 
@@ -111,8 +129,9 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
     Service.MOTION_MOVE_C: (_motion.MoveCReq, EmptyData),
     Service.MOTION_MOVE_P: (_motion.MovePReq, EmptyData),
     Service.MOTION_SERVO_TCP: (_motion.ServoTcpReq, EmptyData),
-    Service.MOTION_SPEED_TCP: (_motion.SpeedTcpReq, EmptyData),
-    Service.MOTION_SPEED_J: (_motion.SpeedJReq, EmptyData),
+    Service.MOTION_SERVO_J: (_motion.ServoJReq, EmptyData),
+    Service.MOTION_JOG_TCP: (_motion.JogTcpReq, EmptyData),
+    Service.MOTION_JOG_J: (_motion.JogJReq, EmptyData),
     Service.MOTION_STOP: (EmptyData, EmptyData),
     # ─ Perception (Grounding DINO)
     Service.PERCEPTION_GROUNDED_DETECT: (
@@ -160,6 +179,40 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
         _storage.StorageActivateReq,
         _storage.StorageActivateRes,
     ),
+    # ─ Storage Phase 2 — scan workflow (frontend TasksPage scan task 자리)
+    Service.STORAGE_NEW_SCAN_SESSION: (
+        _storage.StorageNewScanSessionReq,
+        _storage.StorageNewScanSessionRes,
+    ),
+    Service.STORAGE_LIST_SCAN_SESSIONS: (
+        _storage.StorageListScanSessionsReq,
+        _storage.StorageListScanSessionsRes,
+    ),
+    Service.STORAGE_DELETE_SCAN_SESSION: (
+        _storage.StorageDeleteScanSessionReq,
+        EmptyData,
+    ),
+    Service.STORAGE_LIST_SCANS: (
+        _storage.StorageListScansReq,
+        _storage.StorageListScansRes,
+    ),
+    Service.STORAGE_DELETE_SCAN: (
+        _storage.StorageDeleteScanReq,
+        EmptyData,
+    ),
+    Service.STORAGE_LIST_RECONSTRUCTIONS: (
+        _storage.StorageListReconstructionsReq,
+        _storage.StorageListReconstructionsRes,
+    ),
+    Service.STORAGE_DELETE_RECONSTRUCTION: (
+        _storage.StorageDeleteReconstructionReq,
+        EmptyData,
+    ),
+    # ── Internal (의도적 미등재 — backend 노드 간 호출만, blob 자리 wire 큰
+    # 자리라 frontend 노출 X)
+    # Service.STORAGE_PUT_SCAN              — Scene3DNode + Storage 자리
+    # Service.STORAGE_PUT_RECONSTRUCTION    — ReconstructionNode 자리
+    # Service.STORAGE_GET_BLOB              — ReconstructionNode 자리
     # ─ Task
     Service.TASK_STOP: (EmptyData, EmptyData),
     Service.TASK_PAUSE: (EmptyData, EmptyData),
@@ -167,36 +220,15 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
     Service.TASK_STEP: (EmptyData, EmptyData),
     Service.TASK_RUN_TO: (_task.TaskStepIdReq, EmptyData),
     Service.TASK_TOGGLE_BREAKPOINT: (_task.TaskStepIdReq, EmptyData),
-    # ─ PointCloud
-    Service.POINTCLOUD_CONFIGURE: (
-        _pointcloud.PointcloudConfigureReq,
-        _pointcloud.PointcloudConfigureRes,
+    # ─ Scene3D — RGBD primitive (snapshot + stream)
+    Service.SCENE3D_SNAPSHOT: (
+        _scene3d.Scene3DSnapshotReq,
+        _scene3d.Scene3DSnapshotRes,
     ),
-    Service.POINTCLOUD_NEW_SESSION: (
-        _pointcloud.PointcloudNewSessionReq,
-        _pointcloud.PointcloudNewSessionRes,
+    Service.SCENE3D_SET_STREAM: (
+        _scene3d.Scene3DSetStreamReq,
+        _scene3d.Scene3DSetStreamRes,
     ),
-    Service.POINTCLOUD_CAPTURE: (
-        _pointcloud.PointcloudCaptureReq,
-        _pointcloud.PointcloudCaptureRes,
-    ),
-    Service.POINTCLOUD_LIST_SESSIONS: (
-        EmptyData,
-        _pointcloud.PointcloudListSessionsRes,
-    ),
-    Service.POINTCLOUD_LIST_SCANS: (
-        _pointcloud.PointcloudListScansReq,
-        _pointcloud.PointcloudListScansRes,
-    ),
-    Service.POINTCLOUD_DELETE_SCAN: (
-        _pointcloud.PointcloudDeleteScanReq,
-        _pointcloud.PointcloudDeleteScanRes,
-    ),
-    Service.POINTCLOUD_BUILD_MESH: (
-        _pointcloud.PointcloudBuildMeshReq,
-        _pointcloud.PointcloudBuildMeshRes,
-    ),
-    Service.POINTCLOUD_LIST_MESHES: (EmptyData, _pointcloud.PointcloudListMeshesRes),
     # ── free-form 면제 자리 (typed_messaging.md §마이그레이션 사유) ──
     Service.TASK_RUN: (None, None),
     Service.TASK_STATUS: (EmptyData, None),
@@ -223,6 +255,9 @@ def all_referenced_models() -> set[type[BaseModel]]:
     """
     models: set[type[BaseModel]] = set()
     for payload in PUBLIC_TOPICS.values():
+        if payload is not None:
+            models.add(payload)
+    for payload in PUBLIC_PUBLISH_TOPICS.values():
         if payload is not None:
             models.add(payload)
     for req, res in PUBLIC_SERVICES.values():
@@ -274,13 +309,17 @@ def to_x_contract() -> dict[str, object]:
     """
     topic_names = _attr_name_by_value(Topic)
     service_names = _attr_name_by_value(Service)
+    # frontend contract.ts 는 PUBLIC_TOPICS (backend→frontend) 와
+    # PUBLIC_PUBLISH_TOPICS (frontend→backend) 둘 다 같은 TopicPayloadMap 에
+    # 박힘. 다만 _ALWAYS_SUBSCRIBE 는 backend→frontend 자리만.
+    all_topics = {**PUBLIC_TOPICS, **PUBLIC_PUBLISH_TOPICS}
     return {
         "topics": {
             key: {
                 "name": topic_names[key],
                 "payload": payload.__name__ if payload is not None else None,
             }
-            for key, payload in PUBLIC_TOPICS.items()
+            for key, payload in all_topics.items()
         },
         "binary_topics": [
             {"key": key, "name": topic_names[key]}

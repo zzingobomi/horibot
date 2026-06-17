@@ -1,0 +1,23 @@
+# 분산 sim — 모터 Pi 역할 (mock_motor + motion).
+# scene3d_decoupling.md §13.1 분산 sim 자리.
+#
+# 실행 (host_pc_sim 자리와 같은 LAN / 같은 머신 multi-process):
+#   uv run python main.py --host pi_motor_sim
+host_name: pi_motor_sim
+
+zenoh:
+  mode: peer
+  connect: []
+
+robots:
+  - so101_6dof_0
+
+device_nodes:
+  - mock_motor
+  - motion
+
+# application 노드 없음 — storage / task 자리는 PC sim 자리.
+application_nodes: []
+
+bridge:
+  enabled: false

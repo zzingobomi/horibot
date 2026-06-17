@@ -1,5 +1,6 @@
 import logging
 import threading
+from dataclasses import dataclass, field
 from typing import Callable
 
 from core.transport.application_node import ApplicationNode
@@ -14,8 +15,21 @@ from modules.llm.prompt_parser import parse_pick_place
 from modules.task.step import Task, task_tree
 from modules.task.task_runner import TaskRunner
 from modules.task.tasks.pick_and_place import create_pick_and_place_task
+from modules.task.tasks.scan import create_scan_task
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TaskDefinition:
+    """task 자리 metadata + factory. TASK_REGISTRY 의 value.
+
+    required_capabilities — frontend TasksPage 의 robot dropdown 자리 filter.
+    robots.yaml::capabilities 의 subset 인 robot 만 task 실행 자리 select.
+    """
+
+    factory: Callable[[dict], Task]
+    required_capabilities: tuple[str, ...] = field(default_factory=tuple)
 
 
 def _factory_pick_and_place(data: dict) -> Task:
@@ -29,8 +43,19 @@ def _factory_pick_and_place(data: dict) -> Task:
     )
 
 
-TASK_REGISTRY: dict[str, Callable[[dict], Task]] = {
-    "pick_and_place": _factory_pick_and_place,
+def _factory_scan(data: dict) -> Task:
+    label = data.get("label") or None
+    scan_poses = data.get("scan_poses") or None
+    if scan_poses is not None and not isinstance(scan_poses, list):
+        raise ValueError("scan_poses 는 list[str] 이어야 함")
+    return create_scan_task(label=label, scan_poses=scan_poses)
+
+
+TASK_REGISTRY: dict[str, TaskDefinition] = {
+    "pick_and_place": TaskDefinition(factory=_factory_pick_and_place),
+    "scan": TaskDefinition(
+        factory=_factory_scan, required_capabilities=("rgbd",)
+    ),
 }
 
 
@@ -127,13 +152,14 @@ class TaskNode(ApplicationNode):
         data = req.get("data", {})
         task_name = data.get("task", "pick_and_place")
 
-        factory = TASK_REGISTRY.get(task_name)
-        if factory is None:
+        definition = TASK_REGISTRY.get(task_name)
+        if definition is None:
             return {
                 "success": False,
                 "message": f"알 수 없는 task: {task_name}",
                 "data": {},
             }
+        factory = definition.factory
 
         if self._runner.is_running():
             return {"success": False, "message": "이미 실행 중인 Task 있음", "data": {}}
@@ -244,13 +270,14 @@ class TaskNode(ApplicationNode):
 
         data = req.get("data", {})
         task_name = data.get("task", "pick_and_place")
-        factory = TASK_REGISTRY.get(task_name)
-        if factory is None:
+        definition = TASK_REGISTRY.get(task_name)
+        if definition is None:
             return {
                 "success": False,
                 "message": f"알 수 없는 task: {task_name}",
                 "data": {},
             }
+        factory = definition.factory
 
         try:
             task = factory(data)

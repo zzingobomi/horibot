@@ -7,8 +7,7 @@ import { RobotLayer } from "./RobotLayer";
 import type { RobotInfo } from "@/types/robot";
 import { AxisFrame } from "./AxisFrame";
 import { CameraFrustum } from "./CameraFrustum";
-import { LivePointCloudLayer } from "./PointCloudLayer";
-import { MeshLayer } from "./MeshLayer";
+import { Scene3DLayer } from "./Scene3DLayer";
 import { DetectionLayer } from "./DetectionLayer";
 import { TaskResultLayer } from "./TaskResultLayer";
 
@@ -54,7 +53,7 @@ const LEGACY_ROBOTS: RobotInfo[] = [
     id: "omx_f_0",
     type: "omx_f",
     enabled: true,
-    capabilities: ["move", "calibrate", "scan"],
+    capabilities: ["move", "calibrate", "rgbd"],
     base_pose: { x: 0, y: 0, z: 0, yaw_deg: 0 },
     urdf_url: "/robot/omx_f/urdf/omx_f.urdf",
   },
@@ -184,11 +183,11 @@ function SceneContent({
         </>
       )}
 
-      <LivePointCloudLayer cameraMatrix={cameraMatrix} />
+      <Scene3DLayer cameraMatrix={cameraMatrix} />
 
-      {/* TSDF mesh — base 프레임 PLY. RobotModel과 동일하게 z-up→y-up 회전 적용 */}
+      {/* Reconstruction mesh layer 자리 — 묶음 B-6 자리에서 storage 의 .ply blob
+          자리 fetch + render 신설 (또는 별도 ReconstructionLayer). */}
       <group rotation={[-Math.PI / 2, 0, 0]}>
-        <MeshLayer />
         {/* Grounded detection 타겟 (base 프레임). store null이면 자동 미렌더. */}
         <DetectionLayer />
         {/* Task step 결과 (Detection / Position3 / ...) base 프레임 자동 렌더.

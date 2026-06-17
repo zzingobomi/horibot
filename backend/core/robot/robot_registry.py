@@ -43,12 +43,15 @@ MotorBackendName = Literal["dynamixel", "feetech"]
 KinematicsBackendName = Literal["pybullet", "mujoco"]
 CameraBackendName = Literal["realsense", "opencv", "mujoco"]
 
-# Robot mode sub-route 의 sidebar / route enablement 결정 (frontend Phase 2 UX —
-# multi_robot_phase2_frontend.md). camera 가 depth 인지 RGB 인지에 따라 scan 가능
-# 여부가 달라짐 — robots.yaml capabilities 가 SSOT.
-# "gamepad" — mini 펜던트 (motion_taxonomy.md Phase 1) 가 SpeedTcp/SpeedJ 발행할
-# robot. 6DOF + cartesian jog 자연한 robot 에만 (SO-101). OMX-F 5DOF 부적합.
-RobotCapability = Literal["move", "calibrate", "scan", "gamepad"]
+# Robot capability — sidebar mode (move/calibrate) / sensor (rgbd) / control input
+# (gamepad) 세 갈래. robots.yaml SSOT.
+# - "move" / "calibrate" — UI mode sub-route (sidebar entry, /robots/:id/<mode>)
+# - "rgbd" — RGBD 카메라 보유 (D405). Scene3DNode 의 dispatch 게이트. point cloud
+#   라이브 stream 토글 자리 (Scene Controls, mode 무관) + scan workflow (TasksPage
+#   의 scan task) 의 robot 필터.
+# - "gamepad" — mini 펜던트 (motion_taxonomy.md Phase 1) 가 SpeedTcp/SpeedJ 발행할
+#   robot. 6DOF + cartesian jog 자연한 robot 에만 (SO-101). OMX-F 5DOF 부적합.
+RobotCapability = Literal["move", "calibrate", "rgbd", "gamepad"]
 
 _VALID_MOTOR_BACKENDS = frozenset(get_args(MotorBackendName))
 _VALID_KINEMATICS_BACKENDS = frozenset(get_args(KinematicsBackendName))
@@ -238,7 +241,7 @@ class RobotRegistry:
         if not isinstance(caps_raw, list):
             raise ValueError(
                 f"robot '{robot_id}' capabilities 가 list 아님 "
-                f"({type(caps_raw).__name__}). 예: capabilities: [move, calibrate, scan]"
+                f"({type(caps_raw).__name__}). 예: capabilities: [move, calibrate, rgbd]"
             )
         caps: list[RobotCapability] = []
         for c in caps_raw:

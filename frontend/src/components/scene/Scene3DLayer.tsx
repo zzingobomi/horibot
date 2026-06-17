@@ -1,9 +1,6 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
-import {
-  usePointCloudStore,
-  type PointCloudFrame,
-} from "@/domain/stores/pointCloud";
+import { useScene3DStore, type PointCloudFrame } from "@/domain/stores/scene3D";
 
 function useGeometry(frame: PointCloudFrame | null) {
   const geometry = useMemo(() => {
@@ -29,12 +26,13 @@ interface LiveProps {
   pointSize?: number;
 }
 
-export function LivePointCloudLayer({
+/** 라이브 RGBD point cloud 자리. scene3DStore.enabled 토글로 보임/숨김. */
+export function Scene3DLayer({
   cameraMatrix,
   pointSize = 0.003,
 }: LiveProps) {
-  const enabled = usePointCloudStore((s) => s.enabled);
-  const frame = usePointCloudStore((s) => s.frame);
+  const enabled = useScene3DStore((s) => s.enabled);
+  const frame = useScene3DStore((s) => s.frame);
   const geometry = useGeometry(frame);
 
   if (!enabled || !cameraMatrix || !geometry) return null;

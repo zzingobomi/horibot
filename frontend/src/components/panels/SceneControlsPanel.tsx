@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Eye, EyeOff, ChevronDown, ChevronRight } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
 import { useSceneStore, type SceneOptions } from "@/domain/stores/scene";
+import { useScene3DStore } from "@/domain/stores/scene3D";
 import { PanelShell } from "@/components/shared/PanelShell";
 import { Section } from "@/components/shared/Section";
 import { ToggleRow } from "@/components/shared/ToggleRow";
@@ -26,6 +27,12 @@ export function SceneControlsPanel(props: IDockviewPanelProps<object>) {
   const toggleLink = useSceneStore((s) => s.toggleLink);
   const toggleAllLinks = useSceneStore((s) => s.toggleAllLinks);
 
+  // Scene3D — RGBD primitive 라이브 point cloud (mode 무관 토글).
+  // rgbd capability robot 자리만 backend Scene3DNode service 등록 — capability
+  // 없는 robot 자리 setEnabled 호출 자리 unknown service 응답 (사용자 안 다).
+  const pointCloudEnabled = useScene3DStore((s) => s.enabled);
+  const setPointCloudEnabled = useScene3DStore((s) => s.setEnabled);
+
   const [linksExpanded, setLinksExpanded] = useState(false);
 
   const allVisible =
@@ -49,6 +56,12 @@ export function SceneControlsPanel(props: IDockviewPanelProps<object>) {
               accentColor={color}
             />
           ))}
+          <ToggleRow
+            label="Point Cloud"
+            checked={pointCloudEnabled}
+            onChange={() => setPointCloudEnabled(!pointCloudEnabled)}
+            accentColor="bg-emerald-400"
+          />
         </div>
       </Section>
 

@@ -29,7 +29,8 @@ application_nodes:
   - calibration
   - task
   - detector
-  - pointcloud
+  - scene3d
+  - reconstruction
 # gamepad — frontend UX 검증 mock 자리엔 실 펜던트 의미 X. 실 hardware 자리에만.
 
 # Memory backend — 매번 fresh, 영속화 X. mock 은 frontend UX 검증용이라

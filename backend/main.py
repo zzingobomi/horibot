@@ -152,14 +152,18 @@ def main():
             seed_d405_intrinsic_if_missing(calib_dir / "intrinsic.npz")
 
     # ─── 노드 인스턴스 생성 ───────────────────────────────────
-    # Device:      robots × device_node_names 데카르트곱 — key=(name, robot_id)
-    # Application: 1번씩 — key=(name, None)
+    # Application 먼저, Device 다음 — main loop 가 dict iteration 순으로 start()
+    # 호출하는데, motion_node.start() 가 storage service (joint/link/sag offsets
+    # fetch_active) 무한 retry 로 blocking. application (storage) 가 같은
+    # process 안에 있으면 device 보다 *먼저 start* 해야 retry 가 즉시 풀림.
+    # 분산 자리 (모터 Pi 의 motion_node, PC 의 storage_node) 는 자기 process
+    # 안에 storage 없음 → 무관, 별 process 의 storage 가 떠 있으면 retry 풀림.
     instances: dict[tuple[str, str | None], Any] = {}
+    for name in application_node_names:
+        instances[(name, None)] = create_node(name)
     for name in device_node_names:
         for rid in robots:
             instances[(name, rid)] = create_node(name, robot_id=rid)
-    for name in application_node_names:
-        instances[(name, None)] = create_node(name)
 
     # ─── 노드 시작 ────────────────────────────────────────────
     # storage_layer.md §7 — 부팅 순서 강제 X. Storage 의존 노드 (Coordinates

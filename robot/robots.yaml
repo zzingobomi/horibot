@@ -11,7 +11,7 @@ robots:
     # 기존 OMX 모터 Pi (host_pi_motor) 의 OpenRB-150 자리에 Waveshare 보드 +
     # SO-101 결선. OMX 모터 디바이스 detach. 통합 검증 후 다시 enabled=true.
     enabled: false
-    capabilities: [move, calibrate, scan]   # D405 보유 → scan 가능. SO-101 도착 시 USB cam 으로 바뀌면 [move, calibrate] 로 변경.
+    capabilities: [move, calibrate, rgbd]   # D405 보유 → RGBD primitive. SO-101 도착 시 USB cam 으로 바뀌면 rgbd 자리 제거.
     motor_backend: dynamixel
     kinematics_backend: pybullet
     camera_backend: realsense    # Phase 2 (distributed_topology.md §1): omx_f → opencv (UVC)
@@ -39,7 +39,7 @@ robots:
     # 결선 안 된 단계 부팅 시: MotorNode connect 실패 log 만 (motor_node.py:91-99),
     # 나머지 노드 정상. 결선 후 backend 재시작 → MOTOR_STATE_JOINT publish.
     enabled: true
-    capabilities: [move, calibrate, gamepad]   # gamepad = SO-101 6DOF 전용 (mini pendant). camera 후속 session — D405 patch 끝나면 scan 추가
+    capabilities: [move, calibrate, gamepad, rgbd]   # gamepad = SO-101 6DOF 전용 (mini pendant). rgbd = D405 보유.
     motor_backend: feetech            # ⭐ FeetechBackend (STS3215/3250 + scservo_sdk)
     kinematics_backend: pybullet
     camera_backend: realsense         # D405. 1차엔 camera_node 안 띄움 (host_pi_motor 에 camera device_node 없음)

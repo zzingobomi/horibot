@@ -139,10 +139,22 @@ def list_tasks() -> TasksResponse:
     """task_node 의 TASK_REGISTRY enumerate — frontend Sidebar / TasksPage 의
     enumeration source. lazy import 로 task_node 의 무거운 deps (LLM /
     detector chain) 부팅 시 끌고 오지 않음.
+
+    each task 의 required_capabilities 자리 frontend robot dropdown 의 filter
+    (rgbd capability robot 만 자체 자리 자리 자체 자리).
     """
     from nodes.application.task_node import TASK_REGISTRY
+    from bridge.schemas import TaskInfo
 
-    return TasksResponse(tasks=sorted(TASK_REGISTRY.keys()))
+    return TasksResponse(
+        tasks=[
+            TaskInfo(
+                name=name,
+                required_capabilities=list(defn.required_capabilities),
+            )
+            for name, defn in sorted(TASK_REGISTRY.items())
+        ]
+    )
 
 
 @app.get(

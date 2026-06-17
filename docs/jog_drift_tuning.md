@@ -2,7 +2,37 @@
 
 SO-101 6DOF (Feetech STS3215/STS3250) 의 SpeedTcp/SpeedJ jog 자리에서 발생한 **transient drift** (계속 누름 시 *처음 한 번 Z 처지고 그 후 cruise에서 정상 +X*, 찔끔찔끔 자리에 더 심함, wrist down 자세에서 증폭) 진단 + fix 박제. 2026-06-17 session 결과.
 
-**현재 상태**: 대부분 자리에서 cartesian direction 일관, 잔존 transient drift는 *자세별 gravity dynamics + 모터 PID 응답 lag* 자리 (물리 layer). backend layer 산업 표준 구조 도달.
+**현재 상태 (2026-06-17 update v2)**: **근본 fix 도달 + 4 계층 taxonomy 정리**. root cause 자리 *resolved-rate velocity-streaming* 아키텍처 자체 (`pinv(J) @ ramping_twist`) 였음. **SpeedJ/SpeedTcp 자리 폐기** + 신규 **JogJ/JogTcp** (LeRobot delta-pose 패턴, backend SE(3) 적분 SSOT) + Servo 의미 자리 보존 (절대 target chase = 미래 RL/Vision). frontend / gamepad 자리 모두 같은 wire (`MOTION_JOG_J_STREAM` / `MOTION_JOG_TCP_STREAM`) — directional transient 자리 자체 사라짐 (수학적 보장).
+
+## 신규 ServoJ / ServoTcp = jog의 진짜 fix (2026-06-17)
+
+리서치 (LeRobot SO100FollowerEndEffector, XLeRobot keyboard EE, box2ai-robotics FK/IK) 결과 — **SO-101 cartesian EE 제어 자체는 흔함**, 다만 모두 *position-increment* (delta-pose 적분) 패턴이지 *velocity-streaming/resolved-rate* 아님.
+
+| 자리 | 기존 SpeedTcp | 신규 ServoTcp |
+|---|---|---|
+| 입력 | twist (linear+angular) | 절대 pose (position + quaternion) |
+| 적분 | server `_velocity_loop` 의 cartesian Ruckig | **frontend** ref pose latch + 50Hz dt 적분 |
+| Server | pinv(J) @ smoothed_twist → joint vel → Ruckig velocity → publish | IK(target, seed=current_joints) → publish |
+| Ramp 자리 | cart Ruckig + joint Ruckig 2 layer ramp | 모터 trapezoidal profile 1 layer (`motors.yaml::profile`) |
+| Direction transient | ramp 중 *ratio mismatch* → 옆으로 새는 cartesian drift | **0** — 매 cycle target 이 기하학적으로 정확 |
+| Cycle 당 변위 | 가변 (twist × ramp factor) | **~2mm/cycle @ 100mm/s** (cap by motion.yaml::max_trans_vel) |
+| Wire | service `MOTION_SPEED_TCP` (RTT 자리) | topic `MOTION_SERVO_TCP_STREAM` (fire-and-forget, LeRobot 표준) |
+
+**왜 잘 동작하나**:
+1. 매 publish 가 *절대 target* — ramp 중 옆 방향으로 샐 자리 자체 X (캘이 정확한 한 IK 가 그 pose 풀기만).
+2. 50Hz × 1-2mm/cycle = effective 50-100mm/s 인데 cycle 당 *step* 자체가 작아 모터 trapezoidal profile 이 *cycle 안에 도달 못 함* → 매 cycle 모터가 chase 중 → continuous motion.
+3. caller (frontend) 가 *fresh latch* — button hold 시작 시 인코더 reading 으로 ref 새로 잡음 → 인코더 - ref 누적 drift 차단.
+
+**잔존 자리** = Feetech PID 응답 자체 (모터 layer). gravity dynamics 의 transient torque lag 가 위치 어긋남 → 모터 PID 가 따라잡음. 단 *방향성 (cartesian Z drift)* 은 사라짐 — 균일한 위치 lag 이라 사용자가 "받아들일만한 자리".
+
+## 박제 폐기 자리 (2026-06-17)
+
+이전 박제 결론 두 개 폐기:
+
+1. ~~"DIY 6DOF cartesian jog는 흔하지 않은 자리"~~ — **틀림**. LeRobot 본체 `SO100FollowerEndEffector`, XLeRobot 키보드 EE, box2ai-robotics/lerobot-kinematics 모두 동일 자리. 차이는 *jog UI 직접 구현* 뿐.
+2. ~~"잔존 transient = *물리 layer (Feetech PID + gravity dynamics)* 자리 운명"~~ — **과함**. 대부분은 *velocity-streaming 선택의 산물*. position-increment 로 가니 directional transient 0. 진짜 물리 자리 (PID + gravity) 잔존만 남음.
+
+이 결론 폐기의 결정타 — *왜 +X 누르면 항상 Z 먼저 처짐* 이 깨끗한 방향성을 가졌나는 random backlash 가 아니라 *아키텍처의 결정론적 증상* 이었음.
 
 ## 배경 — 증상
 
@@ -118,9 +148,10 @@ Phase sync 적용 후 *대부분 자세 cartesian direction 일관*. 잔존:
 
 ## 핵심 결정 박제
 
-- **DIY 6DOF cartesian jog는 흔하지 않은 자리** — LeRobot 메인 사용처는 *leader/follower teleop*. 우리 자리는 *raw cartesian inverse + jog UI* 직접 구현. 산업 robot (UR/ABB/KUKA) 의 teach pendant와 같은 자리지만 *Feetech hobby motor + 우리 backend layer 짧은 코드*. 완벽 부드러움은 *근본적으로 산업 grade 한계*
-- **Synchronization.Phase가 진짜 root cause fix** — 1줄 변경이지만 *수학적으로 cartesian direction 보장*. 이게 *backend layer 자리의 마지막 cap*
-- **잔존 transient는 *물리 layer (Feetech PID + gravity dynamics)* 자리** — backend로 더 fix 비효율적. *모터 PID 튜닝 또는 sag 캘이 *추가 fix 가능* but *완전 보장 X*
+- ~~**DIY 6DOF cartesian jog는 흔하지 않은 자리**~~ — **폐기** (위 §박제 폐기 참조). LeRobot 자리 흔함, 우리만 resolved-rate 선택했음.
+- **Synchronization.Phase 가 SpeedTcp/SpeedJ 자리의 backend layer 마지막 cap** — root cause 의 *resolved-rate aware fix* 자리. SpeedTcp/SpeedJ 사용 유지 시 의미 있는 박제. ServoTcp/ServoJ 자리는 적분 자체가 server-side 아니라 무관.
+- **진짜 root cause fix = position-increment (ServoJ/ServoTcp)** — backend layer 의 마지막 cap 이 아니라 *아키텍처 선택의 마지막 cap*. SpeedJ/SpeedTcp 의 directional transient 는 *수학적으로* 사라짐 (방향이 매 cycle 기하학적으로 정확).
+- **잔존 transient = *물리 layer (Feetech PID + gravity dynamics)* 자리** — 그 자리 자체는 그대로 남음. backend 자리에서 sag 캘 / Feetech PID 튜닝 (옵션 A/B) 으로 줄일 수 있지만 *완전 보장 X*. 사용자가 받아들이는 자리.
 
 ## References
 

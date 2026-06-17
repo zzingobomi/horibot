@@ -15,9 +15,10 @@ export function RobotModeRedirect() {
   if (loading) return null; // RobotsLayout 가 동일 hook 으로 로딩 화면 표시 중
 
   const robot = robots.find((r) => r.id === id);
-  // gamepad 같은 도구성 capability 는 sidebar mode sub-route 가 없음 — UI mode
-  // 자리 (move/calibrate/scan) 만 redirect 대상.
-  const PAGE_MODES = new Set(["move", "calibrate", "scan"]);
+  // gamepad / rgbd 같은 도구성/sensor capability 는 sidebar mode sub-route 없음 —
+  // UI mode 자리 (move/calibrate) 만 redirect 대상. point cloud 자리는 Scene
+  // Controls 토글 (mode 무관). scan workflow 자리는 TasksPage 의 scan task.
+  const PAGE_MODES = new Set(["move", "calibrate"]);
   const firstMode = robot?.capabilities.find((c) => PAGE_MODES.has(c));
   if (firstMode) {
     return <Navigate to={`/robots/${id}/${firstMode}`} replace />;

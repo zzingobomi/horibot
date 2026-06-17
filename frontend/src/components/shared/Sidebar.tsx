@@ -22,18 +22,17 @@ const navItems = [
 ];
 
 // Sidebar mode sub-route 자리 — UI page mode 만. backend RobotCapability 의
-// 부분집합 (gamepad 같은 도구성 capability 는 sidebar mode 아님 — backend
-// 가 target robot 정할 때만 사용).
-type SidebarMode = Extract<RobotCapability, "move" | "calibrate" | "scan">;
+// 부분집합 (gamepad / rgbd 같은 도구성/sensor capability 는 sidebar mode 아님
+// — point cloud 토글은 Scene Controls 의 mode-무관 자리, scan workflow 는
+// TasksPage 의 scan task 자리).
+type SidebarMode = Extract<RobotCapability, "move" | "calibrate">;
 const SIDEBAR_MODES: ReadonlySet<RobotCapability> = new Set([
   "move",
   "calibrate",
-  "scan",
 ]);
 const CAPABILITY_LABELS: Record<SidebarMode, string> = {
   move: "Move",
   calibrate: "Calibrate",
-  scan: "Scan",
 };
 
 const COLLAPSED_KEY = "omx.sidebar.collapsed";
@@ -181,11 +180,11 @@ export function Sidebar() {
                 Tasks
               </p>
             )}
-            {tasks.map((name) => (
+            {tasks.map((task) => (
               <NavLink
-                key={name}
-                to={`/tasks/${name}`}
-                title={collapsed ? name : undefined}
+                key={task.name}
+                to={`/tasks/${task.name}`}
+                title={collapsed ? task.name : undefined}
                 className={({ isActive }) =>
                   cn(
                     "flex items-center rounded-md py-2 text-sm transition-colors",
@@ -197,7 +196,7 @@ export function Sidebar() {
                 }
               >
                 <ListChecks className="h-4 w-4 shrink-0" />
-                {!collapsed && <span>{name}</span>}
+                {!collapsed && <span>{task.name}</span>}
               </NavLink>
             ))}
           </div>

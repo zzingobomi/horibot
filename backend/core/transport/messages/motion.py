@@ -1,12 +1,15 @@
 """Motion 노드 토픽 / 서비스 payload schema.
 
-motion_taxonomy.md 의 3 계층 × 2 입력 공간:
-- Trajectory-planned: MOTION_MOVE_J / MOTION_MOVE_L / MOTION_MOVE_C / MOTION_MOVE_P
-- Servo (target chase): MOTION_SERVO_TCP
-- Velocity (jog, deadman timeout): MOTION_SPEED_TCP / MOTION_SPEED_J
+motion_taxonomy.md 의 4 계층 taxonomy:
+- Move*  (one-shot target motion, trajectory-planned)
+- Servo* (external absolute target stream — RL / Vision servo)
+- Jog*   (human/manual velocity stream — frontend / gamepad)
+- Task*  (scripted execution — task_node)
 
 토픽:
 - MOTION_STATE_TRAJ (publish) — MotionTrajState
+- MOTION_JOG_TCP_STREAM (subscribe) — JogTcpReq (frontend/gamepad 50Hz velocity)
+- MOTION_JOG_J_STREAM (subscribe) — JogJReq (frontend/gamepad 50Hz velocity)
 - (MOTOR_CMD_JOINT publish — motor.py 의 MotorCmd 재사용)
 
 서비스 (request data / response data):
@@ -15,9 +18,10 @@ motion_taxonomy.md 의 3 계층 × 2 입력 공간:
 - MOTION_MOVE_L     — MoveLReq / EmptyData
 - MOTION_MOVE_C     — MoveCReq / EmptyData
 - MOTION_MOVE_P     — MovePReq / EmptyData
-- MOTION_SERVO_TCP  — ServoTcpReq / EmptyData
-- MOTION_SPEED_TCP  — SpeedTcpReq / EmptyData
-- MOTION_SPEED_J    — SpeedJReq / EmptyData
+- MOTION_SERVO_TCP  — ServoTcpReq / EmptyData (절대 pose chase — RL/Vision servo)
+- MOTION_SERVO_J    — ServoJReq / EmptyData  (절대 joint chase — RL replay)
+- MOTION_JOG_TCP    — JogTcpReq / EmptyData  (velocity 단발 — 자동화 tool 호출)
+- MOTION_JOG_J      — JogJReq / EmptyData    (velocity 단발)
 - MOTION_STOP       — EmptyData / EmptyData
 """
 
@@ -65,27 +69,56 @@ class MotionTcpPose(StrictModel):
 
 
 class ServoTcpReq(StrictModel):
-    """절대 TCP target 직접 IK + publish (planner 우회).
+    """Servo (target chase) — 절대 TCP pose stream from external controller.
+
+    Caller (RL policy / Vision servo / 외부 trajectory player) 가 *자기가 계산한
+    절대 target* 자리 보냄. server = direct IK + publish (planner 우회).
+    UR `servoc` / EGM / RSI Cartesian 자리 정석.
 
     `quaternion` None → position-only IK (5DOF / 6DOF 무관 — orientation 무시).
-    6DOF robot 에서만 quaternion 의미 — 5DOF (OMX-F) 면 orientation 필드 무시.
+    6DOF robot 에서만 quaternion 의미.
+
+    Human jog 자리는 `MOTION_JOG_TCP_STREAM` 자리 사용 — 의미 자리 다름.
     """
 
     position: list[float]
     quaternion: list[float] | None = None
 
 
-# ─── Service: MOTION_SPEED_TCP ───────────────────────────────────────
+# ─── Service: MOTION_SERVO_J ─────────────────────────────────────────
 
 
-class SpeedTcpReq(StrictModel):
-    """TCP twist 추종 (linear 3 + angular 3). server 가 timeout 까지 추종.
+class ServoJReq(StrictModel):
+    """Servo (target chase) — 절대 joint stream from external controller.
+
+    Caller (RL replay / motion capture remap / 외부 trajectory player) 가 *자기가
+    계산한 절대 joint target* 자리 보냄. server = direct publish (IK 불요).
+    UR `servoj` / KUKA RSI joint 자리 정석.
+
+    `positions` = arm joint URDF rad (motors.yaml `kind: arm` 순서, gripper 제외).
+
+    Human jog 자리는 `MOTION_JOG_J_STREAM` 자리 사용.
+    """
+
+    positions: list[float]
+
+
+# ─── Service: MOTION_JOG_TCP ─────────────────────────────────────────
+
+
+class JogTcpReq(StrictModel):
+    """Jog (human/manual velocity) — Cartesian twist input.
+
+    Caller (frontend Jog UI / gamepad pendant) 가 *velocity twist 만* 보냄.
+    backend JogTcpCommand 가 *실 끝점 pose* fresh latch + 실 측정 dt SE(3)
+    적분 → IK → publish_cmd. 모든 caller 가 같은 wire (SE(3) 적분 SSOT = backend).
 
     `frame`:
       - `"base"` — twist 벡터가 base 좌표계 (world axes)
       - `"tcp"`  — twist 벡터가 현재 EE-local 좌표계
 
-    OMX-F (5DOF) 자리는 angular 무시 (linear-only).
+    OMX-F (5DOF) 자리는 angular 무시 (server-side IK 가 position-only fallback).
+    `IDLE_RESET_S` 보다 publish 끊긴 자리 → 다음 publish 자리 fresh latch.
     """
 
     linear: list[float]  # [vx, vy, vz] m/s
@@ -93,16 +126,22 @@ class SpeedTcpReq(StrictModel):
     frame: Literal["base", "tcp"] = "base"
 
 
-# ─── Service: MOTION_SPEED_J ─────────────────────────────────────────
+# ─── Service: MOTION_JOG_J ───────────────────────────────────────────
 
 
-class SpeedJReq(StrictModel):
-    """joint velocity 벡터 추종. server 가 timeout 까지 추종.
+class JogJReq(StrictModel):
+    """Jog (human/manual velocity) — joint-space velocity input.
 
-    `velocities` 길이 = robot arm dof (OMX-F=5, SO-101=6). dof 불일치 시 fail.
+    Caller (frontend Jog UI / gamepad) 는 *velocity 만* 보냄. backend JogJCommand
+    가 자기 process joint_cache (joint_offset 적용 URDF rad) 에서 ref latch +
+    실 측정 dt 적분 → 절대 URDF rad target publish. cross-process safe
+    (joint_offset SSOT = backend).
+
+    `velocities` = arm joint URDF rad/s (motors.yaml `kind: arm` 순서).
+    `IDLE_RESET_S` 보다 publish 끊긴 자리 → 다음 publish 자리 fresh latch.
     """
 
-    velocities: list[float]  # rad/s, arm joint 순서
+    velocities: list[float]
 
 
 # ─── Service: MOTION_MOVE_J ──────────────────────────────────────────

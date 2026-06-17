@@ -1,10 +1,10 @@
 /**
- * Motion panel — 산업 표준 6 primitive (motion_taxonomy.md):
- * - Trajectory-planned (단발 절대 target): MoveJ / MoveL / MoveC / MoveP
- * - Velocity (jog, deadman timeout): SpeedJ / SpeedTcp
+ * Motion panel — motion_taxonomy.md 4 계층 자리 frontend 자리:
+ * - Move*  (one-shot trajectory-planned): MoveJ / MoveL / MoveC / MoveP
+ * - Jog*   (human/manual velocity stream): JogJ / JogTcp
  *
- * Servo 계층 (ServoTcp / ServoJ) 은 frontend 모션패널에서 빠짐 — 외부 컨트롤러
- * (gamepad, 미래 RL/외부 driver) chase 50Hz+ 가정이라 단발 UI 자리 의미 미스매치.
+ * Servo 계층 (절대 target chase — RL / Vision servo) 자리는 frontend UI 자리 X.
+ * 정의상 외부 controller 자리 caller.
  *
  * 각 sub 가 self-subscribe (useTopic + useService) → props drilling 0.
  * 새 sub 추가 = TabsTrigger + Content 한 줄.
@@ -13,20 +13,20 @@ import { Cpu } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PanelShell } from "@/components/shared/PanelShell";
+import { JogJControl } from "./JogJ";
+import { JogTcpControl } from "./JogTcp";
 import { MoveJControl } from "./MoveJ";
 import { MoveLControl } from "./MoveL";
 import { MoveCControl } from "./MoveC";
 import { MovePControl } from "./MoveP";
-import { SpeedJControl } from "./SpeedJ";
-import { SpeedTcpControl } from "./SpeedTcp";
 
 const TABS = [
   { value: "move_j", label: "J", body: <MoveJControl /> },
   { value: "move_l", label: "L", body: <MoveLControl /> },
   { value: "move_c", label: "C", body: <MoveCControl /> },
   { value: "move_p", label: "P", body: <MovePControl /> },
-  { value: "speed_j", label: "Jog J", body: <SpeedJControl /> },
-  { value: "speed_tcp", label: "Jog TCP", body: <SpeedTcpControl /> },
+  { value: "jog_j", label: "Jog J", body: <JogJControl /> },
+  { value: "jog_tcp", label: "Jog TCP", body: <JogTcpControl /> },
 ];
 
 export function MotionPanel(props: IDockviewPanelProps<object>) {

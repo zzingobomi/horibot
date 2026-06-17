@@ -64,6 +64,9 @@ export interface paths {
          * @description task_node 의 TASK_REGISTRY enumerate — frontend Sidebar / TasksPage 의
          *     enumeration source. lazy import 로 task_node 의 무거운 deps (LLM /
          *     detector chain) 부팅 시 끌고 오지 않음.
+         *
+         *     each task 의 required_capabilities 자리 frontend robot dropdown 의 filter
+         *     (rgbd capability robot 만 자체 자리 자리 자체 자리).
          */
         get: operations["list_tasks_tasks_get"];
         put?: never;
@@ -670,6 +673,49 @@ export interface components {
             image_size?: number[] | null;
         };
         /**
+         * JogJReq
+         * @description Jog (human/manual velocity) — joint-space velocity input.
+         *
+         *     Caller (frontend Jog UI / gamepad) 는 *velocity 만* 보냄. backend JogJCommand
+         *     가 자기 process joint_cache (joint_offset 적용 URDF rad) 에서 ref latch +
+         *     실 측정 dt 적분 → 절대 URDF rad target publish. cross-process safe
+         *     (joint_offset SSOT = backend).
+         *
+         *     `velocities` = arm joint URDF rad/s (motors.yaml `kind: arm` 순서).
+         *     `IDLE_RESET_S` 보다 publish 끊긴 자리 → 다음 publish 자리 fresh latch.
+         */
+        JogJReq: {
+            /** Velocities */
+            velocities: number[];
+        };
+        /**
+         * JogTcpReq
+         * @description Jog (human/manual velocity) — Cartesian twist input.
+         *
+         *     Caller (frontend Jog UI / gamepad pendant) 가 *velocity twist 만* 보냄.
+         *     backend JogTcpCommand 가 *실 끝점 pose* fresh latch + 실 측정 dt SE(3)
+         *     적분 → IK → publish_cmd. 모든 caller 가 같은 wire (SE(3) 적분 SSOT = backend).
+         *
+         *     `frame`:
+         *       - `"base"` — twist 벡터가 base 좌표계 (world axes)
+         *       - `"tcp"`  — twist 벡터가 현재 EE-local 좌표계
+         *
+         *     OMX-F (5DOF) 자리는 angular 무시 (server-side IK 가 position-only fallback).
+         *     `IDLE_RESET_S` 보다 publish 끊긴 자리 → 다음 publish 자리 fresh latch.
+         */
+        JogTcpReq: {
+            /** Linear */
+            linear: number[];
+            /** Angular */
+            angular: number[];
+            /**
+             * Frame
+             * @default base
+             * @enum {string}
+             */
+            frame: "base" | "tcp";
+        };
+        /**
          * JointDegree
          * @description 모터 id 와 목표 각도 (degrees).
          */
@@ -790,17 +836,6 @@ export interface components {
             message: string;
             /** Robot Id */
             robot_id?: string | null;
-        };
-        /** MeshMeta */
-        MeshMeta: {
-            /** Session Id */
-            session_id: string;
-            /** Path */
-            path: string;
-            /** Size */
-            size: number;
-            /** Mtime */
-            mtime: number;
         };
         /**
          * MotionTcpPose
@@ -1041,6 +1076,8 @@ export interface components {
             Heartbeat?: components["schemas"]["Heartbeat"] | null;
             IntrinsicCaptureRes?: components["schemas"]["IntrinsicCaptureRes"] | null;
             IntrinsicSaveRes?: components["schemas"]["IntrinsicSaveRes"] | null;
+            JogJReq?: components["schemas"]["JogJReq"] | null;
+            JogTcpReq?: components["schemas"]["JogTcpReq"] | null;
             LogMessage?: components["schemas"]["LogMessage"] | null;
             MotionTcpPose?: components["schemas"]["MotionTcpPose"] | null;
             MotionTrajState?: components["schemas"]["MotionTrajState"] | null;
@@ -1057,169 +1094,38 @@ export interface components {
             MovePReq?: components["schemas"]["MovePReq"] | null;
             MultiStartReq?: components["schemas"]["MultiStartReq"] | null;
             MultiStartRes?: components["schemas"]["MultiStartRes"] | null;
-            PointcloudBuildMeshReq?: components["schemas"]["PointcloudBuildMeshReq"] | null;
-            PointcloudBuildMeshRes?: components["schemas"]["PointcloudBuildMeshRes"] | null;
-            PointcloudCaptureReq?: components["schemas"]["PointcloudCaptureReq"] | null;
-            PointcloudCaptureRes?: components["schemas"]["PointcloudCaptureRes"] | null;
-            PointcloudConfigureReq?: components["schemas"]["PointcloudConfigureReq"] | null;
-            PointcloudConfigureRes?: components["schemas"]["PointcloudConfigureRes"] | null;
-            PointcloudDeleteScanReq?: components["schemas"]["PointcloudDeleteScanReq"] | null;
-            PointcloudDeleteScanRes?: components["schemas"]["PointcloudDeleteScanRes"] | null;
-            PointcloudListMeshesRes?: components["schemas"]["PointcloudListMeshesRes"] | null;
-            PointcloudListScansReq?: components["schemas"]["PointcloudListScansReq"] | null;
-            PointcloudListScansRes?: components["schemas"]["PointcloudListScansRes"] | null;
-            PointcloudListSessionsRes?: components["schemas"]["PointcloudListSessionsRes"] | null;
-            PointcloudNewSessionReq?: components["schemas"]["PointcloudNewSessionReq"] | null;
-            PointcloudNewSessionRes?: components["schemas"]["PointcloudNewSessionRes"] | null;
-            PointcloudState?: components["schemas"]["PointcloudState"] | null;
             RecommendationFailReq?: components["schemas"]["RecommendationFailReq"] | null;
             RecommendationFailRes?: components["schemas"]["RecommendationFailRes"] | null;
+            ReconstructionProgress?: components["schemas"]["ReconstructionProgress"] | null;
+            Scene3DSetStreamReq?: components["schemas"]["Scene3DSetStreamReq"] | null;
+            Scene3DSetStreamRes?: components["schemas"]["Scene3DSetStreamRes"] | null;
+            Scene3DSnapshotReq?: components["schemas"]["Scene3DSnapshotReq"] | null;
+            Scene3DSnapshotRes?: components["schemas"]["Scene3DSnapshotRes"] | null;
+            Scene3DState?: components["schemas"]["Scene3DState"] | null;
+            ServoJReq?: components["schemas"]["ServoJReq"] | null;
             ServoTcpReq?: components["schemas"]["ServoTcpReq"] | null;
-            SpeedJReq?: components["schemas"]["SpeedJReq"] | null;
-            SpeedTcpReq?: components["schemas"]["SpeedTcpReq"] | null;
             StorageActivateReq?: components["schemas"]["StorageActivateReq"] | null;
             StorageActivateRes?: components["schemas"]["StorageActivateRes"] | null;
             StorageCommitReq?: components["schemas"]["StorageCommitReq"] | null;
             StorageCommitRes?: components["schemas"]["StorageCommitRes"] | null;
+            StorageDeleteReconstructionReq?: components["schemas"]["StorageDeleteReconstructionReq"] | null;
+            StorageDeleteScanReq?: components["schemas"]["StorageDeleteScanReq"] | null;
+            StorageDeleteScanSessionReq?: components["schemas"]["StorageDeleteScanSessionReq"] | null;
             StorageGetActiveReq?: components["schemas"]["StorageGetActiveReq"] | null;
             StorageGetActiveRes?: components["schemas"]["StorageGetActiveRes"] | null;
+            StorageListReconstructionsReq?: components["schemas"]["StorageListReconstructionsReq"] | null;
+            StorageListReconstructionsRes?: components["schemas"]["StorageListReconstructionsRes"] | null;
             StorageListReq?: components["schemas"]["StorageListReq"] | null;
             StorageListRes?: components["schemas"]["StorageListRes"] | null;
             StorageListRunsReq?: components["schemas"]["StorageListRunsReq"] | null;
             StorageListRunsRes?: components["schemas"]["StorageListRunsRes"] | null;
+            StorageListScanSessionsReq?: components["schemas"]["StorageListScanSessionsReq"] | null;
+            StorageListScanSessionsRes?: components["schemas"]["StorageListScanSessionsRes"] | null;
+            StorageListScansReq?: components["schemas"]["StorageListScansReq"] | null;
+            StorageListScansRes?: components["schemas"]["StorageListScansRes"] | null;
+            StorageNewScanSessionReq?: components["schemas"]["StorageNewScanSessionReq"] | null;
+            StorageNewScanSessionRes?: components["schemas"]["StorageNewScanSessionRes"] | null;
             TaskStepIdReq?: components["schemas"]["TaskStepIdReq"] | null;
-        };
-        /**
-         * PointcloudBuildMeshReq
-         * @description TSDF 파라미터는 모두 optional — None 이면 tsdf_builder default.
-         */
-        PointcloudBuildMeshReq: {
-            /** Session Id */
-            session_id: string;
-            /** Voxel Size */
-            voxel_size?: number | null;
-            /** Sdf Trunc */
-            sdf_trunc?: number | null;
-            /** Depth Trunc */
-            depth_trunc?: number | null;
-            /** Icp Max Dist */
-            icp_max_dist?: number | null;
-        };
-        /** PointcloudBuildMeshRes */
-        PointcloudBuildMeshRes: {
-            /** Session Id */
-            session_id: string;
-            /** Path */
-            path: string;
-            /** Vertex Count */
-            vertex_count: number;
-            /** Triangle Count */
-            triangle_count: number;
-            /** N Scans */
-            n_scans: number;
-            /** N Edges */
-            n_edges: number;
-            /** Elapsed */
-            elapsed: number;
-        };
-        /** PointcloudCaptureReq */
-        PointcloudCaptureReq: {
-            /** Session Id */
-            session_id: string;
-            /** Num Frames */
-            num_frames?: number | null;
-        };
-        /** PointcloudCaptureRes */
-        PointcloudCaptureRes: {
-            /** Session Id */
-            session_id: string;
-            /** Scan Id */
-            scan_id: number;
-            /** Path */
-            path: string;
-            /** Num Frames */
-            num_frames: number;
-        };
-        /**
-         * PointcloudConfigureReq
-         * @description 변경할 필드만 명시 (None 이면 미변경).
-         */
-        PointcloudConfigureReq: {
-            /** Enabled */
-            enabled?: boolean | null;
-            /** Voxel Size */
-            voxel_size?: number | null;
-        };
-        /**
-         * PointcloudConfigureRes
-         * @description 전환 후 현재 상태 echo.
-         */
-        PointcloudConfigureRes: {
-            /** Enabled */
-            enabled: boolean;
-            /** Voxel Size */
-            voxel_size: number;
-        };
-        /** PointcloudDeleteScanReq */
-        PointcloudDeleteScanReq: {
-            /** Session Id */
-            session_id: string;
-            /** Scan Id */
-            scan_id: number;
-        };
-        /** PointcloudDeleteScanRes */
-        PointcloudDeleteScanRes: {
-            /** Session Id */
-            session_id: string;
-            /** Scan Id */
-            scan_id: number;
-        };
-        /** PointcloudListMeshesRes */
-        PointcloudListMeshesRes: {
-            /** Meshes */
-            meshes: components["schemas"]["MeshMeta"][];
-        };
-        /** PointcloudListScansReq */
-        PointcloudListScansReq: {
-            /** Session Id */
-            session_id: string;
-        };
-        /** PointcloudListScansRes */
-        PointcloudListScansRes: {
-            /** Session Id */
-            session_id: string;
-            /** Scans */
-            scans: components["schemas"]["ScanMeta"][];
-        };
-        /** PointcloudListSessionsRes */
-        PointcloudListSessionsRes: {
-            /** Sessions */
-            sessions: string[];
-        };
-        /**
-         * PointcloudNewSessionReq
-         * @description 빈 문자열이면 자동 default (현재 시각 기반).
-         */
-        PointcloudNewSessionReq: {
-            /**
-             * Session Id
-             * @default
-             */
-            session_id: string;
-        };
-        /** PointcloudNewSessionRes */
-        PointcloudNewSessionRes: {
-            /** Session Id */
-            session_id: string;
-        };
-        /** PointcloudState */
-        PointcloudState: {
-            /** Timestamp */
-            timestamp: number;
-            /** Enabled */
-            enabled: boolean;
-            /** Voxel Size */
-            voxel_size: number;
         };
         /**
          * RecommendationFailReq
@@ -1241,6 +1147,59 @@ export interface components {
             /** Excluded Count */
             excluded_count: number;
         };
+        /** ReconstructionProgress */
+        ReconstructionProgress: {
+            /** Session Row Id */
+            session_row_id: number;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "loading_scans" | "pairwise_registration" | "pose_graph_optimization" | "tsdf_integration" | "mesh_extraction";
+            /** Percent */
+            percent: number;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+        };
+        /**
+         * ReconstructionRecord
+         * @description Reconstruction — multi-scan ICP+PoseGraph+TSDF mesh 결과.
+         *
+         *     blob (.ply) 는 ObjectStore. row 는 metadata + ICP/TSDF 통계 자리.
+         */
+        ReconstructionRecord: {
+            /** Id */
+            id?: number | null;
+            /** Session Row Id */
+            session_row_id: number;
+            /** Robot Id */
+            robot_id: string;
+            /** Created At */
+            created_at: number;
+            /** Blob Key */
+            blob_key: string;
+            /** Voxel Size */
+            voxel_size: number;
+            /** Sdf Trunc */
+            sdf_trunc: number;
+            /** Depth Trunc */
+            depth_trunc: number;
+            /** Icp Max Dist */
+            icp_max_dist: number;
+            /** N Scans */
+            n_scans: number;
+            /** N Edges */
+            n_edges: number;
+            /** Vertex Count */
+            vertex_count: number;
+            /** Triangle Count */
+            triangle_count: number;
+            /** Elapsed */
+            elapsed: number;
+        };
         /**
          * RobotInfo
          * @description robots.yaml 의 entry 1개를 frontend 가 받는 모양 — `RobotConfig` 의 hardware
@@ -1255,7 +1214,7 @@ export interface components {
             /** Enabled */
             enabled: boolean;
             /** Capabilities */
-            capabilities: ("move" | "calibrate" | "scan" | "gamepad")[];
+            capabilities: ("move" | "calibrate" | "rgbd" | "gamepad")[];
             base_pose: components["schemas"]["BasePoseSchema"];
             /** Urdf Url */
             urdf_url: string;
@@ -1317,63 +1276,177 @@ export interface components {
             result_data: components["schemas"]["SagOffsetResultData"];
         };
         /**
-         * ScanMeta
-         * @description scan_io.scan_meta() 결과 1개.
+         * ScanRecord
+         * @description Scan — 한 자세에서 캡처한 RGBD frame.
+         *
+         *     blob (raw depth_z16 + color_bgr + ...) 는 ObjectStore 자리. row 는 metadata
+         *     (intrinsic / motor positions) 자리만.
          */
-        ScanMeta: {
+        ScanRecord: {
             /** Id */
-            id: number;
-            /** Path */
-            path: string;
+            id?: number | null;
+            /** Session Row Id */
+            session_row_id: number;
+            /** Robot Id */
+            robot_id: string;
+            /** Scan Id */
+            scan_id: number;
+            /** Created At */
+            created_at: number;
+            /** Blob Key */
+            blob_key: string;
+            /** Num Frames */
+            num_frames: number;
+            /** Width */
+            width: number;
+            /** Height */
+            height: number;
+            /** Fx */
+            fx: number;
+            /** Fy */
+            fy: number;
+            /** Cx */
+            cx: number;
+            /** Cy */
+            cy: number;
+            /** Depth Scale */
+            depth_scale: number;
+            /** Motor Positions */
+            motor_positions: number[];
+            /** Arm Motor Ids */
+            arm_motor_ids: number[];
+        };
+        /**
+         * ScanSessionRecord
+         * @description Scan session — 한 번의 multi-pose scan 묶음. label / note 자리 수정 가능.
+         */
+        ScanSessionRecord: {
+            /** Id */
+            id?: number | null;
+            /** Robot Id */
+            robot_id: string;
+            /** Session Id */
+            session_id: string;
+            /** Created At */
+            created_at: number;
+            /** Label */
+            label?: string | null;
+            /** Note */
+            note?: string | null;
+        };
+        /**
+         * Scene3DIntrinsic
+         * @description RGBD 카메라 intrinsic — pinhole + depth scale.
+         */
+        Scene3DIntrinsic: {
+            /** Width */
+            width: number;
+            /** Height */
+            height: number;
+            /** Fx */
+            fx: number;
+            /** Fy */
+            fy: number;
+            /** Cx */
+            cx: number;
+            /** Cy */
+            cy: number;
+            /** Depth Scale */
+            depth_scale: number;
+        };
+        /** Scene3DSetStreamReq */
+        Scene3DSetStreamReq: {
+            /** Enabled */
+            enabled: boolean;
+        };
+        /** Scene3DSetStreamRes */
+        Scene3DSetStreamRes: {
+            /** Enabled */
+            enabled: boolean;
+        };
+        /**
+         * Scene3DSnapshotReq
+         * @description N frame consensus median.
+         *
+         *     num_frames=1 이면 단순 latest. 보통 10 (consensus 안정성).
+         */
+        Scene3DSnapshotReq: {
+            /**
+             * Num Frames
+             * @default 10
+             */
+            num_frames: number;
+            /**
+             * Timeout S
+             * @default 5
+             */
+            timeout_s: number;
+        };
+        /** Scene3DSnapshotRes */
+        Scene3DSnapshotRes: {
+            /**
+             * Color Bgr Jpeg
+             * Format: base64
+             */
+            color_bgr_jpeg: string;
+            /**
+             * Depth Z16 Zstd
+             * Format: base64
+             */
+            depth_z16_zstd: string;
+            intrinsic: components["schemas"]["Scene3DIntrinsic"];
+            /** Motor Positions */
+            motor_positions: number[];
+            /** Arm Motor Ids */
+            arm_motor_ids: number[];
             /** Timestamp */
             timestamp: number;
             /** Num Frames */
             num_frames: number;
         };
+        /** Scene3DState */
+        Scene3DState: {
+            /** Timestamp */
+            timestamp: number;
+            /** Enabled */
+            enabled: boolean;
+            /** Voxel Size */
+            voxel_size: number;
+        };
+        /**
+         * ServoJReq
+         * @description Servo (target chase) — 절대 joint stream from external controller.
+         *
+         *     Caller (RL replay / motion capture remap / 외부 trajectory player) 가 *자기가
+         *     계산한 절대 joint target* 자리 보냄. server = direct publish (IK 불요).
+         *     UR `servoj` / KUKA RSI joint 자리 정석.
+         *
+         *     `positions` = arm joint URDF rad (motors.yaml `kind: arm` 순서, gripper 제외).
+         *
+         *     Human jog 자리는 `MOTION_JOG_J_STREAM` 자리 사용.
+         */
+        ServoJReq: {
+            /** Positions */
+            positions: number[];
+        };
         /**
          * ServoTcpReq
-         * @description 절대 TCP target 직접 IK + publish (planner 우회).
+         * @description Servo (target chase) — 절대 TCP pose stream from external controller.
+         *
+         *     Caller (RL policy / Vision servo / 외부 trajectory player) 가 *자기가 계산한
+         *     절대 target* 자리 보냄. server = direct IK + publish (planner 우회).
+         *     UR `servoc` / EGM / RSI Cartesian 자리 정석.
          *
          *     `quaternion` None → position-only IK (5DOF / 6DOF 무관 — orientation 무시).
-         *     6DOF robot 에서만 quaternion 의미 — 5DOF (OMX-F) 면 orientation 필드 무시.
+         *     6DOF robot 에서만 quaternion 의미.
+         *
+         *     Human jog 자리는 `MOTION_JOG_TCP_STREAM` 자리 사용 — 의미 자리 다름.
          */
         ServoTcpReq: {
             /** Position */
             position: number[];
             /** Quaternion */
             quaternion?: number[] | null;
-        };
-        /**
-         * SpeedJReq
-         * @description joint velocity 벡터 추종. server 가 timeout 까지 추종.
-         *
-         *     `velocities` 길이 = robot arm dof (OMX-F=5, SO-101=6). dof 불일치 시 fail.
-         */
-        SpeedJReq: {
-            /** Velocities */
-            velocities: number[];
-        };
-        /**
-         * SpeedTcpReq
-         * @description TCP twist 추종 (linear 3 + angular 3). server 가 timeout 까지 추종.
-         *
-         *     `frame`:
-         *       - `"base"` — twist 벡터가 base 좌표계 (world axes)
-         *       - `"tcp"`  — twist 벡터가 현재 EE-local 좌표계
-         *
-         *     OMX-F (5DOF) 자리는 angular 무시 (linear-only).
-         */
-        SpeedTcpReq: {
-            /** Linear */
-            linear: number[];
-            /** Angular */
-            angular: number[];
-            /**
-             * Frame
-             * @default base
-             * @enum {string}
-             */
-            frame: "base" | "tcp";
         };
         /** StorageActivateReq */
         StorageActivateReq: {
@@ -1416,6 +1489,26 @@ export interface components {
             /** Result Ids */
             result_ids: number[];
         };
+        /** StorageDeleteReconstructionReq */
+        StorageDeleteReconstructionReq: {
+            /** Recon Row Id */
+            recon_row_id: number;
+        };
+        /** StorageDeleteScanReq */
+        StorageDeleteScanReq: {
+            /** Scan Row Id */
+            scan_row_id: number;
+        };
+        /**
+         * StorageDeleteScanSessionReq
+         * @description CASCADE — 자식 scans / reconstructions 자리 자동 삭제 (RDB + ObjectStore blob).
+         *
+         *     blob 자리도 server 가 같이 삭제 자리 — RDB row 자리 fetch 후 blob_key 순회.
+         */
+        StorageDeleteScanSessionReq: {
+            /** Session Row Id */
+            session_row_id: number;
+        };
         /** StorageGetActiveReq */
         StorageGetActiveReq: {
             /** Robot Id */
@@ -1435,6 +1528,16 @@ export interface components {
             found: boolean;
             /** Result */
             result?: (components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"]) | null;
+        };
+        /** StorageListReconstructionsReq */
+        StorageListReconstructionsReq: {
+            /** Session Row Id */
+            session_row_id: number;
+        };
+        /** StorageListReconstructionsRes */
+        StorageListReconstructionsRes: {
+            /** Reconstructions */
+            reconstructions: components["schemas"]["ReconstructionRecord"][];
         };
         /** StorageListReq */
         StorageListReq: {
@@ -1474,6 +1577,52 @@ export interface components {
             /** Runs */
             runs: components["schemas"]["CalibrationRunSummary"][];
         };
+        /** StorageListScanSessionsReq */
+        StorageListScanSessionsReq: {
+            /** Robot Id */
+            robot_id: string;
+            /**
+             * Limit
+             * @default 100
+             */
+            limit: number;
+        };
+        /** StorageListScanSessionsRes */
+        StorageListScanSessionsRes: {
+            /** Sessions */
+            sessions: components["schemas"]["ScanSessionRecord"][];
+        };
+        /** StorageListScansReq */
+        StorageListScansReq: {
+            /** Session Row Id */
+            session_row_id: number;
+        };
+        /**
+         * StorageListScansRes
+         * @description metadata 만 자리 — blob 자체 X (GET_BLOB 자리 별도).
+         */
+        StorageListScansRes: {
+            /** Scans */
+            scans: components["schemas"]["ScanRecord"][];
+        };
+        /** StorageNewScanSessionReq */
+        StorageNewScanSessionReq: {
+            /** Robot Id */
+            robot_id: string;
+            /**
+             * Session Id
+             * @default
+             */
+            session_id: string;
+            /** Label */
+            label?: string | null;
+            /** Note */
+            note?: string | null;
+        };
+        /** StorageNewScanSessionRes */
+        StorageNewScanSessionRes: {
+            session: components["schemas"]["ScanSessionRecord"];
+        };
         /**
          * SystemMetrics
          * @description `GET /system` 응답. psutil + zenoh peer info — Dashboard overview source.
@@ -1493,6 +1642,20 @@ export interface components {
             zenoh_peers: number;
         };
         /**
+         * TaskInfo
+         * @description task_node.TASK_REGISTRY 의 한 entry — frontend TasksPage 의 select + robot
+         *     dropdown filter (rgbd capability robot 만 자체 자리 자리).
+         */
+        TaskInfo: {
+            /** Name */
+            name: string;
+            /**
+             * Required Capabilities
+             * @default []
+             */
+            required_capabilities: string[];
+        };
+        /**
          * TaskStepIdReq
          * @description step_id 만 받는 디버거 명령 공통 입력.
          */
@@ -1506,7 +1669,7 @@ export interface components {
          */
         TasksResponse: {
             /** Tasks */
-            tasks: string[];
+            tasks: components["schemas"]["TaskInfo"][];
         };
         /**
          * TrajStatus

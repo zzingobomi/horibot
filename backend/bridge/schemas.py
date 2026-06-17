@@ -60,10 +60,18 @@ class SystemMetrics(BaseModel):
     zenoh_peers: int
 
 
+class TaskInfo(BaseModel):
+    """task_node.TASK_REGISTRY 의 한 entry — frontend TasksPage 의 select + robot
+    dropdown filter (rgbd capability robot 만 자체 자리 자리)."""
+
+    name: str
+    required_capabilities: list[str] = []
+
+
 class TasksResponse(BaseModel):
     """`GET /tasks` 응답 — task_node.TASK_REGISTRY enumeration."""
 
-    tasks: list[str]
+    tasks: list[TaskInfo]
 
 
 class IntrinsicSchema(BaseModel):

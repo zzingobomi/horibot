@@ -23,6 +23,11 @@ from modules.calibration.persistence_models import (
     CalibrationResultRecordAdapter,
     CalibrationRunRecord,
 )
+from modules.scan_workflow.persistence_models import (
+    ReconstructionRecord,
+    ScanRecord,
+    ScanSessionRecord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +79,66 @@ CREATE TABLE IF NOT EXISTS calibration_captures (
 
 CREATE INDEX IF NOT EXISTS idx_calibration_captures_run
     ON calibration_captures(run_id, pose_index);
+
+-- ─── Phase 2 — scan workflow ──────────────────────────────────────
+-- append-only blob (ObjectStore) + immutable metadata row. is_active 자리 X.
+-- FK CASCADE — delete_scan_session 자리 자식 row 자동 삭제 (storage_layer.md §6).
+
+CREATE TABLE IF NOT EXISTS scan_sessions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    robot_id    TEXT    NOT NULL,
+    session_id  TEXT    NOT NULL,
+    created_at  REAL    NOT NULL,
+    label       TEXT,
+    note        TEXT,
+    UNIQUE(robot_id, session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_sessions_lookup
+    ON scan_sessions(robot_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS scans (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_row_id  INTEGER NOT NULL REFERENCES scan_sessions(id) ON DELETE CASCADE,
+    robot_id        TEXT    NOT NULL,
+    scan_id         INTEGER NOT NULL,
+    created_at      REAL    NOT NULL,
+    blob_key        TEXT    NOT NULL,
+    num_frames      INTEGER NOT NULL,
+    width           INTEGER NOT NULL,
+    height          INTEGER NOT NULL,
+    fx              REAL    NOT NULL,
+    fy              REAL    NOT NULL,
+    cx              REAL    NOT NULL,
+    cy              REAL    NOT NULL,
+    depth_scale     REAL    NOT NULL,
+    motor_positions TEXT    NOT NULL,   -- JSON list[int]
+    arm_motor_ids   TEXT    NOT NULL,   -- JSON list[int]
+    UNIQUE(session_row_id, scan_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scans_session
+    ON scans(session_row_id, scan_id ASC);
+
+CREATE TABLE IF NOT EXISTS reconstructions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_row_id  INTEGER NOT NULL REFERENCES scan_sessions(id) ON DELETE CASCADE,
+    robot_id        TEXT    NOT NULL,
+    created_at      REAL    NOT NULL,
+    blob_key        TEXT    NOT NULL,
+    voxel_size      REAL    NOT NULL,
+    sdf_trunc       REAL    NOT NULL,
+    depth_trunc     REAL    NOT NULL,
+    icp_max_dist    REAL    NOT NULL,
+    n_scans         INTEGER NOT NULL,
+    n_edges         INTEGER NOT NULL,
+    vertex_count    INTEGER NOT NULL,
+    triangle_count  INTEGER NOT NULL,
+    elapsed         REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_reconstructions_session
+    ON reconstructions(session_row_id, created_at DESC);
 """
 
 
@@ -254,6 +319,181 @@ class SqliteStore:
         with self._lock:
             self._conn.close()
 
+    # ─── Phase 2 — scan workflow ──────────────────────────────────
+
+    # scan_sessions
+    def insert_scan_session(self, record: ScanSessionRecord) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO scan_sessions "
+                "(robot_id, session_id, created_at, label, note) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    record.robot_id,
+                    record.session_id,
+                    record.created_at,
+                    record.label,
+                    record.note,
+                ),
+            )
+            return int(cur.lastrowid or 0)
+
+    def get_scan_session(self, session_row_id: int) -> ScanSessionRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM scan_sessions WHERE id=?", (session_row_id,)
+            ).fetchone()
+        return _row_to_scan_session(row) if row else None
+
+    def find_scan_session_by_id(
+        self, robot_id: str, session_id: str
+    ) -> ScanSessionRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM scan_sessions WHERE robot_id=? AND session_id=?",
+                (robot_id, session_id),
+            ).fetchone()
+        return _row_to_scan_session(row) if row else None
+
+    def list_scan_sessions(
+        self, robot_id: str, limit: int = 100
+    ) -> list[ScanSessionRecord]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM scan_sessions "
+                "WHERE robot_id=? ORDER BY created_at DESC LIMIT ?",
+                (robot_id, limit),
+            ).fetchall()
+        return [_row_to_scan_session(r) for r in rows]
+
+    def delete_scan_session(self, session_row_id: int) -> None:
+        # FK ON DELETE CASCADE — scans / reconstructions 자동 삭제.
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM scan_sessions WHERE id=?", (session_row_id,)
+            )
+
+    # scans
+    def allocate_scan_id(self, session_row_id: int) -> int:
+        # transaction lock 안 MAX+1 — concurrent insert 시 race 차단.
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                row = self._conn.execute(
+                    "SELECT COALESCE(MAX(scan_id), 0) + 1 AS next_id "
+                    "FROM scans WHERE session_row_id=?",
+                    (session_row_id,),
+                ).fetchone()
+                next_id = int(row["next_id"])
+                self._conn.execute("COMMIT")
+                return next_id
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    def insert_scan(self, record: ScanRecord) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO scans "
+                "(session_row_id, robot_id, scan_id, created_at, blob_key, "
+                " num_frames, width, height, fx, fy, cx, cy, depth_scale, "
+                " motor_positions, arm_motor_ids) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    record.session_row_id,
+                    record.robot_id,
+                    record.scan_id,
+                    record.created_at,
+                    record.blob_key,
+                    record.num_frames,
+                    record.width,
+                    record.height,
+                    record.fx,
+                    record.fy,
+                    record.cx,
+                    record.cy,
+                    record.depth_scale,
+                    json.dumps(record.motor_positions),
+                    json.dumps(record.arm_motor_ids),
+                ),
+            )
+            return int(cur.lastrowid or 0)
+
+    def list_scans(self, session_row_id: int) -> list[ScanRecord]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM scans WHERE session_row_id=? "
+                "ORDER BY scan_id ASC",
+                (session_row_id,),
+            ).fetchall()
+        return [_row_to_scan(r) for r in rows]
+
+    def get_scan(self, scan_row_id: int) -> ScanRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM scans WHERE id=?", (scan_row_id,)
+            ).fetchone()
+        return _row_to_scan(row) if row else None
+
+    def delete_scan(self, scan_row_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM scans WHERE id=?", (scan_row_id,))
+
+    # reconstructions
+    def insert_reconstruction(self, record: ReconstructionRecord) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO reconstructions "
+                "(session_row_id, robot_id, created_at, blob_key, "
+                " voxel_size, sdf_trunc, depth_trunc, icp_max_dist, "
+                " n_scans, n_edges, vertex_count, triangle_count, elapsed) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    record.session_row_id,
+                    record.robot_id,
+                    record.created_at,
+                    record.blob_key,
+                    record.voxel_size,
+                    record.sdf_trunc,
+                    record.depth_trunc,
+                    record.icp_max_dist,
+                    record.n_scans,
+                    record.n_edges,
+                    record.vertex_count,
+                    record.triangle_count,
+                    record.elapsed,
+                ),
+            )
+            return int(cur.lastrowid or 0)
+
+    def list_reconstructions(
+        self, session_row_id: int
+    ) -> list[ReconstructionRecord]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM reconstructions WHERE session_row_id=? "
+                "ORDER BY created_at DESC",
+                (session_row_id,),
+            ).fetchall()
+        return [_row_to_reconstruction(r) for r in rows]
+
+    def get_reconstruction(
+        self, recon_row_id: int
+    ) -> ReconstructionRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM reconstructions WHERE id=?", (recon_row_id,)
+            ).fetchone()
+        return _row_to_reconstruction(row) if row else None
+
+    def delete_reconstruction(self, recon_row_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM reconstructions WHERE id=?", (recon_row_id,)
+            )
+
+    # ─── Phase 1 (캘) 자리 ────────────────────────────────────────
+
     def activate_result(self, result_id: int) -> CalibrationResultRecord:
         with self._lock:
             try:
@@ -334,4 +574,58 @@ def _row_to_capture(row: sqlite3.Row) -> CalibrationCaptureRecord:
         residual_rot=row["residual_rot"],
         residual_trans=row["residual_trans"],
         weight=row["weight"],
+    )
+
+
+# ─── Phase 2 row converters ──────────────────────────────────
+
+
+def _row_to_scan_session(row: sqlite3.Row) -> ScanSessionRecord:
+    return ScanSessionRecord(
+        id=row["id"],
+        robot_id=row["robot_id"],
+        session_id=row["session_id"],
+        created_at=row["created_at"],
+        label=row["label"],
+        note=row["note"],
+    )
+
+
+def _row_to_scan(row: sqlite3.Row) -> ScanRecord:
+    return ScanRecord(
+        id=row["id"],
+        session_row_id=row["session_row_id"],
+        robot_id=row["robot_id"],
+        scan_id=row["scan_id"],
+        created_at=row["created_at"],
+        blob_key=row["blob_key"],
+        num_frames=row["num_frames"],
+        width=row["width"],
+        height=row["height"],
+        fx=row["fx"],
+        fy=row["fy"],
+        cx=row["cx"],
+        cy=row["cy"],
+        depth_scale=row["depth_scale"],
+        motor_positions=json.loads(row["motor_positions"]),
+        arm_motor_ids=json.loads(row["arm_motor_ids"]),
+    )
+
+
+def _row_to_reconstruction(row: sqlite3.Row) -> ReconstructionRecord:
+    return ReconstructionRecord(
+        id=row["id"],
+        session_row_id=row["session_row_id"],
+        robot_id=row["robot_id"],
+        created_at=row["created_at"],
+        blob_key=row["blob_key"],
+        voxel_size=row["voxel_size"],
+        sdf_trunc=row["sdf_trunc"],
+        depth_trunc=row["depth_trunc"],
+        icp_max_dist=row["icp_max_dist"],
+        n_scans=row["n_scans"],
+        n_edges=row["n_edges"],
+        vertex_count=row["vertex_count"],
+        triangle_count=row["triangle_count"],
+        elapsed=row["elapsed"],
     )

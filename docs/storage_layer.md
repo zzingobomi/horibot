@@ -497,12 +497,22 @@ Phase 1 의 generic 토대가 Phase 2/3 에서 그대로 재사용. Phase 2 는 
 
 ### Phase 2 — entity 확장
 
-- scans (`scan_*.npz`) — ObjectStore 진짜 사용 시작
-- meshes (`mesh_*.ply`)
-- scan_sessions (label / note)
-- task_runs
-- 캘 row 에 observability metrics / PnP reject 기록 통합 가능
-- **캘 raw image 보존 (Artifact 계층) 도입** — Phase 1 검증 후 진행. `calibration_captures.image_blob_key` 컬럼 추가 + ObjectStore key 컨벤션 (`calibration_captures/<run_id>/<pose_index>.jpg`). 마이그레이션 — 옛 row 들은 image_blob_key=null
+**scan_sessions / scans / reconstructions 자체 ✅ 완료 (2026-06-17)** — scene3d_decoupling.md 4-노드 분리 작업과 묶음. 상세:
+
+- **3 신규 테이블** ([adapters/sqlite.py](../backend/modules/storage/rdb/adapters/sqlite.py) _SCHEMA_SQL):
+  - `scan_sessions(id, robot_id, session_id, created_at, label, note)` UNIQUE(robot_id, session_id)
+  - `scans(id, session_row_id FK CASCADE, robot_id, scan_id, created_at, blob_key, num_frames, width/height/fx/fy/cx/cy/depth_scale, motor_positions JSON, arm_motor_ids JSON)` UNIQUE(session_row_id, scan_id)
+  - `reconstructions(id, session_row_id FK CASCADE, robot_id, created_at, blob_key, voxel_size/sdf_trunc/depth_trunc/icp_max_dist, n_scans/n_edges/vertex_count/triangle_count/elapsed)`
+- **RdbStore Protocol +12 method** ([rdb/store.py](../backend/modules/storage/rdb/store.py)) — `insert_scan_session` / `list_scan_sessions` / `find_scan_session_by_id` / `get_scan_session` / `delete_scan_session` (CASCADE) / `allocate_scan_id` (monotonic per session) / `insert_scan` / `list_scans` / `get_scan` / `delete_scan` / `insert_reconstruction` / `list_reconstructions` / `get_reconstruction` / `delete_reconstruction`
+- **양쪽 adapter 구현 + 같은 contract 테스트 통과** — `MemoryRdbStore` ([memory.py](../backend/modules/storage/rdb/adapters/memory.py)) + `SqliteStore` ([sqlite.py](../backend/modules/storage/rdb/adapters/sqlite.py)). [tests/test_storage_phase2.py](../backend/tests/test_storage_phase2.py) parametrize 자체 18 tests
+- **ObjectStore 실 사용 시작** — `FilesystemObjectStore` + `MemoryObjectStore` 둘 다 동작. blob key 컨벤션: `scans/<robot_id>/<session_id>/<scan_id:03d>.bin` + `reconstructions/<robot_id>/<session_id>/recon_<ts>.ply`
+- **storage_node service +10** ([storage_node.py](../backend/nodes/application/storage_node.py)) — NEW_SCAN_SESSION / LIST_SCAN_SESSIONS / DELETE_SCAN_SESSION (자식 blob_key fetch 후 ObjectStore delete + RDB CASCADE) / PUT_SCAN (allocate_scan_id + blob put + INSERT atomic) / LIST_SCANS / DELETE_SCAN (blob + RDB) / GET_BLOB (generic) / PUT_RECONSTRUCTION (blob_key = `recon_<ts>.ply`) / LIST_RECONSTRUCTIONS / DELETE_RECONSTRUCTION
+- **Pydantic `Base64Bytes`** — Phase 2 entity 의 binary blob (scan blob + reconstruction PLY) 자체 `bytes` 로는 `model_dump_json` 시 utf-8 인코딩 실패. `Base64Bytes` 자체 wire 시 base64 string, Python 코드는 raw bytes. [scene3d.py](../backend/core/transport/messages/scene3d.py) + [storage.py](../backend/core/transport/messages/storage.py) 의 blob field 모두 적용
+
+**남은 자리**:
+- task_runs (실행 결과 record) — 미진입
+- 캘 row 의 observability metrics / PnP reject 기록 통합 — 미진입
+- **캘 raw image 보존 (Artifact 계층)** — Phase 1 검증 후 진행. `calibration_captures.image_blob_key` 컬럼 추가 + ObjectStore key 컨벤션 (`calibration_captures/<run_id>/<pose_index>.jpg`). 마이그레이션 — 옛 row 들은 image_blob_key=null
 
 ### Phase 3 — NAS backend
 

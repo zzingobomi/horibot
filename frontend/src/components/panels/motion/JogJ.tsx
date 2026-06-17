@@ -1,40 +1,43 @@
 /**
- * SpeedJ Jog — joint velocity 추종 (산업 펜던트 jog 패턴).
+ * JogJ — joint-space human velocity jog (motion_taxonomy.md §Jog).
  *
- * 버튼 hold 동안 50Hz 로 `MOTION_SPEED_J` publish → backend `_velocity_loop` 가
- * Ruckig velocity mode + jerk-limited 추종 + 100ms deadman timeout. 손 떼면
- * publish 멈춤 → backend 자동 감속 정지. 게임패드 LT hold 와 동일 메커니즘.
+ * Wire 자리 `MOTION_JOG_J_STREAM` topic publish (fire-and-forget, 50Hz). backend
+ * JogJCommand 가 자기 process joint_cache (joint_offset 적용 URDF rad) 에서 ref
+ * latch + 실 측정 dt 자리 적분 → 절대 URDF rad target → publish_cmd.
  *
- * 한 번에 1 joint 만 hold (산업 펜던트 컨벤션 — 여러 joint 동시 jog 는 예측 어려움).
+ * cross-process safe — frontend 는 *velocity 만* 알면 되며 joint_offset / URDF
+ * rad 자리 backend SSOT 자리. 동일 wire 자리 gamepad 자리도 사용.
+ *
+ * IDLE_RESET_S (backend) 자리 publish 끊긴 후 자동 fresh latch — button up 후
+ * 모터 settled 자리에 다시 hold 시 인코더 - ref 누적 drift 차단.
+ *
+ * 한 번에 1 joint 만 jog (산업 펜던트 컨벤션).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import * as SliderPrimitive from "@radix-ui/react-slider";
-import { PanelButton } from "@/components/shared/PanelButton";
-import { useService, useTopic } from "@/framework";
-import { ServiceKey, Topic } from "@/constants/topics";
+import { useTopic } from "@/framework";
+import { Topic } from "@/constants/topics";
 import { useArmJoints } from "@/lib/robot/config";
+import { bridge } from "@/api/bridge";
 
-const PUBLISH_DT_MS = 20; // 50Hz — backend deadman timeout 100ms 안에 갱신.
-const JOINT_VEL_MAX = 0.6; // rad/s — 게임패드 GamepadNode 와 동일 권장치.
+const PUBLISH_DT_MS = 20; // 50Hz
+const JOINT_VEL_MAX = 0.6; // rad/s — gamepad 자리 와 같은 권장치
 
-export function SpeedJControl() {
+export function JogJControl() {
   const { id: robotId = "" } = useParams<{ id: string }>();
   const armJoints = useArmJoints(robotId);
   const joints = useTopic(Topic.MOTOR_STATE_JOINT, robotId)?.joints ?? [];
-  const speedJ = useService(ServiceKey.MOTION_SPEED_J, robotId);
 
   const armIds = useMemo(() => new Set(armJoints.map((j) => j.id)), [armJoints]);
   const currentJoints = joints.filter((j) => armIds.has(j.id));
 
-  // jog 진행 중인 joint id + 방향. null = idle.
   const [jogState, setJogState] = useState<{ id: number; dir: 1 | -1 } | null>(
     null,
   );
-  const [velocityScale, setVelocityScale] = useState(0.3); // 0.1 ~ 1.0
+  const [velocityScale, setVelocityScale] = useState(0.3);
 
   const intervalRef = useRef<number | null>(null);
-  // 최신 jogState/velocityScale 를 setInterval 콜백이 읽어야 함 — closure stale 방지.
   const stateRef = useRef<{
     jog: { id: number; dir: 1 | -1 } | null;
     scale: number;
@@ -49,17 +52,16 @@ export function SpeedJControl() {
       intervalRef.current = null;
     }
     setJogState(null);
-    // 명시적 stop publish — backend deadman timeout (100ms) 기다리지 말고
-    // 즉시 target=0 → joint Ruckig jerk-limited 감속. pendant button up
-    // 의 *명시 signal* 자리.
-    if (armJoints.length > 0) {
-      void speedJ.call({ velocities: armJoints.map(() => 0) });
-    }
-  }, [armJoints, speedJ]);
+    // publish 중단 → backend IDLE_RESET_S (0.2s) 후 fresh latch 준비. 모터는
+    // *마지막 target 머무름* (자연 정지).
+  }, []);
 
   const startJog = useCallback(
     (id: number, dir: 1 | -1) => {
       if (armJoints.length === 0) return;
+      const targetIdx = armJoints.findIndex((j) => j.id === id);
+      if (targetIdx < 0) return;
+
       setJogState({ id, dir });
       if (intervalRef.current !== null) {
         window.clearInterval(intervalRef.current);
@@ -70,13 +72,16 @@ export function SpeedJControl() {
         const velocities = armJoints.map((j) =>
           j.id === s.jog!.id ? s.jog!.dir * s.scale * JOINT_VEL_MAX : 0,
         );
-        void speedJ.call({ velocities });
+        bridge.publish(
+          Topic.MOTION_JOG_J_STREAM,
+          { velocities },
+          robotId,
+        );
       }, PUBLISH_DT_MS);
     },
-    [armJoints, speedJ],
+    [armJoints, robotId],
   );
 
-  // 컴포넌트 unmount 시 jog 정지 — 탭 전환해도 robot 안 도망감.
   useEffect(() => {
     return () => {
       if (intervalRef.current !== null) {
@@ -86,7 +91,6 @@ export function SpeedJControl() {
     };
   }, []);
 
-  // 전역 pointerup — 버튼 위에서 손 떼지 않고 옆으로 끌고 가도 jog 정지.
   useEffect(() => {
     if (jogState === null) return;
     const handler = () => stopJog();
@@ -101,8 +105,8 @@ export function SpeedJControl() {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-[10px] text-zinc-500 font-mono leading-relaxed">
-        ※ 버튼 hold = joint velocity jog. 손 떼면 deadman timeout (100ms) 자동
-        정지.
+        ※ 버튼 hold = joint velocity publish (50Hz). backend latch + dt 적분
+        → 직접 publish. cross-process safe (joint_offset SSOT = backend).
       </p>
 
       <div className="flex flex-col gap-1.5">
@@ -130,7 +134,7 @@ export function SpeedJControl() {
                 }}
                 className={`flex-1 h-7 rounded border text-[11px] font-mono uppercase tracking-wide transition-colors ${
                   isActiveMinus
-                    ? "bg-amber-500/30 border-amber-500/60 text-amber-200"
+                    ? "bg-emerald-500/30 border-emerald-500/60 text-emerald-200"
                     : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-100"
                 }`}
               >
@@ -143,7 +147,7 @@ export function SpeedJControl() {
                 }}
                 className={`flex-1 h-7 rounded border text-[11px] font-mono uppercase tracking-wide transition-colors ${
                   isActivePlus
-                    ? "bg-amber-500/30 border-amber-500/60 text-amber-200"
+                    ? "bg-emerald-500/30 border-emerald-500/60 text-emerald-200"
                     : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-100"
                 }`}
               >
@@ -167,9 +171,9 @@ export function SpeedJControl() {
           onValueChange={(v) => setVelocityScale(v[0])}
         >
           <SliderPrimitive.Track className="relative h-1 w-full grow rounded-full bg-zinc-800">
-            <SliderPrimitive.Range className="absolute h-full rounded-full bg-amber-500/40" />
+            <SliderPrimitive.Range className="absolute h-full rounded-full bg-emerald-500/40" />
           </SliderPrimitive.Track>
-          <SliderPrimitive.Thumb className="block h-3.5 w-3.5 rounded-full border border-amber-400 bg-zinc-900 shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400" />
+          <SliderPrimitive.Thumb className="block h-3.5 w-3.5 rounded-full border border-emerald-400 bg-zinc-900 shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-emerald-400" />
         </SliderPrimitive.Root>
         <span className="text-[10px] text-zinc-400 tabular-nums w-16 text-right">
           {(velocityScale * JOINT_VEL_MAX).toFixed(2)} rad/s

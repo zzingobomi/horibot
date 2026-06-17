@@ -1,27 +1,32 @@
 /**
- * SpeedTcp Jog — TCP twist 추종 (산업 펜던트 cartesian jog 패턴).
+ * JogTcp — Cartesian human velocity jog (motion_taxonomy.md §Jog).
  *
- * 버튼 hold 동안 50Hz 로 `MOTION_SPEED_TCP` publish → backend `_velocity_loop` 가
- * Jacobian pseudo-inverse + Ruckig velocity mode + jerk-limited 추종. 손 떼면
- * publish 멈춤 → backend 100ms deadman timeout 자동 정지.
+ * Wire 자리 `MOTION_JOG_TCP_STREAM` topic publish (fire-and-forget, 50Hz). backend
+ * JogTcpCommand 가 자기 process 의 joint_cache → fk + tool_offset 으로 *실 끝점
+ * pose* fresh latch + 실 측정 dt 자리 SE(3) 적분 → IK → publish_cmd.
  *
- * 5DOF robot (OMX-F) 자리는 angular 무시 (server side linear-only fallback).
+ * SE(3) 적분 자리 backend SSOT (scipy.spatial.transform.Rotation) — frontend
+ * Three.js / Python gamepad 자리 중복 회피. 동일 wire 자리 gamepad 자리도 사용.
+ *
+ * 5DOF (OMX-F) 자리 angular 무시 (backend IK 가 position-only fallback).
+ * IDLE_RESET_S (backend) 자리 publish 끊긴 후 자동 fresh latch.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import * as SliderPrimitive from "@radix-ui/react-slider";
 import { PanelButton } from "@/components/shared/PanelButton";
-import { useService } from "@/framework";
-import { ServiceKey } from "@/constants/topics";
+import { Topic } from "@/constants/topics";
+import { bridge } from "@/api/bridge";
 
 const PUBLISH_DT_MS = 20; // 50Hz
-const TCP_LINEAR_MAX = 0.08; // m/s — 게임패드 GamepadNode 와 동일.
+const TCP_LINEAR_MAX = 0.08; // m/s — gamepad 자리 와 같은 권장치
 const TCP_ANGULAR_MAX = 0.8; // rad/s
 
 type LinearAxis = "X" | "Y" | "Z";
 type AngularAxis = "Rx" | "Ry" | "Rz";
 type AxisKey = LinearAxis | AngularAxis;
 type Dir = 1 | -1;
+type Frame = "base" | "tcp";
 
 interface JogState {
   axis: AxisKey;
@@ -49,12 +54,11 @@ function buildTwist(
   return { linear, angular };
 }
 
-export function SpeedTcpControl() {
+export function JogTcpControl() {
   const { id: robotId = "" } = useParams<{ id: string }>();
-  const speedTcp = useService(ServiceKey.MOTION_SPEED_TCP, robotId);
 
   const [jogState, setJogState] = useState<JogState | null>(null);
-  const [frame, setFrame] = useState<"base" | "tcp">("base");
+  const [frame, setFrame] = useState<Frame>("base");
   const [linearScale, setLinearScale] = useState(0.4);
   const [angularScale, setAngularScale] = useState(0.3);
 
@@ -63,7 +67,7 @@ export function SpeedTcpControl() {
     jog: JogState | null;
     linear: number;
     angular: number;
-    frame: "base" | "tcp";
+    frame: Frame;
   }>({ jog: null, linear: 0.4, angular: 0.3, frame: "base" });
   useEffect(() => {
     stateRef.current = {
@@ -80,15 +84,9 @@ export function SpeedTcpControl() {
       intervalRef.current = null;
     }
     setJogState(null);
-    // 명시적 stop publish — backend deadman timeout (100ms) 기다리지 말고
-    // 즉시 target=0 → joint Ruckig jerk-limited 감속. button up event 가
-    // backend 로 *명시*되니 짧은 burst 자리 ramp-down 시작 시점 정확.
-    void speedTcp.call({
-      linear: [0, 0, 0],
-      angular: [0, 0, 0],
-      frame: stateRef.current.frame,
-    });
-  }, [speedTcp]);
+    // publish 중단 = backend IDLE_RESET_S (0.2s) 후 fresh latch 준비. 모터는
+    // *마지막 valid target 머무름* (자연 정지).
+  }, []);
 
   const startJog = useCallback(
     (axis: AxisKey, dir: Dir) => {
@@ -100,10 +98,14 @@ export function SpeedTcpControl() {
         const s = stateRef.current;
         if (s.jog === null) return;
         const twist = buildTwist(s.jog, s.linear, s.angular);
-        void speedTcp.call({ ...twist, frame: s.frame });
+        bridge.publish(
+          Topic.MOTION_JOG_TCP_STREAM,
+          { ...twist, frame: s.frame },
+          robotId,
+        );
       }, PUBLISH_DT_MS);
     },
-    [speedTcp],
+    [robotId],
   );
 
   useEffect(() => {
@@ -139,7 +141,7 @@ export function SpeedTcpControl() {
           }}
           className={`flex-1 h-7 rounded border text-[11px] uppercase tracking-wide transition-colors ${
             isMinus
-              ? "bg-amber-500/30 border-amber-500/60 text-amber-200"
+              ? "bg-emerald-500/30 border-emerald-500/60 text-emerald-200"
               : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-100"
           }`}
         >
@@ -152,7 +154,7 @@ export function SpeedTcpControl() {
           }}
           className={`flex-1 h-7 rounded border text-[11px] uppercase tracking-wide transition-colors ${
             isPlus
-              ? "bg-amber-500/30 border-amber-500/60 text-amber-200"
+              ? "bg-emerald-500/30 border-emerald-500/60 text-emerald-200"
               : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-100"
           }`}
         >
@@ -166,7 +168,7 @@ export function SpeedTcpControl() {
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <p className="text-[10px] text-zinc-500 font-mono leading-relaxed">
-          ※ 버튼 hold = TCP twist jog. 5DOF 자리는 angular 무시.
+          ※ 버튼 hold = TCP twist publish (50Hz). backend latch + SE(3) 적분.
         </p>
         <div className="flex items-center gap-1">
           <span className="text-[9px] uppercase tracking-widest text-zinc-600 font-mono">
@@ -209,9 +211,9 @@ export function SpeedTcpControl() {
           onValueChange={(v) => setLinearScale(v[0])}
         >
           <SliderPrimitive.Track className="relative h-1 w-full grow rounded-full bg-zinc-800">
-            <SliderPrimitive.Range className="absolute h-full rounded-full bg-amber-500/40" />
+            <SliderPrimitive.Range className="absolute h-full rounded-full bg-emerald-500/40" />
           </SliderPrimitive.Track>
-          <SliderPrimitive.Thumb className="block h-3.5 w-3.5 rounded-full border border-amber-400 bg-zinc-900 shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400" />
+          <SliderPrimitive.Thumb className="block h-3.5 w-3.5 rounded-full border border-emerald-400 bg-zinc-900 shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-emerald-400" />
         </SliderPrimitive.Root>
         <span className="text-[10px] text-zinc-400 tabular-nums w-16 text-right">
           {(linearScale * TCP_LINEAR_MAX * 1000).toFixed(0)} mm/s
@@ -238,9 +240,9 @@ export function SpeedTcpControl() {
           onValueChange={(v) => setAngularScale(v[0])}
         >
           <SliderPrimitive.Track className="relative h-1 w-full grow rounded-full bg-zinc-800">
-            <SliderPrimitive.Range className="absolute h-full rounded-full bg-amber-500/40" />
+            <SliderPrimitive.Range className="absolute h-full rounded-full bg-emerald-500/40" />
           </SliderPrimitive.Track>
-          <SliderPrimitive.Thumb className="block h-3.5 w-3.5 rounded-full border border-amber-400 bg-zinc-900 shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400" />
+          <SliderPrimitive.Thumb className="block h-3.5 w-3.5 rounded-full border border-emerald-400 bg-zinc-900 shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-emerald-400" />
         </SliderPrimitive.Root>
         <span className="text-[10px] text-zinc-400 tabular-nums w-16 text-right">
           {(angularScale * TCP_ANGULAR_MAX).toFixed(2)} rad/s

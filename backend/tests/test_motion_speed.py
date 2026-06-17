@@ -1,35 +1,36 @@
-"""TrajectoryRunner 의 velocity streamer + ServoTcpCommand 동작 in-process 검증.
+"""TrajectoryRunner + Servo / Jog command 동작 in-process 검증.
 
-motion_taxonomy.md Phase 1 의 SpeedJ / SpeedTcp / ServoTcp 가 mock motor 없이도
-*runner 단독* 으로 정상 동작하는지. e2e (zenoh service 호출) 는 별도 자리.
+motion_taxonomy.md 4 계층 자리 (Move / Servo / Jog / Task) 의 Servo / Jog 자리.
 
 검증 자리:
-- SpeedJ: set 호출 시 publish_cmd 가 호출됨 + target velocity 추종.
-- SpeedJ timeout: 더 이상 갱신 X → jerk-limited 감속 후 자연 종료.
-- SpeedTcp: tcp_twist_to_joint_vel 콜백 호출됨.
-- ServoTcpCommand: 직접 publish_cmd 호출 (planner 우회).
+- ServoTcpCommand: 절대 target → 직접 IK + publish (planner 우회).
+- ServoJCommand: 절대 joint target → 직접 publish (IK 불요).
+- JogJCommand: velocity input + backend latched ref + dt 적분.
+- JogTcpCommand: twist input + backend latched ref + SE(3) 적분 + IK + publish.
+- IDLE_RESET_S 후 fresh latch 자리 (인코더 - ref 누적 drift 차단).
 """
 
 from __future__ import annotations
 
 import time
 
+import numpy as np
 import pytest
 
-from modules.kinematics.motion_commands import ServoTcpCommand
+from modules.kinematics.motion_commands import (
+    JogJCommand,
+    JogTcpCommand,
+    ServoJCommand,
+    ServoTcpCommand,
+)
 from modules.kinematics.trajectory_runner import (
     TRAJ_DT,
-    VELOCITY_INPUT_TIMEOUT,
     TrajectoryRunner,
 )
 
 
 def _make_runner(n: int = 5) -> tuple[TrajectoryRunner, list[list[float]], list[tuple]]:
-    """단독 TrajectoryRunner. publish_cmd / state / IK 콜백 모두 stub.
-
-    solve_ik stub = 받은 angle 그대로 반환 (cartesian path 자리 fallback).
-    tcp_twist_to_joint_vel = linear[0] 을 J1 velocity 로 매핑 (단순 식별 검증).
-    """
+    """단독 TrajectoryRunner. publish_cmd / state / IK 콜백 모두 stub."""
     cmds: list[list[float]] = []
     states: list[tuple] = []
 
@@ -42,14 +43,7 @@ def _make_runner(n: int = 5) -> tuple[TrajectoryRunner, list[list[float]], list[
     def get_angles() -> list[float]:
         return [0.0] * n
 
-    def twist_to_vel(
-        lin: list[float], ang: list[float], joint: list[float], frame: str
-    ) -> list[float] | None:
-        # linear[0] = J1 vel, 나머지 0. frame 무관 (stub).
-        return [lin[0]] + [0.0] * (n - 1)
-
     def solve_ik(pos, angles):
-        # cartesian path stub — 받은 자세 그대로.
         return list(angles)
 
     runner = TrajectoryRunner(
@@ -66,92 +60,15 @@ def _make_runner(n: int = 5) -> tuple[TrajectoryRunner, list[list[float]], list[
         publish_state=pub_state,
         solve_ik=solve_ik,
         get_joint_angles=get_angles,
-        tcp_twist_to_joint_vel=twist_to_vel,
     )
     return runner, cmds, states
 
 
-def test_speed_j_publishes_and_tracks_target():
-    """SpeedJ — target velocity 0.5 rad/s 추종 시 J1 position 단조 증가."""
-    runner, cmds, _ = _make_runner()
-    try:
-        # 50ms 동안 0.5 rad/s 갱신 (50Hz × ~2 step)
-        end = time.time() + 0.05
-        while time.time() < end:
-            runner.set_speed_joint([0.5, 0.0, 0.0, 0.0, 0.0])
-            time.sleep(0.005)
-        time.sleep(0.05)  # publish 더 받기
-
-        assert len(cmds) >= 2, f"publish_cmd 가 충분히 호출 안 됨: {len(cmds)}"
-        j1_first = cmds[0][0]
-        j1_last = cmds[-1][0]
-        assert j1_last > j1_first, (
-            f"J1 position 증가 안 함: first={j1_first} last={j1_last}"
-        )
-        # 다른 joint 는 0 근처에 유지 (target=0)
-        for cmd in cmds:
-            for j in cmd[1:]:
-                assert abs(j) < 0.01, f"비-target joint 가 0 이탈: {cmd}"
-    finally:
-        runner.stop()
-
-
-def test_speed_j_timeout_decelerates_and_terminates():
-    """SpeedJ — 갱신 끊김 → 100ms timeout 후 target=0 → idle grace 후 자연 종료."""
-    runner, cmds, states = _make_runner()
-    try:
-        runner.set_speed_joint([0.5, 0.0, 0.0, 0.0, 0.0])
-        time.sleep(0.05)  # 잠시 추종
-
-        # 더 이상 set X. timeout (100ms) + idle grace (500ms) + 감속 margin.
-        time.sleep(VELOCITY_INPUT_TIMEOUT + 1.0)
-
-        assert not runner.is_running, "streamer 가 자연 종료 안 됨"
-        # 종료 직전 cmd 가 변하지 않아야 (target=0 + 실 velocity=0)
-        assert len(cmds) >= 4
-        # 마지막 2 cmd 사이 J1 변동 < 1e-3 (이미 정지)
-        delta = abs(cmds[-1][0] - cmds[-2][0])
-        assert delta < 1e-3, f"종료 시점에 아직 움직임: delta={delta}"
-    finally:
-        runner.stop()
-
-
-def test_speed_tcp_invokes_twist_callback():
-    """SpeedTcp — tcp_twist_to_joint_vel stub (linear[0]→J1) 가 적용되어
-    J1 position 이 linear vx 방향으로 움직임."""
-    runner, cmds, _ = _make_runner()
-    try:
-        end = time.time() + 0.05
-        while time.time() < end:
-            runner.set_speed_tcp(
-                linear=[0.5, 0.0, 0.0],
-                angular=[0.0, 0.0, 0.0],
-                frame="base",
-            )
-            time.sleep(0.005)
-        time.sleep(0.05)
-
-        assert len(cmds) >= 2
-        # twist_to_vel stub 가 linear[0]=0.5 → J1 vel=0.5
-        assert cmds[-1][0] > cmds[0][0], (
-            f"SpeedTcp J1 추종 실패: {cmds[0][0]} → {cmds[-1][0]}"
-        )
-    finally:
-        runner.stop()
-
-
-def test_speed_j_dof_mismatch_raises():
-    """SpeedJ velocities 길이 ≠ n_arm 이면 ValueError."""
-    runner, _, _ = _make_runner(n=5)
-    try:
-        with pytest.raises(ValueError, match="length|길이"):
-            runner.set_speed_joint([0.5, 0.0])  # 5축인데 2개만
-    finally:
-        runner.stop()
+# ─── ServoTcp / ServoJ — 절대 target chase ──────────────────────────
 
 
 def test_servo_tcp_command_publishes_directly():
-    """ServoTcpCommand — runner trajectory 없이 publish_cmd 직접 호출 (chase)."""
+    """ServoTcpCommand — 절대 target → planner 우회 IK + publish."""
     cmds: list[list[float]] = []
     solve_calls: list[tuple] = []
 
@@ -160,7 +77,6 @@ def test_servo_tcp_command_publishes_directly():
 
     def solve_servo(position, quaternion, angles):
         solve_calls.append((tuple(position), quaternion, tuple(angles)))
-        # stub IK = current angles 에 position[0] 더한 J1.
         result = list(angles)
         result[0] += position[0]
         return result
@@ -170,27 +86,22 @@ def test_servo_tcp_command_publishes_directly():
     try:
         req = {"data": {"position": [0.1, 0.0, 0.0], "quaternion": None}}
         cmd.execute(req, [0.0] * 5, [0.0, 0.0, 0.0], runner)
-
         assert len(solve_calls) == 1
         assert len(cmds) == 1
-        # stub IK 가 J1 에 0.1 더함
         assert cmds[0][0] == pytest.approx(0.1, abs=1e-9)
     finally:
         runner.stop()
 
 
 def test_servo_tcp_with_quaternion_passed_through():
-    """ServoTcp 의 quaternion 필드 — solve 콜백에 그대로 전달 (6DOF)."""
+    """ServoTcp — quaternion 자리 6DOF 자리 그대로 IK 콜백 전달."""
     solve_calls: list[tuple] = []
-
-    def pub_cmd(a):
-        pass
 
     def solve_servo(position, quaternion, angles):
         solve_calls.append((tuple(position), quaternion, tuple(angles)))
         return list(angles)
 
-    cmd = ServoTcpCommand(solve_servo, pub_cmd)
+    cmd = ServoTcpCommand(solve_servo, lambda a: None)
     runner, _, _ = _make_runner()
     try:
         req = {
@@ -206,15 +117,12 @@ def test_servo_tcp_with_quaternion_passed_through():
 
 
 def test_servo_tcp_ik_failure_raises():
-    """ServoTcp — IK 가 None 반환 시 ValueError."""
-
-    def pub_cmd(a):
-        pass
+    """ServoTcp — IK None 자리 ValueError."""
 
     def solve_servo(position, quaternion, angles):
-        return None  # IK 수렴 실패 시뮬
+        return None
 
-    cmd = ServoTcpCommand(solve_servo, pub_cmd)
+    cmd = ServoTcpCommand(solve_servo, lambda a: None)
     runner, _, _ = _make_runner()
     try:
         req = {"data": {"position": [0.1, 0.0, 0.0], "quaternion": None}}
@@ -224,9 +132,277 @@ def test_servo_tcp_ik_failure_raises():
         runner.stop()
 
 
-def test_traj_dt_constant_sanity():
-    """50Hz 보장 — TRAJ_DT 가 0.02 라고 가정한 다른 자리 (gamepad poll, server timeout) 안전."""
-    assert TRAJ_DT == pytest.approx(0.02, abs=1e-6)
-    assert VELOCITY_INPUT_TIMEOUT >= 5 * TRAJ_DT, (
-        "timeout 이 너무 짧음 — 매 step 갱신 가능한 마진 필요"
+def test_servo_j_command_publishes_directly():
+    """ServoJCommand — 절대 joint target 직접 publish (IK 불요)."""
+    cmds: list[list[float]] = []
+
+    def pub_cmd(a):
+        cmds.append(list(a))
+
+    cmd = ServoJCommand(pub_cmd, n_arm=6)
+    runner, _, _ = _make_runner(n=6)
+    try:
+        req = {"data": {"positions": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]}}
+        cmd.execute(req, [], [], runner)
+        assert len(cmds) == 1
+        assert cmds[0] == pytest.approx([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    finally:
+        runner.stop()
+
+
+def test_servo_j_command_validates_dof():
+    """ServoJCommand — positions 길이 != arm dof 자리 validate 실패."""
+    cmd = ServoJCommand(lambda a: None, n_arm=6)
+    assert cmd.validate({"data": {"positions": [0.0] * 5}}) is not None
+    assert cmd.validate({"data": {"positions": [0.0] * 6}}) is None
+    assert cmd.validate({"data": {}}) is not None
+
+
+# ─── JogJ — velocity input + backend latch + 적분 ──────────────────
+
+
+def test_jog_j_first_publish_latches_from_cache():
+    """JogJCommand 첫 publish 자리 joint_cache 의 현재 URDF rad 으로 latch.
+
+    velocity 입력 자리 영향 X (첫 publish 자리 fresh latch = 현재 위치).
+    """
+    cmds: list[list[float]] = []
+
+    def pub_cmd(a):
+        cmds.append(list(a))
+
+    current_state = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+
+    cmd = JogJCommand(pub_cmd, lambda: list(current_state), n_arm=6)
+    runner, _, _ = _make_runner(n=6)
+    try:
+        cmd.execute({"data": {"velocities": [1.0] * 6}}, [], [], runner)
+        assert len(cmds) == 1
+        assert cmds[0] == pytest.approx(current_state)
+    finally:
+        runner.stop()
+
+
+def test_jog_j_command_validates_dof():
+    """JogJCommand — velocities 길이 검증."""
+    cmd = JogJCommand(lambda a: None, lambda: [0.0] * 6, n_arm=6)
+    assert cmd.validate({"data": {"velocities": [0.0] * 5}}) is not None
+    assert cmd.validate({"data": {"velocities": [0.0] * 6}}) is None
+    assert cmd.validate({"data": {}}) is not None
+
+
+def test_jog_j_streaming_integrates_velocity():
+    """50Hz publish loop — backend 실 dt 적분 → J1 단조 증가."""
+    cmds: list[list[float]] = []
+
+    def pub_cmd(a):
+        cmds.append(list(a))
+
+    cmd = JogJCommand(pub_cmd, lambda: [0.0] * 6, n_arm=6)
+    runner, _, _ = _make_runner(n=6)
+    try:
+        for _ in range(10):
+            cmd.execute(
+                {"data": {"velocities": [0.5, 0, 0, 0, 0, 0]}}, [], [], runner
+            )
+            time.sleep(0.02)
+        assert len(cmds) == 10
+        assert cmds[0] == pytest.approx([0.0] * 6, abs=1e-9)
+        for i in range(9):
+            step = cmds[i + 1][0] - cmds[i][0]
+            assert step > 0, f"cycle {i}→{i+1} step {step} not increasing"
+            assert 0.005 < step < 0.04, f"cycle {i}→{i+1} step {step} out of range"
+        for c in cmds:
+            assert c[1:] == pytest.approx([0.0] * 5, abs=1e-9)
+    finally:
+        runner.stop()
+
+
+def test_jog_j_idle_reset_fresh_latches():
+    """IDLE_RESET_S 보다 publish 끊긴 후 → joint_cache fresh latch."""
+    cmds: list[list[float]] = []
+    cache_state = {"value": [0.0] * 5}
+
+    cmd = JogJCommand(
+        lambda a: cmds.append(list(a)),
+        lambda: list(cache_state["value"]),
+        n_arm=5,
     )
+    runner, _, _ = _make_runner(n=5)
+    try:
+        for _ in range(5):
+            cmd.execute(
+                {"data": {"velocities": [0.5, 0, 0, 0, 0]}}, [], [], runner
+            )
+            time.sleep(0.02)
+        last_first_session = cmds[-1][0]
+        cache_state["value"] = [last_first_session, 0, 0, 0, 0]
+
+        time.sleep(0.3)  # IDLE_RESET_S=0.2s 초과
+
+        cmd.execute({"data": {"velocities": [0.5] + [0] * 4}}, [], [], runner)
+        # fresh latch — cache_state 값 그대로.
+        assert cmds[-1][0] == pytest.approx(last_first_session, abs=1e-9)
+    finally:
+        runner.stop()
+
+
+def test_jog_j_raises_when_cache_empty():
+    """JogJ — joint_cache 비어있으면 fresh latch 실패."""
+    cmd = JogJCommand(lambda a: None, lambda: None, n_arm=5)
+    runner, _, _ = _make_runner(n=5)
+    try:
+        with pytest.raises(ValueError, match="joint_cache"):
+            cmd.execute(
+                {"data": {"velocities": [0.0] * 5}}, [], [], runner
+            )
+    finally:
+        runner.stop()
+
+
+# ─── JogTcp — twist input + backend latch + SE(3) 적분 + IK ────────
+
+
+def test_jog_tcp_first_publish_latches_from_fk():
+    """JogTcpCommand 첫 publish 자리 fk + tool_offset → fresh latch + IK + publish."""
+    cmds: list[list[float]] = []
+    solve_calls: list[tuple] = []
+    fk_pos = np.array([0.3, 0.0, 0.4])
+    fk_quat = np.array([0.0, 0.0, 0.0, 1.0])
+
+    def fk(angles):
+        return fk_pos, fk_quat
+
+    def tool_offset_base(angles):
+        return np.zeros(3)
+
+    def solve_servo(position, quaternion, angles):
+        solve_calls.append((tuple(position), tuple(quaternion), tuple(angles)))
+        return list(angles)
+
+    cmd = JogTcpCommand(
+        solve_servo,
+        lambda a: cmds.append(list(a)),
+        lambda: [0.0] * 6,
+        fk,
+        tool_offset_base,
+    )
+    runner, _, _ = _make_runner(n=6)
+    try:
+        req = {"data": {"linear": [0.0] * 3, "angular": [0.0] * 3, "frame": "base"}}
+        cmd.execute(req, [], [], runner)
+        assert len(solve_calls) == 1
+        # fresh latch + IK = 현재 자세 (= fk_pos, fk_quat).
+        assert solve_calls[0][0] == pytest.approx((0.3, 0.0, 0.4))
+        assert solve_calls[0][1] == pytest.approx((0.0, 0.0, 0.0, 1.0))
+        assert len(cmds) == 1
+    finally:
+        runner.stop()
+
+
+def test_jog_tcp_linear_base_frame_integrates():
+    """JogTcp linear (base frame) — 실 dt 자리 ref pos 적분, IK 호출."""
+    cmds: list[list[float]] = []
+    solve_calls: list[tuple] = []
+
+    def solve_servo(position, quaternion, angles):
+        solve_calls.append(tuple(position))
+        return list(angles)
+
+    cmd = JogTcpCommand(
+        solve_servo,
+        lambda a: cmds.append(list(a)),
+        lambda: [0.0] * 6,
+        lambda a: (np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 0.0, 1.0])),
+        lambda a: np.zeros(3),
+    )
+    runner, _, _ = _make_runner(n=6)
+    try:
+        # 10 cycle × Z velocity 0.05 m/s × ~20ms → Z position 단조 증가
+        for _ in range(10):
+            cmd.execute(
+                {
+                    "data": {
+                        "linear": [0.0, 0.0, 0.05],
+                        "angular": [0.0] * 3,
+                        "frame": "base",
+                    }
+                },
+                [], [], runner,
+            )
+            time.sleep(0.02)
+        # 첫 publish 자리 (fresh latch) z=0, 이후 적분.
+        assert solve_calls[0][2] == pytest.approx(0.0)
+        for i in range(9):
+            step = solve_calls[i + 1][2] - solve_calls[i][2]
+            assert step > 0
+            assert 0.0003 < step < 0.003  # 0.05 m/s × ~20ms = 1mm
+    finally:
+        runner.stop()
+
+
+def test_jog_tcp_validates_input():
+    """JogTcp — linear/angular 누락 또는 frame 잘못 자리 reject."""
+    cmd = JogTcpCommand(
+        lambda *a: [0.0],
+        lambda a: None,
+        lambda: [0.0] * 6,
+        lambda a: (np.zeros(3), np.array([0, 0, 0, 1])),
+        lambda a: np.zeros(3),
+    )
+    assert cmd.validate({"data": {}}) is not None
+    assert cmd.validate({"data": {"linear": [0, 0, 0]}}) is not None
+    assert cmd.validate(
+        {"data": {"linear": [0, 0, 0], "angular": [0, 0, 0], "frame": "world"}}
+    ) is not None
+    assert cmd.validate(
+        {"data": {"linear": [0, 0, 0], "angular": [0, 0, 0]}}
+    ) is None  # frame default base
+
+
+def test_jog_tcp_ik_failure_rolls_back_ref():
+    """JogTcp IK None 자리 ref 자리 *적분 전 값* 유지 (reach 한계 누적 X)."""
+    fk_pos = np.array([0.0, 0.0, 0.0])
+    fk_quat = np.array([0.0, 0.0, 0.0, 1.0])
+
+    # 첫 호출은 IK success (fresh latch), 둘째 호출은 IK None.
+    call_count = [0]
+
+    def solve_servo(position, quaternion, angles):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return list(angles)
+        return None
+
+    cmd = JogTcpCommand(
+        solve_servo,
+        lambda a: None,
+        lambda: [0.0] * 6,
+        lambda a: (fk_pos, fk_quat),
+        lambda a: np.zeros(3),
+    )
+    runner, _, _ = _make_runner(n=6)
+    try:
+        # 첫 publish — fresh latch.
+        cmd.execute(
+            {"data": {"linear": [0.05, 0, 0], "angular": [0, 0, 0], "frame": "base"}},
+            [], [], runner,
+        )
+        ref_before = cmd._last_pos.copy()
+        time.sleep(0.02)
+
+        # 둘째 publish — IK 실패 → rollback.
+        with pytest.raises(ValueError, match="IK"):
+            cmd.execute(
+                {"data": {"linear": [0.05, 0, 0], "angular": [0, 0, 0], "frame": "base"}},
+                [], [], runner,
+            )
+        # ref 자리 적분 전 값 유지.
+        np.testing.assert_allclose(cmd._last_pos, ref_before, atol=1e-9)
+    finally:
+        runner.stop()
+
+
+def test_traj_dt_constant_sanity():
+    """50Hz 보장 — TRAJ_DT 가 0.02 라고 가정한 다른 자리 (gamepad poll 등) 안전."""
+    assert TRAJ_DT == pytest.approx(0.02, abs=1e-6)

@@ -12,15 +12,15 @@ import { onConnect, onTopic } from "@/framework";
 import { Topic } from "@/constants/topics";
 import { useSystemStore } from "@/domain/stores/system";
 import { useTaskResultStore, type StepResultPayload } from "@/domain/stores/taskResult";
-import { usePointCloudStore } from "@/domain/stores/pointCloud";
+import { useScene3DStore } from "@/domain/stores/scene3D";
 
 // 재연결 시 멱등 — 이전 unsub 호출 후 재attach.
-let unsubPointCloud: (() => void) | null = null;
+let unsubScene3D: (() => void) | null = null;
 
 onConnect(() => {
-  // PointCloud 는 binary 토픽 — bootstrap 가 BINARY_TOPICS 는 skip 하므로 store 자체 attach.
-  if (unsubPointCloud) unsubPointCloud();
-  unsubPointCloud = usePointCloudStore.getState()._attach();
+  // Scene3D 는 binary 토픽 — bootstrap 가 BINARY_TOPICS 는 skip 하므로 store 자체 attach.
+  if (unsubScene3D) unsubScene3D();
+  unsubScene3D = useScene3DStore.getState()._attach();
 });
 
 onTopic(Topic.SYSTEM_HEARTBEAT, (hb) => {

@@ -5,7 +5,6 @@ import { CameraPanel } from "@/components/panels/calibration/CameraPanel";
 import { IntrinsicPanel } from "@/components/panels/calibration/IntrinsicPanel";
 import { HandEyePanel } from "@/components/panels/calibration/HandEyePanel";
 import { CalibrationHistoryPanel } from "@/components/panels/calibration/CalibrationHistoryPanel";
-import { PointCloudPanel } from "@/components/panels/PointCloudPanel";
 import { PromptPanel } from "@/components/panels/PromptPanel";
 import { TaskProgressPanel } from "@/components/panels/TaskProgressPanel";
 import { CameraFeedPanel } from "@/components/panels/CameraFeedPanel";
@@ -19,7 +18,6 @@ export const PANEL_COMPONENTS = {
   intrinsic: IntrinsicPanel,
   handEye: HandEyePanel,
   calibrationHistory: CalibrationHistoryPanel,
-  pointCloud: PointCloudPanel,
   prompt: PromptPanel,
   taskProgress: TaskProgressPanel,
   cameraFeed: CameraFeedPanel,

@@ -15,6 +15,11 @@ from modules.calibration.persistence_models import (
     CalibrationResultRecord,
     CalibrationRunRecord,
 )
+from modules.scan_workflow.persistence_models import (
+    ReconstructionRecord,
+    ScanRecord,
+    ScanSessionRecord,
+)
 
 
 class MemoryRdbStore:
@@ -25,6 +30,13 @@ class MemoryRdbStore:
         self._next_run_id = 1
         self._next_result_id = 1
         self._next_capture_id = 1
+        # Phase 2 — scan workflow
+        self._scan_sessions: dict[int, ScanSessionRecord] = {}
+        self._scans: dict[int, ScanRecord] = {}
+        self._reconstructions: dict[int, ReconstructionRecord] = {}
+        self._next_scan_session_id = 1
+        self._next_scan_id = 1
+        self._next_reconstruction_id = 1
         self._lock = threading.Lock()
 
     # ─── Read ─────────────────────────────────────────────────
@@ -117,6 +129,149 @@ class MemoryRdbStore:
                 )
 
         return run_id, result_ids
+
+    # ─── Phase 2 — scan workflow ──────────────────────────────────
+
+    # scan_sessions
+    def insert_scan_session(self, record: ScanSessionRecord) -> int:
+        with self._lock:
+            # (robot_id, session_id) unique 자리 check
+            for s in self._scan_sessions.values():
+                if (
+                    s.robot_id == record.robot_id
+                    and s.session_id == record.session_id
+                ):
+                    raise ValueError(
+                        f"scan_session (robot_id={record.robot_id}, "
+                        f"session_id={record.session_id}) 이미 존재"
+                    )
+            row_id = self._next_scan_session_id
+            self._next_scan_session_id += 1
+            self._scan_sessions[row_id] = record.model_copy(update={"id": row_id})
+            return row_id
+
+    def get_scan_session(self, session_row_id: int) -> ScanSessionRecord | None:
+        with self._lock:
+            r = self._scan_sessions.get(session_row_id)
+            return copy.deepcopy(r) if r else None
+
+    def find_scan_session_by_id(
+        self, robot_id: str, session_id: str
+    ) -> ScanSessionRecord | None:
+        with self._lock:
+            for s in self._scan_sessions.values():
+                if s.robot_id == robot_id and s.session_id == session_id:
+                    return copy.deepcopy(s)
+        return None
+
+    def list_scan_sessions(
+        self, robot_id: str, limit: int = 100
+    ) -> list[ScanSessionRecord]:
+        with self._lock:
+            matching = [
+                s for s in self._scan_sessions.values() if s.robot_id == robot_id
+            ]
+        matching.sort(key=lambda s: s.created_at, reverse=True)
+        return [copy.deepcopy(s) for s in matching[:limit]]
+
+    def delete_scan_session(self, session_row_id: int) -> None:
+        with self._lock:
+            self._scan_sessions.pop(session_row_id, None)
+            # CASCADE — 자식 scans / reconstructions 같이 삭제
+            scan_ids = [
+                rid for rid, s in self._scans.items()
+                if s.session_row_id == session_row_id
+            ]
+            for rid in scan_ids:
+                self._scans.pop(rid, None)
+            recon_ids = [
+                rid for rid, r in self._reconstructions.items()
+                if r.session_row_id == session_row_id
+            ]
+            for rid in recon_ids:
+                self._reconstructions.pop(rid, None)
+
+    # scans
+    def allocate_scan_id(self, session_row_id: int) -> int:
+        with self._lock:
+            max_scan_id = max(
+                (
+                    s.scan_id
+                    for s in self._scans.values()
+                    if s.session_row_id == session_row_id
+                ),
+                default=0,
+            )
+            return max_scan_id + 1
+
+    def insert_scan(self, record: ScanRecord) -> int:
+        with self._lock:
+            # (session_row_id, scan_id) unique 자리 check
+            for s in self._scans.values():
+                if (
+                    s.session_row_id == record.session_row_id
+                    and s.scan_id == record.scan_id
+                ):
+                    raise ValueError(
+                        f"scan (session_row_id={record.session_row_id}, "
+                        f"scan_id={record.scan_id}) 이미 존재"
+                    )
+            row_id = self._next_scan_id
+            self._next_scan_id += 1
+            self._scans[row_id] = record.model_copy(update={"id": row_id})
+            return row_id
+
+    def list_scans(self, session_row_id: int) -> list[ScanRecord]:
+        with self._lock:
+            matching = [
+                s for s in self._scans.values()
+                if s.session_row_id == session_row_id
+            ]
+        matching.sort(key=lambda s: s.scan_id)
+        return [copy.deepcopy(s) for s in matching]
+
+    def get_scan(self, scan_row_id: int) -> ScanRecord | None:
+        with self._lock:
+            r = self._scans.get(scan_row_id)
+            return copy.deepcopy(r) if r else None
+
+    def delete_scan(self, scan_row_id: int) -> None:
+        with self._lock:
+            self._scans.pop(scan_row_id, None)
+
+    # reconstructions
+    def insert_reconstruction(self, record: ReconstructionRecord) -> int:
+        with self._lock:
+            row_id = self._next_reconstruction_id
+            self._next_reconstruction_id += 1
+            self._reconstructions[row_id] = record.model_copy(
+                update={"id": row_id}
+            )
+            return row_id
+
+    def list_reconstructions(
+        self, session_row_id: int
+    ) -> list[ReconstructionRecord]:
+        with self._lock:
+            matching = [
+                r for r in self._reconstructions.values()
+                if r.session_row_id == session_row_id
+            ]
+        matching.sort(key=lambda r: r.created_at, reverse=True)
+        return [copy.deepcopy(r) for r in matching]
+
+    def get_reconstruction(
+        self, recon_row_id: int
+    ) -> ReconstructionRecord | None:
+        with self._lock:
+            r = self._reconstructions.get(recon_row_id)
+            return copy.deepcopy(r) if r else None
+
+    def delete_reconstruction(self, recon_row_id: int) -> None:
+        with self._lock:
+            self._reconstructions.pop(recon_row_id, None)
+
+    # ─── Phase 1 (캘) 자리 ────────────────────────────────────────
 
     def activate_result(self, result_id: int) -> CalibrationResultRecord:
         with self._lock:

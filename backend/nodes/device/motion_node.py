@@ -14,26 +14,30 @@ from modules.calibration.applier import CalibrationApplier
 from modules.calibration.calibration_cache import CalibrationCache
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.motion import (
+    JogJReq,
+    JogTcpReq,
     MotionTcpPose,
     MotionTrajState,
     MoveCReq,
     MoveJReq,
     MoveLReq,
     MovePReq,
+    ServoJReq,
     ServoTcpReq,
-    SpeedJReq,
-    SpeedTcpReq,
     TrajStatus,
 )
 from core.transport.messages.motor import MotorCmd, MotorCmdJoint, MotorSetProfileAllReq
 from core.transport.topic_map import Service, Topic
 from modules.kinematics.kinematics import Kinematics
 from modules.kinematics.motion_commands import (
+    JogJCommand,
+    JogTcpCommand,
     MotionCommand,
     MoveCCommand,
     MoveJCommand,
     MoveLCommand,
     MovePCommand,
+    ServoJCommand,
     ServoTcpCommand,
 )
 from modules.kinematics.motion_config import MotionConfig
@@ -104,7 +108,6 @@ class MotionNode(DeviceNode):
             # Cartesian path 추종 IK = position-only (servo_tcp 의 6DOF 분기 안 씀).
             solve_ik=lambda pos, angles: self._motion.servo_tcp(pos, None, angles),
             get_joint_angles=self._get_joint_angles_for_streamer,
-            tcp_twist_to_joint_vel=self._tcp_twist_to_joint_vel,
         )
 
         # ─── Service 등록 ───────────────────────────────────────
@@ -138,26 +141,72 @@ class MotionNode(DeviceNode):
             EmptyData,
             self._cartesian_handler_factory(MovePCommand()),
         )
-        # ServoTcp — Cartesian target 입력이라 tool_offset 적용 자리 동일하게 cartesian factory.
+        # ─── Servo (external target chase — RL / Vision / replay) ────
+        # Caller 가 *자기가 계산한 절대 target* 보냄. server = direct IK + publish.
+        # 산업 표준 UR `servoj/servoc` 의미. frontend Jog UI 자리는 별도
+        # (Jog 계층). caller 자리 = 미래 RL / vision servo policy node.
+        servo_tcp_cmd = ServoTcpCommand(_solve_servo, self._publish_cmd)
         self.create_service(
             self.r(Service.MOTION_SERVO_TCP),
             ServoTcpReq,
             EmptyData,
-            self._cartesian_handler_factory(
-                ServoTcpCommand(_solve_servo, self._publish_cmd)
-            ),
+            self._cartesian_handler_factory(servo_tcp_cmd),
+        )
+        servo_j_cmd = ServoJCommand(self._publish_cmd, self._n_arm)
+        self.create_service(
+            self.r(Service.MOTION_SERVO_J),
+            ServoJReq,
+            EmptyData,
+            self._make_servo_j_service_handler(servo_j_cmd),
+        )
+
+        # ─── Jog (human/manual velocity stream — frontend / gamepad) ──
+        # Caller 가 velocity twist / joint vel 만 보냄. backend 가 fresh latch
+        # + 실 측정 dt 로 적분 → IK + publish. SE(3) 적분 자리 SSOT = backend.
+        # LeRobot delta-pose 패턴, cross-process safe (joint_offset 자리 backend
+        # SSOT). docs/motion_taxonomy.md §Jog.
+        def _get_current_arm_joints() -> list[float] | None:
+            return self._joint_cache.get_joint_angles_rad(
+                self._arm_cfgs, robot_id=self.robot_id
+            )
+
+        def _fk(arm_joints: list[float]) -> tuple[np.ndarray, np.ndarray]:
+            pose = self._motion.get_tcp_pose(arm_joints)
+            return np.asarray(pose.position), np.asarray(pose.quaternion)
+
+        jog_j_cmd = JogJCommand(
+            self._publish_cmd, _get_current_arm_joints, self._n_arm
+        )
+        jog_tcp_cmd = JogTcpCommand(
+            _solve_servo,
+            self._publish_cmd,
+            _get_current_arm_joints,
+            _fk,
+            self._tool_offset_base,
         )
         self.create_service(
-            self.r(Service.MOTION_SPEED_TCP),
-            SpeedTcpReq,
+            self.r(Service.MOTION_JOG_J),
+            JogJReq,
             EmptyData,
-            self._srv_speed_tcp,
+            self._make_jog_j_service_handler(jog_j_cmd),
         )
         self.create_service(
-            self.r(Service.MOTION_SPEED_J),
-            SpeedJReq,
+            self.r(Service.MOTION_JOG_TCP),
+            JogTcpReq,
             EmptyData,
-            self._srv_speed_j,
+            self._make_jog_tcp_service_handler(jog_tcp_cmd),
+        )
+        # Topic streams — frontend Jog UI / gamepad 50Hz publish 자리.
+        # bridge 가 frontend WS publish → Zenoh put → 본 subscriber 호출.
+        self.create_subscriber(
+            self.r(Topic.MOTION_JOG_J_STREAM),
+            JogJReq,
+            self._make_jog_j_topic_subscriber(jog_j_cmd),
+        )
+        self.create_subscriber(
+            self.r(Topic.MOTION_JOG_TCP_STREAM),
+            JogTcpReq,
+            self._make_jog_tcp_topic_subscriber(jog_tcp_cmd),
         )
         self.create_service(
             self.r(Service.MOTION_STOP), EmptyData, EmptyData, self._srv_stop
@@ -202,69 +251,191 @@ class MotionNode(DeviceNode):
         R_be, _ = self._kinematics.fk_to_matrix(angles)
         return np.asarray(R_be) @ np.asarray(tool_ee)
 
-    def _cartesian_handler_factory(self, cmd: MotionCommand):
-        """MoveL / MoveC / MoveP / ServoTcp — cartesian 좌표 입출력. tool_offset 변환 적용.
+    def _dispatch_cartesian(
+        self, cmd: MotionCommand, data_dict: dict, *, verbose: bool
+    ) -> str | None:
+        """MoveL / MoveC / MoveP / ServoTcp 공통 chain.
 
-        입력 (req.data.position / via / end / waypoints) = user frame.
-        내부 cmd.execute 에는 URDF frame 으로 변환해 전달 (= 입력 - tool_offset_base).
-        시작점 tcp_pos 도 URDF frame (kinematics.fk 결과 그대로) 사용 → start/end 일관.
+        - validate → angles fetch → FK + tool_offset → user frame → URDF frame
+          변환 → cmd.execute. 반환: 에러 메시지 (실패) 또는 None (성공).
+        - `verbose=True` (service caller — 단발) → tool_offset 변환 log + 시작 log.
+          `verbose=False` (topic stream — 50Hz) → log 생략 (스팸 방지).
         """
+        req_dict = {"data": data_dict}
+        error = cmd.validate(req_dict)
+        if error:
+            return error
 
-        def handler(
-            req: ServiceRequest[BaseModel],
-        ) -> ServiceResponse[EmptyData]:
-            data_dict = req.data.model_dump()
-            req_dict = {"data": data_dict}
+        angles = self._joint_cache.get_joint_angles_rad(
+            self._arm_cfgs, robot_id=self.robot_id
+        )
+        if angles is None:
+            return "관절 상태 수신 전"
 
-            error = cmd.validate(req_dict)
-            if error:
-                return ServiceResponse(success=False, message=error, data=None)
+        try:
+            tcp_pos_urdf = list(self._motion.get_tcp_pose(angles).position)
+            tool_base = self._tool_offset_base(angles)
+        except Exception as e:
+            return f"FK 오류: {e}"
 
-            angles = self._joint_cache.get_joint_angles_rad(self._arm_cfgs, robot_id=self.robot_id)
-            if angles is None:
-                return ServiceResponse(
-                    success=False, message="관절 상태 수신 전", data=None
-                )
-
-            try:
-                tcp_pos_urdf = list(self._motion.get_tcp_pose(angles).position)
-                tool_base = self._tool_offset_base(angles)
-            except Exception as e:
-                return ServiceResponse(
-                    success=False, message=f"FK 오류: {e}", data=None
-                )
-
-            user_pos_before = data_dict.get("position")
-            for key in ("position", "via", "end"):
-                if key in data_dict and data_dict[key] is not None:
-                    data_dict[key] = (
-                        np.asarray(data_dict[key], dtype=float) - tool_base
-                    ).tolist()
-            if "waypoints" in data_dict and data_dict["waypoints"] is not None:
-                data_dict["waypoints"] = [
-                    (np.asarray(wp, dtype=float) - tool_base).tolist()
-                    for wp in data_dict["waypoints"]
-                ]
-            req_urdf = {"data": data_dict}
+        user_pos_before = data_dict.get("position")
+        for key in ("position", "via", "end"):
+            if key in data_dict and data_dict[key] is not None:
+                data_dict[key] = (
+                    np.asarray(data_dict[key], dtype=float) - tool_base
+                ).tolist()
+        if "waypoints" in data_dict and data_dict["waypoints"] is not None:
+            data_dict["waypoints"] = [
+                (np.asarray(wp, dtype=float) - tool_base).tolist()
+                for wp in data_dict["waypoints"]
+            ]
+        req_urdf = {"data": data_dict}
+        if verbose:
             logger.info(
                 "[tool_offset] %s tool_base=%s  user→urdf: %s → %s",
                 cmd.label, np.round(tool_base, 4).tolist(),
                 user_pos_before, data_dict.get("position"),
             )
 
-            try:
-                cmd.execute(req_urdf, angles, tcp_pos_urdf, self._runner)
+        try:
+            cmd.execute(req_urdf, angles, tcp_pos_urdf, self._runner)
+            if verbose:
                 self.log("info", f"{cmd.label} 시작")
-                return ServiceResponse(
-                    success=True, message="ok", data=EmptyData()
-                )
+            return None
+        except ValueError as e:
+            return str(e)
+        except Exception as e:
+            logger.error(f"{cmd.label} execute 오류: {e}")
+            return str(e)
+
+    def _cartesian_handler_factory(self, cmd: MotionCommand):
+        """Service handler for MoveL / MoveC / MoveP / ServoTcp."""
+
+        def handler(
+            req: ServiceRequest[BaseModel],
+        ) -> ServiceResponse[EmptyData]:
+            err = self._dispatch_cartesian(
+                cmd, req.data.model_dump(), verbose=True
+            )
+            if err is not None:
+                return ServiceResponse(success=False, message=err, data=None)
+            return ServiceResponse(success=True, message="ok", data=EmptyData())
+
+        return handler
+
+    def _make_servo_j_service_handler(self, cmd: MotionCommand):
+        """ServoJ service handler — 단발 절대 joint target (RL replay 자리)."""
+
+        def handler(
+            req: ServiceRequest[ServoJReq],
+        ) -> ServiceResponse[EmptyData]:
+            req_dict = {"data": req.data.model_dump()}
+            error = cmd.validate(req_dict)
+            if error:
+                return ServiceResponse(success=False, message=error, data=None)
+            try:
+                cmd.execute(req_dict, [], [], self._runner)
+                return ServiceResponse(success=True, message="ok", data=EmptyData())
             except ValueError as e:
                 return ServiceResponse(success=False, message=str(e), data=None)
             except Exception as e:
-                logger.error(f"{cmd.label} execute 오류: {e}")
+                logger.error(f"ServoJ 오류: {e}")
                 return ServiceResponse(success=False, message=str(e), data=None)
 
         return handler
+
+    def _make_jog_j_service_handler(self, cmd: MotionCommand):
+        """JogJ service handler — 단발 velocity (자동화 tool / test 호출)."""
+
+        def handler(
+            req: ServiceRequest[JogJReq],
+        ) -> ServiceResponse[EmptyData]:
+            req_dict = {"data": req.data.model_dump()}
+            error = cmd.validate(req_dict)
+            if error:
+                return ServiceResponse(success=False, message=error, data=None)
+            try:
+                cmd.execute(req_dict, [], [], self._runner)
+                return ServiceResponse(success=True, message="ok", data=EmptyData())
+            except ValueError as e:
+                return ServiceResponse(success=False, message=str(e), data=None)
+            except Exception as e:
+                logger.error(f"JogJ 오류: {e}")
+                return ServiceResponse(success=False, message=str(e), data=None)
+
+        return handler
+
+    def _make_jog_tcp_service_handler(self, cmd: MotionCommand):
+        """JogTcp service handler — 단발 twist (자동화 tool / test 호출)."""
+
+        def handler(
+            req: ServiceRequest[JogTcpReq],
+        ) -> ServiceResponse[EmptyData]:
+            req_dict = {"data": req.data.model_dump()}
+            error = cmd.validate(req_dict)
+            if error:
+                return ServiceResponse(success=False, message=error, data=None)
+            try:
+                cmd.execute(req_dict, [], [], self._runner)
+                return ServiceResponse(success=True, message="ok", data=EmptyData())
+            except ValueError as e:
+                return ServiceResponse(success=False, message=str(e), data=None)
+            except Exception as e:
+                logger.error(f"JogTcp 오류: {e}")
+                return ServiceResponse(success=False, message=str(e), data=None)
+
+        return handler
+
+    def _make_jog_j_topic_subscriber(self, cmd: MotionCommand):
+        """JogJ topic subscriber — 50Hz hot path, throttled error log."""
+        last_err_ts = [0.0]
+        last_err_msg = [""]
+
+        def callback(req: BaseModel) -> None:
+            req_dict = {"data": req.model_dump()}
+            error = cmd.validate(req_dict)
+            if error is None:
+                try:
+                    cmd.execute(req_dict, [], [], self._runner)
+                    return
+                except ValueError as e:
+                    error = str(e)
+                except Exception as e:
+                    logger.error(f"JogJ stream execute 오류: {e}")
+                    error = str(e)
+            now = time.time()
+            if now - last_err_ts[0] > 1.0 or error != last_err_msg[0]:
+                logger.warning(f"JogJ stream 오류: {error}")
+                last_err_ts[0] = now
+                last_err_msg[0] = error
+
+        return callback
+
+    def _make_jog_tcp_topic_subscriber(self, cmd: MotionCommand):
+        """JogTcp topic subscriber — 50Hz hot path. tool_offset 자리는 command 가
+        매 cycle 내부 처리 (실 끝점 적분 자리)."""
+        last_err_ts = [0.0]
+        last_err_msg = [""]
+
+        def callback(req: BaseModel) -> None:
+            req_dict = {"data": req.model_dump()}
+            error = cmd.validate(req_dict)
+            if error is None:
+                try:
+                    cmd.execute(req_dict, [], [], self._runner)
+                    return
+                except ValueError as e:
+                    error = str(e)
+                except Exception as e:
+                    logger.error(f"JogTcp stream execute 오류: {e}")
+                    error = str(e)
+            now = time.time()
+            if now - last_err_ts[0] > 1.0 or error != last_err_msg[0]:
+                logger.warning(f"JogTcp stream 오류: {error}")
+                last_err_ts[0] = now
+                last_err_msg[0] = error
+
+        return callback
 
     def _make_handler(self, cmd: MotionCommand):
         """MoveJ 전용 (joint 명령 — tool offset 무관)."""
@@ -337,39 +508,6 @@ class MotionNode(DeviceNode):
         except Exception as e:
             return ServiceResponse(success=False, message=str(e), data=None)
 
-    def _srv_speed_tcp(
-        self, req: ServiceRequest[SpeedTcpReq]
-    ) -> ServiceResponse[EmptyData]:
-        """SpeedTcp — TCP twist set. streamer 가 timeout 까지 추종.
-
-        5DOF (dof<6) 자리는 angular 무시 + linear-only (Jacobian 자체가 자동).
-        """
-        try:
-            self._runner.set_speed_tcp(
-                list(req.data.linear),
-                list(req.data.angular),
-                req.data.frame,
-            )
-            return ServiceResponse(success=True, message="ok", data=EmptyData())
-        except ValueError as e:
-            return ServiceResponse(success=False, message=str(e), data=None)
-        except Exception as e:
-            logger.error(f"SpeedTcp 오류: {e}")
-            return ServiceResponse(success=False, message=str(e), data=None)
-
-    def _srv_speed_j(
-        self, req: ServiceRequest[SpeedJReq]
-    ) -> ServiceResponse[EmptyData]:
-        """SpeedJ — joint velocity set. streamer 가 timeout 까지 추종."""
-        try:
-            self._runner.set_speed_joint(list(req.data.velocities))
-            return ServiceResponse(success=True, message="ok", data=EmptyData())
-        except ValueError as e:
-            return ServiceResponse(success=False, message=str(e), data=None)
-        except Exception as e:
-            logger.error(f"SpeedJ 오류: {e}")
-            return ServiceResponse(success=False, message=str(e), data=None)
-
     def _srv_stop(
         self, _req: ServiceRequest[EmptyData]
     ) -> ServiceResponse[EmptyData]:
@@ -414,35 +552,8 @@ class MotionNode(DeviceNode):
         )
 
     def _get_joint_angles_for_streamer(self) -> list[float] | None:
-        """SpeedJ / SpeedTcp streamer 의 초기 자세. None = joint state 미수신."""
+        """TrajectoryRunner cartesian path 자리 초기 자세 자리. None = joint state 미수신."""
         return self._joint_cache.get_joint_angles_rad(self._arm_cfgs, robot_id=self.robot_id)
-
-    def _tcp_twist_to_joint_vel(
-        self,
-        linear: list[float],
-        angular: list[float],
-        joint_angles: list[float],
-        frame: str,
-    ) -> list[float] | None:
-        """SpeedTcp streamer 가 매 step 호출. Jacobian pseudo-inverse 위임.
-
-        kinematics adapter 의 dof 는 *모든 revolute joint* (arm + gripper 등 포함)
-        를 셈 (PyBullet getNumJoints). 우리 streamer 는 arm 만 = self._n_arm.
-        adapter 호출 시 zero-pad, 결과는 arm 부분만 slice (arm 이 URDF 의 첫
-        n_arm 자리라는 컨벤션 기준 — multi_robot_architecture §3.1).
-        """
-        delegate = getattr(self._kinematics, "tcp_twist_to_joint_vel", None)
-        if delegate is None:
-            return None
-        full_dof = getattr(self._kinematics, "dof", self._n_arm)
-        if full_dof > len(joint_angles):
-            padded = list(joint_angles) + [0.0] * (full_dof - len(joint_angles))
-        else:
-            padded = list(joint_angles[:full_dof])
-        result = delegate(linear, angular, padded, frame)
-        if result is None:
-            return None
-        return list(result)[: self._n_arm]
 
     def _release_profile(self) -> bool:
         """raw 0,0 → motor cap 해제 (Ruckig 가 직접 trajectory shape 만든다)."""

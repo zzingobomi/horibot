@@ -1,4 +1,4 @@
-"""Mini pendant — SO-101 6DOF jog. SpeedTcp / SpeedJ 만 발행 (velocity primitive).
+"""Mini pendant — SO-101 6DOF jog. JogTcp / JogJ topic stream publish.
 
 motion_taxonomy.md Phase 1 의 gamepad enabling. 산업 펜던트 컨벤션:
 - 6DOF twist (3 linear + 3 angular) → cartesian jog
@@ -47,17 +47,17 @@ from core.transport.application_node import ApplicationNode
 from core.transport.messages.base import EmptyData
 from core.transport.messages.calibration import HandeyeCaptureRes
 from core.transport.messages.motion import (
+    JogJReq,
+    JogTcpReq,
     JointDegree,
     MoveJReq,
-    SpeedJReq,
-    SpeedTcpReq,
 )
 from core.transport.messages.motor import (
     MotorEnableReq,
     MotorEnableRes,
     MotorGripperReq,
 )
-from core.transport.topic_map import Service
+from core.transport.topic_map import Service, Topic
 from modules.gamepad import mapper as M
 from modules.gamepad.driver import GamepadDriver, GamepadState
 from modules.motor.motor_config import load_motor_layout
@@ -235,15 +235,15 @@ class GamepadNode(ApplicationNode):
         if M.BTN_LB in state.buttons_held:
             wy -= TCP_ANGULAR_MAX
 
-        # 5DOF robot 자리는 server (Jacobian) 가 angular 무시. 우리는 그대로 보냄.
-        self.call_service(
-            self._t(Service.MOTION_SPEED_TCP),
-            SpeedTcpReq(
+        # JogTcp topic stream — backend 가 latched ref + SE(3) 적분 + IK 자리.
+        # 50Hz service RTT 회피 위해 fire-and-forget topic publish.
+        self.publish(
+            self._t(Topic.MOTION_JOG_TCP_STREAM),
+            JogTcpReq(
                 linear=[vx, vy, vz],
                 angular=[wx, wy, wz],
                 frame=self._frame,  # type: ignore[arg-type]
             ),
-            EmptyData,
         )
 
     def _publish_joint_jog(self, state: GamepadState) -> None:
@@ -269,10 +269,9 @@ class GamepadNode(ApplicationNode):
         # robot dof 만큼만 (5DOF 면 처음 5개).
         velocities = [a * JOINT_VEL_MAX for a in joint_axes[: self._n_arm]]
 
-        self.call_service(
-            self._t(Service.MOTION_SPEED_J),
-            SpeedJReq(velocities=velocities),
-            EmptyData,
+        self.publish(
+            self._t(Topic.MOTION_JOG_J_STREAM),
+            JogJReq(velocities=velocities),
         )
 
     # ─── Discrete actions ─────────────────────────────────────────

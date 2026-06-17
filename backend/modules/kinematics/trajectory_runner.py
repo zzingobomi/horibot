@@ -6,7 +6,6 @@ from typing import Callable
 
 import numpy as np
 from ruckig import (
-    ControlInterface,
     InputParameter,
     OutputParameter,
     Result,
@@ -23,15 +22,6 @@ logger = logging.getLogger(__name__)
 
 TRAJ_DT = 1.0 / 50   # 50 Hz
 
-# SpeedTcp / SpeedJ — caller (gamepad/외부) 가 마지막 명령 보낸 후 timeout 지나면
-# target velocity 를 0 으로 잡고 jerk-limited 감속. caller 가 끊기거나 0 vector
-# 명시한 경우 둘 다 안전 정지 (deadman 의 2차선).
-VELOCITY_INPUT_TIMEOUT = 0.1  # 100ms
-
-# Cartesian / joint Ruckig limit 은 더 이상 하드코드 X — robot/<type>/motion.yaml SSOT.
-# motion_node 가 load 해서 TrajectoryRunner ctor 에 주입. Cartesian 저속 chatter
-# (J3 P=1500 stick-slip) 회피용 최소 0.10 m/s 는 motion.yaml 코멘트로 박힘.
-
 _MOVEP_MIN_DIST = 1e-4   # 너무 가까운 waypoint 제거
 
 # Cartesian IK 출력 EMA — null-space 미세 노이즈 댐핑 (5DOF position-only IK가
@@ -42,13 +32,6 @@ _CART_SETTLE_STEPS = 5
 # 모터 PID가 last_raw에 물리적으로 수렴할 dwell. 이게 없으면 DONE 직후 다음 step이
 # 실측 encoder(= 아직 수렴 중인 위치)에서 출발해서 모터 momentum과 충돌 → 떨림.
 _CART_HOLD_STEPS = 25
-
-# Cartesian-space velocity Ruckig (SpeedTcp primary smoothing layer) 의 rotation
-# limits. linear 는 motion.yaml cartesian_limits SSOT.
-_CART_ROT_MAX_VEL = 1.0
-_CART_ROT_MAX_ACC = 2.5
-_CART_ROT_MAX_JERK = 10.0
-
 
 
 # ── 콜백 타입 ──────────────────────────────────────────────────
@@ -61,12 +44,6 @@ RestoreProfileFn = Callable[[], bool]
 # Cartesian path 추종 시 매 step IK (position-only). servo_tcp 의 5DOF/6DOF 분기는
 # caller (motion_node) 가 wrap 해서 주입 — 여기서는 단순 IK 콜백.
 SolveIkFn = Callable[[Position3, list[float]], list[float] | None]
-# TCP twist → joint velocity 변환 (Jacobian pseudo-inverse). frame 변환 포함.
-# 입력: linear (3,) + angular (3,) + 현재 joint angles + frame ('base' | 'tcp')
-# 반환: joint velocity (dof,) rad/s. None = 변환 실패.
-TcpTwistToJointVelFn = Callable[
-    [list[float], list[float], list[float], str], list[float] | None
-]
 
 # ═══════════════════════════════════════════════════════════════
 # Path 추상화 (Cartesian)
@@ -177,7 +154,6 @@ class TrajectoryRunner:
         publish_state:              PublishStateFn,
         solve_ik:                   SolveIkFn,
         get_joint_angles:           Callable[[], list[float] | None],
-        tcp_twist_to_joint_vel:     TcpTwistToJointVelFn,
     ) -> None:
         if not (len(joint_max_velocity) == len(joint_max_acceleration) == len(joint_max_jerk) == n_arm):
             raise ValueError(
@@ -198,19 +174,9 @@ class TrajectoryRunner:
         self._publish_state = publish_state
         self._solve_ik = solve_ik
         self._get_joint_angles = get_joint_angles
-        self._tcp_twist_to_joint_vel = tcp_twist_to_joint_vel
 
         self._thread:  threading.Thread | None = None
         self._stop_ev: threading.Event = threading.Event()
-
-        # Velocity streaming 자리 (SpeedJ / SpeedTcp 공통).
-        # set_speed_joint() / set_speed_tcp() 가 update 시점 갱신 — streamer 가 추종.
-        self._vel_lock = threading.Lock()
-        self._vel_target_joint: list[float] = [0.0] * n_arm
-        self._vel_last_set: float = 0.0
-        # SpeedTcp 가 active 일 때만 채워짐. None = SpeedJ 모드 or idle.
-        # streamer 가 매 step 마다 현재 angles 기준으로 Jacobian 풀어 joint_vel 환산.
-        self._vel_tcp_twist: tuple[list[float], list[float], str] | None = None
 
     # ─── Public API ─────────────────────────────────────────────
 
@@ -219,23 +185,12 @@ class TrajectoryRunner:
         return bool(self._thread and self._thread.is_alive())
 
     def stop(self) -> None:
-        """외부 호출 — thread 정지 + velocity state reset (다음 set_speed_* 깨끗이 시작)."""
-        self._stop_thread()
-        self._reset_velocity_state()
-
-    def _stop_thread(self) -> None:
-        """thread 만 정지. velocity state 는 보존 — 내부에서 trajectory↔streamer 교체 시 사용."""
+        """외부 호출 — trajectory thread 정지."""
         if self._thread is not None and self._thread.is_alive():
             self._stop_ev.set()
             self._thread.join(timeout=2.0)
         self._thread = None
         self._stop_ev.clear()
-
-    def _reset_velocity_state(self) -> None:
-        with self._vel_lock:
-            self._vel_target_joint = [0.0] * self._n_arm
-            self._vel_tcp_twist = None
-            self._vel_last_set = 0.0
 
     def run_cartesian(self, path: CartesianPath, start_angles: list[float]) -> None:
         self._launch(
@@ -251,65 +206,14 @@ class TrajectoryRunner:
             name="movej-traj",
         )
 
-    # ─── Speed (velocity) primitives ────────────────────────────
-
-    def set_speed_joint(self, velocities: list[float]) -> None:
-        """SpeedJ — joint velocity 추종 갱신. streamer 없으면 자동 launch.
-
-        caller 가 빠른 rate (~50Hz) 로 호출 → streamer 가 매 step 추종.
-        VELOCITY_INPUT_TIMEOUT 동안 갱신 X → 0 velocity 로 jerk-limited 감속.
-        """
-        if len(velocities) != self._n_arm:
-            raise ValueError(
-                f"SpeedJ velocities 길이={len(velocities)} != n_arm={self._n_arm}"
-            )
-        now = time.time()
-        with self._vel_lock:
-            self._vel_target_joint = list(velocities)
-            self._vel_tcp_twist = None
-            self._vel_last_set = now
-        self._ensure_velocity_streamer()
-
-    def set_speed_tcp(
-        self,
-        linear: list[float],
-        angular: list[float],
-        frame: str,
-    ) -> None:
-        """SpeedTcp — TCP twist 추종 갱신. streamer 가 매 step Jacobian 풀어 joint vel 환산.
-
-        `frame` ∈ {"base", "tcp"}. tcp → 현재 EE-local 좌표계.
-        5DOF robot 자리는 caller (motion_node) 가 angular 무시 후 호출 권장 —
-        여기서는 받은 twist 그대로 변환 시도 (tcp_twist_to_joint_vel 가 fallback).
-        """
-        now = time.time()
-        with self._vel_lock:
-            self._vel_tcp_twist = (list(linear), list(angular), frame)
-            self._vel_target_joint = [0.0] * self._n_arm
-            self._vel_last_set = now
-        self._ensure_velocity_streamer()
-
-    def _ensure_velocity_streamer(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            # 이미 streamer 또는 trajectory thread 가 도는 중.
-            # trajectory 가 돌고 있으면 stop_thread + 새 streamer 시작 (velocity 가 가로챔).
-            # set_speed_* 가 방금 갱신한 _vel_last_set / _vel_target_joint 는 보존.
-            if self._thread.name != "velocity-streamer":
-                self._stop_thread()
-            else:
-                return
-        self._launch(
-            target=self._velocity_loop,
-            args=(),
-            name="velocity-streamer",
-        )
-
     # ─── Internal ────────────────────────────────────
 
     def _launch(self, target, args: tuple, name: str) -> None:
-        # thread 만 교체. velocity state 는 보존 — set_speed_* 가 갱신한 직후
-        # streamer thread 시작 시 stale reset 으로 timeout 즉시 발동되는 자리 차단.
-        self._stop_thread()
+        # 기존 thread 정지 후 새 thread 시작.
+        if self._thread is not None and self._thread.is_alive():
+            self._stop_ev.set()
+            self._thread.join(timeout=2.0)
+            self._stop_ev.clear()
         self._thread = threading.Thread(
             target=target, args=args, name=name, daemon=True)
         self._thread.start()
@@ -514,164 +418,6 @@ class TrajectoryRunner:
             ok = self._restore_profile()
             if not ok:
                 logger.warning("MoveJ: profile 복원 실패")
-
-    def _velocity_loop(self) -> None:
-        """SpeedJ / SpeedTcp 공통 streamer — 50Hz, Ruckig velocity mode.
-
-        매 step:
-          1. caller 가 set_speed_joint / set_speed_tcp 로 갱신한 target velocity 읽기.
-             VELOCITY_INPUT_TIMEOUT 지나도 갱신 X → target=0 (deadman 2차선).
-          2. SpeedTcp 면 현재 joint angles + tcp_twist → joint velocity 변환 (Jacobian).
-          3. Ruckig 가 jerk-limited 으로 target_velocity 추종 + new position 산출.
-          4. publish_cmd(new_position).
-          5. 정지 상태 (target=0 + 실 vel≈0) 가 충분히 지속되면 자연 종료.
-
-        ※ MoveJ/L/C/P 와 다름 — *release_profile 호출 안 함*. motors.yaml 의
-          default profile (vel/acc cap) 을 *유지* → 모터 자체의 *trapezoidal
-          profile* 이 Ruckig output 을 *부드럽게 추종*. jog 의 transient drift
-          (Feetech PID lag 자리) 를 *모터 내장 layer* 로 흡수. MoveJ/L/C/P 는
-          큰 motion + Ruckig 가 전체 trajectory generate 라 cap 풀어야 자유.
-        """
-        n = self._n_arm
-        otg = Ruckig(n, TRAJ_DT)
-        inp = InputParameter(n)
-        out = OutputParameter(n)
-        inp.control_interface = ControlInterface.Velocity
-        # ★ root cause fix (2026-06-17): Phase synchronization — 모든 joint 이
-        # *같은 phase 로 ramp* → target ratio 가 매 cycle 100% 유지 → cartesian
-        # direction 이 transient 전체에서 일관. default (Synchronization.No) 였을
-        # 때 각 joint independent jerk-limited ramp 으로 *큰 target (J2=0.30)*
-        # 이 *작은 target (J3=0.16)* 보다 ramp 늦어져 *out_v ratio ≠ target
-        # ratio* → cartesian Z drift. 시뮬레이션 검증 — cycle 0 부터 ratio 정확.
-        inp.synchronization = Synchronization.Phase
-
-        # ─── Cartesian-space Ruckig (SpeedTcp primary smoothing) ────────
-        # log 분석 (2026-06-17) — joint Ruckig 만으론 *각 joint independent
-        # jerk-limited ramp* 자리에서 *target_velocity magnitude 다름* (J2=0.30
-        # vs J3=0.16) → 같은 max_jerk 에서 *작은 target 먼저 cruise 도달*, 큰
-        # target 가속 중. transient out_v ratio ≠ target ratio → cartesian
-        # direction 깨짐. cartesian smoothing 이 *twist 자체를 ramp* → 매 cycle
-        # Jacobian 환산 시 *joint target_velocity 자체가 *cartesian space 비례
-        # 유지*. joint Ruckig 는 *target 변화에 jerk-limited 대응 + saturation 보호*.
-        cart_otg = Ruckig(6, TRAJ_DT)
-        cart_inp = InputParameter(6)
-        cart_out = OutputParameter(6)
-        cart_inp.control_interface = ControlInterface.Velocity
-        cart_inp.synchronization = Synchronization.Phase
-        cart_inp.current_position = [0.0] * 6
-        cart_inp.current_velocity = [0.0] * 6
-        cart_inp.current_acceleration = [0.0] * 6
-        cart_inp.target_velocity = [0.0] * 6
-        cart_inp.target_acceleration = [0.0] * 6
-        cart_inp.max_velocity = (
-            [self._c_max_vel] * 3 + [_CART_ROT_MAX_VEL] * 3
-        )
-        cart_inp.max_acceleration = (
-            [self._c_max_acc] * 3 + [_CART_ROT_MAX_ACC] * 3
-        )
-        cart_inp.max_jerk = (
-            [self._c_max_jerk] * 3 + [_CART_ROT_MAX_JERK] * 3
-        )
-
-        start = self._get_joint_angles()
-        if start is None:
-            logger.warning("Speed*: 시작 joint state 없음 — streamer 종료")
-            return
-        inp.current_position = list(start)
-        inp.current_velocity = [0.0] * n
-        inp.current_acceleration = [0.0] * n
-        inp.target_velocity = [0.0] * n
-        inp.target_acceleration = [0.0] * n
-        inp.max_velocity = list(self._j_max_vel)
-        inp.max_acceleration = list(self._j_max_acc)
-        inp.max_jerk = list(self._j_max_jerk)
-
-        IDLE_GRACE_S = 0.5  # 마지막 input 후 추가 idle 허용 — 짧은 끊김 시 즉시 종료 방지.
-        try:
-            self._publish_state(TrajStatus.RUNNING, 0.0)
-            while True:
-                if self._stop_ev.is_set():
-                    self._publish_state(TrajStatus.STOPPED, 0.0)
-                    return
-
-                step_start = time.time()
-
-                with self._vel_lock:
-                    target_joint = list(self._vel_target_joint)
-                    tcp_twist = self._vel_tcp_twist
-                    last_set = self._vel_last_set
-
-                age = step_start - last_set
-                timed_out = age > VELOCITY_INPUT_TIMEOUT
-                if timed_out:
-                    target = [0.0] * n
-                    # SpeedTcp 자리 timeout 도 cartesian Ruckig ramp down. caller
-                    # 가 명령 멈춤 → twist target = 0 → 자연 deadman ramp.
-                    cart_inp.target_velocity = [0.0] * 6
-                    cart_otg.update(cart_inp, cart_out)
-                    cart_inp.current_velocity = list(cart_out.new_velocity)
-                    cart_inp.current_acceleration = list(cart_out.new_acceleration)
-                elif tcp_twist is not None:
-                    linear, angular, frame = tcp_twist
-                    # ── Cartesian smoothing (primary) ─────────────────
-                    # twist 자체를 jerk-limited 으로 ramp → 매 cycle smoothed
-                    # twist 를 Jacobian 환산. joint target_velocity 가 cartesian
-                    # 비례 유지 → transient direction 일관.
-                    cart_inp.target_velocity = list(linear) + list(angular)
-                    cart_otg.update(cart_inp, cart_out)
-                    smoothed = list(cart_out.new_velocity)
-                    cart_inp.current_velocity = smoothed
-                    cart_inp.current_acceleration = list(cart_out.new_acceleration)
-
-                    # ── Closed-loop Jacobian @ encoder reading ────────
-                    encoder = self._get_joint_angles()
-                    angles_for_jacobian = (
-                        list(encoder) if encoder else list(inp.current_position)
-                    )
-                    joint_vel = self._tcp_twist_to_joint_vel(
-                        smoothed[:3], smoothed[3:], angles_for_jacobian, frame
-                    )
-                    if joint_vel is None:
-                        # Jacobian 못 풂 (singularity 등) → 안전 정지.
-                        target = [0.0] * n
-                    else:
-                        target = list(joint_vel)
-                else:
-                    # SpeedJ 자리 — cartesian 무관. 다음 SpeedTcp 진입 시 clean
-                    # start 위해 cartesian Ruckig 0 으로 ramp.
-                    cart_inp.target_velocity = [0.0] * 6
-                    cart_otg.update(cart_inp, cart_out)
-                    cart_inp.current_velocity = list(cart_out.new_velocity)
-                    cart_inp.current_acceleration = list(cart_out.new_acceleration)
-                    target = target_joint
-
-                inp.target_velocity = target
-
-                result = otg.update(inp, out)
-                if result == Result.Error:
-                    logger.error("Speed* Ruckig 오류")
-                    self._publish_state(TrajStatus.FAILED, 0.0)
-                    return
-
-                self._publish_cmd(list(out.new_position))
-
-                inp.current_position = list(out.new_position)
-                inp.current_velocity = list(out.new_velocity)
-                inp.current_acceleration = list(out.new_acceleration)
-
-                # 자연 종료: timeout 이고 + 실 velocity 가 0 에 수렴 + idle grace 경과.
-                vel_zero = max(abs(v) for v in out.new_velocity) < 1e-4
-                if timed_out and vel_zero and age > VELOCITY_INPUT_TIMEOUT + IDLE_GRACE_S:
-                    self._publish_state(TrajStatus.DONE, 1.0)
-                    return
-
-                sleep_t = TRAJ_DT - (time.time() - step_start)
-                if sleep_t > 0:
-                    time.sleep(sleep_t)
-        finally:
-            # release_profile 호출 안 했음 — restore 도 X. motors.yaml default
-            # profile 유지로 모터 trapezoidal smooth motion 활성 (jog 전용 fix).
-            pass
 
     # ─── 정적 유틸 ────────────────────────────────────────────
 

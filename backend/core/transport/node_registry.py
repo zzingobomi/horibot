@@ -32,11 +32,14 @@ _NODE_REGISTRY: dict[str, NodeSpec] = {
     "mock_camera": NodeSpec("nodes.device.camera_node_mock", "MockCameraNode"),
     # ─── Application ────────────────────────────────────────
     "detector": NodeSpec("nodes.application.detector_node", "DetectorNode"),
-    "pointcloud": NodeSpec("nodes.application.pointcloud_node", "PointCloudNode"),
+    "scene3d": NodeSpec("nodes.application.scene3d_node", "Scene3DNode"),
     "calibration": NodeSpec("nodes.application.calibration_node", "CalibrationNode"),
     "task": NodeSpec("nodes.application.task_node", "TaskNode"),
     "gamepad": NodeSpec("nodes.application.gamepad_node", "GamepadNode"),
     "storage": NodeSpec("nodes.application.storage_node", "StorageNode"),
+    "reconstruction": NodeSpec(
+        "nodes.application.reconstruction_node", "ReconstructionNode"
+    ),
 }
 
 

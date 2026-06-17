@@ -1,0 +1,39 @@
+# 분산 sim — PC 역할 (localhost multi-process).
+# scene3d_decoupling.md §13.1 분산 sim 자리 + memory anchor "mock 통과 ≠
+# distributed 검증" — single-process e2e 로 안 잡히는 cross-process state.
+#
+# 실행:
+#   터미널 1: uv run python main.py --host pc_sim
+#   터미널 2: uv run python main.py --host pi_motor_sim
+#   터미널 3: uv run python main.py --host pi_camera_sim
+#
+# PC 역할 — 모든 application_nodes + bridge. USB 직결 robot 없음.
+host_name: pc_sim
+
+zenoh:
+  mode: peer
+  # localhost multi-process — multicast scout default (udp/ipv4:224.0.0.224:7446)
+  # 으로 자동 발견. Windows 자체 multicast loopback 자리 의존 — 안 잡히면
+  # connect 명시.
+  connect: []
+
+robots: []
+device_nodes: []
+
+application_nodes:
+  - storage
+  - calibration
+  - task
+  - detector
+  - scene3d
+  - reconstruction
+
+# Memory backend — sim 자리 영속화 X.
+storage:
+  rdb_uri:    "memory://"
+  object_uri: "memory://"
+
+bridge:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8000

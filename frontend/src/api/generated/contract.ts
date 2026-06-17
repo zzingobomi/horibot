@@ -14,7 +14,7 @@ export const Topic = {
   MOTION_STATE_TRAJ: "horibot/{robot_id}/motion/state/trajectory",
   DETECTOR_STATE: "horibot/{robot_id}/detector/state",
   PERCEPTION_GROUNDED_STATE: "horibot/{robot_id}/perception/state/grounded",
-  POINTCLOUD_STATE: "horibot/{robot_id}/pointcloud/state",
+  SCENE3D_STATE: "horibot/{robot_id}/scene3d/state",
   TASK_STATE: "horibot/task/state",
   TASK_TREE: "horibot/task/tree",
   TASK_STEP_RESULT: "horibot/task/step_result",
@@ -24,12 +24,15 @@ export const Topic = {
   CALIB_HANDEYE_SATURATE: "horibot/{robot_id}/calib/state/handeye_saturate",
   CALIB_HANDEYE_OBSERVABILITY: "horibot/{robot_id}/calib/state/handeye_observability",
   STORAGE_CALIBRATION_INVALIDATED: "horibot/storage/state/calibration_invalidated",
-  POINTCLOUD_STREAM: "horibot/{robot_id}/pointcloud/stream",
+  RECONSTRUCTION_PROGRESS: "horibot/reconstruction/state/progress",
+  MOTION_JOG_TCP_STREAM: "horibot/{robot_id}/motion/cmd/jog_tcp_stream",
+  MOTION_JOG_J_STREAM: "horibot/{robot_id}/motion/cmd/jog_j_stream",
+  SCENE3D_STREAM: "horibot/{robot_id}/scene3d/stream",
 } as const;
 export type TopicKey = (typeof Topic)[keyof typeof Topic];
 
 export const BINARY_TOPICS: ReadonlySet<string> = new Set([
-  "horibot/{robot_id}/pointcloud/stream",
+  "horibot/{robot_id}/scene3d/stream",
 ]);
 
 export type TopicPayloadMap = {
@@ -41,7 +44,7 @@ export type TopicPayloadMap = {
   "horibot/{robot_id}/motion/state/trajectory": components["schemas"]["MotionTrajState"];
   "horibot/{robot_id}/detector/state": components["schemas"]["DetectorState"];
   "horibot/{robot_id}/perception/state/grounded": components["schemas"]["GroundedDetectionResult"];
-  "horibot/{robot_id}/pointcloud/state": components["schemas"]["PointcloudState"];
+  "horibot/{robot_id}/scene3d/state": components["schemas"]["Scene3DState"];
   "horibot/task/state": unknown;
   "horibot/task/tree": unknown;
   "horibot/task/step_result": unknown;
@@ -51,6 +54,9 @@ export type TopicPayloadMap = {
   "horibot/{robot_id}/calib/state/handeye_saturate": unknown;
   "horibot/{robot_id}/calib/state/handeye_observability": components["schemas"]["HandeyeObservabilityState"];
   "horibot/storage/state/calibration_invalidated": components["schemas"]["CalibrationInvalidated"];
+  "horibot/reconstruction/state/progress": components["schemas"]["ReconstructionProgress"];
+  "horibot/{robot_id}/motion/cmd/jog_tcp_stream": components["schemas"]["JogTcpReq"];
+  "horibot/{robot_id}/motion/cmd/jog_j_stream": components["schemas"]["JogJReq"];
 };
 
 export const ServiceKey = {
@@ -64,8 +70,9 @@ export const ServiceKey = {
   MOTION_MOVE_C: "horibot/{robot_id}/motion/srv/move_c",
   MOTION_MOVE_P: "horibot/{robot_id}/motion/srv/move_p",
   MOTION_SERVO_TCP: "horibot/{robot_id}/motion/srv/servo_tcp",
-  MOTION_SPEED_TCP: "horibot/{robot_id}/motion/srv/speed_tcp",
-  MOTION_SPEED_J: "horibot/{robot_id}/motion/srv/speed_j",
+  MOTION_SERVO_J: "horibot/{robot_id}/motion/srv/servo_j",
+  MOTION_JOG_TCP: "horibot/{robot_id}/motion/srv/jog_tcp",
+  MOTION_JOG_J: "horibot/{robot_id}/motion/srv/jog_j",
   MOTION_STOP: "horibot/{robot_id}/motion/srv/stop",
   PERCEPTION_GROUNDED_DETECT: "horibot/{robot_id}/perception/srv/grounded_detect",
   CALIB_INTRINSIC_CAPTURE: "horibot/{robot_id}/calib/srv/intrinsic/capture",
@@ -83,20 +90,21 @@ export const ServiceKey = {
   STORAGE_LIST_CALIBRATION_RUNS: "horibot/storage/srv/calibration/list_runs",
   STORAGE_COMMIT_CALIBRATION: "horibot/storage/srv/calibration/commit",
   STORAGE_ACTIVATE_CALIBRATION: "horibot/storage/srv/calibration/activate",
+  STORAGE_NEW_SCAN_SESSION: "horibot/storage/srv/scan/new_session",
+  STORAGE_LIST_SCAN_SESSIONS: "horibot/storage/srv/scan/list_sessions",
+  STORAGE_DELETE_SCAN_SESSION: "horibot/storage/srv/scan/delete_session",
+  STORAGE_LIST_SCANS: "horibot/storage/srv/scan/list",
+  STORAGE_DELETE_SCAN: "horibot/storage/srv/scan/delete",
+  STORAGE_LIST_RECONSTRUCTIONS: "horibot/storage/srv/reconstruction/list",
+  STORAGE_DELETE_RECONSTRUCTION: "horibot/storage/srv/reconstruction/delete",
   TASK_STOP: "horibot/task/srv/stop",
   TASK_PAUSE: "horibot/task/srv/pause",
   TASK_RESUME: "horibot/task/srv/resume",
   TASK_STEP: "horibot/task/srv/step",
   TASK_RUN_TO: "horibot/task/srv/run_to",
   TASK_TOGGLE_BREAKPOINT: "horibot/task/srv/toggle_breakpoint",
-  POINTCLOUD_CONFIGURE: "horibot/{robot_id}/pointcloud/srv/configure",
-  POINTCLOUD_NEW_SESSION: "horibot/{robot_id}/pointcloud/srv/new_session",
-  POINTCLOUD_CAPTURE: "horibot/{robot_id}/pointcloud/srv/capture",
-  POINTCLOUD_LIST_SESSIONS: "horibot/{robot_id}/pointcloud/srv/list_sessions",
-  POINTCLOUD_LIST_SCANS: "horibot/{robot_id}/pointcloud/srv/list_scans",
-  POINTCLOUD_DELETE_SCAN: "horibot/{robot_id}/pointcloud/srv/delete_scan",
-  POINTCLOUD_BUILD_MESH: "horibot/{robot_id}/pointcloud/srv/build_mesh",
-  POINTCLOUD_LIST_MESHES: "horibot/{robot_id}/pointcloud/srv/list_meshes",
+  SCENE3D_SNAPSHOT: "horibot/{robot_id}/scene3d/srv/snapshot",
+  SCENE3D_SET_STREAM: "horibot/{robot_id}/scene3d/srv/set_stream",
   TASK_RUN: "horibot/task/srv/run",
   TASK_STATUS: "horibot/task/srv/status",
   TASK_PREVIEW: "horibot/task/srv/preview",
@@ -116,8 +124,9 @@ export type ServiceMap = {
   "horibot/{robot_id}/motion/srv/move_c": { req: components["schemas"]["MoveCReq"]; res: Record<string, never> };
   "horibot/{robot_id}/motion/srv/move_p": { req: components["schemas"]["MovePReq"]; res: Record<string, never> };
   "horibot/{robot_id}/motion/srv/servo_tcp": { req: components["schemas"]["ServoTcpReq"]; res: Record<string, never> };
-  "horibot/{robot_id}/motion/srv/speed_tcp": { req: components["schemas"]["SpeedTcpReq"]; res: Record<string, never> };
-  "horibot/{robot_id}/motion/srv/speed_j": { req: components["schemas"]["SpeedJReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motion/srv/servo_j": { req: components["schemas"]["ServoJReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motion/srv/jog_tcp": { req: components["schemas"]["JogTcpReq"]; res: Record<string, never> };
+  "horibot/{robot_id}/motion/srv/jog_j": { req: components["schemas"]["JogJReq"]; res: Record<string, never> };
   "horibot/{robot_id}/motion/srv/stop": { req: Record<string, never>; res: Record<string, never> };
   "horibot/{robot_id}/perception/srv/grounded_detect": { req: components["schemas"]["GroundedDetectReq"]; res: components["schemas"]["GroundedDetectionResult"] };
   "horibot/{robot_id}/calib/srv/intrinsic/capture": { req: Record<string, never>; res: components["schemas"]["IntrinsicCaptureRes"] };
@@ -135,20 +144,21 @@ export type ServiceMap = {
   "horibot/storage/srv/calibration/list_runs": { req: components["schemas"]["StorageListRunsReq"]; res: components["schemas"]["StorageListRunsRes"] };
   "horibot/storage/srv/calibration/commit": { req: components["schemas"]["StorageCommitReq"]; res: components["schemas"]["StorageCommitRes"] };
   "horibot/storage/srv/calibration/activate": { req: components["schemas"]["StorageActivateReq"]; res: components["schemas"]["StorageActivateRes"] };
+  "horibot/storage/srv/scan/new_session": { req: components["schemas"]["StorageNewScanSessionReq"]; res: components["schemas"]["StorageNewScanSessionRes"] };
+  "horibot/storage/srv/scan/list_sessions": { req: components["schemas"]["StorageListScanSessionsReq"]; res: components["schemas"]["StorageListScanSessionsRes"] };
+  "horibot/storage/srv/scan/delete_session": { req: components["schemas"]["StorageDeleteScanSessionReq"]; res: Record<string, never> };
+  "horibot/storage/srv/scan/list": { req: components["schemas"]["StorageListScansReq"]; res: components["schemas"]["StorageListScansRes"] };
+  "horibot/storage/srv/scan/delete": { req: components["schemas"]["StorageDeleteScanReq"]; res: Record<string, never> };
+  "horibot/storage/srv/reconstruction/list": { req: components["schemas"]["StorageListReconstructionsReq"]; res: components["schemas"]["StorageListReconstructionsRes"] };
+  "horibot/storage/srv/reconstruction/delete": { req: components["schemas"]["StorageDeleteReconstructionReq"]; res: Record<string, never> };
   "horibot/task/srv/stop": { req: Record<string, never>; res: Record<string, never> };
   "horibot/task/srv/pause": { req: Record<string, never>; res: Record<string, never> };
   "horibot/task/srv/resume": { req: Record<string, never>; res: Record<string, never> };
   "horibot/task/srv/step": { req: Record<string, never>; res: Record<string, never> };
   "horibot/task/srv/run_to": { req: components["schemas"]["TaskStepIdReq"]; res: Record<string, never> };
   "horibot/task/srv/toggle_breakpoint": { req: components["schemas"]["TaskStepIdReq"]; res: Record<string, never> };
-  "horibot/{robot_id}/pointcloud/srv/configure": { req: components["schemas"]["PointcloudConfigureReq"]; res: components["schemas"]["PointcloudConfigureRes"] };
-  "horibot/{robot_id}/pointcloud/srv/new_session": { req: components["schemas"]["PointcloudNewSessionReq"]; res: components["schemas"]["PointcloudNewSessionRes"] };
-  "horibot/{robot_id}/pointcloud/srv/capture": { req: components["schemas"]["PointcloudCaptureReq"]; res: components["schemas"]["PointcloudCaptureRes"] };
-  "horibot/{robot_id}/pointcloud/srv/list_sessions": { req: Record<string, never>; res: components["schemas"]["PointcloudListSessionsRes"] };
-  "horibot/{robot_id}/pointcloud/srv/list_scans": { req: components["schemas"]["PointcloudListScansReq"]; res: components["schemas"]["PointcloudListScansRes"] };
-  "horibot/{robot_id}/pointcloud/srv/delete_scan": { req: components["schemas"]["PointcloudDeleteScanReq"]; res: components["schemas"]["PointcloudDeleteScanRes"] };
-  "horibot/{robot_id}/pointcloud/srv/build_mesh": { req: components["schemas"]["PointcloudBuildMeshReq"]; res: components["schemas"]["PointcloudBuildMeshRes"] };
-  "horibot/{robot_id}/pointcloud/srv/list_meshes": { req: Record<string, never>; res: components["schemas"]["PointcloudListMeshesRes"] };
+  "horibot/{robot_id}/scene3d/srv/snapshot": { req: components["schemas"]["Scene3DSnapshotReq"]; res: components["schemas"]["Scene3DSnapshotRes"] };
+  "horibot/{robot_id}/scene3d/srv/set_stream": { req: components["schemas"]["Scene3DSetStreamReq"]; res: components["schemas"]["Scene3DSetStreamRes"] };
   "horibot/task/srv/run": { req: unknown; res: unknown };
   "horibot/task/srv/status": { req: Record<string, never>; res: unknown };
   "horibot/task/srv/preview": { req: unknown; res: unknown };

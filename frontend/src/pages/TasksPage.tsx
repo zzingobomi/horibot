@@ -121,11 +121,11 @@ export function TasksPage() {
   if (loading) {
     return <div className="p-6 text-zinc-400 font-mono">tasks 로드 중...</div>;
   }
-  if (!tasks.includes(name)) {
+  if (!tasks.some((t) => t.name === name)) {
     return (
       <div className="p-6 text-zinc-400 font-mono">
         task <span className="text-red-400">{name}</span> 없음. 등록된 task:{" "}
-        {tasks.join(", ") || "(없음)"}
+        {tasks.map((t) => t.name).join(", ") || "(없음)"}
       </div>
     );
   }

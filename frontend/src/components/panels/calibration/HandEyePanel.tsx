@@ -286,6 +286,7 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
   const { id: robotId = "" } = useParams<{ id: string }>();
   const { refetch: refetchCalibrationResults } = useCalibrationResults(robotId);
 
+  const handEyeRunId = useCalibrationStore((s) => s.hand_eye_run_id);
   const poses = useCalibrationStore((s) => s.poses);
   const liveSigma = useCalibrationStore((s) => s.liveSigma);
   const compute = useCalibrationStore((s) => s.compute);
@@ -301,7 +302,9 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
   const loading = useCalibrationStore((s) => s.loading);
   const status = useCalibrationStore((s) => s.status);
 
+  const startSessionAction = useCalibrationStore((s) => s.startSession);
   const captureAction = useCalibrationStore((s) => s.capture);
+  const undoLastCaptureAction = useCalibrationStore((s) => s.undoLastCapture);
   const resetAction = useCalibrationStore((s) => s.reset);
   const commitAction = useCalibrationStore((s) => s.commit);
   const movedAction = useCalibrationStore((s) => s.moved);
@@ -310,9 +313,11 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
 
   const minManualPoses = thresholds?.min_poses_for_trusted_sigma ?? 8;
   const canExitManual = poses.length >= minManualPoses;
+  const sessionActive = handEyeRunId !== null;
 
   const handleReset = async () => {
-    if (!confirm("누적된 모든 포즈를 삭제합니다. 계속할까요?")) return;
+    if (!confirm("진행 중 캘 세션을 폐기합니다 (캡처 + draft run cascade 삭제). 계속할까요?"))
+      return;
     await resetAction();
   };
 
@@ -336,7 +341,25 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
       api={props.api}
       expandedHeight={640}
     >
-      {manualModeActive ? (
+      {!sessionActive ? (
+        // ──── 세션 시작 전 ────
+        <Section label="시작">
+          <div className="flex flex-col gap-2">
+            <p className="text-[11px] text-zinc-500 leading-snug font-mono">
+              ChArUco 보드 준비 후 [캘 시작] 누르면 새 세션 (in_progress run)
+              생성. 이후 [캡처] {minManualPoses}장 누적 → [자동 추천] →
+              [커밋]. 중간 reload / 재시작에도 DB 자체 자체 자동 복원.
+            </p>
+            <PanelButton
+              variant="primary"
+              onClick={() => void startSessionAction()}
+              disabled={loading}
+            >
+              {loading ? "시작 중..." : "캘 시작"}
+            </PanelButton>
+          </div>
+        </Section>
+      ) : manualModeActive ? (
         // ──── Phase 1: 수동 자유 자세 캡처 ────
         <>
           <Section label={`Capture — 수동 (${poses.length}/${minManualPoses})`}>
@@ -356,8 +379,17 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
                 </PanelButton>
                 <PanelButton
                   variant="outline"
-                  onClick={() => void handleReset()}
+                  onClick={() => void undoLastCaptureAction()}
                   disabled={loading || poses.length === 0}
+                  title="마지막 캡처 1장 삭제"
+                >
+                  되돌리기
+                </PanelButton>
+                <PanelButton
+                  variant="outline"
+                  onClick={() => void handleReset()}
+                  disabled={loading}
+                  title="현재 세션 폐기"
                 >
                   리셋
                 </PanelButton>

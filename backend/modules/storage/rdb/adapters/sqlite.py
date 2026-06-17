@@ -42,12 +42,16 @@ CREATE TABLE IF NOT EXISTS calibration_runs (
     note             TEXT,
     algorithm        TEXT    NOT NULL,
     algorithm_params TEXT    NOT NULL DEFAULT '{}',
-    status           TEXT    NOT NULL DEFAULT 'success'
+    status           TEXT    NOT NULL DEFAULT 'success',
+    kind             TEXT    -- 'intrinsic' / 'hand_eye' / NULL (legacy)
 );
+
+-- in_progress (draft) lookup 가속 — robot/kind 별 최대 1개.
+-- _migrate() 가 ALTER 후 CREATE — 옛 DB 의 자체 자체 자체 kind 컬럼 없는 시점 자체 자체 fail 방지.
 
 CREATE TABLE IF NOT EXISTS calibration_results (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id      INTEGER NOT NULL REFERENCES calibration_runs(id),
+    run_id      INTEGER NOT NULL REFERENCES calibration_runs(id) ON DELETE CASCADE,
     robot_id    TEXT    NOT NULL,
     kind        TEXT    NOT NULL,
     created_at  REAL    NOT NULL,
@@ -68,7 +72,7 @@ CREATE INDEX IF NOT EXISTS idx_calibration_results_lookup
 
 CREATE TABLE IF NOT EXISTS calibration_captures (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id         INTEGER NOT NULL REFERENCES calibration_runs(id),
+    run_id         INTEGER NOT NULL REFERENCES calibration_runs(id) ON DELETE CASCADE,
     pose_index     INTEGER NOT NULL,
     joint_angles   TEXT    NOT NULL,
     board_in_cam   TEXT,
@@ -156,7 +160,29 @@ class SqliteStore:
         self._lock = threading.Lock()
         with self._lock:
             self._conn.executescript(_SCHEMA_SQL)
+            self._migrate()
         logger.info("SqliteStore 초기화: %s", path)
+
+    def _migrate(self) -> None:
+        """기존 DB schema 점진 진화 — CREATE TABLE IF NOT EXISTS 가 못 잡는 자리.
+
+        SQLite 의 ALTER TABLE 은 컬럼 추가만 지원. 옛 DB 에 새 컬럼 / 새 인덱스
+        반영 시 본 함수가 PRAGMA table_info 로 컬럼 유무 확인 후 ALTER.
+        """
+        # calibration_runs.kind — in_progress lookup 위해 추가 (2026-06-18).
+        cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(calibration_runs)")
+        }
+        if "kind" not in cols:
+            self._conn.execute("ALTER TABLE calibration_runs ADD COLUMN kind TEXT")
+            logger.info("schema migration: calibration_runs.kind 추가")
+        # kind 컬럼 자체 자체 보장 후 in_progress index 생성 (옛 DB / 신규 DB 자체 자체 동일).
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_calibration_runs_in_progress "
+            "ON calibration_runs(robot_id, kind) "
+            "WHERE status = 'in_progress'"
+        )
 
     # ─── Read ─────────────────────────────────────────────────
 
@@ -253,8 +279,8 @@ class SqliteStore:
                 cur = self._conn.execute(
                     "INSERT INTO calibration_runs "
                     "(robot_id, started_at, ended_at, operator, note, "
-                    " algorithm, algorithm_params, status) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    " algorithm, algorithm_params, status, kind) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
                     (
                         run.robot_id,
                         run.started_at,
@@ -264,6 +290,7 @@ class SqliteStore:
                         run.algorithm,
                         json.dumps(run.algorithm_params),
                         run.status,
+                        run.kind,
                     ),
                 )
                 run_id = int(cur.lastrowid or 0)
@@ -313,6 +340,193 @@ class SqliteStore:
                 raise
 
         return run_id, result_ids
+
+    # ─── Draft run / capture-as-you-go (Phase 1 확장) ────────────
+    # 사용자 [캘 시작] 누르면 run 생성 (in_progress). [캡처] 마다 capture row
+    # append. [리셋] 시 cascade delete. [커밋] 시 finalize_calibration_run 로
+    # status flip + result INSERT + capture residuals 갱신.
+
+    def new_calibration_run(
+        self,
+        run: CalibrationRunRecord,
+    ) -> int:
+        """draft run 시작 — status 강제 'in_progress'. kind 는 caller 가 채워야 함."""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO calibration_runs "
+                "(robot_id, started_at, ended_at, operator, note, "
+                " algorithm, algorithm_params, status, kind) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    run.robot_id,
+                    run.started_at,
+                    run.ended_at,
+                    run.operator,
+                    run.note,
+                    run.algorithm,
+                    json.dumps(run.algorithm_params),
+                    "in_progress",
+                    run.kind,
+                ),
+            )
+            return int(cur.lastrowid or 0)
+
+    def append_calibration_capture(
+        self, capture: CalibrationCaptureRecord
+    ) -> int:
+        """draft run 에 capture 1장 추가 — caller 가 capture.run_id 채워야 함."""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO calibration_captures "
+                "(run_id, pose_index, joint_angles, board_in_cam, "
+                " residual_rot, residual_trans, weight) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    capture.run_id,
+                    capture.pose_index,
+                    json.dumps(capture.joint_angles),
+                    json.dumps(capture.board_in_cam)
+                    if capture.board_in_cam is not None
+                    else None,
+                    capture.residual_rot,
+                    capture.residual_trans,
+                    capture.weight,
+                ),
+            )
+            return int(cur.lastrowid or 0)
+
+    def delete_last_capture(self, run_id: int) -> int | None:
+        """draft run 의 마지막 capture 1장 삭제 ([되돌리기]). 삭제된 pose_index 반환, 없으면 None."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                row = self._conn.execute(
+                    "SELECT id, pose_index FROM calibration_captures "
+                    "WHERE run_id=? ORDER BY pose_index DESC LIMIT 1",
+                    (run_id,),
+                ).fetchone()
+                if row is None:
+                    self._conn.execute("COMMIT")
+                    return None
+                self._conn.execute(
+                    "DELETE FROM calibration_captures WHERE id=?", (row["id"],)
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        return int(row["pose_index"])
+
+    def get_in_progress_run(
+        self, robot_id: str, kind: CalibrationKind
+    ) -> tuple[CalibrationRunRecord, list[CalibrationCaptureRecord]] | None:
+        """robot 의 (kind) in_progress run + 누적 captures. 없으면 None."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM calibration_runs "
+                "WHERE robot_id=? AND kind=? AND status='in_progress' "
+                "ORDER BY started_at DESC LIMIT 1",
+                (robot_id, kind),
+            ).fetchone()
+            if row is None:
+                return None
+            run = _row_to_run(row)
+            cap_rows = self._conn.execute(
+                "SELECT * FROM calibration_captures "
+                "WHERE run_id=? ORDER BY pose_index ASC",
+                (run.id,),
+            ).fetchall()
+            captures = [_row_to_capture(r) for r in cap_rows]
+        return run, captures
+
+    def delete_calibration_run(self, run_id: int) -> None:
+        """run + captures + results cascade 삭제 ([리셋]).
+
+        FK ON DELETE CASCADE 가 새 DB 만 적용되므로 옛 DB 호환 위해 명시 cascade.
+        """
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                self._conn.execute(
+                    "DELETE FROM calibration_captures WHERE run_id=?", (run_id,)
+                )
+                self._conn.execute(
+                    "DELETE FROM calibration_results WHERE run_id=?", (run_id,)
+                )
+                self._conn.execute(
+                    "DELETE FROM calibration_runs WHERE id=?", (run_id,)
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    def finalize_calibration_run(
+        self,
+        run_id: int,
+        results: list[CalibrationResultRecord],
+        capture_residuals: dict[int, tuple[float | None, float | None, float | None]]
+        | None = None,
+    ) -> list[int]:
+        """draft run commit — status in_progress→success, result rows INSERT,
+        capture residuals UPDATE (BA output).
+
+        capture_residuals: {pose_index: (residual_rot, residual_trans, weight)}.
+        None 이면 capture 업데이트 안 함.
+        """
+        ended_at = results[0].created_at if results else 0.0
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                row = self._conn.execute(
+                    "SELECT id FROM calibration_runs "
+                    "WHERE id=? AND status='in_progress'",
+                    (run_id,),
+                ).fetchone()
+                if row is None:
+                    self._conn.execute("ROLLBACK")
+                    raise KeyError(f"in_progress run id={run_id} 없음 / 이미 종료")
+
+                self._conn.execute(
+                    "UPDATE calibration_runs "
+                    "SET status='success', ended_at=? WHERE id=?",
+                    (ended_at, run_id),
+                )
+
+                if capture_residuals:
+                    for pose_index, (rrot, rtrans, weight) in capture_residuals.items():
+                        self._conn.execute(
+                            "UPDATE calibration_captures "
+                            "SET residual_rot=?, residual_trans=?, weight=? "
+                            "WHERE run_id=? AND pose_index=?",
+                            (rrot, rtrans, weight, run_id, pose_index),
+                        )
+
+                result_ids: list[int] = []
+                for r in results:
+                    cur = self._conn.execute(
+                        "INSERT INTO calibration_results "
+                        "(run_id, robot_id, kind, created_at, is_active, "
+                        " sigma_rot, sigma_t, result_data) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
+                        (
+                            run_id,
+                            r.robot_id,
+                            r.kind,
+                            r.created_at,
+                            0,  # finalize 시점 always is_active=false (ACTIVATE 별도)
+                            r.sigma_rot,
+                            r.sigma_t,
+                            r.result_data.model_dump_json(),
+                        ),
+                    )
+                    result_ids.append(int(cur.lastrowid or 0))
+
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        return result_ids
 
     def close(self) -> None:
         """process 종료 시 connection 명시 close (Windows 에서 파일 lock 해제)."""
@@ -532,6 +746,8 @@ class SqliteStore:
 
 
 def _row_to_run(row: sqlite3.Row) -> CalibrationRunRecord:
+    # row["kind"] 는 migration 거친 옛 row 면 NULL — 그대로 None 으로 들고 옴.
+    kind = row["kind"] if "kind" in row.keys() else None
     return CalibrationRunRecord(
         id=row["id"],
         robot_id=row["robot_id"],
@@ -542,6 +758,7 @@ def _row_to_run(row: sqlite3.Row) -> CalibrationRunRecord:
         algorithm=row["algorithm"],
         algorithm_params=json.loads(row["algorithm_params"] or "{}"),
         status=row["status"],
+        kind=kind,
     )
 
 

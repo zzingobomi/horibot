@@ -23,15 +23,27 @@ from core.transport.messages.storage import (
     CalibrationRunSummary,
     StorageActivateReq,
     StorageActivateRes,
+    StorageAppendCaptureReq,
+    StorageAppendCaptureRes,
     StorageCommitReq,
     StorageCommitRes,
+    StorageDeleteCalRunReq,
+    StorageDeleteLastCaptureReq,
+    StorageDeleteLastCaptureRes,
+    StorageFinalizeCalRunReq,
+    StorageFinalizeCalRunRes,
     StorageGetActiveReq,
     StorageGetActiveRes,
+    StorageGetInProgressReq,
+    StorageGetInProgressRes,
     StorageListReq,
     StorageListRes,
     StorageListRunsReq,
     StorageListRunsRes,
+    StorageNewCalRunReq,
+    StorageNewCalRunRes,
 )
+from core.transport.messages.base import EmptyData
 from core.transport.topic_map import Service, Topic
 from modules.calibration.persistence_models import (
     CalibrationCaptureRecord,
@@ -104,6 +116,75 @@ class CalibrationStorageClient:
             StorageActivateRes,
         )
         return res.result
+
+    # ─── Draft run / capture-as-you-go (사용자 flow) ─────────
+
+    def new_run(self, run: CalibrationRunRecord) -> int:
+        """[캘 시작] — in_progress run 생성. run.kind 채워야 함."""
+        res = self._t.call(
+            Service.STORAGE_NEW_CAL_RUN,
+            StorageNewCalRunReq(run=run),
+            StorageNewCalRunRes,
+        )
+        return res.run_id
+
+    def append_capture(self, capture: CalibrationCaptureRecord) -> int:
+        """[캡처] — draft run 에 capture 1장 append. caller 가 capture.run_id 채워야 함."""
+        res = self._t.call(
+            Service.STORAGE_APPEND_CAPTURE,
+            StorageAppendCaptureReq(capture=capture),
+            StorageAppendCaptureRes,
+        )
+        return res.capture_id
+
+    def delete_last_capture(self, run_id: int) -> int | None:
+        """[되돌리기] — 마지막 capture 1장 삭제. 삭제된 pose_index, 없으면 None."""
+        res = self._t.call(
+            Service.STORAGE_DELETE_LAST_CAPTURE,
+            StorageDeleteLastCaptureReq(run_id=run_id),
+            StorageDeleteLastCaptureRes,
+        )
+        return res.deleted_pose_index
+
+    def get_in_progress_run(
+        self, robot_id: str, kind: CalibrationKind
+    ) -> tuple[CalibrationRunRecord, list[CalibrationCaptureRecord]] | None:
+        """부팅 시 복원 — 진행 중이던 세션. 없으면 None."""
+        res = self._t.call(
+            Service.STORAGE_GET_IN_PROGRESS_RUN,
+            StorageGetInProgressReq(robot_id=robot_id, kind=kind),
+            StorageGetInProgressRes,
+        )
+        if not res.found or res.run is None:
+            return None
+        return res.run, res.captures
+
+    def delete_run(self, run_id: int) -> None:
+        """[리셋] — run + captures + results cascade delete."""
+        self._t.call(
+            Service.STORAGE_DELETE_CAL_RUN,
+            StorageDeleteCalRunReq(run_id=run_id),
+            EmptyData,
+        )
+
+    def finalize_run(
+        self,
+        run_id: int,
+        results: list[CalibrationResultRecord],
+        capture_residuals: dict[int, tuple[float | None, float | None, float | None]]
+        | None = None,
+    ) -> list[int]:
+        """[커밋] — in_progress → success, result rows INSERT, captures residual UPDATE."""
+        res = self._t.call(
+            Service.STORAGE_FINALIZE_CAL_RUN,
+            StorageFinalizeCalRunReq(
+                run_id=run_id,
+                results=results,
+                capture_residuals=capture_residuals,
+            ),
+            StorageFinalizeCalRunRes,
+        )
+        return res.result_ids
 
     # ─── invalidation subscribe ──────────────────────────────
 

@@ -122,6 +122,81 @@ class StorageActivateRes(StrictModel):
     result: CalibrationResultRecord
 
 
+# ─── Draft run / capture-as-you-go (사용자 [캘 시작] flow) ─────
+
+
+class StorageNewCalRunReq(StrictModel):
+    """[캘 시작] — in_progress run 생성. caller 가 run.kind 채워야 함.
+    같은 (robot_id, kind) 의 기존 in_progress 가 있으면 서버가 reject."""
+
+    run: CalibrationRunRecord
+
+
+class StorageNewCalRunRes(StrictModel):
+    run_id: int
+
+
+class StorageAppendCaptureReq(StrictModel):
+    """[캡처] — draft run 에 capture 1장 append. caller 가 capture.run_id 채워야 함."""
+
+    capture: CalibrationCaptureRecord
+
+
+class StorageAppendCaptureRes(StrictModel):
+    capture_id: int
+
+
+class StorageDeleteLastCaptureReq(StrictModel):
+    """[되돌리기] — 마지막 capture 1장 삭제."""
+
+    run_id: int
+
+
+class StorageDeleteLastCaptureRes(StrictModel):
+    """deleted_pose_index None = 삭제할 capture 없음."""
+
+    deleted_pose_index: int | None = None
+
+
+class StorageGetInProgressReq(StrictModel):
+    """부팅 시 복원 — 사용자 진행 중이던 세션 자리."""
+
+    robot_id: str
+    kind: CalibrationKind
+
+
+class StorageGetInProgressRes(StrictModel):
+    """found=False 면 진행 중 세션 없음."""
+
+    found: bool
+    run: CalibrationRunRecord | None = None
+    captures: list[CalibrationCaptureRecord] = []
+
+
+class StorageDeleteCalRunReq(StrictModel):
+    """[리셋] — run + captures + results cascade delete."""
+
+    run_id: int
+
+
+class StorageFinalizeCalRunReq(StrictModel):
+    """[커밋] — in_progress → success, result rows INSERT, captures 의 residual UPDATE.
+
+    capture_residuals: pose_index → (residual_rot, residual_trans, weight) 매핑.
+    BA 출력 자리 자체 (hand_eye 자리 BA 결과). None 이면 update skip (intrinsic 등 residual 없는 자리).
+    """
+
+    run_id: int
+    results: list[CalibrationResultRecord]
+    capture_residuals: dict[int, tuple[float | None, float | None, float | None]] | None = (
+        None
+    )
+
+
+class StorageFinalizeCalRunRes(StrictModel):
+    result_ids: list[int]
+
+
 # ─── Phase 2 — scan workflow ───────────────────────────────────
 # blob_key 자리는 server 결정 (race 차단). blob bytes wire = opaque — caller 가
 # scan_workflow.blob 의 encode/decode 자리 사용. GET_BLOB 자리 generic (scan /

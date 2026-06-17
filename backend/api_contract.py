@@ -158,6 +158,12 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
         _calibration.MultiStartReq,
         _calibration.MultiStartRes,
     ),
+    # Draft run flow — 사용자 [캘 시작] / [되돌리기]. storage_layer.md §13.
+    Service.CALIB_HANDEYE_START: (EmptyData, _calibration.HandeyeStartRes),
+    Service.CALIB_HANDEYE_UNDO_LAST_CAPTURE: (
+        EmptyData,
+        _calibration.HandeyeUndoLastCaptureRes,
+    ),
     # ─ Storage (Phase 1 — 캘 4 service)
     Service.STORAGE_GET_ACTIVE_CALIBRATION: (
         _storage.StorageGetActiveReq,

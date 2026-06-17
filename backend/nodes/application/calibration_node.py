@@ -1,10 +1,11 @@
 ﻿import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+
 import cv2
 import numpy as np
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from core.transport.application_node import ApplicationNode
 from core.coords.joint_coordinates import JointCoordinates
@@ -21,6 +22,8 @@ from core.transport.messages.calibration import (
     HandeyePreviewEnableReq,
     HandeyePreviewEnableRes,
     HandeyeResetRes,
+    HandeyeStartRes,
+    HandeyeUndoLastCaptureRes,
     IntrinsicCaptureRes,
     IntrinsicSaveRes,
     JointOffsetEntry,
@@ -45,6 +48,7 @@ from modules.calibration.calibration_cache import CalibrationCache
 from modules.calibration.link_offsets import LinkOffsets
 from modules.calibration.loader import CalibrationData, HandEyeData, IntrinsicData
 from modules.calibration.persistence_models import (
+    CalibrationCaptureRecord,
     CalibrationResultRecord,
     CalibrationRunRecord,
     HandEyeResultRecord,
@@ -71,14 +75,6 @@ from modules.kinematics.adapters.sag_corrected import SagCorrectedKinematics
 logger = logging.getLogger(__name__)
 
 
-def _save_dir(robot_id: str) -> Path:
-    return RobotRegistry().get(robot_id).calibration_dir
-
-
-def _handeye_poses_path(robot_id: str) -> Path:
-    return _save_dir(robot_id) / "handeye_poses.npz"
-
-
 PREVIEW_INTERVAL = 0.2  # 5Hz
 
 
@@ -103,6 +99,9 @@ class _RobotState:
     # recommendation 실패한 자세 ID (사용자가 직접 후보에서 제외)
     recommendation_fail_ids: set[str] = field(default_factory=set)
     sigma_history: list[float] = field(default_factory=list)
+    # draft run id — [캘 시작] 자리 시 setting, [리셋]/[커밋] 자리 시 None.
+    # capture 가 None 이면 fail (사용자가 START 안 한 자리). storage_layer.md §13.
+    hand_eye_run_id: int | None = None
 
 
 class CalibrationNode(ApplicationNode):
@@ -132,6 +131,70 @@ class CalibrationNode(ApplicationNode):
         self._preview_thread: threading.Thread | None = None
         self._setup_thread: threading.Thread | None = None
         self._storage = CalibrationStorageClient()
+
+        # per-robot single-thread executor — capture service fast path 자체 자체,
+        # 자동 BA / observability 자체 자체 자체 background 자체 자체. max_workers=1 자체
+        # 자체 자체 자체 BA 자체 자체 자체 직렬화 (latest pose 자체 사용).
+        self._ba_executors: dict[str, ThreadPoolExecutor] = {
+            rid: ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix=f"calib-ba-{rid}"
+            )
+            for rid in self.enabled_robot_ids
+        }
+
+    def _restore_in_progress_handeye(
+        self, robot_id: str, st: _RobotState
+    ) -> None:
+        """부팅 시 storage 의 in_progress hand_eye run 자체 자체 복원.
+
+        있으면 hand_eye_run_id setting + capture rows 자체 in-memory Pose 자체 자체.
+        없으면 no-op (사용자가 [캘 시작] 누를 때까지 빈 상태).
+        """
+        existing = self._storage.get_in_progress_run(robot_id, "hand_eye")
+        if existing is None:
+            return
+        run, captures = existing
+        st.hand_eye_run_id = run.id
+        self._restore_poses_from_captures(robot_id, st, captures)
+        logger.info(
+            "[%s] in_progress hand_eye run 복원 (run_id=%d, %d장)",
+            robot_id, run.id, len(captures),
+        )
+
+    def _restore_poses_from_captures(
+        self,
+        robot_id: str,
+        st: _RobotState,
+        captures: list[CalibrationCaptureRecord],
+    ) -> None:
+        """capture rows → in-memory Pose 객체. id 는 pose_index 그대로 사용."""
+        joints = JointCoordinates()
+        st.hand_eye.poses.clear()
+        for cap in captures:
+            if cap.board_in_cam is None or len(cap.joint_angles) != len(st.arm_cfgs):
+                logger.warning(
+                    "[%s] capture row 손상 — skip (pose_index=%d)",
+                    robot_id, cap.pose_index,
+                )
+                continue
+            raw_dict = {
+                cfg.id: joints.urdf_to_motor(rad, cfg, robot_id=robot_id)
+                for cfg, rad in zip(st.arm_cfgs, cap.joint_angles)
+            }
+            board_T = np.asarray(cap.board_in_cam, dtype=np.float64)
+            R = board_T[:3, :3]
+            t = board_T[:3, 3].reshape(3, 1)
+            st.hand_eye.poses.append(
+                Pose(
+                    raw_motor_positions=raw_dict,
+                    R_target2cam=R,
+                    t_target2cam=t,
+                    id=cap.pose_index,
+                )
+            )
+        st.hand_eye._next_id = (
+            max((p.id for p in st.hand_eye.poses), default=-1) + 1
+        )
 
     def _setup_runtime_calibration(self) -> None:
         """부팅 시 background thread. Storage 대기 → 5종 fetch → 소비자에 push.
@@ -325,6 +388,21 @@ class CalibrationNode(ApplicationNode):
                 MultiStartRes,
                 lambda req, _rid=rid: self._srv_handeye_multi_start(req, _rid),
             )
+            # Draft run flow — 사용자 [캘 시작] / [되돌리기].
+            self.create_service(
+                topic_for(Service.CALIB_HANDEYE_START, rid),
+                EmptyData,
+                HandeyeStartRes,
+                lambda req, _rid=rid: self._srv_handeye_start(req, _rid),
+            )
+            self.create_service(
+                topic_for(Service.CALIB_HANDEYE_UNDO_LAST_CAPTURE, rid),
+                EmptyData,
+                HandeyeUndoLastCaptureRes,
+                lambda req, _rid=rid: self._srv_handeye_undo_last_capture(
+                    req, _rid
+                ),
+            )
 
         super().start()
         self._joint_cache.subscribe(self)
@@ -335,11 +413,13 @@ class CalibrationNode(ApplicationNode):
         )
         self._preview_thread.start()
 
-        # 이전 hand-eye poses 복원
+        # 부팅 시 in_progress hand_eye run 복원 — DB SSOT. 사용자가 캘 진행
+        # 중에 backend 재시작 / browser reload 한 자리 자리 자리 자리 자리 자리 복원.
         for rid, st in self._states.items():
-            loaded = st.hand_eye.load_poses(_handeye_poses_path(rid))
-            if loaded > 0:
-                logger.info("[%s] 이전 Hand-Eye 포즈 %d개 복원됨", rid, loaded)
+            try:
+                self._restore_in_progress_handeye(rid, st)
+            except Exception:
+                logger.exception("[%s] in_progress 복원 실패", rid)
 
         # 부팅 시 storage 에서 5종 fetch + 소비자에 push (background thread —
         # main start 안 막힘. storage 늦게 떠도 retry).
@@ -351,6 +431,15 @@ class CalibrationNode(ApplicationNode):
         self._setup_thread.start()
 
         logger.info("CalibrationNode 시작 (robots=%s)", self.enabled_robot_ids)
+
+    def stop(self) -> None:
+        # 진행 중 BA 자체 자체 자체 자체 wait — process 종료 자체 자체 자체 자체.
+        for rid, ex in self._ba_executors.items():
+            try:
+                ex.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                logger.exception("[%s] BA executor shutdown 오류", rid)
+        super().stop()
 
     # ─── 이미지 캡처 ─────────────────────────────────────────
 
@@ -802,7 +891,49 @@ class CalibrationNode(ApplicationNode):
                 ),
             )
 
+        # draft run 필수 — 사용자가 [캘 시작] 안 누른 자리 자리 자체 자체 자체.
+        if st.hand_eye_run_id is None:
+            return ServiceResponse(
+                success=False,
+                message=(
+                    "캘 세션이 시작 안 됨 — 먼저 [캘 시작] 을 눌러주세요"
+                ),
+                data=HandeyeCaptureRes(
+                    detected=False, pose_count=len(st.hand_eye.poses)
+                ),
+            )
+
         R_t2c, _ = cv2.Rodrigues(rvec)
+        pose_index = len(st.hand_eye.poses)
+
+        # capture record 자체 자체 storage 자체 박기 — in-memory 자체 자체 박기 *전*.
+        # 자체 자체 storage fail 자체 자체 자체 자체 in-memory 자체 자체 자체 일관 (consistent fail).
+        joints = JointCoordinates()
+        joint_angles_rad = [
+            joints.motor_to_urdf(raw_positions[cfg.id], cfg, robot_id=robot_id)
+            for cfg in st.arm_cfgs
+        ]
+        board_in_cam = np.eye(4)
+        board_in_cam[:3, :3] = R_t2c
+        board_in_cam[:3, 3] = np.asarray(tvec).reshape(3)
+        try:
+            self._storage.append_capture(
+                CalibrationCaptureRecord(  # type: ignore[call-arg]
+                    run_id=st.hand_eye_run_id,
+                    pose_index=pose_index,
+                    joint_angles=joint_angles_rad,
+                    board_in_cam=board_in_cam.tolist(),
+                )
+            )
+        except Exception as e:
+            logger.exception("[%s] capture storage append 실패", robot_id)
+            return ServiceResponse(
+                success=False,
+                message=f"storage append 실패: {e}",
+                data=HandeyeCaptureRes(
+                    detected=False, pose_count=len(st.hand_eye.poses)
+                ),
+            )
 
         st.hand_eye.add_pose(
             Pose(
@@ -813,32 +944,14 @@ class CalibrationNode(ApplicationNode):
         )
 
         st.last_compute = None
-        try:
-            st.hand_eye.save_poses(_handeye_poses_path(robot_id))
-        except Exception as e:
-            logger.warning("[%s] 포즈 디스크 저장 실패: %s", robot_id, e)
 
-        # 자동 BA — capture 마다 σ live + 추천 + saturate 인지 갱신. 사용자가
-        # [COMPUTE] 별도로 안 눌러도 매 capture 후 즉시 publish (재캘 거부감 0).
-        # 최소 capture 수 미만이면 skip. 실패는 warning 로그만.
+        # 자동 BA + observability 자체 background — service response 자체 fast (~100ms).
+        # 결과 자체 자체 sigma / saturate / recommendations / observability 자체 topic publish 자체.
+        # frontend subscribe 자체 자체 자체 async 자체 갱신 — service timeout 자체 issue 자체 사라짐.
         if len(st.hand_eye.poses) >= calib_thresholds.MIN_POSES_FOR_COMPUTE:
-            try:
-                auto_diag = self._run_ba_and_stash(robot_id, mode="physical_sag")
-                if auto_diag is not None:
-                    self._publish_sigma_state(robot_id, auto_diag)
-                    self._publish_saturate_state(robot_id, auto_diag)
-                    self._publish_recommendations(robot_id)
-            except Exception as e:
-                logger.warning("[%s] 자동 BA 실패: %s", robot_id, e)
-
-        # 자동 observability 진단 — capture 마다 자세 분포의 기하학적 정보 분석.
-        # verdict='A' 면 다양성 충분, 'B' 면 구조적 부족. frontend 가 verdict 기반
-        # 안내 (4 metric 숫자 X, "보드 위치 변경" 같은 액션만).
-        if len(st.hand_eye.poses) >= calib_thresholds.MIN_POSES_FOR_COMPUTE:
-            try:
-                self._publish_observability_state(robot_id, st)
-            except Exception as e:
-                logger.warning("[%s] observability 진단 실패: %s", robot_id, e)
+            self._ba_executors[robot_id].submit(
+                self._auto_ba_and_publish, robot_id
+            )
 
         return ServiceResponse(
             success=True,
@@ -846,24 +959,159 @@ class CalibrationNode(ApplicationNode):
             data=HandeyeCaptureRes(detected=True, pose_count=len(st.hand_eye.poses)),
         )
 
+    def _auto_ba_and_publish(self, robot_id: str) -> None:
+        """capture 마다 background 자체 자체 BA + observability + 추천. capture service
+        자체 자체 fast response 자체. 같은 robot 자체 capture 자체 자체 자체 자체 queue 자체
+        ThreadPoolExecutor(max_workers=1) 자체 자체 직렬화."""
+        st = self._states[robot_id]
+        if len(st.hand_eye.poses) < calib_thresholds.MIN_POSES_FOR_COMPUTE:
+            return
+        try:
+            auto_diag = self._run_ba_and_stash(robot_id, mode="physical_sag")
+            if auto_diag is not None:
+                self._publish_sigma_state(robot_id, auto_diag)
+                self._publish_saturate_state(robot_id, auto_diag)
+                self._publish_recommendations(robot_id)
+        except Exception:
+            logger.exception("[%s] 자동 BA 실패 (background)", robot_id)
+        try:
+            self._publish_observability_state(robot_id, st)
+        except Exception:
+            logger.exception("[%s] observability 실패 (background)", robot_id)
+
     def _srv_handeye_reset(
         self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[HandeyeResetRes]:
+        """draft run + captures cascade 삭제 + in-memory 비우기. 사용자 [리셋].
+
+        이후 사용자는 [캘 시작] 재호출 필요. storage_layer.md §13.
+        """
         st = self._states[robot_id]
+        if st.hand_eye_run_id is not None:
+            try:
+                self._storage.delete_run(st.hand_eye_run_id)
+            except Exception:
+                logger.exception(
+                    "[%s] draft run delete 실패 (run_id=%d)",
+                    robot_id, st.hand_eye_run_id,
+                )
         st.hand_eye.reset()
+        st.hand_eye_run_id = None
         st.last_compute = None
         st.recommendation_fail_ids.clear()
         st.sigma_history.clear()
-        poses_path = _handeye_poses_path(robot_id)
-        if poses_path.exists():
-            try:
-                poses_path.unlink()
-            except OSError as e:
-                logger.warning("[%s] 포즈 파일 삭제 실패: %s", robot_id, e)
         return ServiceResponse(
             success=True,
-            message="Hand-Eye 누적 포즈 초기화됨",
+            message="Hand-Eye 세션 초기화됨",
             data=HandeyeResetRes(pose_count=0),
+        )
+
+    def _srv_handeye_start(
+        self, _req: ServiceRequest[EmptyData], robot_id: str
+    ) -> ServiceResponse[HandeyeStartRes]:
+        """[캘 시작] — draft run 생성. 기존 in_progress 가 있으면 reject — frontend
+        는 부팅 시 GET_IN_PROGRESS 로 확인 후 호출하거나 [리셋] 먼저 누름."""
+        st = self._states[robot_id]
+        if st.hand_eye_run_id is not None:
+            return ServiceResponse(
+                success=False,
+                message=(
+                    f"이미 진행 중 세션 있음 (run_id={st.hand_eye_run_id}). "
+                    "이어하기 또는 [리셋] 후 다시 시작."
+                ),
+                data=None,
+            )
+        # 안전 가드 — DB 자체 자체 확인. in-memory 상태 자체 자체 자체 자체 disagreement 자체 자체
+        # 자체 자체 자체 (예: 다른 process 자체 자체 만든 in_progress).
+        existing = self._storage.get_in_progress_run(robot_id, "hand_eye")
+        if existing is not None:
+            run, captures = existing
+            st.hand_eye_run_id = run.id
+            self._restore_poses_from_captures(robot_id, st, captures)
+            return ServiceResponse(
+                success=False,
+                message=(
+                    f"DB 에 기존 진행 중 세션 있음 (run_id={run.id}, "
+                    f"{len(captures)}장 복원). 이어하기 또는 [리셋] 후 다시 시작."
+                ),
+                data=None,
+            )
+
+        now = time.time()
+        run = CalibrationRunRecord(
+            robot_id=robot_id,
+            started_at=now,
+            algorithm="hand_eye",
+            kind="hand_eye",
+        )
+        try:
+            run_id = self._storage.new_run(run)
+        except Exception as e:
+            logger.exception("[%s] new_run 실패", robot_id)
+            return ServiceResponse(
+                success=False, message=f"storage new_run 실패: {e}", data=None
+            )
+
+        # 새 세션이라 in-memory 자체 자체 비우기 (이전 session 잔재 제거).
+        st.hand_eye.reset()
+        st.hand_eye_run_id = run_id
+        st.last_compute = None
+        st.recommendation_fail_ids.clear()
+        st.sigma_history.clear()
+
+        logger.info(
+            "[%s] Hand-Eye 세션 시작 (run_id=%d)", robot_id, run_id
+        )
+        return ServiceResponse(
+            success=True,
+            message=f"Hand-Eye 세션 시작 (run_id={run_id})",
+            data=HandeyeStartRes(run_id=run_id, pose_count=0),
+        )
+
+    def _srv_handeye_undo_last_capture(
+        self, _req: ServiceRequest[EmptyData], robot_id: str
+    ) -> ServiceResponse[HandeyeUndoLastCaptureRes]:
+        """[되돌리기] — 마지막 capture 1장 삭제 + in-memory pop."""
+        st = self._states[robot_id]
+        if st.hand_eye_run_id is None or not st.hand_eye.poses:
+            return ServiceResponse(
+                success=True,
+                message="삭제할 capture 없음",
+                data=HandeyeUndoLastCaptureRes(
+                    deleted=False, pose_count=len(st.hand_eye.poses)
+                ),
+            )
+
+        try:
+            deleted_idx = self._storage.delete_last_capture(st.hand_eye_run_id)
+        except Exception as e:
+            logger.exception("[%s] storage delete_last_capture 실패", robot_id)
+            return ServiceResponse(
+                success=False, message=f"storage delete 실패: {e}", data=None
+            )
+
+        if deleted_idx is None:
+            # DB 와 in-memory 가 어긋남 — 안전 동기화: in-memory 도 비움.
+            st.hand_eye.reset()
+            return ServiceResponse(
+                success=True,
+                message="DB capture 없음 — in-memory 도 동기화 reset",
+                data=HandeyeUndoLastCaptureRes(deleted=False, pose_count=0),
+            )
+
+        # in-memory 마지막 pop + next_id 보정.
+        if st.hand_eye.poses:
+            st.hand_eye.poses.pop()
+            st.hand_eye._next_id = (
+                max((p.id for p in st.hand_eye.poses), default=-1) + 1
+            )
+        st.last_compute = None
+        return ServiceResponse(
+            success=True,
+            message=f"capture #{deleted_idx} 삭제됨",
+            data=HandeyeUndoLastCaptureRes(
+                deleted=True, pose_count=len(st.hand_eye.poses)
+            ),
         )
 
     def _srv_handeye_list_poses(
@@ -877,7 +1125,11 @@ class CalibrationNode(ApplicationNode):
         return ServiceResponse(
             success=True,
             message="ok",
-            data=HandeyeListPosesRes(poses=poses, pose_count=len(st.hand_eye.poses)),
+            data=HandeyeListPosesRes(
+                poses=poses,
+                pose_count=len(st.hand_eye.poses),
+                run_id=st.hand_eye_run_id,
+            ),
         )
 
     def _srv_handeye_compute(self, req: dict, robot_id: str) -> dict:
@@ -903,17 +1155,23 @@ class CalibrationNode(ApplicationNode):
     def _srv_handeye_commit(
         self, _req: ServiceRequest[EmptyData], robot_id: str
     ) -> ServiceResponse[HandeyeCommitRes]:
-        """BA 결과 → storage Run + Results (kind 별) + activate → in-memory push.
+        """BA 결과 → finalize_run (in_progress→success + Result rows INSERT) → activate.
 
-        Stage 2c — 옛 disk save (npz) 대신 storage 단일 source. activate 마다
-        STORAGE_CALIBRATION_INVALIDATED publish (storage_node 가 담당).
-        push 는 `_push_calibration` 재호출 — storage 에서 fresh fetch (방금 활성화
-        된 새 record 받음).
+        draft run + captures 가 capture 단계 동안 storage 에 누적됨. commit 은 그 run
+        finalize: status flip + Result rows INSERT + 새 result activate + invalidation publish.
+        끝나면 session 종료 — hand_eye_run_id None, in-memory 비움, 다음 [캘 시작]
+        대기.
         """
         st = self._states[robot_id]
         if st.last_compute is None or st.hand_eye.result is None:
             return ServiceResponse(
                 success=False, message="먼저 COMPUTE를 실행하세요", data=None
+            )
+        if st.hand_eye_run_id is None:
+            return ServiceResponse(
+                success=False,
+                message="진행 중 세션 없음 — [캘 시작] 후 capture/compute 필요",
+                data=None,
             )
 
         method = st.hand_eye.result.method
@@ -1007,26 +1265,19 @@ class CalibrationNode(ApplicationNode):
                 )
             )
 
-        # ─── Run record + storage commit (atomic INSERT) ────────────
-        run = CalibrationRunRecord(
-            robot_id=robot_id,
-            started_at=now,
-            ended_at=now,
-            algorithm=method,
-            algorithm_params={
-                "sigma_rot_deg": _optional_float(st.last_compute.get("sigma_rot_deg")),
-                "sigma_t_mm": _optional_float(st.last_compute.get("sigma_t_mm")),
-                "pose_count": len(st.hand_eye.poses),
-                "ba_mode": _optional_str(st.last_compute.get("method")),
-            },
-        )
+        # ─── draft run finalize — status flip + result rows INSERT (atomic) ──
         try:
-            run_id, result_ids = self._storage.commit(run, results, [])
-        except Exception as e:
-            logger.exception("[%s] storage commit 실패", robot_id)
-            return ServiceResponse(
-                success=False, message=f"storage commit 실패: {e}", data=None
+            result_ids = self._storage.finalize_run(
+                st.hand_eye_run_id,
+                results,
+                capture_residuals=None,
             )
+        except Exception as e:
+            logger.exception("[%s] storage finalize 실패", robot_id)
+            return ServiceResponse(
+                success=False, message=f"storage finalize 실패: {e}", data=None
+            )
+        run_id = st.hand_eye_run_id
 
         # ─── ACTIVATE 모든 새 result — storage_node 가 invalidation publish ──
         for rid_ in result_ids:
@@ -1038,6 +1289,17 @@ class CalibrationNode(ApplicationNode):
         # ─── in-memory push — 방금 활성화된 새 record 가 fresh fetch ─────
         self._push_calibration(robot_id)
 
+        # log + 응답 위해 sigma 값 자체 자체 미리 추출 (세션 종료 자체 자체 자체 자체 자체 None 되기 전에).
+        sigma_rot_log = st.last_compute.get("sigma_rot_deg")
+        sigma_t_log = st.last_compute.get("sigma_t_mm")
+
+        # ─── 세션 종료 — 다음 [캘 시작] 까지 빈 상태 ────────────────
+        st.hand_eye_run_id = None
+        st.hand_eye.reset()
+        st.last_compute = None
+        st.recommendation_fail_ids.clear()
+        st.sigma_history.clear()
+
         # link offset 적용은 PybulletKinematics URDF patch 자리 — 부팅 시 1회.
         # 따라서 link estimated 면 재시작 필요 (sag 는 runtime cache 갱신만으로 OK).
         restart_required = link_estimated
@@ -1047,12 +1309,9 @@ class CalibrationNode(ApplicationNode):
             robot_id,
             run_id,
             result_ids,
-            st.last_compute.get("sigma_rot_deg"),
-            st.last_compute.get("sigma_t_mm"),
+            sigma_rot_log,
+            sigma_t_log,
         )
-
-        # Bug A fix: COMMIT 끝에 invalidate. 같은 compute 로 다시 누르면 idempotent.
-        st.last_compute = None
 
         msg_parts = [f"storage commit (run_id={run_id})"]
         if joint_estimated:

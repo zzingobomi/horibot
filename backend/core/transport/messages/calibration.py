@@ -64,6 +64,27 @@ class HandeyeResetRes(StrictModel):
     pose_count: int
 
 
+# ─── Service: CALIB_HANDEYE_START ────────────────────────────────────
+
+
+class HandeyeStartRes(StrictModel):
+    """[캘 시작] — draft run 생성. 기존 in_progress 있으면 reject (frontend 가
+    먼저 GET_IN_PROGRESS 로 확인 후 호출)."""
+
+    run_id: int
+    pose_count: int  # 항상 0 (방금 시작했으니). frontend state 자체 자체 자체 reset.
+
+
+# ─── Service: CALIB_HANDEYE_UNDO_LAST_CAPTURE ────────────────────────
+
+
+class HandeyeUndoLastCaptureRes(StrictModel):
+    """[되돌리기] — 마지막 capture 1장 삭제. deleted=False 면 삭제할 거 없음."""
+
+    deleted: bool
+    pose_count: int
+
+
 # ─── Service: CALIB_HANDEYE_LIST_POSES ───────────────────────────────
 
 
@@ -78,8 +99,12 @@ class HandeyePoseMeta(StrictModel):
 
 
 class HandeyeListPosesRes(StrictModel):
+    """`run_id` 가 None 이면 in_progress draft 없음 (사용자 [캘 시작] 안 누름).
+    아니면 draft run id — frontend 가 in_progress 여부 / 이어하기 UI 결정 자료."""
+
     poses: list[HandeyePoseMeta]
     pose_count: int
+    run_id: int | None = None
 
 
 # ─── Service: CALIB_HANDEYE_COMMIT ───────────────────────────────────

@@ -913,84 +913,8 @@ class HandEyeCalibration:
         self.result = None
         self._next_id = 0
 
-    # ── 포즈 영구화 ──────────────────────────────────────────
-    # raw motor + R/t_target2cam만 저장. 이번 캘 세션 안에서 [계산]을 여러 번
-    # 누를 때 *그때마다의 시스템 offset*으로 모든 포즈가 일관 재해석되도록 하는 게
-    # 유일 목적. 백엔드 재시작 시 캡처 진행 상태 복원에도 사용.
-
-    def save_poses(self, path: str | Path) -> None:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.poses:
-            np.savez(
-                str(path),
-                motor_ids=np.empty((0,), dtype=np.int64),
-                raw_positions=np.empty((0, 0), dtype=np.int64),
-                R_target2cam=np.empty((0, 3, 3)),
-                t_target2cam=np.empty((0, 3, 1)),
-                ids=np.empty((0,), dtype=np.int64),
-                timestamps=np.empty((0,), dtype=np.float64),
-                next_id=np.int64(self._next_id),
-            )
-            return
-        motor_ids = sorted(self.poses[0].raw_motor_positions.keys())
-        raw_arr = np.array(
-            [[p.raw_motor_positions[mid] for mid in motor_ids] for p in self.poses],
-            dtype=np.int64,
-        )
-        np.savez(
-            str(path),
-            motor_ids=np.array(motor_ids, dtype=np.int64),
-            raw_positions=raw_arr,
-            R_target2cam=np.stack([p.R_target2cam for p in self.poses]),
-            t_target2cam=np.stack(
-                [np.asarray(p.t_target2cam).reshape(3, 1) for p in self.poses]
-            ),
-            ids=np.array([p.id for p in self.poses], dtype=np.int64),
-            timestamps=np.array(
-                [p.timestamp for p in self.poses], dtype=np.float64
-            ),
-            next_id=np.int64(self._next_id),
-        )
-
-    def load_poses(self, path: str | Path) -> int:
-        """디스크에서 포즈 복원. 반환: 로드된 포즈 수."""
-        path = Path(path)
-        if not path.exists():
-            return 0
-        data = np.load(str(path))
-        if "motor_ids" not in data.files or "raw_positions" not in data.files:
-            # 기대하는 raw 기반 포맷 아님 → 없는 것처럼 처리.
-            logger.info("기대 포맷 아닌 handeye_poses.npz — 무시 (%s)", path)
-            return 0
-
-        ids = data["ids"]
-        if len(ids) == 0:
-            self._next_id = int(data["next_id"]) if "next_id" in data.files else 0
-            return 0
-
-        motor_ids = data["motor_ids"].astype(int).tolist()
-        raw_positions = data["raw_positions"]
-        R_tc = data["R_target2cam"]
-        t_tc = data["t_target2cam"]
-        ts = data["timestamps"]
-        self.poses = [
-            Pose(
-                raw_motor_positions={
-                    int(mid): int(raw_positions[i, k])
-                    for k, mid in enumerate(motor_ids)
-                },
-                R_target2cam=R_tc[i],
-                t_target2cam=t_tc[i],
-                id=int(ids[i]),
-                timestamp=float(ts[i]),
-            )
-            for i in range(len(ids))
-        ]
-        self._next_id = (
-            int(data["next_id"]) if "next_id" in data.files else int(ids.max()) + 1
-        )
-        return len(self.poses)
+    # 포즈 영구화는 storage_layer (calibration_captures 테이블) 가 담당.
+    # storage_layer.md §13 — sets capture row per [캡처]. file io 제거됨.
 
 
 def _rotation_diff_deg(R_ref: np.ndarray, R: np.ndarray) -> float:

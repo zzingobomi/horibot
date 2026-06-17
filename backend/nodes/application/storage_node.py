@@ -28,15 +28,24 @@ from core.transport.messages.storage import (
     CalibrationRunSummary,
     StorageActivateReq,
     StorageActivateRes,
+    StorageAppendCaptureReq,
+    StorageAppendCaptureRes,
     StorageCommitReq,
     StorageCommitRes,
+    StorageDeleteCalRunReq,
+    StorageDeleteLastCaptureReq,
+    StorageDeleteLastCaptureRes,
     StorageDeleteReconstructionReq,
     StorageDeleteScanReq,
     StorageDeleteScanSessionReq,
+    StorageFinalizeCalRunReq,
+    StorageFinalizeCalRunRes,
     StorageGetActiveReq,
     StorageGetActiveRes,
     StorageGetBlobReq,
     StorageGetBlobRes,
+    StorageGetInProgressReq,
+    StorageGetInProgressRes,
     StorageListReconstructionsReq,
     StorageListReconstructionsRes,
     StorageListReq,
@@ -47,6 +56,8 @@ from core.transport.messages.storage import (
     StorageListScanSessionsRes,
     StorageListScansReq,
     StorageListScansRes,
+    StorageNewCalRunReq,
+    StorageNewCalRunRes,
     StorageNewScanSessionReq,
     StorageNewScanSessionRes,
     StoragePutReconstructionReq,
@@ -102,6 +113,43 @@ class StorageNode(ApplicationNode):
             StorageActivateReq,
             StorageActivateRes,
             self._srv_activate,
+        )
+        # ─── Draft run (사용자 [캘 시작] flow) ───────────────────
+        self.create_service(
+            Service.STORAGE_NEW_CAL_RUN,
+            StorageNewCalRunReq,
+            StorageNewCalRunRes,
+            self._srv_new_cal_run,
+        )
+        self.create_service(
+            Service.STORAGE_APPEND_CAPTURE,
+            StorageAppendCaptureReq,
+            StorageAppendCaptureRes,
+            self._srv_append_capture,
+        )
+        self.create_service(
+            Service.STORAGE_DELETE_LAST_CAPTURE,
+            StorageDeleteLastCaptureReq,
+            StorageDeleteLastCaptureRes,
+            self._srv_delete_last_capture,
+        )
+        self.create_service(
+            Service.STORAGE_GET_IN_PROGRESS_RUN,
+            StorageGetInProgressReq,
+            StorageGetInProgressRes,
+            self._srv_get_in_progress_run,
+        )
+        self.create_service(
+            Service.STORAGE_DELETE_CAL_RUN,
+            StorageDeleteCalRunReq,
+            EmptyData,
+            self._srv_delete_cal_run,
+        )
+        self.create_service(
+            Service.STORAGE_FINALIZE_CAL_RUN,
+            StorageFinalizeCalRunReq,
+            StorageFinalizeCalRunRes,
+            self._srv_finalize_cal_run,
         )
         # ─── Phase 2 — scan workflow ────────────────────────────
         self.create_service(
@@ -258,6 +306,94 @@ class StorageNode(ApplicationNode):
         )
         return ServiceResponse(
             success=True, data=StorageActivateRes(result=activated)
+        )
+
+    # ─── Draft run handlers (사용자 [캘 시작] flow) ───────────
+
+    def _srv_new_cal_run(
+        self, req: ServiceRequest[StorageNewCalRunReq]
+    ) -> ServiceResponse[StorageNewCalRunRes]:
+        run = req.data.run
+        if run.kind is None:
+            return ServiceResponse(
+                success=False, message="run.kind 필수 (intrinsic / hand_eye)"
+            )
+        # 같은 (robot_id, kind) 의 기존 in_progress 가 있으면 거부 — frontend 는
+        # 먼저 GET_IN_PROGRESS 로 확인해야 함.
+        existing = self._reg.rdb.get_in_progress_run(run.robot_id, run.kind)
+        if existing is not None:
+            existing_run, _ = existing
+            return ServiceResponse(
+                success=False,
+                message=(
+                    f"이미 in_progress run 있음 (robot={run.robot_id}, "
+                    f"kind={run.kind}, run_id={existing_run.id})"
+                ),
+            )
+        run_id = self._reg.rdb.new_calibration_run(run)
+        logger.info(
+            "NEW_CAL_RUN: run_id=%d (robot=%s, kind=%s, algorithm=%s)",
+            run_id, run.robot_id, run.kind, run.algorithm,
+        )
+        return ServiceResponse(success=True, data=StorageNewCalRunRes(run_id=run_id))
+
+    def _srv_append_capture(
+        self, req: ServiceRequest[StorageAppendCaptureReq]
+    ) -> ServiceResponse[StorageAppendCaptureRes]:
+        capture = req.data.capture
+        capture_id = self._reg.rdb.append_calibration_capture(capture)
+        return ServiceResponse(
+            success=True,
+            data=StorageAppendCaptureRes(capture_id=capture_id),
+        )
+
+    def _srv_delete_last_capture(
+        self, req: ServiceRequest[StorageDeleteLastCaptureReq]
+    ) -> ServiceResponse[StorageDeleteLastCaptureRes]:
+        deleted = self._reg.rdb.delete_last_capture(req.data.run_id)
+        return ServiceResponse(
+            success=True,
+            data=StorageDeleteLastCaptureRes(deleted_pose_index=deleted),
+        )
+
+    def _srv_get_in_progress_run(
+        self, req: ServiceRequest[StorageGetInProgressReq]
+    ) -> ServiceResponse[StorageGetInProgressRes]:
+        result = self._reg.rdb.get_in_progress_run(
+            req.data.robot_id, req.data.kind
+        )
+        if result is None:
+            return ServiceResponse(
+                success=True, data=StorageGetInProgressRes(found=False)
+            )
+        run, captures = result
+        return ServiceResponse(
+            success=True,
+            data=StorageGetInProgressRes(found=True, run=run, captures=captures),
+        )
+
+    def _srv_delete_cal_run(
+        self, req: ServiceRequest[StorageDeleteCalRunReq]
+    ) -> ServiceResponse[EmptyData]:
+        self._reg.rdb.delete_calibration_run(req.data.run_id)
+        logger.info("DELETE_CAL_RUN: run_id=%d", req.data.run_id)
+        return ServiceResponse(success=True, data=EmptyData())
+
+    def _srv_finalize_cal_run(
+        self, req: ServiceRequest[StorageFinalizeCalRunReq]
+    ) -> ServiceResponse[StorageFinalizeCalRunRes]:
+        try:
+            result_ids = self._reg.rdb.finalize_calibration_run(
+                req.data.run_id, req.data.results, req.data.capture_residuals
+            )
+        except KeyError as e:
+            return ServiceResponse(success=False, message=str(e))
+        logger.info(
+            "FINALIZE_CAL_RUN: run_id=%d, result_ids=%s",
+            req.data.run_id, result_ids,
+        )
+        return ServiceResponse(
+            success=True, data=StorageFinalizeCalRunRes(result_ids=result_ids),
         )
 
     # ─── Phase 2 — scan workflow handlers ─────────────────────

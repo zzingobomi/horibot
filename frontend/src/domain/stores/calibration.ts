@@ -33,6 +33,9 @@ interface CalibrationState {
   // ─── 데이터 ───────────────────────────────────────────────
   preview: HandEyePreview | null;
   previewStale: boolean;
+  // draft run id — null = 사용자 [캘 시작] 안 누름. 캡처 가능 여부 gate.
+  // storage_layer.md §13 — in_progress run id, 부팅 시 자동 복원.
+  hand_eye_run_id: number | null;
   poses: PoseMeta[];
   liveSigma: HandEyeSigmaState | null;
   compute: ComputeData | null;
@@ -73,7 +76,9 @@ interface CalibrationState {
 
   // ─── actions (panel 들이 호출) ─────────────────────────────
   refreshPoses: () => Promise<void>;
+  startSession: () => Promise<{ success: boolean; message: string }>;
   capture: () => Promise<void>;
+  undoLastCapture: () => Promise<void>;
   reset: () => Promise<void>;
   compute_: () => Promise<void>;
   commit: () => Promise<{ success: boolean; message: string }>;
@@ -88,6 +93,7 @@ interface CalibrationState {
 export const useCalibrationStore = create<CalibrationState>((set, get) => ({
   preview: null,
   previewStale: false,
+  hand_eye_run_id: null,
   poses: [],
   liveSigma: null,
   compute: null,
@@ -172,12 +178,18 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
       },
     );
 
-    // 초기 fetch — pose list + thresholds
+    // 초기 fetch — pose list + thresholds + in_progress run id (있으면 이어하기)
     void bridge.callService(ServiceKey.CALIB_HANDEYE_LIST_POSES, {}).then(
       (res) => {
         if (!res.success) return;
-        const data = res.data as unknown as { poses: PoseMeta[] };
-        set({ poses: data.poses ?? [] });
+        const data = res.data as unknown as {
+          poses: PoseMeta[];
+          run_id: number | null;
+        };
+        set({
+          poses: data.poses ?? [],
+          hand_eye_run_id: data.run_id ?? null,
+        });
       },
     );
     void bridge.callService(ServiceKey.CALIB_HANDEYE_THRESHOLDS, {}).then(
@@ -234,9 +246,42 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
       {},
     );
     if (res.success) {
-      const data = res.data as unknown as { poses: PoseMeta[] };
-      set({ poses: data.poses ?? [] });
+      const data = res.data as unknown as {
+        poses: PoseMeta[];
+        run_id: number | null;
+      };
+      set({
+        poses: data.poses ?? [],
+        hand_eye_run_id: data.run_id ?? null,
+      });
     }
+  },
+
+  startSession: async () => {
+    set({ loading: true });
+    const res = await bridge.callService(ServiceKey.CALIB_HANDEYE_START, {});
+    set({ loading: false });
+    if (res.success) {
+      const data = res.data as { run_id: number; pose_count: number };
+      set({
+        hand_eye_run_id: data.run_id,
+        status: `▶ 캘 세션 시작 (run_id=${data.run_id})`,
+        // 새 세션 — 이전 잔재 자체 자체 비우기
+        poses: [],
+        compute: null,
+        computeStale: false,
+        recommendations: null,
+        noCandidatesReason: null,
+        visited: new Set(),
+        activeIndex: null,
+        liveSigma: null,
+        saturate: null,
+        manualModeActive: true,
+      });
+    } else {
+      set({ status: `❌ ${res.message}` });
+    }
+    return { success: res.success, message: res.message };
   },
 
   capture: async () => {
@@ -246,7 +291,28 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
     if (res.success) {
       const data = res.data as { pose_count: number; detected: boolean };
       set({
-        status: `✅ 포즈 기록됨 (${data.pose_count}개) — [계산]을 눌러 진척 확인`,
+        status: `✅ 포즈 기록됨 (${data.pose_count}개)`,
+        computeStale: true,
+      });
+      await get().refreshPoses();
+    } else {
+      set({ status: `❌ ${res.message}` });
+    }
+  },
+
+  undoLastCapture: async () => {
+    set({ loading: true });
+    const res = await bridge.callService(
+      ServiceKey.CALIB_HANDEYE_UNDO_LAST_CAPTURE,
+      {},
+    );
+    set({ loading: false });
+    if (res.success) {
+      const data = res.data as { deleted: boolean; pose_count: number };
+      set({
+        status: data.deleted
+          ? `↶ 마지막 포즈 삭제됨 (${data.pose_count}개 남음)`
+          : "삭제할 포즈 없음",
         computeStale: true,
       });
       await get().refreshPoses();
@@ -261,7 +327,8 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
     set({ loading: false });
     if (res.success) {
       set({
-        status: "리셋됨 — 자세 잡고 [캡처]부터 시작 (수동 모드)",
+        hand_eye_run_id: null,
+        status: "리셋됨 — [캘 시작] 후 다시 캡처 가능",
         compute: null,
         computeStale: false,
         recommendations: null,
@@ -302,10 +369,26 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
   commit: async () => {
     set({ loading: true });
     const res = await bridge.callService(ServiceKey.CALIB_HANDEYE_COMMIT, {});
-    set({
-      loading: false,
-      status: res.success ? `✅ ${res.message}` : `❌ ${res.message}`,
-    });
+    if (res.success) {
+      // commit 후 backend 자체 자체 세션 종료 — frontend 자체 자체 자체 sync.
+      set({
+        loading: false,
+        status: `✅ ${res.message}`,
+        hand_eye_run_id: null,
+        poses: [],
+        compute: null,
+        computeStale: false,
+        recommendations: null,
+        noCandidatesReason: null,
+        visited: new Set(),
+        activeIndex: null,
+        liveSigma: null,
+        saturate: null,
+        manualModeActive: true,
+      });
+    } else {
+      set({ loading: false, status: `❌ ${res.message}` });
+    }
     return { success: res.success, message: res.message };
   },
 

@@ -42,8 +42,9 @@ CalibrationKind = Literal[
 ]
 
 
-# Run status — 부팅 실패 / BA 발산 등 진단용.
-CalibrationRunStatus = Literal["success", "failed"]
+# Run status — draft / 종료 상태 분리. 사용자가 commit 누르기 전 단계 자체는 in_progress.
+# 캡처 row 들은 in_progress run 에 append (FK 가 commit 시점에야 생기는 문제 해결).
+CalibrationRunStatus = Literal["in_progress", "success", "failed"]
 
 
 # ─── Run ──────────────────────────────────────────────────────
@@ -54,6 +55,9 @@ class CalibrationRunRecord(StrictModel):
 
     한 Run 이 여러 Result 만들 수 있음 (예: 확장 BA → hand_eye + joint + link +
     sag 동시 산출). algorithm 은 'extended_ba_irls' 등 식별자.
+
+    `kind` 는 run 의 *목적* (사용자가 누른 버튼). 예: hand_eye run 은 4 kind result
+    만들지만 kind='hand_eye'. in_progress run 의 robot/kind lookup 용. None=legacy.
     """
 
     # id 는 storage 가 부여 (INSERT 후 채워짐). insert 호출 시 None.
@@ -66,6 +70,7 @@ class CalibrationRunRecord(StrictModel):
     algorithm: str
     algorithm_params: dict[str, Any] = {}
     status: CalibrationRunStatus = "success"
+    kind: CalibrationKind | None = None  # run 의 목적 (intrinsic / hand_eye). draft lookup 용.
 
 
 # ─── Result — discriminated union ─────────────────────────────

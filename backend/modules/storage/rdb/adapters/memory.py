@@ -130,6 +130,119 @@ class MemoryRdbStore:
 
         return run_id, result_ids
 
+    # ─── Draft run / capture-as-you-go (Phase 1 확장) ────────────
+
+    def new_calibration_run(self, run: CalibrationRunRecord) -> int:
+        with self._lock:
+            run_id = self._next_run_id
+            self._next_run_id += 1
+            self._runs[run_id] = run.model_copy(
+                update={"id": run_id, "status": "in_progress"}
+            )
+            return run_id
+
+    def append_calibration_capture(
+        self, capture: CalibrationCaptureRecord
+    ) -> int:
+        with self._lock:
+            cid = self._next_capture_id
+            self._next_capture_id += 1
+            self._captures[cid] = capture.model_copy(update={"id": cid})
+            return cid
+
+    def delete_last_capture(self, run_id: int) -> int | None:
+        with self._lock:
+            captures = [
+                c for c in self._captures.values() if c.run_id == run_id
+            ]
+            if not captures:
+                return None
+            captures.sort(key=lambda c: c.pose_index, reverse=True)
+            last = captures[0]
+            assert last.id is not None
+            self._captures.pop(last.id, None)
+            return last.pose_index
+
+    def get_in_progress_run(
+        self, robot_id: str, kind: CalibrationKind
+    ) -> tuple[CalibrationRunRecord, list[CalibrationCaptureRecord]] | None:
+        with self._lock:
+            matching = [
+                r
+                for r in self._runs.values()
+                if r.robot_id == robot_id
+                and r.kind == kind
+                and r.status == "in_progress"
+            ]
+            if not matching:
+                return None
+            matching.sort(key=lambda r: r.started_at, reverse=True)
+            run = matching[0]
+            assert run.id is not None
+            cap_list = [
+                c for c in self._captures.values() if c.run_id == run.id
+            ]
+            cap_list.sort(key=lambda c: c.pose_index)
+            return copy.deepcopy(run), [copy.deepcopy(c) for c in cap_list]
+
+    def delete_calibration_run(self, run_id: int) -> None:
+        with self._lock:
+            self._runs.pop(run_id, None)
+            cap_ids = [
+                cid for cid, c in self._captures.items() if c.run_id == run_id
+            ]
+            for cid in cap_ids:
+                self._captures.pop(cid, None)
+            res_ids = [
+                rid for rid, r in self._results.items() if r.run_id == run_id
+            ]
+            for rid in res_ids:
+                self._results.pop(rid, None)
+
+    def finalize_calibration_run(
+        self,
+        run_id: int,
+        results: list[CalibrationResultRecord],
+        capture_residuals: dict[int, tuple[float | None, float | None, float | None]]
+        | None = None,
+    ) -> list[int]:
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None or run.status != "in_progress":
+                raise KeyError(f"in_progress run id={run_id} 없음 / 이미 종료")
+
+            ended_at = results[0].created_at if results else run.started_at
+            self._runs[run_id] = run.model_copy(
+                update={"status": "success", "ended_at": ended_at}
+            )
+
+            if capture_residuals:
+                for cid, c in list(self._captures.items()):
+                    if c.run_id != run_id:
+                        continue
+                    r = capture_residuals.get(c.pose_index)
+                    if r is None:
+                        continue
+                    rrot, rtrans, weight = r
+                    self._captures[cid] = c.model_copy(
+                        update={
+                            "residual_rot": rrot,
+                            "residual_trans": rtrans,
+                            "weight": weight,
+                        }
+                    )
+
+            result_ids: list[int] = []
+            for r in results:
+                rid = self._next_result_id
+                self._next_result_id += 1
+                self._results[rid] = r.model_copy(
+                    update={"id": rid, "run_id": run_id, "is_active": False}
+                )
+                result_ids.append(rid)
+
+            return result_ids
+
     # ─── Phase 2 — scan workflow ──────────────────────────────────
 
     # scan_sessions

@@ -94,6 +94,9 @@ class Service:
     CALIB_HANDEYE_THRESHOLDS = "horibot/{robot_id}/calib/srv/handeye/thresholds"
     CALIB_HANDEYE_RECOMMENDATION_FAIL = "horibot/{robot_id}/calib/srv/handeye/recommendation_fail"
     CALIB_HANDEYE_MULTI_START = "horibot/{robot_id}/calib/srv/handeye/multi_start"
+    # Draft run flow — 사용자 [캘 시작] / [되돌리기]. storage_layer.md §13.
+    CALIB_HANDEYE_START = "horibot/{robot_id}/calib/srv/handeye/start"
+    CALIB_HANDEYE_UNDO_LAST_CAPTURE = "horibot/{robot_id}/calib/srv/handeye/undo_last_capture"
     CALIB_INTRINSIC_CAPTURE = "horibot/{robot_id}/calib/srv/intrinsic/capture"
 
     # ─── Task ──────────────────────────────────────────────
@@ -122,6 +125,17 @@ class Service:
     STORAGE_LIST_CALIBRATION_RUNS = "horibot/storage/srv/calibration/list_runs"
     STORAGE_COMMIT_CALIBRATION = "horibot/storage/srv/calibration/commit"
     STORAGE_ACTIVATE_CALIBRATION = "horibot/storage/srv/calibration/activate"
+
+    # ─── Draft run / capture-as-you-go (사용자 [캘 시작] flow) ─────
+    # [캘 시작] → NEW_CAL_RUN (in_progress run). [캡처] → APPEND_CAPTURE.
+    # [되돌리기] → DELETE_LAST_CAPTURE. [리셋] → DELETE_CAL_RUN. [커밋] →
+    # FINALIZE_CAL_RUN. 부팅 시 GET_IN_PROGRESS_RUN 로 복원.
+    STORAGE_NEW_CAL_RUN = "horibot/storage/srv/calibration/new_run"
+    STORAGE_APPEND_CAPTURE = "horibot/storage/srv/calibration/append_capture"
+    STORAGE_DELETE_LAST_CAPTURE = "horibot/storage/srv/calibration/delete_last_capture"
+    STORAGE_GET_IN_PROGRESS_RUN = "horibot/storage/srv/calibration/get_in_progress_run"
+    STORAGE_DELETE_CAL_RUN = "horibot/storage/srv/calibration/delete_run"
+    STORAGE_FINALIZE_CAL_RUN = "horibot/storage/srv/calibration/finalize_run"
 
     # ─── Storage Phase 2 — scan workflow ───────────────────
     # scan_sessions / scans / reconstructions. append-only blob + immutable

@@ -86,6 +86,49 @@ class RdbStore(Protocol):
         """
         ...
 
+    # ─── Draft run / capture-as-you-go (사용자 [캘 시작] flow) ─
+    # commit_calibration 가 한 번에 다 박는 패턴은 hand_eye 같이 commit 전 8장
+    # 누적 자리 안 맞음 — draft run + capture-by-capture append + finalize 자리
+    # 별도 자리.
+
+    def new_calibration_run(self, run: CalibrationRunRecord) -> int:
+        """draft run 시작 (status='in_progress'). caller 가 run.kind 채워야 함."""
+        ...
+
+    def append_calibration_capture(
+        self, capture: CalibrationCaptureRecord
+    ) -> int:
+        """draft run 에 capture 1장 추가. caller 가 capture.run_id 채워야 함."""
+        ...
+
+    def delete_last_capture(self, run_id: int) -> int | None:
+        """draft run 의 마지막 capture 1장 삭제. 삭제된 pose_index, 없으면 None."""
+        ...
+
+    def get_in_progress_run(
+        self, robot_id: str, kind: CalibrationKind
+    ) -> tuple[CalibrationRunRecord, list[CalibrationCaptureRecord]] | None:
+        """robot 의 (kind) in_progress run + 누적 captures. 없으면 None."""
+        ...
+
+    def delete_calibration_run(self, run_id: int) -> None:
+        """run + 자식 captures + results cascade 삭제."""
+        ...
+
+    def finalize_calibration_run(
+        self,
+        run_id: int,
+        results: list[CalibrationResultRecord],
+        capture_residuals: dict[int, tuple[float | None, float | None, float | None]]
+        | None = None,
+    ) -> list[int]:
+        """draft → success — status flip + result INSERT + captures residual UPDATE.
+
+        capture_residuals: {pose_index: (residual_rot, residual_trans, weight)}.
+        None 이면 capture 업데이트 안 함. 반환: result_ids list.
+        """
+        ...
+
     # ─── Phase 2 — scan workflow ─────────────────────────────
     # scan_sessions / scans / reconstructions. append-only blob + immutable
     # metadata row 패턴. is_active / ACTIVATE / invalidation 자리 X — 캘 특유

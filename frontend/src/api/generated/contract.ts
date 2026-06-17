@@ -85,6 +85,8 @@ export const ServiceKey = {
   CALIB_HANDEYE_PREVIEW_ENABLE: "horibot/{robot_id}/calib/srv/handeye/preview_enable",
   CALIB_HANDEYE_RECOMMENDATION_FAIL: "horibot/{robot_id}/calib/srv/handeye/recommendation_fail",
   CALIB_HANDEYE_MULTI_START: "horibot/{robot_id}/calib/srv/handeye/multi_start",
+  CALIB_HANDEYE_START: "horibot/{robot_id}/calib/srv/handeye/start",
+  CALIB_HANDEYE_UNDO_LAST_CAPTURE: "horibot/{robot_id}/calib/srv/handeye/undo_last_capture",
   STORAGE_GET_ACTIVE_CALIBRATION: "horibot/storage/srv/calibration/get_active",
   STORAGE_LIST_CALIBRATIONS: "horibot/storage/srv/calibration/list",
   STORAGE_LIST_CALIBRATION_RUNS: "horibot/storage/srv/calibration/list_runs",
@@ -139,6 +141,8 @@ export type ServiceMap = {
   "horibot/{robot_id}/calib/srv/handeye/preview_enable": { req: components["schemas"]["HandeyePreviewEnableReq"]; res: components["schemas"]["HandeyePreviewEnableRes"] };
   "horibot/{robot_id}/calib/srv/handeye/recommendation_fail": { req: components["schemas"]["RecommendationFailReq"]; res: components["schemas"]["RecommendationFailRes"] };
   "horibot/{robot_id}/calib/srv/handeye/multi_start": { req: components["schemas"]["MultiStartReq"]; res: components["schemas"]["MultiStartRes"] };
+  "horibot/{robot_id}/calib/srv/handeye/start": { req: Record<string, never>; res: components["schemas"]["HandeyeStartRes"] };
+  "horibot/{robot_id}/calib/srv/handeye/undo_last_capture": { req: Record<string, never>; res: components["schemas"]["HandeyeUndoLastCaptureRes"] };
   "horibot/storage/srv/calibration/get_active": { req: components["schemas"]["StorageGetActiveReq"]; res: components["schemas"]["StorageGetActiveRes"] };
   "horibot/storage/srv/calibration/list": { req: components["schemas"]["StorageListReq"]; res: components["schemas"]["StorageListRes"] };
   "horibot/storage/srv/calibration/list_runs": { req: components["schemas"]["StorageListRunsReq"]; res: components["schemas"]["StorageListRunsRes"] };

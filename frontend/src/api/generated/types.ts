@@ -263,6 +263,9 @@ export interface components {
          *
          *     한 Run 이 여러 Result 만들 수 있음 (예: 확장 BA → hand_eye + joint + link +
          *     sag 동시 산출). algorithm 은 'extended_ba_irls' 등 식별자.
+         *
+         *     `kind` 는 run 의 *목적* (사용자가 누른 버튼). 예: hand_eye run 은 4 kind result
+         *     만들지만 kind='hand_eye'. in_progress run 의 robot/kind lookup 용. None=legacy.
          */
         CalibrationRunRecord: {
             /** Id */
@@ -291,7 +294,9 @@ export interface components {
              * @default success
              * @enum {string}
              */
-            status: "success" | "failed";
+            status: "in_progress" | "success" | "failed";
+            /** Kind */
+            kind?: ("intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag") | null;
         };
         /**
          * CalibrationRunSummary
@@ -454,12 +459,18 @@ export interface components {
             /** Restart Required */
             restart_required: boolean;
         };
-        /** HandeyeListPosesRes */
+        /**
+         * HandeyeListPosesRes
+         * @description `run_id` 가 None 이면 in_progress draft 없음 (사용자 [캘 시작] 안 누름).
+         *     아니면 draft run id — frontend 가 in_progress 여부 / 이어하기 UI 결정 자료.
+         */
         HandeyeListPosesRes: {
             /** Poses */
             poses: components["schemas"]["HandeyePoseMeta"][];
             /** Pose Count */
             pose_count: number;
+            /** Run Id */
+            run_id?: number | null;
         };
         /**
          * HandeyeObservabilityState
@@ -560,6 +571,27 @@ export interface components {
              * @default []
              */
             axis_distributions: components["schemas"]["AxisDistributionEntry"][];
+        };
+        /**
+         * HandeyeStartRes
+         * @description [캘 시작] — draft run 생성. 기존 in_progress 있으면 reject (frontend 가
+         *     먼저 GET_IN_PROGRESS 로 확인 후 호출).
+         */
+        HandeyeStartRes: {
+            /** Run Id */
+            run_id: number;
+            /** Pose Count */
+            pose_count: number;
+        };
+        /**
+         * HandeyeUndoLastCaptureRes
+         * @description [되돌리기] — 마지막 capture 1장 삭제. deleted=False 면 삭제할 거 없음.
+         */
+        HandeyeUndoLastCaptureRes: {
+            /** Deleted */
+            deleted: boolean;
+            /** Pose Count */
+            pose_count: number;
         };
         /**
          * Heartbeat
@@ -1073,6 +1105,8 @@ export interface components {
             HandeyePreviewEnableRes?: components["schemas"]["HandeyePreviewEnableRes"] | null;
             HandeyeResetRes?: components["schemas"]["HandeyeResetRes"] | null;
             HandeyeSigmaState?: components["schemas"]["HandeyeSigmaState"] | null;
+            HandeyeStartRes?: components["schemas"]["HandeyeStartRes"] | null;
+            HandeyeUndoLastCaptureRes?: components["schemas"]["HandeyeUndoLastCaptureRes"] | null;
             Heartbeat?: components["schemas"]["Heartbeat"] | null;
             IntrinsicCaptureRes?: components["schemas"]["IntrinsicCaptureRes"] | null;
             IntrinsicSaveRes?: components["schemas"]["IntrinsicSaveRes"] | null;

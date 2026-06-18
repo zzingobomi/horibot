@@ -50,6 +50,9 @@ HE_COMPUTE = f"horibot/{ROBOT_ID}/calib/srv/handeye/compute"
 HE_COMMIT = f"horibot/{ROBOT_ID}/calib/srv/handeye/commit"
 HE_RESET = f"horibot/{ROBOT_ID}/calib/srv/handeye/reset"
 PARAM_OBS_TOPIC = f"horibot/{ROBOT_ID}/calib/state/handeye_param_observability"
+# Rollback = DB history (global storage 서비스, robot_id 는 payload).
+LIST_RUNS = "horibot/storage/srv/calibration/list_runs"
+ACTIVATE = "horibot/storage/srv/calibration/activate"
 
 
 def _kill_stale() -> None:
@@ -196,8 +199,27 @@ def test_full_calibration_pipeline(zsession):
         last = obs_collector.msgs[-1]
         assert "handeye_rot" in last["scores"]
 
-        # ─── 5. Commit ───
+        # ─── 5. Commit (DB finalize + activate) ───
         commit = _call(zsession, HE_COMMIT, {}, timeout=15.0)
         assert commit.get("success"), f"commit 실패: {commit}"
     finally:
         obs_collector.close()
+
+    # ─── 6. Rollback (DB history) — run 목록 조회 → 결과 재활성 ───
+    # 옛 npz backup 아니라 DB history 기반 롤백 검증 (CalibrationHistoryPanel ACTIVATE).
+    runs_res = _call(zsession, LIST_RUNS, {"robot_id": ROBOT_ID})
+    assert runs_res.get("success"), f"list_runs 실패: {runs_res}"
+    runs = runs_res["data"]["runs"]
+    assert len(runs) >= 1, "commit 한 run 이 DB history 에 없음"
+    # 활성화할 result id 1개 추출 (롤백 = 과거 run 의 result 재활성).
+    result_id = None
+    for run in runs:
+        for r in run.get("results", []):
+            if r.get("id") is not None:
+                result_id = r["id"]
+                break
+        if result_id is not None:
+            break
+    assert result_id is not None, "history run 에 result 없음"
+    act = _call(zsession, ACTIVATE, {"result_id": result_id})
+    assert act.get("success"), f"롤백(ACTIVATE) 실패: {act}"

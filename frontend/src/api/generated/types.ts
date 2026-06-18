@@ -202,6 +202,40 @@ export interface components {
             y2: number;
         };
         /**
+         * BeginRefinementReq
+         * @description Multi-start BA 명시 트리거 — random init 다중 시도 → 가장 좋은 σ 선택.
+         *
+         *     Local minimum 자리 escape. 사용자가 saturate 알림 받고 시도, 또는
+         *     [수동 모드 종료] 시점 자동 트리거.
+         */
+        BeginRefinementReq: {
+            /**
+             * N Starts
+             * @default 10
+             */
+            n_starts: number;
+            /**
+             * Mode
+             * @default physical_sag
+             */
+            mode: string;
+        };
+        /** BeginRefinementRes */
+        BeginRefinementRes: {
+            /** N Tried */
+            n_tried: number;
+            /** N Converged */
+            n_converged: number;
+            /** Sigma Rot Deg */
+            sigma_rot_deg: number | null;
+            /** Sigma T Mm */
+            sigma_t_mm: number | null;
+            /** Improvement Rot Deg */
+            improvement_rot_deg: number | null;
+            /** Improvement T Mm */
+            improvement_t_mm: number | null;
+        };
+        /**
          * CalibrationCaptureRecord
          * @description Evidence — per-pose 자세 정보 (BA 입력 + 출력 residual + IRLS weight).
          */
@@ -506,6 +540,33 @@ export interface components {
             wrist_roll_range_raw: number;
             /** Verdict */
             verdict: string;
+        };
+        /**
+         * HandeyeParamObservabilityState
+         * @description 매 compute(physical_sag) 후 발행 — *parameter별* 식별성 + staged gating 결과.
+         *
+         *     위 HandeyeObservabilityState(geometry A/B/mid)와 별개. BA 정보행렬(Fisher)에서
+         *     블록(handeye_rot / handeye_trans / joint_offset / link / sag)별 식별성 score
+         *     ∈[0,1] + verdict(OK/WEAK/INSUFFICIENT) 산출. unlocked = gate 통과해 BA 가 실제
+         *     추정한 블록 (나머지는 freeze=정보부족). docs/handeye_ux_solver_v3_plan.md §3.
+         *
+         *     frontend 는 블록별 색 dot (수치 노출 X) — "어느 보정값이 잘 잡혔나 / 자세 보강 필요".
+         */
+        HandeyeParamObservabilityState: {
+            /** Timestamp */
+            timestamp: number;
+            /** Pose Count */
+            pose_count: number;
+            /** Scores */
+            scores: {
+                [key: string]: number;
+            };
+            /** Verdicts */
+            verdicts: {
+                [key: string]: string;
+            };
+            /** Unlocked */
+            unlocked: string[];
         };
         /**
          * HandeyePoseMeta
@@ -1053,44 +1114,12 @@ export interface components {
             waypoints: number[][];
         };
         /**
-         * MultiStartReq
-         * @description Multi-start BA 명시 트리거 — random init 다중 시도 → 가장 좋은 σ 선택.
-         *
-         *     Local minimum 자리 escape. 사용자가 saturate 알림 받고 시도, 또는
-         *     [수동 모드 종료] 시점 자동 트리거.
-         */
-        MultiStartReq: {
-            /**
-             * N Starts
-             * @default 10
-             */
-            n_starts: number;
-            /**
-             * Mode
-             * @default physical_sag
-             */
-            mode: string;
-        };
-        /** MultiStartRes */
-        MultiStartRes: {
-            /** N Tried */
-            n_tried: number;
-            /** N Converged */
-            n_converged: number;
-            /** Sigma Rot Deg */
-            sigma_rot_deg: number | null;
-            /** Sigma T Mm */
-            sigma_t_mm: number | null;
-            /** Improvement Rot Deg */
-            improvement_rot_deg: number | null;
-            /** Improvement T Mm */
-            improvement_t_mm: number | null;
-        };
-        /**
          * OpenApiSchemaRegistry
          * @description OpenAPI schema export only — auto-built from api_contract.
          */
         OpenApiSchemaRegistry: {
+            BeginRefinementReq?: components["schemas"]["BeginRefinementReq"] | null;
+            BeginRefinementRes?: components["schemas"]["BeginRefinementRes"] | null;
             CalibrationInvalidated?: components["schemas"]["CalibrationInvalidated"] | null;
             CameraStatus?: components["schemas"]["CameraStatus"] | null;
             DetectorState?: components["schemas"]["DetectorState"] | null;
@@ -1101,6 +1130,7 @@ export interface components {
             HandeyeCommitRes?: components["schemas"]["HandeyeCommitRes"] | null;
             HandeyeListPosesRes?: components["schemas"]["HandeyeListPosesRes"] | null;
             HandeyeObservabilityState?: components["schemas"]["HandeyeObservabilityState"] | null;
+            HandeyeParamObservabilityState?: components["schemas"]["HandeyeParamObservabilityState"] | null;
             HandeyePreviewEnableReq?: components["schemas"]["HandeyePreviewEnableReq"] | null;
             HandeyePreviewEnableRes?: components["schemas"]["HandeyePreviewEnableRes"] | null;
             HandeyeResetRes?: components["schemas"]["HandeyeResetRes"] | null;
@@ -1126,10 +1156,6 @@ export interface components {
             MoveJReq?: components["schemas"]["MoveJReq"] | null;
             MoveLReq?: components["schemas"]["MoveLReq"] | null;
             MovePReq?: components["schemas"]["MovePReq"] | null;
-            MultiStartReq?: components["schemas"]["MultiStartReq"] | null;
-            MultiStartRes?: components["schemas"]["MultiStartRes"] | null;
-            RecommendationFailReq?: components["schemas"]["RecommendationFailReq"] | null;
-            RecommendationFailRes?: components["schemas"]["RecommendationFailRes"] | null;
             ReconstructionProgress?: components["schemas"]["ReconstructionProgress"] | null;
             Scene3DSetStreamReq?: components["schemas"]["Scene3DSetStreamReq"] | null;
             Scene3DSetStreamRes?: components["schemas"]["Scene3DSetStreamRes"] | null;
@@ -1160,26 +1186,6 @@ export interface components {
             StorageNewScanSessionReq?: components["schemas"]["StorageNewScanSessionReq"] | null;
             StorageNewScanSessionRes?: components["schemas"]["StorageNewScanSessionRes"] | null;
             TaskStepIdReq?: components["schemas"]["TaskStepIdReq"] | null;
-        };
-        /**
-         * RecommendationFailReq
-         * @description 사용자 명시 신호 — 추천 자세 fail 기록. 다음 추천 생성 시 제외.
-         *
-         *     카테고리:
-         *       - "not_visible": [이동] 후 보드 화면 밖
-         *       - "red": 도달했고 보이지만 한 장 단위 hint 빨강 (tilt extreme / 코너 부족)
-         *       - "motion_fail": 도달 실패 (IK 통과했지만 motion 자체 fail)
-         */
-        RecommendationFailReq: {
-            /** Anchor Id */
-            anchor_id: string;
-            /** Category */
-            category: string;
-        };
-        /** RecommendationFailRes */
-        RecommendationFailRes: {
-            /** Excluded Count */
-            excluded_count: number;
         };
         /** ReconstructionProgress */
         ReconstructionProgress: {

@@ -7,6 +7,8 @@ mount 시 fetch하므로 미러링 불필요.
 
 from __future__ import annotations
 
+import math
+
 # ─── Verdict + UI 색 임계값 ──────────────────────────────────────
 # σ_rot / σ_t 가 GOOD 이하 → verdict=good + 초록.  WARN 이하 → needs_work + 노랑.
 # 그 이상 → bad + 빨강.
@@ -77,6 +79,24 @@ HANDEYE_PNP_RMS_WARN_PX: float = 1.0
 HANDEYE_PNP_RMS_REJECT_PX: float = 1.5
 
 
+# ─── Phase 1 Traffic Light (실시간 capture-quality) ──────────────
+# 현재 pose 를 기존 캡처와 비교해 G/Y/R 판정 (handeye_ux_solver_v3_plan.md §5,
+# 스펙 MVP1). 순수 geometry — 토크오프 이동 중 "지금 찍어도 좋은 데이터셋이 되나"
+# 실시간 안내. preview loop 가 매 프레임 evaluate_capture_quality 호출.
+#
+# 기존과 거의 같은 자세 (max per-joint diff < 이 값) + 회전 다양성도 없으면 RED
+# ("기존과 거의 동일 — 찍어도 가치 X").
+CAPTURE_SIMILAR_JOINT_DEG: float = 6.0
+# board orientation (board-in-cam) 의 기존 대비 최소 상대 회전. 이 미만이면
+# rotation diversity 부족 → YELLOW ("회전 더 다양하게"). hand-eye 회전 관측의 핵심.
+CAPTURE_ROT_DIVERSITY_DEG: float = 12.0
+# board position (board-in-cam) 의 기존 대비 최소 거리 (m). 이 미만이면 translation
+# diversity 부족 → YELLOW ("거리/위치 더 다양하게"). handeye_trans 관측.
+CAPTURE_TRANS_DIVERSITY_M: float = 0.03
+# tilt 가 권장 범위 경계에서 이 margin 안이면 YELLOW hint ("조금 더 기울이기").
+CAPTURE_TILT_EDGE_MARGIN_DEG: float = 5.0
+
+
 # ─── tilt 임계 ───────────────────────────────────────────────────
 # tilt = 보드 normal vs 카메라 광축 각. 0° = 카메라가 보드 정면 (depth ambiguous),
 # 90° = edge-on (corner 픽셀 정확도 ↓). docs/calibration_workflow.md §2 권장 범위.
@@ -113,6 +133,45 @@ INTRINSIC_RECOMMENDED_CAPTURES: int = 10
 # Frame 3×3 grid coverage 임계. 보드 중심이 떨어진 grid 셀 개수 ≥ 이 값이면 OK.
 # 9 영역 다 채우면 perfect, 7 이상이면 acceptable.
 INTRINSIC_GRID_COVERAGE_GOOD: int = 7
+
+
+# ─── Per-parameter observability (Fisher/Jacobian 식별성) ─────────
+# docs/handeye_ux_solver_v3_plan.md §3. BA data residual 의 Jacobian 에서 블록별
+# 식별성 score ∈ [0,1] 산출 → capture 개수가 아니라 식별성으로 BA 블록 unlock gating.
+#
+# 파라미터 정규화 nominal — Jacobian 컬럼을 "1 nominal 만큼 흔들면 residual 얼마
+# 변하나" 로 무차원화 (블록 간 비교 가능). 단위 통일용이라 절대값보다 *상대 비율* 이
+# score 를 지배 (degeneracy = collinear → score≈0 는 scale 무관).
+OBS_SCALE_ANGLE_RAD: float = math.radians(1.0)  # joint_offset / link_rot / handeye rod
+OBS_SCALE_TRANS_M: float = 0.001  # link_trans / handeye t (1mm)
+OBS_SCALE_SAG_K: float = 0.1  # sag_k (rad / (m·g_unit))
+
+# 측정 노이즈 바닥값 — Fisher 정보의 residual 행 정규화 (rot 행/σ_rot, trans 행/σ_trans).
+# *fitted* residual 이 아니라 *고정* 노이즈 floor 여야 함: 포즈 적으면 overfit 으로
+# residual→0 이지만 측정 노이즈는 그대로 → 정보 적음 → observability 낮게 (정상).
+# D405 + ChArUco PnP 의 per-pose 자세 노이즈 추정.
+OBS_NOISE_ROT_RAD: float = math.radians(0.5)
+OBS_NOISE_TRANS_M: float = 0.003
+
+# 블록별 unlock 임계 — score ≥ 임계면 BA 가 해당 블록 추정, 아니면 freeze (prior 0).
+# handeye(R,t) 는 항상 unlock (캘 1차 목적). joint / link / sag 만 gate.
+#
+# **gating = 안전망** (handeye_ux_solver_v3_plan.md §3.2 measurement 결과):
+# physical_sag 모델에선 현실적 데이터(자세 몇 개라도 다양)면 EE 위치 변화로 sag 까지
+# 거의 항상 관측 가능 (실데이터: joint 0.22 / link 0.23 / sag 0.66, 전부 unlock = 현
+# always-on BA 와 동일 → 무회귀). 임계를 안전망 수준 0.05 로 — 자세가 거의 동일하거나
+# 극소수라 *정보가 사실상 없는* 병리적 블록만 freeze (잘못된 흡수 차단).
+OBS_UNLOCK_JOINT: float = 0.05
+OBS_UNLOCK_LINK: float = 0.05
+OBS_UNLOCK_SAG: float = 0.05
+
+# verdict 표시 (UI 안내) — gate 와 별개 band. score ≥ OK → "잘 잡힘", WEAK band →
+# "보강 권장", < WEAK(=unlock) → "정보 부족 (freeze)".
+# score = posterior 분산이 prior 대비 줄어든 비율 (information gain). 8 포즈 + tight
+# prior 라 good data 도 블록별 0.08~0.6 — OK 임계는 measurement 기반 0.10
+# (handeye_ux_solver_v3_plan.md §3.2).
+OBS_VERDICT_OK: float = 0.10
+OBS_VERDICT_WEAK: float = 0.05
 
 
 def as_dict() -> dict:

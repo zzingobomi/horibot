@@ -44,9 +44,10 @@ from modules.kinematics.fk_chain import gravity_torque_lumped
 if TYPE_CHECKING:
     from modules.kinematics.fk_chain import FkChain
 
-# OMX-F sag joint 의 arm 안 0-indexed position. J2/J3 = motor id 2, 3 → 0/1-indexed 1, 2.
-# SO-101 sag 캘 진입 시 일반화 (storage_layer.md §13.6 (5.5)(a) follow-up).
-_OMX_SAG_JOINT_ARM_INDICES: list[int] = [1, 2]
+# sag joint 의 arm 안 0-indexed default (J2/J3 = motor id 2,3 → idx 1,2).
+# 실제 값은 robots.yaml::sag_joint_motor_ids 가 SSOT — caller (hand_eye) 가
+# `sag_arm_indices` 인자로 주입 (같은 코드 5축/6축, 값만 yaml). 본 default 는 fallback.
+_DEFAULT_SAG_ARM_INDICES: list[int] = [1, 2]
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,172 @@ def _mean_rotation(Rs: list[np.ndarray]) -> np.ndarray:
         U[:, -1] *= -1
         R_mean = U @ Vt
     return R_mean
+
+
+# ─── physical_sag 공유 residual primitive (SSOT) ─────────────────────────
+# bundle_adjust_hand_eye_physical_sag / _irls / observability_params 가 모두
+# 같은 residual 수식을 쓰도록 module-level 로 추출. 중복 금지 — residual 수식이
+# 한 곳에만 존재해야 BA 와 observability 의 Jacobian 이 정확히 같은 모델 위에서
+# 계산됨 (Fisher 정보행렬의 전제).
+
+# physical_sag 변수 layout (J = fk_chain.n_arm):
+#   [0:J] joint_offset · [J:4J] link_trans · [4J:7J] link_rot
+#   [7J:7J+2] sag_k(J2,J3) · [+3] rod(cam2gripper R) · [+3] t(cam2gripper)
+_N_SAG_K: int = 2
+
+
+def physical_sag_unpack(x: np.ndarray, J: int):
+    """physical_sag 변수 벡터 → (offset, link_t (J,3), link_r (J,3), sag_k (2,), rod (3,), t_x (3,))."""
+    n_off = J
+    n_lt = 3 * J
+    n_lr = 3 * J
+    i = 0
+    offset = x[i : i + n_off]
+    i += n_off
+    link_t = x[i : i + n_lt].reshape(J, 3)
+    i += n_lt
+    link_r = x[i : i + n_lr].reshape(J, 3)
+    i += n_lr
+    sag_k = x[i : i + _N_SAG_K]
+    i += _N_SAG_K
+    rod = x[i : i + 3]
+    i += 3
+    t_x = x[i : i + 3]
+    return offset, link_t, link_r, sag_k, rod, t_x
+
+
+def physical_sag_n_params(J: int) -> int:
+    """physical_sag 변수 벡터 길이."""
+    return J + 3 * J + 3 * J + _N_SAG_K + 3 + 3
+
+
+def physical_sag_pack(
+    *,
+    joint_offset_rad: np.ndarray,
+    link_trans_m: np.ndarray,
+    link_rot_rad: np.ndarray,
+    sag_k_rad_per_m: np.ndarray,
+    R_cam2gripper: np.ndarray,
+    t_cam2gripper: np.ndarray,
+) -> np.ndarray:
+    """BA 결과 → 변수 벡터 x (physical_sag_unpack 의 역). observability / gating 용 SSOT."""
+    rod = cv2.Rodrigues(np.asarray(R_cam2gripper, dtype=np.float64))[0].flatten()
+    return np.concatenate(
+        [
+            np.asarray(joint_offset_rad, dtype=np.float64).flatten(),
+            np.asarray(link_trans_m, dtype=np.float64).flatten(),
+            np.asarray(link_rot_rad, dtype=np.float64).flatten(),
+            np.asarray(sag_k_rad_per_m, dtype=np.float64).flatten(),
+            rod,
+            np.asarray(t_cam2gripper, dtype=np.float64).reshape(3),
+        ]
+    )
+
+
+# 블록 이름 — staged gating / observability 의 SSOT (layout 지식은 여기 한 곳).
+BLOCK_JOINT = "joint_offset"
+BLOCK_LINK = "link"  # link_trans (3J) + link_rot (3J) 한 블록
+BLOCK_SAG = "sag"
+BLOCK_HANDEYE_ROT = "handeye_rot"
+BLOCK_HANDEYE_TRANS = "handeye_trans"
+
+
+def physical_sag_block_indices(J: int) -> dict[str, slice]:
+    """physical_sag 변수 layout 의 블록 slice (physical_sag_unpack 과 같은 SSOT).
+
+    [0:J] joint · [J:7J] link(trans+rot) · [7J:7J+2] sag · [+3] rod · [+3] t
+    """
+    n_off = J
+    n_link = 6 * J
+    sag_start = 7 * J
+    rod_start = sag_start + _N_SAG_K
+    t_start = rod_start + 3
+    return {
+        BLOCK_JOINT: slice(0, n_off),
+        BLOCK_LINK: slice(n_off, n_off + n_link),
+        BLOCK_SAG: slice(sag_start, sag_start + _N_SAG_K),
+        BLOCK_HANDEYE_ROT: slice(rod_start, rod_start + 3),
+        BLOCK_HANDEYE_TRANS: slice(t_start, t_start + 3),
+    }
+
+
+def _physical_sag_T_targets(
+    x: np.ndarray,
+    J: int,
+    angles_arr: np.ndarray,
+    T_tc_list: list[np.ndarray],
+    fk_chain: "FkChain",
+    sag_indices: list[int],
+) -> list[np.ndarray]:
+    """각 포즈의 T_target_in_base 리스트 (sag 적용 + FK + X + board→cam)."""
+    offset, link_t, link_r, sag_k, rod, t_x = physical_sag_unpack(x, J)
+    R_x = cv2.Rodrigues(rod)[0]
+    T_x = make_T(R_x, t_x)
+    out: list[np.ndarray] = []
+    for i in range(len(angles_arr)):
+        a_corr = fk_chain.apply_gravity_sag(
+            angles_arr[i] + offset, sag_k, sag_indices, link_t, link_r
+        )
+        R_gb, t_gb = fk_chain.fk(a_corr, link_t, link_r)
+        out.append(make_T(R_gb, t_gb) @ T_x @ T_tc_list[i])
+    return out
+
+
+def physical_sag_data_residual(
+    x: np.ndarray,
+    J: int,
+    angles_arr: np.ndarray,
+    T_tc_list: list[np.ndarray],
+    fk_chain: "FkChain",
+    sag_indices: list[int],
+) -> np.ndarray:
+    """data residual (6N) — 각 포즈 T_base←board 가 평균에서 벗어난 양 (rot 3 + trans 3).
+
+    reg 항 미포함 — observability 의 Fisher 정보는 *측정* residual 만 봐야 함
+    (reg 는 prior 라 frozen-by-prior 파라미터를 observable 로 오인하게 만듦).
+    """
+    T_list = _physical_sag_T_targets(x, J, angles_arr, T_tc_list, fk_chain, sag_indices)
+    N = len(T_list)
+    positions = np.array([T[:3, 3] for T in T_list])
+    mean_pos = positions.mean(axis=0)
+    mean_R = _mean_rotation([T[:3, :3] for T in T_list])
+    res = np.empty(6 * N, dtype=np.float64)
+    for i, T in enumerate(T_list):
+        R_dev = T[:3, :3] @ mean_R.T
+        rod_dev, _ = cv2.Rodrigues(R_dev)
+        res[6 * i : 6 * i + 3] = rod_dev.flatten()
+        res[6 * i + 3 : 6 * (i + 1)] = T[:3, 3] - mean_pos
+    return res
+
+
+def _physical_sag_full_residual(
+    x: np.ndarray,
+    J: int,
+    angles_arr: np.ndarray,
+    T_tc_list: list[np.ndarray],
+    fk_chain: "FkChain",
+    sag_indices: list[int],
+    regs: tuple[float, float, float, float],
+) -> np.ndarray:
+    """data residual (6N) + reg 항 (n_off + n_lt + n_lr + n_k). LM 최적화용."""
+    offset, link_t, link_r, sag_k, _, _ = physical_sag_unpack(x, J)
+    data = physical_sag_data_residual(x, J, angles_arr, T_tc_list, fk_chain, sag_indices)
+    N = len(angles_arr)
+    n_off = J
+    n_lt = 3 * J
+    n_lr = 3 * J
+    joint_offset_reg, link_trans_reg, link_rot_reg, sag_k_reg = regs
+    res = np.empty(6 * N + n_off + n_lt + n_lr + _N_SAG_K, dtype=np.float64)
+    res[: 6 * N] = data
+    k = 6 * N
+    res[k : k + n_off] = joint_offset_reg * offset
+    k += n_off
+    res[k : k + n_lt] = link_trans_reg * link_t.flatten()
+    k += n_lt
+    res[k : k + n_lr] = link_rot_reg * link_r.flatten()
+    k += n_lr
+    res[k : k + _N_SAG_K] = sag_k_reg * sag_k
+    return res
 
 
 def bundle_adjust_hand_eye(
@@ -480,6 +647,7 @@ def bundle_adjust_hand_eye_physical_sag(
     link_trans_reg: float = DEFAULT_LINK_TRANS_REG,
     link_rot_reg: float = DEFAULT_LINK_ROT_REG,
     sag_k_reg: float = DEFAULT_SAG_K_REG,
+    sag_arm_indices: list[int] | None = None,
     max_nfev: int = 5000,
 ) -> BundleAdjustPhysicalSagResult:
     """확장 BA + 물리 sag (43 DOF for OMX-F 5DOF / 51 DOF for SO-101 6DOF).
@@ -522,63 +690,19 @@ def bundle_adjust_hand_eye_physical_sag(
     n_off = J
     n_lt = 3 * J
     n_lr = 3 * J
-    n_k = 2
-
-    def unpack(x: np.ndarray):
-        i = 0
-        offset = x[i : i + n_off]
-        i += n_off
-        link_t = x[i : i + n_lt].reshape(J, 3)
-        i += n_lt
-        link_r = x[i : i + n_lr].reshape(J, 3)
-        i += n_lr
-        sag_k = x[i : i + n_k]
-        i += n_k
-        rod = x[i : i + 3]
-        i += 3
-        t_x = x[i : i + 3]
-        return offset, link_t, link_r, sag_k, rod, t_x
-
-    def compute_T_target_in_base(x: np.ndarray) -> list[np.ndarray]:
-        offset, link_t, link_r, sag_k, rod, t_x = unpack(x)
-        R_x = cv2.Rodrigues(rod)[0]
-        T_x = make_T(R_x, t_x)
-        out: list[np.ndarray] = []
-        for i in range(N):
-            a_corr = fk_chain.apply_gravity_sag(
-                angles_arr[i] + offset,
-                sag_k,
-                _OMX_SAG_JOINT_ARM_INDICES,
-                link_t,
-                link_r,
-            )
-            R_gb, t_gb = fk_chain.fk(a_corr, link_t, link_r)
-            T_gb = make_T(R_gb, t_gb)
-            out.append(T_gb @ T_x @ T_tc_list[i])
-        return out
+    n_k = _N_SAG_K
+    regs = (joint_offset_reg, link_trans_reg, link_rot_reg, sag_k_reg)
+    sag_idx = (
+        sag_arm_indices if sag_arm_indices is not None else _DEFAULT_SAG_ARM_INDICES
+    )
+    assert len(sag_idx) == _N_SAG_K, (
+        f"sag_arm_indices 길이는 {_N_SAG_K} 이어야 함 (physical_sag 모델 가정)"
+    )
 
     def residual(x: np.ndarray) -> np.ndarray:
-        offset, link_t, link_r, sag_k, _, _ = unpack(x)
-        T_list = compute_T_target_in_base(x)
-        positions = np.array([T[:3, 3] for T in T_list])
-        mean_pos = positions.mean(axis=0)
-        mean_R = _mean_rotation([T[:3, :3] for T in T_list])
-        n_reg = n_off + n_lt + n_lr + n_k
-        res = np.empty(6 * N + n_reg, dtype=np.float64)
-        for i, T in enumerate(T_list):
-            R_dev = T[:3, :3] @ mean_R.T
-            rod_dev, _ = cv2.Rodrigues(R_dev)
-            res[6 * i : 6 * i + 3] = rod_dev.flatten()
-            res[6 * i + 3 : 6 * (i + 1)] = T[:3, 3] - mean_pos
-        k = 6 * N
-        res[k : k + n_off] = joint_offset_reg * offset
-        k += n_off
-        res[k : k + n_lt] = link_trans_reg * link_t.flatten()
-        k += n_lt
-        res[k : k + n_lr] = link_rot_reg * link_r.flatten()
-        k += n_lr
-        res[k : k + n_k] = sag_k_reg * sag_k
-        return res
+        return _physical_sag_full_residual(
+            x, J, angles_arr, T_tc_list, fk_chain, sag_idx, regs
+        )
 
     x0 = np.concatenate(
         [
@@ -600,10 +724,14 @@ def bundle_adjust_hand_eye_physical_sag(
         ftol=1e-11,
     )
 
-    offset_opt, link_t_opt, link_r_opt, sag_k_opt, rod_opt, t_opt = unpack(result.x)
+    offset_opt, link_t_opt, link_r_opt, sag_k_opt, rod_opt, t_opt = physical_sag_unpack(
+        result.x, J
+    )
     R_opt, _ = cv2.Rodrigues(rod_opt)
 
-    T_list_final = compute_T_target_in_base(result.x)
+    T_list_final = _physical_sag_T_targets(
+        result.x, J, angles_arr, T_tc_list, fk_chain, sag_idx
+    )
     positions = np.array([T[:3, 3] for T in T_list_final])
     mean_pos = positions.mean(axis=0)
     mean_R = _mean_rotation([T[:3, :3] for T in T_list_final])
@@ -619,7 +747,7 @@ def bundle_adjust_hand_eye_physical_sag(
 
     # 캡처 자세들의 최대 sag (deg) — UI/디버깅 표시용
     max_sag = np.zeros(2, dtype=np.float64)
-    sag_idx_J2, sag_idx_J3 = _OMX_SAG_JOINT_ARM_INDICES
+    sag_idx_J2, sag_idx_J3 = sag_idx
     for i in range(N):
         _, ee_pos, jo, ja = fk_chain.fk_with_axes(
             angles_arr[i] + offset_opt, link_t_opt, link_r_opt
@@ -668,7 +796,9 @@ def bundle_adjust_hand_eye_physical_sag_irls(
     max_outer_iter: int = DEFAULT_IRLS_MAX_OUTER_ITER,
     cost_rel_tol: float = DEFAULT_IRLS_COST_REL_TOL,
     huber_kappa_factor: float = DEFAULT_HUBER_KAPPA_FACTOR,
+    sag_arm_indices: list[int] | None = None,
     max_nfev: int = 5000,
+    frozen_blocks: set[str] | None = None,
 ) -> BundleAdjustPhysicalSagResult:
     """_physical_sag 의 IRLS+Huber 버전. _physical_sag 와 동일 DOF + outer loop.
 
@@ -678,6 +808,12 @@ def bundle_adjust_hand_eye_physical_sag_irls(
       3. per-pose 잔차 norm 계산
       4. σ̂ = MAD(r)/0.6745, κ = 1.345·σ̂, w_i = min(1, κ/r_i)
       5. 잔차 cost change < cost_rel_tol 면 수렴
+
+    Args:
+        frozen_blocks: staged gating — 이 블록들(BLOCK_JOINT/LINK/SAG)은 추정 안 하고
+            0(prior)에 고정. observability gate 가 식별 불가 판정한 블록을 freeze 해
+            잘못된 흡수 차단 (handeye_ux_solver_v3_plan.md §3.3). None = 전부 추정
+            (기존 동작 — 무회귀). handeye(rod/t)는 freeze 대상 아님.
     """
     N = len(joint_angles_per_pose)
     assert N == len(R_target2cam) == len(t_target2cam), "포즈 리스트 길이 불일치"
@@ -700,63 +836,20 @@ def bundle_adjust_hand_eye_physical_sag_irls(
     n_off = J
     n_lt = 3 * J
     n_lr = 3 * J
-    n_k = 2
+    n_k = _N_SAG_K
     n_reg = n_off + n_lt + n_lr + n_k
-
-    def unpack(x: np.ndarray):
-        i = 0
-        offset = x[i : i + n_off]
-        i += n_off
-        link_t = x[i : i + n_lt].reshape(J, 3)
-        i += n_lt
-        link_r = x[i : i + n_lr].reshape(J, 3)
-        i += n_lr
-        sag_k = x[i : i + n_k]
-        i += n_k
-        rod = x[i : i + 3]
-        i += 3
-        t_x = x[i : i + 3]
-        return offset, link_t, link_r, sag_k, rod, t_x
-
-    def compute_T_target_in_base(x: np.ndarray) -> list[np.ndarray]:
-        offset, link_t, link_r, sag_k, rod, t_x = unpack(x)
-        R_x = cv2.Rodrigues(rod)[0]
-        T_x = make_T(R_x, t_x)
-        out: list[np.ndarray] = []
-        for i in range(N):
-            a_corr = fk_chain.apply_gravity_sag(
-                angles_arr[i] + offset,
-                sag_k,
-                _OMX_SAG_JOINT_ARM_INDICES,
-                link_t,
-                link_r,
-            )
-            R_gb, t_gb = fk_chain.fk(a_corr, link_t, link_r)
-            T_gb = make_T(R_gb, t_gb)
-            out.append(T_gb @ T_x @ T_tc_list[i])
-        return out
+    regs = (joint_offset_reg, link_trans_reg, link_rot_reg, sag_k_reg)
+    sag_idx = (
+        sag_arm_indices if sag_arm_indices is not None else _DEFAULT_SAG_ARM_INDICES
+    )
+    assert len(sag_idx) == _N_SAG_K, (
+        f"sag_arm_indices 길이는 {_N_SAG_K} 이어야 함 (physical_sag 모델 가정)"
+    )
 
     def residual_unweighted(x: np.ndarray) -> np.ndarray:
-        offset, link_t, link_r, sag_k, _, _ = unpack(x)
-        T_list = compute_T_target_in_base(x)
-        positions = np.array([T[:3, 3] for T in T_list])
-        mean_pos = positions.mean(axis=0)
-        mean_R = _mean_rotation([T[:3, :3] for T in T_list])
-        res = np.empty(6 * N + n_reg, dtype=np.float64)
-        for i, T in enumerate(T_list):
-            R_dev = T[:3, :3] @ mean_R.T
-            rod_dev, _ = cv2.Rodrigues(R_dev)
-            res[6 * i : 6 * i + 3] = rod_dev.flatten()
-            res[6 * i + 3 : 6 * (i + 1)] = T[:3, 3] - mean_pos
-        k = 6 * N
-        res[k : k + n_off] = joint_offset_reg * offset
-        k += n_off
-        res[k : k + n_lt] = link_trans_reg * link_t.flatten()
-        k += n_lt
-        res[k : k + n_lr] = link_rot_reg * link_r.flatten()
-        k += n_lr
-        res[k : k + n_k] = sag_k_reg * sag_k
-        return res
+        return _physical_sag_full_residual(
+            x, J, angles_arr, T_tc_list, fk_chain, sag_idx, regs
+        )
 
     x0 = np.concatenate(
         [
@@ -769,9 +862,25 @@ def bundle_adjust_hand_eye_physical_sag_irls(
         ]
     )
 
+    # ── staged gating — frozen 블록은 0(prior) 고정, free 인덱스만 최적화 ──
+    n_params = x0.shape[0]
+    free_mask = np.ones(n_params, dtype=bool)
+    if frozen_blocks:
+        block_idx = physical_sag_block_indices(J)
+        for b in frozen_blocks:
+            if b in block_idx:
+                free_mask[block_idx[b]] = False
+    free_idx = np.where(free_mask)[0]
+
+    def _expand(x_free: np.ndarray, base: np.ndarray) -> np.ndarray:
+        """free subset → 전체 벡터 (frozen 은 base=0 유지)."""
+        full = base.copy()
+        full[free_idx] = x_free
+        return full
+
     # ── IRLS outer loop ──
     w = np.ones(N, dtype=np.float64)
-    x_current = x0.copy()
+    x_current = x0.copy()  # 항상 전체 벡터 (frozen 포함)
     prev_cost = float("inf")
     cost_history: list[float] = []
     sigma_hat_history: list[float] = []
@@ -784,21 +893,23 @@ def bundle_adjust_hand_eye_physical_sag_irls(
         sqrt_w_per_pose = np.repeat(np.sqrt(w), 6)  # 6N
         sqrt_w_full = np.concatenate([sqrt_w_per_pose, np.ones(n_reg)])
 
-        def residual_weighted(x: np.ndarray, _w=sqrt_w_full) -> np.ndarray:
-            return residual_unweighted(x) * _w
+        def residual_weighted(
+            x_free: np.ndarray, _w=sqrt_w_full, _base=x_current
+        ) -> np.ndarray:
+            return residual_unweighted(_expand(x_free, _base)) * _w
 
         result = least_squares(
             residual_weighted,
-            x_current,
+            x_current[free_idx],
             method="lm",
             max_nfev=max_nfev,
             xtol=1e-11,
             ftol=1e-11,
         )
-        x_current = result.x.copy()
+        x_current = _expand(result.x, x_current)  # 전체 벡터로 복원
 
         # per-pose unweighted 잔차 norm
-        r_full = residual_unweighted(result.x)
+        r_full = residual_unweighted(x_current)
         r_pose_part = r_full[: 6 * N]
         r_per_pose = np.linalg.norm(r_pose_part.reshape(N, 6), axis=1)
 
@@ -824,10 +935,14 @@ def bundle_adjust_hand_eye_physical_sag_irls(
 
     assert result is not None
 
-    offset_opt, link_t_opt, link_r_opt, sag_k_opt, rod_opt, t_opt = unpack(result.x)
+    offset_opt, link_t_opt, link_r_opt, sag_k_opt, rod_opt, t_opt = physical_sag_unpack(
+        x_current, J
+    )
     R_opt, _ = cv2.Rodrigues(rod_opt)
 
-    T_list_final = compute_T_target_in_base(result.x)
+    T_list_final = _physical_sag_T_targets(
+        x_current, J, angles_arr, T_tc_list, fk_chain, sag_idx
+    )
     positions = np.array([T[:3, 3] for T in T_list_final])
     mean_pos = positions.mean(axis=0)
     mean_R = _mean_rotation([T[:3, :3] for T in T_list_final])
@@ -842,7 +957,7 @@ def bundle_adjust_hand_eye_physical_sag_irls(
         t_norms[i] = float(np.linalg.norm(T[:3, 3] - mean_pos))
 
     max_sag = np.zeros(2, dtype=np.float64)
-    sag_idx_J2, sag_idx_J3 = _OMX_SAG_JOINT_ARM_INDICES
+    sag_idx_J2, sag_idx_J3 = sag_idx
     for i in range(N):
         _, ee_pos, jo, ja = fk_chain.fk_with_axes(
             angles_arr[i] + offset_opt, link_t_opt, link_r_opt

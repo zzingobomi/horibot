@@ -187,6 +187,24 @@ class HandeyeObservabilityState(StrictModel):
     verdict: str  # 'A' | 'B' | 'mid'
 
 
+class HandeyeParamObservabilityState(StrictModel):
+    """매 compute(physical_sag) 후 발행 — *parameter별* 식별성 + staged gating 결과.
+
+    위 HandeyeObservabilityState(geometry A/B/mid)와 별개. BA 정보행렬(Fisher)에서
+    블록(handeye_rot / handeye_trans / joint_offset / link / sag)별 식별성 score
+    ∈[0,1] + verdict(OK/WEAK/INSUFFICIENT) 산출. unlocked = gate 통과해 BA 가 실제
+    추정한 블록 (나머지는 freeze=정보부족). docs/handeye_ux_solver_v3_plan.md §3.
+
+    frontend 는 블록별 색 dot (수치 노출 X) — "어느 보정값이 잘 잡혔나 / 자세 보강 필요".
+    """
+
+    timestamp: float
+    pose_count: int
+    scores: dict[str, float]  # block → score ∈ [0,1]
+    verdicts: dict[str, str]  # block → "OK" | "WEAK" | "INSUFFICIENT"
+    unlocked: list[str]  # gate 통과 블록 (joint_offset / link / sag 중)
+
+
 class HandeyeSigmaState(StrictModel):
     """capture 후 자동 BA / 수동 COMPUTE 마다 publish. frontend σ live 표시.
 
@@ -221,30 +239,10 @@ class HandeyePreviewEnableRes(StrictModel):
     enabled: bool
 
 
-# ─── Service: CALIB_HANDEYE_RECOMMENDATION_FAIL ──────────────────────
+# ─── Service: CALIB_HANDEYE_BEGIN_REFINEMENT ──────────────────────────────
 
 
-class RecommendationFailReq(StrictModel):
-    """사용자 명시 신호 — 추천 자세 fail 기록. 다음 추천 생성 시 제외.
-
-    카테고리:
-      - "not_visible": [이동] 후 보드 화면 밖
-      - "red": 도달했고 보이지만 한 장 단위 hint 빨강 (tilt extreme / 코너 부족)
-      - "motion_fail": 도달 실패 (IK 통과했지만 motion 자체 fail)
-    """
-
-    anchor_id: str
-    category: str  # "not_visible" | "red" | "motion_fail"
-
-
-class RecommendationFailRes(StrictModel):
-    excluded_count: int
-
-
-# ─── Service: CALIB_HANDEYE_MULTI_START ──────────────────────────────
-
-
-class MultiStartReq(StrictModel):
+class BeginRefinementReq(StrictModel):
     """Multi-start BA 명시 트리거 — random init 다중 시도 → 가장 좋은 σ 선택.
 
     Local minimum 자리 escape. 사용자가 saturate 알림 받고 시도, 또는
@@ -255,7 +253,7 @@ class MultiStartReq(StrictModel):
     mode: str = "physical_sag"
 
 
-class MultiStartRes(StrictModel):
+class BeginRefinementRes(StrictModel):
     n_tried: int
     n_converged: int
     sigma_rot_deg: float | None

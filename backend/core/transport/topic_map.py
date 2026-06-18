@@ -26,6 +26,11 @@ class Topic:
     CALIB_HANDEYE_RECOMMENDATIONS = "horibot/{robot_id}/calib/state/handeye_recommendations"
     CALIB_HANDEYE_SATURATE = "horibot/{robot_id}/calib/state/handeye_saturate"
     CALIB_HANDEYE_OBSERVABILITY = "horibot/{robot_id}/calib/state/handeye_observability"
+    # per-parameter observability (Fisher 식별성 + staged gating 결과). 위 geometry
+    # observability(A/B/mid) 와 별개 — 블록별 score/verdict/unlock.
+    CALIB_HANDEYE_PARAM_OBSERVABILITY = (
+        "horibot/{robot_id}/calib/state/handeye_param_observability"
+    )
 
     # ─── Task ──────────────────────────────────────────────
     TASK_STATE = "horibot/task/state"
@@ -92,8 +97,7 @@ class Service:
     CALIB_HANDEYE_LIST_POSES = "horibot/{robot_id}/calib/srv/handeye/list_poses"
     CALIB_HANDEYE_PREVIEW_ENABLE = "horibot/{robot_id}/calib/srv/handeye/preview_enable"
     CALIB_HANDEYE_THRESHOLDS = "horibot/{robot_id}/calib/srv/handeye/thresholds"
-    CALIB_HANDEYE_RECOMMENDATION_FAIL = "horibot/{robot_id}/calib/srv/handeye/recommendation_fail"
-    CALIB_HANDEYE_MULTI_START = "horibot/{robot_id}/calib/srv/handeye/multi_start"
+    CALIB_HANDEYE_BEGIN_REFINEMENT = "horibot/{robot_id}/calib/srv/handeye/begin_refinement"
     # Draft run flow — 사용자 [캘 시작] / [되돌리기]. storage_layer.md §13.
     CALIB_HANDEYE_START = "horibot/{robot_id}/calib/srv/handeye/start"
     CALIB_HANDEYE_UNDO_LAST_CAPTURE = "horibot/{robot_id}/calib/srv/handeye/undo_last_capture"

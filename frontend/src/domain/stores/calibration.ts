@@ -18,13 +18,13 @@ import type {
   HandEyePreview,
   HandeyeRecommendationsState,
   HandeyeObservabilityState,
+  HandeyeParamObservabilityState,
   HandeyeSaturateState,
   HandEyeSigmaState,
-  MultiStartRes,
+  BeginRefinementRes,
   NextPoseRecommendation,
   NoCandidatesReason,
   PoseMeta,
-  RecommendationFailReq,
 } from "@/components/panels/calibration/parts/types";
 
 const PREVIEW_STALE_MS = 1500;
@@ -43,7 +43,7 @@ interface CalibrationState {
   // recommendations — CALIB_HANDEYE_RECOMMENDATIONS topic 자동 갱신 (매 capture 마다).
   // Phase 1 (manualModeActive=true) frontend 자체 자리 hide.
   recommendations: NextPoseRecommendation[] | null;
-  // 빈 추천 시 *왜* 인지 분리 — NextPoseCard 가 분기별 메시지 표시.
+  // 빈 추천 시 *왜* 인지 분리 — PoseCandidates 가 분기별 메시지 표시.
   // null = 아직 publish 안 됨 (Phase 1) 또는 recommendations 채워짐 (분기 N/A).
   noCandidatesReason: NoCandidatesReason | null;
   visited: Set<number>;
@@ -53,6 +53,8 @@ interface CalibrationState {
   saturate: HandeyeSaturateState | null;
   // observability — 자세 분포의 기하학적 관측성. verdict 만 사용자 안내.
   observability: HandeyeObservabilityState | null;
+  // paramObservability — parameter별 식별성 (Fisher) + staged gating 결과 (Phase 2).
+  paramObservability: HandeyeParamObservabilityState | null;
 
   // ─── Phase 1/2 분기 ────────────────────────────────────────
   // manualModeActive=true → Phase 1 (수동 자유 자세, 추천/σ hide).
@@ -83,11 +85,8 @@ interface CalibrationState {
   compute_: () => Promise<void>;
   commit: () => Promise<{ success: boolean; message: string }>;
   moved: (index: number) => void;
-  // Phase 1 → 2 전환. [수동 모드 종료] 버튼.
-  // multi-start BA 자동 호출 + manualModeActive=false.
-  exitManualMode: () => Promise<MultiStartRes | null>;
-  // 사용자 명시 신호 — 추천 자세 fail 기록. 다음 추천 시 제외.
-  reportFail: (anchorId: string, category: RecommendationFailReq["category"]) => Promise<void>;
+  // Phase 1 → 2 전환. [자동 추천 시작] 버튼 → begin_refinement (초기 solve).
+  exitManualMode: () => Promise<BeginRefinementRes | null>;
 }
 
 export const useCalibrationStore = create<CalibrationState>((set, get) => ({
@@ -105,6 +104,7 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
   thresholds: null,
   saturate: null,
   observability: null,
+  paramObservability: null,
   manualModeActive: true,
 
   loading: false,
@@ -171,6 +171,15 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
     );
 
     // Observability — 매 capture 후 자세 분포 진단. verdict 만 사용자 안내.
+    const unsubParamObs = bridge.subscribe(
+      Topic.CALIB_HANDEYE_PARAM_OBSERVABILITY,
+      (data) => {
+        set({
+          paramObservability: data as unknown as HandeyeParamObservabilityState,
+        });
+      },
+    );
+
     const unsubObservability = bridge.subscribe(
       Topic.CALIB_HANDEYE_OBSERVABILITY,
       (data) => {
@@ -206,6 +215,7 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
         unsubRecs,
         unsubSaturate,
         unsubObservability,
+        unsubParamObs,
       ],
     });
   },
@@ -404,32 +414,21 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
     // Phase 1 → 2 전환. multi-start BA 자동 호출 (local minimum escape).
     set({ loading: true, status: "Multi-start BA 실행 중..." });
     const res = await bridge.callService(
-      ServiceKey.CALIB_HANDEYE_MULTI_START,
+      ServiceKey.CALIB_HANDEYE_BEGIN_REFINEMENT,
       { n_starts: 10, mode: "physical_sag" },
       { timeoutMs: 5 * 60 * 1000 },
     );
     set({ loading: false });
     if (res.success) {
-      const data = res.data as unknown as MultiStartRes;
+      const data = res.data as unknown as BeginRefinementRes;
       set({
         manualModeActive: false,
         status: `자동 모드 진입 — σ_rot=${data.sigma_rot_deg?.toFixed(2)}° / σ_t=${data.sigma_t_mm?.toFixed(1)}mm (n_converged=${data.n_converged}/${data.n_tried})`,
       });
       return data;
     } else {
-      set({ status: `❌ multi-start 실패: ${res.message}` });
+      set({ status: `❌ 초기 solve 실패: ${res.message}` });
       return null;
     }
-  },
-
-  reportFail: async (anchorId, category) => {
-    const res = await bridge.callService(
-      ServiceKey.CALIB_HANDEYE_RECOMMENDATION_FAIL,
-      { anchor_id: anchorId, category },
-    );
-    if (!res.success) {
-      set({ status: `❌ fail 신호 실패: ${res.message}` });
-    }
-    // backend 가 추천 즉시 갱신 publish — subscribe 가 받아 처리
   },
 }));

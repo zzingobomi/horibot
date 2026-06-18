@@ -115,6 +115,12 @@ class RobotConfig:
     # `motor_id - 1` 변환해서 주입 ([calibration_node._publish_observability_state]).
     wrist_roll_motor_id: int = 0
 
+    # 자세 의존 중력 sag 를 모델링할 joint 모터 ID (1-based). robots.yaml SSOT —
+    # 같은 코드로 5축(OMX) / 6축(SO-101) 모두 캘 (값만 robot 별로 분기). bundle_adjust
+    # (BA sag 변수) / hand_eye (result 보고) / sag_corrected (runtime 보정) 가 모두
+    # 이 값을 읽음. arm index (0-based) 변환은 caller 가 `motor_id - 1`.
+    sag_joint_motor_ids: tuple[int, ...] = (2, 3)
+
 
 class RobotRegistry:
     """robots.yaml 싱글톤. 부팅 시 1회 load + validation.
@@ -237,6 +243,16 @@ class RobotRegistry:
             )
         wrist_roll_motor_id = int(wrist_roll_raw)
 
+        sag_raw = entry.get("sag_joint_motor_ids", [2, 3])
+        if not isinstance(sag_raw, list) or not all(
+            isinstance(m, int) and m >= 1 for m in sag_raw
+        ):
+            raise ValueError(
+                f"robot '{robot_id}' sag_joint_motor_ids={sag_raw!r} 는 "
+                f"1-based int list 이어야 함 (예: [2, 3])."
+            )
+        sag_joint_motor_ids = tuple(int(m) for m in sag_raw)
+
         caps_raw = entry.get("capabilities", []) or []
         if not isinstance(caps_raw, list):
             raise ValueError(
@@ -277,6 +293,7 @@ class RobotRegistry:
             capabilities=tuple(caps),
             pose_recommend_strategy=pose_recommend_strategy,
             wrist_roll_motor_id=wrist_roll_motor_id,
+            sag_joint_motor_ids=sag_joint_motor_ids,
             type_dir=type_dir,
             urdf_path=type_dir / "urdf" / f"{robot_type}.urdf",
             type_motors_yaml=type_dir / "motors.yaml",
@@ -362,6 +379,7 @@ class RobotRegistry:
                 LinkCoordinates(),
                 SagCoordinates(),
                 self.get_fk_chain(robot_id),
+                sag_joint_motor_ids=cfg.sag_joint_motor_ids,
             )
         if cfg.kinematics_backend == "mujoco":
             raise NotImplementedError(

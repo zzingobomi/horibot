@@ -23,6 +23,7 @@ export const Topic = {
   CALIB_HANDEYE_RECOMMENDATIONS: "horibot/{robot_id}/calib/state/handeye_recommendations",
   CALIB_HANDEYE_SATURATE: "horibot/{robot_id}/calib/state/handeye_saturate",
   CALIB_HANDEYE_OBSERVABILITY: "horibot/{robot_id}/calib/state/handeye_observability",
+  CALIB_HANDEYE_PARAM_OBSERVABILITY: "horibot/{robot_id}/calib/state/handeye_param_observability",
   STORAGE_CALIBRATION_INVALIDATED: "horibot/storage/state/calibration_invalidated",
   RECONSTRUCTION_PROGRESS: "horibot/reconstruction/state/progress",
   MOTION_JOG_TCP_STREAM: "horibot/{robot_id}/motion/cmd/jog_tcp_stream",
@@ -53,6 +54,7 @@ export type TopicPayloadMap = {
   "horibot/{robot_id}/calib/state/handeye_recommendations": unknown;
   "horibot/{robot_id}/calib/state/handeye_saturate": unknown;
   "horibot/{robot_id}/calib/state/handeye_observability": components["schemas"]["HandeyeObservabilityState"];
+  "horibot/{robot_id}/calib/state/handeye_param_observability": components["schemas"]["HandeyeParamObservabilityState"];
   "horibot/storage/state/calibration_invalidated": components["schemas"]["CalibrationInvalidated"];
   "horibot/reconstruction/state/progress": components["schemas"]["ReconstructionProgress"];
   "horibot/{robot_id}/motion/cmd/jog_tcp_stream": components["schemas"]["JogTcpReq"];
@@ -83,8 +85,7 @@ export const ServiceKey = {
   CALIB_HANDEYE_COMMIT: "horibot/{robot_id}/calib/srv/handeye/commit",
   CALIB_HANDEYE_LIST_POSES: "horibot/{robot_id}/calib/srv/handeye/list_poses",
   CALIB_HANDEYE_PREVIEW_ENABLE: "horibot/{robot_id}/calib/srv/handeye/preview_enable",
-  CALIB_HANDEYE_RECOMMENDATION_FAIL: "horibot/{robot_id}/calib/srv/handeye/recommendation_fail",
-  CALIB_HANDEYE_MULTI_START: "horibot/{robot_id}/calib/srv/handeye/multi_start",
+  CALIB_HANDEYE_BEGIN_REFINEMENT: "horibot/{robot_id}/calib/srv/handeye/begin_refinement",
   CALIB_HANDEYE_START: "horibot/{robot_id}/calib/srv/handeye/start",
   CALIB_HANDEYE_UNDO_LAST_CAPTURE: "horibot/{robot_id}/calib/srv/handeye/undo_last_capture",
   STORAGE_GET_ACTIVE_CALIBRATION: "horibot/storage/srv/calibration/get_active",
@@ -139,8 +140,7 @@ export type ServiceMap = {
   "horibot/{robot_id}/calib/srv/handeye/commit": { req: Record<string, never>; res: components["schemas"]["HandeyeCommitRes"] };
   "horibot/{robot_id}/calib/srv/handeye/list_poses": { req: Record<string, never>; res: components["schemas"]["HandeyeListPosesRes"] };
   "horibot/{robot_id}/calib/srv/handeye/preview_enable": { req: components["schemas"]["HandeyePreviewEnableReq"]; res: components["schemas"]["HandeyePreviewEnableRes"] };
-  "horibot/{robot_id}/calib/srv/handeye/recommendation_fail": { req: components["schemas"]["RecommendationFailReq"]; res: components["schemas"]["RecommendationFailRes"] };
-  "horibot/{robot_id}/calib/srv/handeye/multi_start": { req: components["schemas"]["MultiStartReq"]; res: components["schemas"]["MultiStartRes"] };
+  "horibot/{robot_id}/calib/srv/handeye/begin_refinement": { req: components["schemas"]["BeginRefinementReq"]; res: components["schemas"]["BeginRefinementRes"] };
   "horibot/{robot_id}/calib/srv/handeye/start": { req: Record<string, never>; res: components["schemas"]["HandeyeStartRes"] };
   "horibot/{robot_id}/calib/srv/handeye/undo_last_capture": { req: Record<string, never>; res: components["schemas"]["HandeyeUndoLastCaptureRes"] };
   "horibot/storage/srv/calibration/get_active": { req: components["schemas"]["StorageGetActiveReq"]; res: components["schemas"]["StorageGetActiveRes"] };

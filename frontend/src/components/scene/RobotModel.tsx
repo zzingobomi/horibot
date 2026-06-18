@@ -20,6 +20,8 @@ interface URDFRobotProps {
   basePose?: RobotBasePose;
   /** dim 효과 — 1.0 불투명, 0.3 정도가 "다른 로봇 흐릿하게" 의 합리적 default. */
   opacity?: number;
+  /** material color overlay (hex). ghost preview (주황 #ff8c1a) 등. null=원본 색. */
+  tint?: string | null;
   onTCPMatrix?: (matrix: THREE.Matrix4) => void;
   onLinksLoaded?: (linkNames: string[]) => void;
   linkVisibility?: Record<string, boolean>;
@@ -36,18 +38,32 @@ function emitTCP(
   cb(link.matrixWorld.clone());
 }
 
-function applyOpacity(robot: URDFRobot, opacity: number) {
+/** material 1개에 opacity (+ 선택적 tint color overlay) 적용. */
+function paintMaterial(
+  m: THREE.Material,
+  opacity: number,
+  tint: string | null | undefined,
+) {
+  m.transparent = opacity < 1.0;
+  m.opacity = opacity;
+  m.depthWrite = opacity >= 1.0;
+  // .color 있는 material (Standard/Phong/Basic) 만 tint. clone 된 인스턴스라
+  // robot 별 색 안전 (loadMeshCb 가 mesh 마다 clone).
+  const colored = m as THREE.Material & { color?: THREE.Color };
+  if (tint && colored.color) colored.color.set(tint);
+}
+
+function applyMaterialProps(
+  robot: URDFRobot,
+  opacity: number,
+  tint: string | null | undefined,
+) {
   robot.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh) return;
     const mat = mesh.material as THREE.Material | THREE.Material[];
-    const apply = (m: THREE.Material) => {
-      m.transparent = opacity < 1.0;
-      m.opacity = opacity;
-      m.depthWrite = opacity >= 1.0;
-    };
-    if (Array.isArray(mat)) mat.forEach(apply);
-    else if (mat) apply(mat);
+    if (Array.isArray(mat)) mat.forEach((m) => paintMaterial(m, opacity, tint));
+    else if (mat) paintMaterial(mat, opacity, tint);
   });
 }
 
@@ -80,6 +96,7 @@ export function RobotModel({
   robotId,
   basePose,
   opacity = 1.0,
+  tint = null,
   onTCPMatrix,
   onLinksLoaded,
   linkVisibility,
@@ -105,6 +122,12 @@ export function RobotModel({
   useEffect(() => {
     opacityRef.current = opacity;
   }, [opacity]);
+
+  // tint 도 ref stash — loadMeshCb (async) 가 늦게 들어오는 mesh 에도 현재 tint 적용.
+  const tintRef = useRef(tint);
+  useEffect(() => {
+    tintRef.current = tint;
+  }, [tint]);
 
   // URDF load callback (async) 안에서 *현재* joint state 를 적용하려면 ref 로
   // stash 해야 함 — effect closure 의 값은 마운트 시점 snapshot.
@@ -138,12 +161,8 @@ export function RobotModel({
     };
     loader.workingPath = `${BASE_URL}/robot/${robotType}/urdf/`;
 
-    const setMaterialOpacity = (m: THREE.Material) => {
-      const op = opacityRef.current;
-      m.transparent = op < 1.0;
-      m.opacity = op;
-      m.depthWrite = op >= 1.0;
-    };
+    const paint = (m: THREE.Material) =>
+      paintMaterial(m, opacityRef.current, tintRef.current);
     loader.loadMeshCb = (path, manager, urdfDone) => {
       loader.defaultMeshLoader(path, manager, (obj, err) => {
         urdfDone(obj, err);
@@ -154,12 +173,12 @@ export function RobotModel({
         if (Array.isArray(mat)) {
           mesh.material = mat.map((m) => {
             const c = m.clone();
-            setMaterialOpacity(c);
+            paint(c);
             return c;
           });
         } else if (mat) {
           const c = (mat as THREE.Material).clone();
-          setMaterialOpacity(c);
+          paint(c);
           mesh.material = c;
         }
       });
@@ -220,10 +239,10 @@ export function RobotModel({
     if (robotRef.current) robotRef.current.visible = visible;
   }, [visible, robotReady]);
 
-  // Opacity (focus 모드 dim others)
+  // Opacity (focus 모드 dim others) + tint (ghost preview)
   useEffect(() => {
-    if (robotRef.current) applyOpacity(robotRef.current, opacity);
-  }, [opacity, robotReady]);
+    if (robotRef.current) applyMaterialProps(robotRef.current, opacity, tint);
+  }, [opacity, tint, robotReady]);
 
   // 링크별 visibility
   useEffect(() => {

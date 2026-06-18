@@ -21,6 +21,10 @@ robots:
     # Hand-Eye observability 의 wrist roll 모터 ID (1-based, motor 라벨과 일치).
     # OMX-F: M5 (5DOF 의 마지막 = wrist roll).
     wrist_roll_motor_id: 5
+    # 자세 의존 중력 sag 를 모델링할 joint 모터 ID (1-based, 중력 부하 큰 관절).
+    # OMX-F: M2(shoulder) / M3(elbow). 이 값이 sag 모델 SSOT — bundle_adjust /
+    # hand_eye / sag_corrected 가 RobotConfig.sag_joint_motor_ids 로 읽음.
+    sag_joint_motor_ids: [2, 3]
     base_pose:                   # World frame 의 robot base 위치 (m, x/y/z).
       x: 0.0
       y: 0.0
@@ -48,6 +52,9 @@ robots:
     # Hand-Eye observability 의 wrist roll 모터 ID (1-based, motor 라벨과 일치).
     # SO-101 6DOF: M6 (6DOF 의 마지막 = wrist roll).
     wrist_roll_motor_id: 6
+    # 자세 의존 중력 sag joint 모터 ID (1-based). SO-101: M2(STS3250 shoulder) /
+    # M3(elbow) — 중력 부하 큰 두 관절. 5축 OMX 와 같은 코드, 값만 robots.yaml 로 분기.
+    sag_joint_motor_ids: [2, 3]
     # OMX 우측에 배치 (World frame, m).
     base_pose:
       x: 0.4

@@ -28,10 +28,8 @@ from core.transport.messages.calibration import (
     IntrinsicSaveRes,
     JointOffsetEntry,
     LinkOffsetEntry,
-    MultiStartReq,
-    MultiStartRes,
-    RecommendationFailReq,
-    RecommendationFailRes,
+    BeginRefinementReq,
+    BeginRefinementRes,
     SagOffsetEntry,
 )
 from core.transport.topic_map import Service, Topic, topic_for
@@ -96,12 +94,15 @@ class _RobotState:
     kinematics: SagCorrectedKinematics
     last_compute: dict | None = None
     preview_enabled: bool = False
-    # recommendation 실패한 자세 ID (사용자가 직접 후보에서 제외)
-    recommendation_fail_ids: set[str] = field(default_factory=set)
     sigma_history: list[float] = field(default_factory=list)
     # draft run id — [캘 시작] 자리 시 setting, [리셋]/[커밋] 자리 시 None.
     # capture 가 None 이면 fail (사용자가 START 안 한 자리). storage_layer.md §13.
     hand_eye_run_id: int | None = None
+    # Phase (handeye_ux_solver_v3_plan.md §2): "collection" = Phase 1 (geometry only,
+    # BA 안 돔 — 캡처마다 BA 큐 쌓이는 backlog 방지 + 스펙 "Phase1 RMS/BA 금지").
+    # "refinement" = Phase 2 (초기 solve 이후 — auto-BA + σ + observability + gating).
+    # START/리셋 시 collection, begin_refinement/compute(초기 solve) 시 refinement.
+    phase: str = "collection"
 
 
 class CalibrationNode(ApplicationNode):
@@ -117,7 +118,14 @@ class CalibrationNode(ApplicationNode):
         for rid in self.enabled_robot_ids:
             arm_cfgs = load_motor_layout(rid).arm
             intrinsic = IntrinsicCalibration()
-            hand_eye = HandEyeCalibration(self._registry.get_fk_chain(rid))
+            # sag joint = robots.yaml::sag_joint_motor_ids (1-based) → arm idx (0-based).
+            # 같은 코드로 5축/6축 — sag joint 만 robot config 로 분기 (SSOT).
+            sag_arm_indices = [
+                m - 1 for m in self._registry.get(rid).sag_joint_motor_ids
+            ]
+            hand_eye = HandEyeCalibration(
+                self._registry.get_fk_chain(rid), sag_arm_indices=sag_arm_indices
+            )
             kinematics = self._registry.get_kinematics(rid)
             assert isinstance(kinematics, SagCorrectedKinematics)
 
@@ -377,16 +385,10 @@ class CalibrationNode(ApplicationNode):
                 lambda req, _rid=rid: self._srv_handeye_thresholds(req, _rid),
             )
             self.create_service(
-                topic_for(Service.CALIB_HANDEYE_RECOMMENDATION_FAIL, rid),
-                RecommendationFailReq,
-                RecommendationFailRes,
-                lambda req, _rid=rid: self._srv_handeye_recommendation_fail(req, _rid),
-            )
-            self.create_service(
-                topic_for(Service.CALIB_HANDEYE_MULTI_START, rid),
-                MultiStartReq,
-                MultiStartRes,
-                lambda req, _rid=rid: self._srv_handeye_multi_start(req, _rid),
+                topic_for(Service.CALIB_HANDEYE_BEGIN_REFINEMENT, rid),
+                BeginRefinementReq,
+                BeginRefinementRes,
+                lambda req, _rid=rid: self._srv_handeye_begin_refinement(req, _rid),
             )
             # Draft run flow — 사용자 [캘 시작] / [되돌리기].
             self.create_service(
@@ -689,7 +691,12 @@ class CalibrationNode(ApplicationNode):
         if len(poses) < 3:
             return
         R_arr = np.array([p.R_target2cam for p in poses], dtype=np.float64)
-        raw_arr = np.array([p.raw_motor_positions for p in poses], dtype=np.float64)
+        # raw_motor_positions 는 dict{motor_id: raw} — arm 순서 array 로 변환
+        # (이전 np.array(dict) → TypeError 로 geometry observability 가 죽던 버그 fix).
+        raw_arr = np.array(
+            [[p.raw_motor_positions[c.id] for c in st.arm_cfgs] for p in poses],
+            dtype=np.float64,
+        )
         cfg = self._registry.get(robot_id)
         # motor_id (1-based, yaml SSOT) → array index (0-based, raw[:, axis])
         rep = _obs.analyze_pose_data(
@@ -712,6 +719,26 @@ class CalibrationNode(ApplicationNode):
                 "rotation_axis_ratio": rep.rotation_axis_ratio,
                 "wrist_roll_range_raw": rep.wrist_roll_range_raw,
                 "verdict": v_short,
+            },
+        )
+
+    def _publish_param_observability(self, robot_id: str, diag: dict) -> None:
+        """per-parameter observability + staged gating 결과 publish (physical_sag 만).
+
+        diag["param_observability"] = {n_poses, scores, verdicts, unlocked} 또는 None.
+        frontend 가 블록별 색 dot 으로 "어느 보정값이 잘 잡혔나" 표시.
+        """
+        po = diag.get("param_observability")
+        if not po:
+            return
+        self.publish(
+            topic_for(Topic.CALIB_HANDEYE_PARAM_OBSERVABILITY, robot_id),
+            {
+                "timestamp": time.time(),
+                "pose_count": int(po.get("n_poses", 0)),
+                "scores": po.get("scores", {}),
+                "verdicts": po.get("verdicts", {}),
+                "unlocked": po.get("unlocked", []),
             },
         )
 
@@ -945,13 +972,23 @@ class CalibrationNode(ApplicationNode):
 
         st.last_compute = None
 
-        # 자동 BA + observability 자체 background — service response 자체 fast (~100ms).
-        # 결과 자체 자체 sigma / saturate / recommendations / observability 자체 topic publish 자체.
-        # frontend subscribe 자체 자체 자체 async 자체 갱신 — service timeout 자체 issue 자체 사라짐.
-        if len(st.hand_eye.poses) >= calib_thresholds.MIN_POSES_FOR_COMPUTE:
+        # Phase 1 (collection): geometry observability 만 publish — BA 안 돔.
+        #   캡처마다 BA 큐 쌓여 backlog 되는 문제 방지 + 스펙 "Phase1 RMS/BA 금지".
+        # Phase 2 (refinement): 자동 BA + σ + observability + gating background.
+        #   service response 는 fast (~100ms), frontend 가 topic 으로 async 갱신.
+        if (
+            st.phase == "refinement"
+            and len(st.hand_eye.poses) >= calib_thresholds.MIN_POSES_FOR_COMPUTE
+        ):
             self._ba_executors[robot_id].submit(
                 self._auto_ba_and_publish, robot_id
             )
+        else:
+            # Phase 1 — solver-free geometry 진단만 (가볍다, inline).
+            try:
+                self._publish_observability_state(robot_id, st)
+            except Exception:
+                logger.exception("[%s] Phase1 geometry observability 실패", robot_id)
 
         return ServiceResponse(
             success=True,
@@ -970,6 +1007,7 @@ class CalibrationNode(ApplicationNode):
             auto_diag = self._run_ba_and_stash(robot_id, mode="physical_sag")
             if auto_diag is not None:
                 self._publish_sigma_state(robot_id, auto_diag)
+                self._publish_param_observability(robot_id, auto_diag)
                 self._publish_saturate_state(robot_id, auto_diag)
                 self._publish_recommendations(robot_id)
         except Exception:
@@ -998,8 +1036,8 @@ class CalibrationNode(ApplicationNode):
         st.hand_eye.reset()
         st.hand_eye_run_id = None
         st.last_compute = None
-        st.recommendation_fail_ids.clear()
         st.sigma_history.clear()
+        st.phase = "collection"
         return ServiceResponse(
             success=True,
             message="Hand-Eye 세션 초기화됨",
@@ -1056,8 +1094,8 @@ class CalibrationNode(ApplicationNode):
         st.hand_eye.reset()
         st.hand_eye_run_id = run_id
         st.last_compute = None
-        st.recommendation_fail_ids.clear()
         st.sigma_history.clear()
+        st.phase = "collection"  # Phase 1 시작 — 초기 solve 전엔 geometry only
 
         logger.info(
             "[%s] Hand-Eye 세션 시작 (run_id=%d)", robot_id, run_id
@@ -1133,6 +1171,8 @@ class CalibrationNode(ApplicationNode):
         )
 
     def _srv_handeye_compute(self, req: dict, robot_id: str) -> dict:
+        # 명시 COMPUTE = 초기 solve → Phase 2 (refinement). 이후 capture 는 auto-BA.
+        self._states[robot_id].phase = "refinement"
         mode = str(req.get("mode", "physical_sag")).lower()
         diag = self._run_ba_and_stash(robot_id, mode=mode)
         if diag is None:
@@ -1146,6 +1186,7 @@ class CalibrationNode(ApplicationNode):
         diag["recommendations"] = rec_result["recommendations"]
         diag["no_candidates_reason"] = rec_result["no_candidates_reason"]
         self._publish_sigma_state(robot_id, diag)
+        self._publish_param_observability(robot_id, diag)
         return {
             "success": True,
             "message": f"compute 완료 (poses={diag['pose_count']})",
@@ -1297,7 +1338,6 @@ class CalibrationNode(ApplicationNode):
         st.hand_eye_run_id = None
         st.hand_eye.reset()
         st.last_compute = None
-        st.recommendation_fail_ids.clear()
         st.sigma_history.clear()
 
         # link offset 적용은 PybulletKinematics URDF patch 자리 — 부팅 시 1회.
@@ -1350,45 +1390,15 @@ class CalibrationNode(ApplicationNode):
             ),
         )
 
-    # ─── 명시 신호 / Multi-start ──────────────────────────────
-    def _srv_handeye_recommendation_fail(
-        self, req: ServiceRequest[RecommendationFailReq], robot_id: str
-    ) -> ServiceResponse[RecommendationFailRes]:
-        """사용자 명시 신호 — 추천 자세 fail 기록. 다음 추천 시 제외.
+    # ─── 초기 solve (Phase 1 → 2) ─────────────────────────────
+    def _srv_handeye_begin_refinement(
+        self, _req: ServiceRequest[BeginRefinementReq], robot_id: str
+    ) -> ServiceResponse[BeginRefinementRes]:
+        """초기 hand-eye solve = Phase 1(수집) → Phase 2(정밀화) 전이.
 
-        카테고리: not_visible / red / motion_fail. 분류 자체 자리 자취 자리 = backend
-        log 자체 자리 자취 자리 자체 자리 자취 자리 진단 자체 자리 자취 자리 — 알고리즘 자체 자리 자취 자리 자체 자리 자취 자리 모두
-        같이 자체 자리 자취 자리 fail mark.
-        """
-        st = self._states[robot_id]
-        anchor_id = req.data.anchor_id
-        category = req.data.category
-        st.recommendation_fail_ids.add(anchor_id)
-        logger.info(
-            "[%s] 추천 fail: anchor_id=%s, category=%s",
-            robot_id,
-            anchor_id,
-            category,
-        )
-        # 즉시 추천 갱신 publish
-        self._publish_recommendations(robot_id)
-        return ServiceResponse(
-            success=True,
-            message=f"fail 기록: {anchor_id} ({category})",
-            data=RecommendationFailRes(excluded_count=len(st.recommendation_fail_ids)),
-        )
-
-    def _srv_handeye_multi_start(
-        self, _req: ServiceRequest[MultiStartReq], robot_id: str
-    ) -> ServiceResponse[MultiStartRes]:
-        """Multi-mode BA — standard / extended / physical_sag 시도 → 가장 좋은 σ.
-
-        Local minimum 자리 escape 자체 자리 — 같은 데이터로 다른 모델 가정 자체 자리
-        시도. 사용자가 saturate 알림 받고 명시 트리거 자체 자리, 또는 [수동 모드
-        종료] 시점 자체 자리 자동.
-
-        진짜 random init multi-start 자체 자리 (각 init 자체 자리 random rotation /
-        translation) 자체 자리 자취 자리 = TODO. 현재 = 3 BA mode 시도 자체 자리 자취 자리.
+        여러 BA mode (standard / extended / physical_sag) 를 시도해 가장 좋은 σ 채택
+        — local minimum escape (같은 데이터, 다른 모델 가정). 사용자가 [자동 추천
+        시작] 누르면 (충분히 수집 후) 호출 → Phase 2 진입 (refinement).
         """
         st = self._states[robot_id]
         if len(st.hand_eye.poses) < calib_thresholds.MIN_POSES_FOR_COMPUTE:
@@ -1425,16 +1435,21 @@ class CalibrationNode(ApplicationNode):
                     best_sigma = float(sigma)
                     best_diag = diag
             except Exception as e:
-                logger.warning("[%s] multi-start mode=%s 실패: %s", robot_id, mode, e)
+                logger.warning(
+                    "[%s] begin_refinement mode=%s 실패: %s", robot_id, mode, e
+                )
 
         if best_diag is None:
             return ServiceResponse(
                 success=False, message="모든 BA mode 실패", data=None
             )
 
+        # 초기 solve → Phase 2 (refinement). 이후 capture 는 auto-BA.
+        st.phase = "refinement"
         # best 결과 last_compute 자체 자리 + topic publish
         st.last_compute = best_diag
         self._publish_sigma_state(robot_id, best_diag)
+        self._publish_param_observability(robot_id, best_diag)
         self._publish_saturate_state(robot_id, best_diag)
         self._publish_recommendations(robot_id)
 
@@ -1453,10 +1468,10 @@ class CalibrationNode(ApplicationNode):
         return ServiceResponse(
             success=True,
             message=(
-                f"multi-start: n_converged={n_converged}/{len(modes)}, "
+                f"초기 solve 완료: n_converged={n_converged}/{len(modes)}, "
                 f"best σ_rot={best_rot}°"
             ),
-            data=MultiStartRes(
+            data=BeginRefinementRes(
                 n_tried=len(modes),
                 n_converged=n_converged,
                 sigma_rot_deg=float(best_rot) if best_rot is not None else None,
@@ -1483,7 +1498,6 @@ class CalibrationNode(ApplicationNode):
           - "no_board_estimate"            ─ hand_eye / intrinsic / 보드 base 추정 X
           - "all_ik_fail"                  ─ planner 의 anchor 다 IK 실패
           - "all_invisible"                ─ 모든 anchor invisible (visibility hard fail 가 hint 만이라 잘 안 발생)
-          - "user_marked_fail"             ─ 사용자가 모든 anchor [👎] 마크
           - "sigma_sufficient_and_diverse" ─ σ + 다양성 둘 다 충족 → COMMIT 권장
           - "sigma_sufficient_but_narrow"  ─ σ 좋은데 자세 다양성 부족 → 부족 axis 변주 캡처
 
@@ -1539,15 +1553,18 @@ class CalibrationNode(ApplicationNode):
             )
 
         # 사용자가 명시 신호 ([👎]) 로 fail 표시한 추천 ID set — 다음 추천 시 제외.
-        excluded_ids = st.recommendation_fail_ids
+        excluded_ids: set[str] = set()  # [👎] 제거됨 — 항상 빈 set
 
         # 기존 캡처 자세 list (다양성 score 용 — joint_perturbation strategy 가 사용).
         # raw → rad 단순 변환 (joint_offset 적용은 다양성 score 에 영향 X).
         from core import units as _units
 
+        # raw_motor_positions 키는 1-based motor id (cfg.id) — range(len) 0-based
+        # 인덱싱은 KeyError(0). cfg.id 로 조회 (이전 버그: auto-BA 에선 try/except 로
+        # 삼켜졌지만 explicit COMPUTE 에선 크래시).
         existing_ja = [
-            [_units.raw_to_rad(int(p.raw_motor_positions[i]))
-             for i in range(len(st.arm_cfgs))]
+            [_units.raw_to_rad(int(p.raw_motor_positions[cfg.id]))
+             for cfg in st.arm_cfgs]
             for p in st.hand_eye.poses
         ]
 
@@ -1608,6 +1625,54 @@ class CalibrationNode(ApplicationNode):
             data=HandeyePreviewEnableRes(enabled=enabled),
         )
 
+    def _add_capture_quality(
+        self,
+        payload: dict,
+        robot_id: str,
+        st: "_RobotState",
+        detected: bool,
+        tilt_deg: float | None,
+        cur_R: np.ndarray | None,
+        cur_t: np.ndarray | None,
+    ) -> None:
+        """Phase 1 Traffic Light — 현재 pose vs 기존 캡처 diversity → G/Y/R.
+
+        verdict/reasons 를 preview payload 에 추가. 토크오프 이동 중 실시간 안내.
+        """
+        from core.units import raw_to_rad
+        from modules.calibration.capture_quality import evaluate_capture_quality
+
+        cur_joints = self._joint_cache.get_joint_angles_rad_uncorrected(
+            st.arm_cfgs, robot_id=robot_id
+        )
+        existing_joints: list[list[float]] = []
+        existing_R: list[np.ndarray] = []
+        existing_t: list[np.ndarray] = []
+        for p in st.hand_eye.poses:
+            try:
+                ej = [
+                    raw_to_rad(int(p.raw_motor_positions[c.id]), reverse=c.reverse)
+                    for c in st.arm_cfgs
+                ]
+            except KeyError:
+                continue
+            existing_joints.append(ej)
+            existing_R.append(np.asarray(p.R_target2cam, dtype=np.float64))
+            existing_t.append(np.asarray(p.t_target2cam, dtype=np.float64).reshape(3))
+
+        q = evaluate_capture_quality(
+            detected=detected,
+            tilt_deg=tilt_deg,
+            current_joints_rad=cur_joints,
+            current_R_t2c=cur_R,
+            current_t_t2c=cur_t,
+            existing_joints_rad=existing_joints,
+            existing_R_t2c=existing_R,
+            existing_t_t2c=existing_t,
+        )
+        payload["capture_verdict"] = q.verdict
+        payload["capture_reasons"] = q.reasons
+
     def _preview_loop(self) -> None:
         while self._running:
             for rid, st in self._states.items():
@@ -1653,6 +1718,9 @@ class CalibrationNode(ApplicationNode):
                         if markers_payload:
                             payload["markers"] = markers_payload
 
+                    cur_R: np.ndarray | None = None
+                    cur_t: np.ndarray | None = None
+                    cur_tilt: float | None = None
                     if ok and ch_corners is not None and ch_ids is not None:
                         pts = ch_corners.reshape(-1, 2)
                         payload["corners"] = pts.tolist()
@@ -1673,7 +1741,7 @@ class CalibrationNode(ApplicationNode):
                                 obj_pts, img_pts = calib_board.match_object_points(
                                     ch_corners, ch_ids
                                 )
-                                ok_pnp, rvec, _tvec = cv2.solvePnP(
+                                ok_pnp, rvec, tvec = cv2.solvePnP(
                                     obj_pts,
                                     img_pts,
                                     st.intrinsic.result.camera_matrix,
@@ -1681,13 +1749,19 @@ class CalibrationNode(ApplicationNode):
                                     flags=cv2.SOLVEPNP_ITERATIVE,
                                 )
                                 if ok_pnp:
-                                    R, _ = cv2.Rodrigues(rvec)
-                                    cos_v = float(np.clip(abs(R[2, 2]), 0.0, 1.0))
-                                    payload["tilt_deg"] = float(
-                                        np.degrees(np.arccos(cos_v))
-                                    )
+                                    cur_R, _ = cv2.Rodrigues(rvec)
+                                    cur_t = np.asarray(tvec).reshape(3)
+                                    cos_v = float(np.clip(abs(cur_R[2, 2]), 0.0, 1.0))
+                                    cur_tilt = float(np.degrees(np.arccos(cos_v)))
+                                    payload["tilt_deg"] = cur_tilt
                             except cv2.error:
                                 pass
+
+                    # Phase 1 Traffic Light — 현재 pose 를 기존 캡처와 비교해 G/Y/R
+                    # 실시간 판정 (검출+tilt+diversity). 토크오프 이동 중 "지금 찍어도
+                    # 좋은 데이터셋이 되나" 안내 (handeye_ux_solver_v3_plan.md §5).
+                    self._add_capture_quality(payload, rid, st, bool(ok), cur_tilt,
+                                              cur_R, cur_t)
 
                     self.publish(topic_for(Topic.CALIB_HANDEYE_PREVIEW, rid), payload)
                 except Exception as e:

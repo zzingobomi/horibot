@@ -17,7 +17,8 @@ import { useParams } from "react-router-dom";
 import { PanelShell } from "@/components/shared/PanelShell";
 import { PanelButton } from "@/components/shared/PanelButton";
 import { Section } from "@/components/shared/Section";
-import { NextPoseCard } from "./parts/NextPoseCard";
+import { PoseCandidates } from "./parts/PoseCandidates";
+import { ParamObservabilityCard } from "./parts/ParamObservabilityCard";
 import { HandEyePoseList } from "./parts/PoseList";
 import { useCalibrationStore } from "@/domain/stores/calibration";
 import { useCalibrationResults } from "@/hooks/useCalibrationResults";
@@ -293,11 +294,10 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
   const computeStale = useCalibrationStore((s) => s.computeStale);
   const recommendations = useCalibrationStore((s) => s.recommendations);
   const noCandidatesReason = useCalibrationStore((s) => s.noCandidatesReason);
-  const visited = useCalibrationStore((s) => s.visited);
-  const activeIndex = useCalibrationStore((s) => s.activeIndex);
   const thresholds = useCalibrationStore((s) => s.thresholds);
   const saturate = useCalibrationStore((s) => s.saturate);
   const observability = useCalibrationStore((s) => s.observability);
+  const paramObservability = useCalibrationStore((s) => s.paramObservability);
   const manualModeActive = useCalibrationStore((s) => s.manualModeActive);
   const loading = useCalibrationStore((s) => s.loading);
   const status = useCalibrationStore((s) => s.status);
@@ -307,9 +307,7 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
   const undoLastCaptureAction = useCalibrationStore((s) => s.undoLastCapture);
   const resetAction = useCalibrationStore((s) => s.reset);
   const commitAction = useCalibrationStore((s) => s.commit);
-  const movedAction = useCalibrationStore((s) => s.moved);
   const exitManualMode = useCalibrationStore((s) => s.exitManualMode);
-  const reportFail = useCalibrationStore((s) => s.reportFail);
 
   const minManualPoses = thresholds?.min_poses_for_trusted_sigma ?? 8;
   const canExitManual = poses.length >= minManualPoses;
@@ -413,7 +411,9 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
                 onClick={() => void handleExitManual()}
                 disabled={!canExitManual || loading}
               >
-                {loading ? "계산 중..." : "자동 추천 시작"}
+                {loading
+                  ? "계산 중..."
+                  : `자동 추천 시작 (${Math.min(poses.length, minManualPoses)}/${minManualPoses})`}
               </PanelButton>
             </div>
           </Section>
@@ -433,18 +433,15 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
               <AxisDistributionTable axes={liveSigma?.axis_distributions} />
               <SaturateBanner saturate={saturate} />
               <ObservabilityBanner observability={observability} />
+              <ParamObservabilityCard state={paramObservability} />
             </div>
           </Section>
 
-          <Section label="Next Pose">
-            <NextPoseCard
+          <Section label="추천 후보 자세">
+            <PoseCandidates
               recommendations={recommendations}
               noCandidatesReason={noCandidatesReason}
-              visited={visited}
-              activeIndex={activeIndex}
-              onMoved={movedAction}
-              onReportFail={reportFail}
-              disabled={loading}
+              robotId={robotId}
             />
           </Section>
 

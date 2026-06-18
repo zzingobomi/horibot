@@ -8,6 +8,10 @@ export type HandEyePreview = {
   coverage_ratio?: number; // 체커보드가 화면에서 차지하는 비율 (너무 작거나 크면 PnP 부정확)
   tilt_deg?: number; // 보드 평면 vs 이미지 평면 각도. 0°=정면(모호), 90°=edge-on. 30~70°가 좋음.
   reason?: string;
+  // Phase 1 Traffic Light — backend 가 현재 pose 를 기존 캡처와 비교해 실시간 판정.
+  // 검출+tilt+pose/rotation/translation diversity 종합. (handeye_ux_solver_v3_plan.md §5)
+  capture_verdict?: "green" | "yellow" | "red";
+  capture_reasons?: string[]; // 사용자 안내 (예: "회전 더 다양하게", "기존과 거의 같은 자세")
 };
 
 /**
@@ -250,6 +254,21 @@ export type HandeyeObservabilityState = {
 };
 
 /**
+ * `CALIB_HANDEYE_PARAM_OBSERVABILITY` topic — parameter별 식별성 (Fisher CRLB) +
+ * staged gating 결과. block = handeye_rot / handeye_trans / joint_offset / link / sag.
+ * scores ∈ [0,1] (정보이득), verdict OK/WEAK/INSUFFICIENT, unlocked = BA 가 실제 추정한 block.
+ * 사용자에겐 수치 대신 block 별 색 dot 으로 "어느 보정값이 잘 잡혔나" 안내.
+ */
+export type ParamVerdict = "OK" | "WEAK" | "INSUFFICIENT";
+export type HandeyeParamObservabilityState = {
+  timestamp: number;
+  pose_count: number;
+  scores: Record<string, number>;
+  verdicts: Record<string, ParamVerdict>;
+  unlocked: string[];
+};
+
+/**
  * `CALIB_HANDEYE_RECOMMENDATIONS` topic — 매 capture 후 자동 publish.
  * Phase 1 (n<8) frontend hide, Phase 2 (n>=8) show.
  *
@@ -258,7 +277,6 @@ export type HandeyeObservabilityState = {
  *   "sigma_sufficient_but_narrow"  → 부족 axis 변주 캡처 안내 (axis_distributions 동반)
  *   "all_invisible"                → 추천 자세에서 보드 시야 밖
  *   "all_ik_fail"                  → 추천 자세 IK 불가
- *   "user_marked_fail"             → 사용자가 명시 [👎] 다수
  *   "insufficient_poses"           → 최소 N 캡처 필요
  *   "no_board_estimate"            → hand_eye / intrinsic / 보드 base 추정 X
  */
@@ -267,7 +285,6 @@ export type NoCandidatesReason =
   | "sigma_sufficient_but_narrow"
   | "all_invisible"
   | "all_ik_fail"
-  | "user_marked_fail"
   | "insufficient_poses"
   | "no_board_estimate";
 
@@ -291,27 +308,15 @@ export type HandeyeSaturateState = {
 };
 
 /**
- * 사용자 명시 신호 — 추천 자세 fail 기록.
- */
-export type RecommendationFailReq = {
-  anchor_id: string;
-  category: "not_visible" | "red" | "motion_fail";
-};
-
-export type RecommendationFailRes = {
-  excluded_count: number;
-};
-
-/**
  * Multi-start BA — random init 다중 시도 → 가장 좋은 σ.
  * 사용자가 saturate 알림 받고 escape 자체 자리, 또는 [수동 모드 종료] 자동 트리거.
  */
-export type MultiStartReq = {
+export type BeginRefinementReq = {
   n_starts?: number;
   mode?: "standard" | "extended" | "physical_sag";
 };
 
-export type MultiStartRes = {
+export type BeginRefinementRes = {
   n_tried: number;
   n_converged: number;
   sigma_rot_deg: number | null;

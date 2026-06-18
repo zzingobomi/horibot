@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { HandEyePreview } from "./types";
 
 interface Props {
@@ -6,29 +5,20 @@ interface Props {
   stale: boolean;
 }
 
-// PnP 권장 tilt 범위 (docs/calibration_workflow.md §2) — 30~70° 안에서 캡처.
-// hysteresis 2° margin 으로 chatter 방지.
-const TILT_ENTER_MIN = 30;
-const TILT_ENTER_MAX = 70;
-const TILT_EXIT_MIN = 28;
-const TILT_EXIT_MAX = 72;
+// Phase 1 Traffic Light — verdict 는 backend 가 계산 (검출+tilt+diversity 종합,
+// handeye_ux_solver_v3_plan.md §5). frontend 는 색 + 사유만 표시.
+const VERDICT_STYLE: Record<string, string> = {
+  green: "bg-emerald-500/15 border border-emerald-500/40 text-emerald-300",
+  yellow: "bg-amber-500/15 border border-amber-500/40 text-amber-300",
+  red: "bg-red-500/15 border border-red-500/40 text-red-300",
+};
+const VERDICT_HEAD: Record<string, string> = {
+  green: "🟢 캡처 권장",
+  yellow: "🟡 캡처 가능",
+  red: "🔴 캡처 금지",
+};
 
-export function CheckerboardOverlay({ preview, stale }: Props) {
-  const tilt = preview?.tilt_deg ?? null;
-  const [tiltOk, setTiltOk] = useState(false);
-  const [prevTilt, setPrevTilt] = useState<number | null>(null);
-
-  if (tilt !== prevTilt) {
-    setPrevTilt(tilt);
-    if (tilt == null) {
-      if (tiltOk) setTiltOk(false);
-    } else if (tiltOk) {
-      if (tilt < TILT_EXIT_MIN || tilt > TILT_EXIT_MAX) setTiltOk(false);
-    } else {
-      if (tilt >= TILT_ENTER_MIN && tilt <= TILT_ENTER_MAX) setTiltOk(true);
-    }
-  }
-
+export function CaptureGuideOverlay({ preview, stale }: Props) {
   if (!preview) {
     return (
       <div className="absolute top-2 right-2 rounded border border-zinc-700/60 bg-zinc-900/70 px-2 py-1 font-mono text-[11px] text-zinc-400 backdrop-blur-sm">
@@ -42,31 +32,18 @@ export function CheckerboardOverlay({ preview, stale }: Props) {
   const corners = preview.corners ?? [];
   const markers = preview.markers ?? [];
   const bbox = preview.bbox;
+  const tilt = preview.tilt_deg ?? null;
 
-  let badgeClass: string;
-  let badgeText: string;
-  if (stale) {
-    badgeClass = "bg-red-500/15 border border-red-500/40 text-red-300";
-    badgeText = "캡처 금지 · 신호 끊김";
-  } else if (!preview.detected) {
-    badgeClass = "bg-red-500/15 border border-red-500/40 text-red-300";
-    badgeText = "캡처 금지 · 미검출";
-  } else if (!tiltOk) {
-    badgeClass = "bg-red-500/15 border border-red-500/40 text-red-300";
-    // hysteresis 의 EXIT 범위가 아닌 사용자 직관 기준 (ENTER) 으로 판정.
-    // tilt < 30° 정면 / tilt > 70° 비스듬 / 사이는 OK (tiltOk=true 라 안 들어옴).
-    const reason =
-      tilt == null
-        ? ""
-        : tilt < TILT_ENTER_MIN
-        ? ` · tilt ${tilt.toFixed(0)}° 너무 정면`
-        : ` · tilt ${tilt.toFixed(0)}° 너무 비스듬`;
-    badgeText = `캡처 금지${reason}`;
-  } else {
-    badgeClass = "bg-emerald-500/15 border border-emerald-500/40 text-emerald-300";
-    const tiltStr = tilt != null ? ` · tilt ${tilt.toFixed(0)}°` : "";
-    badgeText = `캡처 가능${tiltStr}`;
-  }
+  // 신호 끊김은 frontend-only (timeout). 그 외엔 backend verdict 사용.
+  const verdict = stale ? "red" : (preview.capture_verdict ?? "red");
+  const reasons = stale
+    ? ["신호 끊김"]
+    : preview.capture_reasons ?? (preview.detected ? [] : ["미검출"]);
+  const badgeClass = VERDICT_STYLE[verdict] ?? VERDICT_STYLE.red;
+  const tiltStr =
+    verdict !== "red" && tilt != null ? ` · tilt ${tilt.toFixed(0)}°` : "";
+  const reasonStr = reasons.length ? ` · ${reasons.join(" · ")}` : "";
+  const badgeText = `${VERDICT_HEAD[verdict] ?? VERDICT_HEAD.red}${tiltStr}${reasonStr}`;
 
   return (
     <>

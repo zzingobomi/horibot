@@ -13,6 +13,7 @@ from modules.motor.motor_config import MotorConfig
 
 from . import thresholds as T
 from .bundle_adjust import (
+    _DEFAULT_SAG_ARM_INDICES,
     BundleAdjustExtendedResult,
     BundleAdjustPhysicalSagResult,
     BundleAdjustResult,
@@ -22,14 +23,19 @@ from .bundle_adjust import (
     bundle_adjust_hand_eye_physical_sag_irls,
 )
 from .coach import diagnose
+from .observability_params import (
+    GATEABLE_BLOCKS,
+    ParamObservability,
+    compute_param_observability,
+)
 from .se3 import make_T
 
 if TYPE_CHECKING:
     from modules.kinematics.fk_chain import FkChain
 
-# sag 모델은 J2, J3에만 적용 (motor id 2, 3). bundle_adjust의 sag_k_rad_per_m
-# (2,) 배열의 순서와 일치. sag_corrected.py 의 _SAG_JOINT_IDS와 같은 정의.
-_SAG_MOTOR_IDS: list[int] = [2, 3]
+# sag joint 의 기본값 (motor id). 실제 값은 robots.yaml::sag_joint_motor_ids 가
+# SSOT — HandEyeCalibration 생성자로 주입 (calibration_node 가 RobotConfig 에서 읽음).
+_DEFAULT_SAG_MOTOR_IDS: list[int] = [2, 3]
 
 # 결과 dispatch 시 사용. Union 매번 풀어쓰는 것 방지.
 _BaResultT = (
@@ -78,11 +84,26 @@ _COMPARE_METHODS = [
 
 
 class HandEyeCalibration:
-    def __init__(self, fk_chain: "FkChain"):
+    def __init__(
+        self,
+        fk_chain: "FkChain",
+        sag_arm_indices: list[int] | None = None,
+    ):
         """fk_chain 명시 주입 — 확장 BA / 물리 sag BA 가 link_offset variable 박는 자리.
         caller (calibration_node) 가 `RobotRegistry.get_fk_chain(robot_id)` 로 받음.
+
+        sag_arm_indices: sag 모델 적용 joint 의 arm 0-based index (robots.yaml SSOT
+        에서 calibration_node 가 `motor_id - 1` 변환해 주입). None = default [1, 2].
+        같은 코드로 5축/6축 — sag joint 만 robot 별로 분기.
         """
         self._fk_chain = fk_chain
+        self._sag_arm_indices: list[int] = (
+            list(sag_arm_indices)
+            if sag_arm_indices is not None
+            else list(_DEFAULT_SAG_ARM_INDICES)
+        )
+        # result 보고용 motor id (1-based).
+        self._sag_motor_ids: list[int] = [i + 1 for i in self._sag_arm_indices]
         self._next_id: int = 0
         self.poses: list[Pose] = []
         self.result: HandEyeResult | None = None
@@ -292,14 +313,71 @@ class HandEyeCalibration:
         else:
             ba_final, ba_final_seed = ba_first, ba_first_seed
 
+        # ── 4.5 staged gating (physical_sag) — per-parameter observability ──
+        # BA solution 의 정보행렬에서 블록별 식별성 산출 → 관측 안 되는 블록 freeze 후
+        # 재BA (docs/handeye_ux_solver_v3_plan.md §3.3). 좋은 데이터면 전부 unlock →
+        # 재BA skip = 무회귀. clean set (outlier 제거 후) 기준.
+        param_obs: ParamObservability | None = None
+        if (
+            use_physical_sag
+            and isinstance(ba_final, BundleAdjustPhysicalSagResult)
+            and ba_final.success
+        ):
+            g_ja = [ja_list[i] for i in clean_idx] if excluded_ids else ja_list
+            g_rtc = [R_tc_list[i] for i in clean_idx] if excluded_ids else R_tc_list
+            g_ttc = [t_tc_list[i] for i in clean_idx] if excluded_ids else t_tc_list
+            from .bundle_adjust import physical_sag_pack
+
+            x_solution = physical_sag_pack(
+                joint_offset_rad=ba_final.joint_offset_rad,
+                link_trans_m=ba_final.link_trans_m,
+                link_rot_rad=ba_final.link_rot_rad,
+                sag_k_rad_per_m=ba_final.sag_k_rad_per_m,
+                R_cam2gripper=ba_final.R_cam2gripper,
+                t_cam2gripper=ba_final.t_cam2gripper,
+            )
+            try:
+                param_obs = compute_param_observability(
+                    x=x_solution,
+                    fk_chain=self._fk_chain,
+                    joint_angles_per_pose=g_ja,
+                    R_target2cam=g_rtc,
+                    t_target2cam=g_ttc,
+                    sag_indices=self._sag_arm_indices,
+                )
+            except Exception:
+                logger.exception("per-parameter observability 계산 실패 — gating skip")
+                param_obs = None
+
+            if param_obs is not None:
+                frozen = set(GATEABLE_BLOCKS) - param_obs.unlocked
+                if frozen:
+                    logger.info(
+                        "staged gating — 식별 불가 블록 freeze: %s", sorted(frozen)
+                    )
+                    seed = HandEyeResult(
+                        R_cam2gripper=ba_final.R_cam2gripper,
+                        t_cam2gripper=ba_final.t_cam2gripper.reshape(3, 1),
+                        method="gated_seed",
+                    )
+                    gated = self._run_ba_physical_sag_lists(
+                        ja_list=g_ja,
+                        R_tc_list=g_rtc,
+                        t_tc_list=g_ttc,
+                        seed=seed,
+                        frozen_blocks=frozen,
+                    )
+                    if gated is not None and gated.success:
+                        ba_final = gated
+
         # ── 5. 최종 X / 잔차 / σ 결정 ────────────────────────────
         joint_offset_rad = np.zeros(len(arm_motor_ids), dtype=np.float64)
         joint_offsets_estimated = False
         link_trans_delta = np.zeros((5, 3), dtype=np.float64)
         link_rot_delta = np.zeros((5, 3), dtype=np.float64)
         link_offsets_estimated = False
-        sag_k_rad_per_m = np.zeros(len(_SAG_MOTOR_IDS), dtype=np.float64)
-        max_sag_deg = np.zeros(len(_SAG_MOTOR_IDS), dtype=np.float64)
+        sag_k_rad_per_m = np.zeros(len(self._sag_motor_ids), dtype=np.float64)
+        max_sag_deg = np.zeros(len(self._sag_motor_ids), dtype=np.float64)
         sag_offsets_estimated = False
 
         if ba_final is not None and ba_final.success:
@@ -446,7 +524,7 @@ class HandEyeCalibration:
                 "k_rad_per_m": float(sag_k_rad_per_m[i]),
                 "max_sag_deg": float(max_sag_deg[i]),
             }
-            for i, mid in enumerate(_SAG_MOTOR_IDS)
+            for i, mid in enumerate(self._sag_motor_ids)
         ]
 
         # ── 6. coach 진단 ────────────────────────────────────────
@@ -493,6 +571,9 @@ class HandEyeCalibration:
             "link_rot_delta": link_rot_list,
             "sag_offset_estimated": sag_offsets_estimated,
             "sag_offset_delta": sag_offset_list,
+            # per-parameter observability (Fisher 식별성) — 어느 블록이 잘 잡혔나 +
+            # staged gating 결과 (freeze 된 블록). physical_sag 일 때만 채워짐.
+            "param_observability": param_obs.to_dict() if param_obs else None,
             # planner가 다음 추천 산출에 사용 (잔차 기반 MVP)
             "joint_angles_per_pose": ja_list,
         }
@@ -551,6 +632,7 @@ class HandEyeCalibration:
         R_tc_list: list[np.ndarray],
         t_tc_list: list[np.ndarray],
         seed: HandEyeResult,
+        frozen_blocks: set[str] | None = None,
     ) -> BundleAdjustPhysicalSagResult | None:
         """물리 sag BA + IRLS+Huber 한 번 실행 (43 DOF + outlier 자동 down-weight).
 
@@ -570,6 +652,8 @@ class HandEyeCalibration:
                 ],
                 X_init=(seed.R_cam2gripper, seed.t_cam2gripper),
                 fk_chain=self._fk_chain,
+                sag_arm_indices=self._sag_arm_indices,
+                frozen_blocks=frozen_blocks,
             )
         except Exception as e:
             logger.exception("물리 sag BA (IRLS) 실패: %s", e)

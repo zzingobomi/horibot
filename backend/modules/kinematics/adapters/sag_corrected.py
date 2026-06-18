@@ -30,14 +30,10 @@ from modules.kinematics.kinematics import (
 
 logger = logging.getLogger(__name__)
 
-# sag 모델은 J2, J3 에만 적용 (motor id 2, 3). J1/J4/J5 의 sag 는 측정 noise
-# 수준이라 모델 단순성 위해 제외. 본 hardcode 는 OMX-F 가정 — SO-101 sag 캘
-# 진입 시 robot 별 일반화 필요 (storage_layer.md §13.6 (5.5)(a) follow-up).
-_SAG_JOINT_MOTOR_IDS: list[int] = [2, 3]
-# 위 motor id 를 arm 안 0-indexed position 으로 변환. arm motor id 가 1-base
-# 연속이라는 가정 (motors.yaml 컨벤션) — 어긋나면 fk_chain.apply_gravity_sag
-# 의 sag_joint_indices 인자에 명시 매핑 필요.
-_SAG_JOINT_ARM_INDICES: list[int] = [i - 1 for i in _SAG_JOINT_MOTOR_IDS]
+# sag 모델을 적용할 joint 의 기본 motor id (중력 부하 큰 shoulder/elbow).
+# 실제 값은 robots.yaml::sag_joint_motor_ids 가 SSOT — RobotConfig 통해 생성자로
+# 주입 (같은 코드로 5축 OMX / 6축 SO-101, 값만 yaml 분기). 본 default 는 fallback.
+_DEFAULT_SAG_JOINT_MOTOR_IDS: tuple[int, ...] = (2, 3)
 
 
 class SagCorrectedKinematics:
@@ -53,11 +49,17 @@ class SagCorrectedKinematics:
         link_coords: LinkCoordinates,
         sag_coords: SagCoordinates,
         fk_chain: FkChain,
+        sag_joint_motor_ids: tuple[int, ...] | list[int] = _DEFAULT_SAG_JOINT_MOTOR_IDS,
     ):
         self._inner = inner
         self._link_coords = link_coords
         self._sag_coords = sag_coords
         self._fk_chain = fk_chain
+        # sag joint motor id (1-based) → arm 안 0-indexed (motors.yaml 1-base 연속 가정).
+        self._sag_joint_motor_ids: list[int] = [int(m) for m in sag_joint_motor_ids]
+        self._sag_joint_arm_indices: list[int] = [
+            m - 1 for m in self._sag_joint_motor_ids
+        ]
         self._cache_lock = threading.Lock()
         # 부팅 시 caches 는 empty (sag 비활성). calibration_node 가 set_offsets 후
         # `reload_calibration()` 호출하면 link/sag array 실제 값으로 채워짐.
@@ -65,7 +67,7 @@ class SagCorrectedKinematics:
         self._link_trans_array = np.zeros((n_arm, 3), dtype=np.float64)
         self._link_rot_array = np.zeros((n_arm, 3), dtype=np.float64)
         self._sag_k_array = np.zeros(
-            (len(_SAG_JOINT_MOTOR_IDS),), dtype=np.float64
+            (len(self._sag_joint_motor_ids),), dtype=np.float64
         )
         self._sag_enabled = False
 
@@ -156,7 +158,7 @@ class SagCorrectedKinematics:
                 dtype=np.float64,
             )
             sag = self._sag_coords.snapshot()
-            self._sag_k_array = sag.as_array_for_joints(_SAG_JOINT_MOTOR_IDS)
+            self._sag_k_array = sag.as_array_for_joints(self._sag_joint_motor_ids)
             self._sag_enabled = bool(
                 self._sag_k_array.size > 0
                 and float(np.max(np.abs(self._sag_k_array))) > 1e-12
@@ -164,7 +166,7 @@ class SagCorrectedKinematics:
             if self._sag_enabled:
                 ks = ", ".join(
                     f"J{jid}={k:+.5f}"
-                    for jid, k in zip(_SAG_JOINT_MOTOR_IDS, self._sag_k_array)
+                    for jid, k in zip(self._sag_joint_motor_ids, self._sag_k_array)
                 )
                 logger.info(f"SagCorrectedKinematics sag 적용: {ks}")
 
@@ -178,7 +180,7 @@ class SagCorrectedKinematics:
             actual = self._fk_chain.apply_gravity_sag(
                 arm,
                 self._sag_k_array,
-                _SAG_JOINT_ARM_INDICES,
+                self._sag_joint_arm_indices,
                 self._link_trans_array,
                 self._link_rot_array,
             )
@@ -194,7 +196,7 @@ class SagCorrectedKinematics:
             commanded = self._fk_chain.actual_to_commanded(
                 arm,
                 self._sag_k_array,
-                _SAG_JOINT_ARM_INDICES,
+                self._sag_joint_arm_indices,
                 self._link_trans_array,
                 self._link_rot_array,
             )

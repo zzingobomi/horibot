@@ -79,6 +79,9 @@ PUBLIC_TOPICS: dict[str, TopicPayload] = {
     Topic.CALIB_HANDEYE_RECOMMENDATIONS: None,
     Topic.CALIB_HANDEYE_SATURATE: None,
     Topic.CALIB_HANDEYE_OBSERVABILITY: _calibration.HandeyeObservabilityState,
+    Topic.CALIB_HANDEYE_PARAM_OBSERVABILITY: (
+        _calibration.HandeyeParamObservabilityState
+    ),
     # Storage — ACTIVATE 마다 1회. frontend list 패널이 활성 row 갱신 트리거.
     Topic.STORAGE_CALIBRATION_INVALIDATED: _storage.CalibrationInvalidated,
     # Reconstruction — BuildReconstruction step 자리 progress bar 자리.
@@ -150,13 +153,9 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
         _calibration.HandeyePreviewEnableReq,
         _calibration.HandeyePreviewEnableRes,
     ),
-    Service.CALIB_HANDEYE_RECOMMENDATION_FAIL: (
-        _calibration.RecommendationFailReq,
-        _calibration.RecommendationFailRes,
-    ),
-    Service.CALIB_HANDEYE_MULTI_START: (
-        _calibration.MultiStartReq,
-        _calibration.MultiStartRes,
+    Service.CALIB_HANDEYE_BEGIN_REFINEMENT: (
+        _calibration.BeginRefinementReq,
+        _calibration.BeginRefinementRes,
     ),
     # Draft run flow — 사용자 [캘 시작] / [되돌리기]. storage_layer.md §13.
     Service.CALIB_HANDEYE_START: (EmptyData, _calibration.HandeyeStartRes),

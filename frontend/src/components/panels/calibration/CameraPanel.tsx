@@ -9,7 +9,7 @@ import type { IDockviewPanelProps } from "dockview";
 import { useParams } from "react-router-dom";
 import { CameraFeed } from "@/components/shared/CameraFeed";
 import { PanelShell } from "@/components/shared/PanelShell";
-import { CheckerboardOverlay } from "./parts/CheckerboardOverlay";
+import { CaptureGuideOverlay } from "./parts/CaptureGuideOverlay";
 import { useCalibrationStore } from "@/domain/stores/calibration";
 
 export function CameraPanel(props: IDockviewPanelProps<object>) {
@@ -32,7 +32,7 @@ export function CameraPanel(props: IDockviewPanelProps<object>) {
         <CameraFeed
           className="!rounded-none w-full h-full"
           robotId={robotId}
-          overlay={<CheckerboardOverlay preview={preview} stale={previewStale} />}
+          overlay={<CaptureGuideOverlay preview={preview} stale={previewStale} />}
         />
       </div>
     </PanelShell>

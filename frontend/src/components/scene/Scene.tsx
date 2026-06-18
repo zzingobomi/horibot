@@ -4,6 +4,7 @@ import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Grid, Environment } from "@react-three/drei";
 import * as THREE from "three";
 import { RobotLayer } from "./RobotLayer";
+import { RobotPreviewLayer } from "./RobotPreviewLayer";
 import type { RobotInfo } from "@/types/robot";
 import { AxisFrame } from "./AxisFrame";
 import { CameraFrustum } from "./CameraFrustum";
@@ -142,6 +143,9 @@ function SceneContent({
         onLinksLoaded={onLinksLoaded}
         showRobot={options.showRobot}
       />
+      {/* Ghost preview (캘 추천 자세 hover 등) — 공통 primitive, store null 이면 미렌더. */}
+      <RobotPreviewLayer robots={robots && robots.length > 0 ? robots : LEGACY_ROBOTS} />
+
       {/* linkVisibility 는 focus robot 한정 — Slice C 의 robot 별 store dict
           화 시 RobotLayer 내부로 이동. 현재 N=1 호환 자리. */}
       {linkVisibility ? null : null}

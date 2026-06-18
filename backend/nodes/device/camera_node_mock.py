@@ -9,6 +9,7 @@ ScanTask CaptureScan 자체 자리 self-contained 통과.
 """
 
 import logging
+import os
 import threading
 import time
 
@@ -53,6 +54,29 @@ class MockCameraNode(DeviceNode):
         self._depth_thread: threading.Thread | None = None
         self._frame_counter = 0
 
+        # ChArUco eye-in-hand 시뮬 — CALIB_SIM_BOARD=1 일 때만 (headless 캘 e2e).
+        # 로봇 joint 상태로부터 board_in_cam 을 계산해 보드 렌더 → 캡처→BA 전체
+        # 파이프라인 검증 (modules/calibration/sim_board.py). 기본 off → 평소
+        # host_mock 동작 불변.
+        self._calib_sim = os.environ.get("CALIB_SIM_BOARD") == "1"
+        self._joint_cache = None
+        self._fk_chain = None
+        self._arm_cfgs = None
+        self._sim_K = np.array(
+            [[MOCK_FX, 0.0, MOCK_CX], [0.0, MOCK_FY, MOCK_CY], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+        self._sim_dist = np.zeros(5, dtype=np.float64)
+        if self._calib_sim:
+            from core.cache.joint_state_cache import JointStateCache
+            from core.robot.robot_registry import RobotRegistry
+            from modules.motor.motor_config import load_motor_layout
+
+            self._joint_cache = JointStateCache()
+            self._fk_chain = RobotRegistry().get_fk_chain(robot_id)
+            self._arm_cfgs = load_motor_layout(robot_id).arm
+            logger.info("[%s] mock camera ChArUco 시뮬 모드 ON", robot_id)
+
         self.create_service(
             self.r(Service.CAMERA_SET_DEPTH_STREAM),
             CameraSetDepthStreamReq,
@@ -62,6 +86,8 @@ class MockCameraNode(DeviceNode):
 
     def start(self) -> None:
         super().start()
+        if self._calib_sim and self._joint_cache is not None:
+            self._joint_cache.subscribe(self)
         self._publish_status()
         self.log("info", "mock camera 노드 시작")
         self._stream_thread = threading.Thread(
@@ -95,6 +121,10 @@ class MockCameraNode(DeviceNode):
     # ─── Stream loop ─────────────────────────────────────────
 
     def _make_frame(self) -> np.ndarray:
+        if self._calib_sim:
+            sim = self._make_sim_charuco_frame()
+            if sim is not None:
+                return sim
         frame = np.zeros((MOCK_HEIGHT, MOCK_WIDTH, 3), dtype=np.uint8)
         frame[:] = (32, 28, 24)  # dark slate
         cv2.putText(
@@ -121,6 +151,38 @@ class MockCameraNode(DeviceNode):
         cv2.circle(frame, (cx, MOCK_HEIGHT - 60), 18, (120, 200, 0), -1)
         return frame
 
+    def _make_sim_charuco_frame(self) -> np.ndarray | None:
+        """현재 joint 상태 → board_in_cam → ChArUco 렌더 (eye-in-hand 시뮬).
+
+        joint 미수신이면 None (caller 가 기본 mock frame fallback).
+        """
+        if self._joint_cache is None or self._fk_chain is None:
+            return None
+        try:
+            from modules.calibration import sim_board
+            from modules.calibration.se3 import make_T
+
+            angles = self._joint_cache.get_joint_angles_rad(
+                self._arm_cfgs, robot_id=self.robot_id
+            )
+            if angles is None:
+                return None
+            n = self._fk_chain.n_arm
+            Z = np.zeros((n, 3), dtype=np.float64)
+            R, t = self._fk_chain.fk(np.asarray(angles[:n], dtype=np.float64), Z, Z)
+            T_gb = make_T(np.asarray(R), np.asarray(t).reshape(3))
+            board_in_cam = sim_board.board_in_cam_from_fk(T_gb)
+            return sim_board.render_charuco_at_pose(
+                width=MOCK_WIDTH,
+                height=MOCK_HEIGHT,
+                camera_matrix=self._sim_K,
+                dist_coeffs=self._sim_dist,
+                board_in_cam=board_in_cam,
+            )
+        except Exception as e:
+            logger.debug("[%s] sim charuco 렌더 실패: %s", self.robot_id, e)
+            return None
+
     def _stream_loop(self) -> None:
         interval = 1.0 / STREAM_FPS
         session = ZenohSession.get()
@@ -130,6 +192,10 @@ class MockCameraNode(DeviceNode):
                 jpeg = frame_to_jpeg_bytes(self._make_frame())
                 session.put(topic, jpeg)
                 self._frame_counter += 1
+                # status 주기적 republish (~1s) — 분산 토폴로지에서 늦게 뜨는
+                # 구독자(pc 의 FrameCache)가 1회성 status 를 놓치는 문제 방지.
+                if self._frame_counter % STREAM_FPS == 0:
+                    self._publish_status()
             except Exception as e:
                 logger.error(f"mock camera 스트림 발행 오류: {e}")
             time.sleep(interval)

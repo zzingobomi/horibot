@@ -125,7 +125,7 @@ CalibrationResultRecord = Annotated[
 ]
 
 # TypeAdapter — 외부 dict (SQL row → JSON parse 결과 등) 를 union 으로 validate.
-# SqliteStore 의 row → record 변환에서 사용.
+# CalibrationRepo 의 row → record 변환에서 사용.
 CalibrationResultRecordAdapter: TypeAdapter[CalibrationResultRecord] = TypeAdapter(
     CalibrationResultRecord
 )

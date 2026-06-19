@@ -28,9 +28,10 @@ application_nodes:
   - scene3d
   - reconstruction
 
-# Memory backend — sim 자리 영속화 X.
+# In-memory backend — sim 자리 영속화 X. SQLite `:memory:` (RDB) + Python dict
+# (ObjectStore) 두 자리 다 프로세스 종료 시 사라짐.
 storage:
-  rdb_uri:    "memory://"
+  rdb_uri:    "sqlite:///:memory:"
   object_uri: "memory://"
 
 bridge:

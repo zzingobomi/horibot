@@ -30,13 +30,13 @@
 
 ```
 [NAS — 미래] 또는 [PC 로컬 — 1차]
-  Postgres + MinIO    ←   sqlite + 파일시스템 (1차) / memory (mock 모드)
+  Postgres + MinIO    ←   sqlite + 파일시스템 (1차) / sqlite `:memory:` (mock/sim)
 
       ↑↓ (SQL / S3 protocol)
 
 [PC]
   storage_node (Zenoh gateway)
-    ├─ RdbStore Protocol      ─ SqliteStore / PostgresStore / MysqlStore / MemoryRdbStore
+    ├─ RdbStore Protocol      ─ SqliteStore (SQLAlchemy 2.x ORM 위) / 미래 PostgresStore
     ├─ ObjectStore Protocol   ─ FilesystemObjectStore / MinioObjectStore / MemoryObjectStore
     │                            (universal 4 method: put/get/delete/list)
     │
@@ -67,7 +67,7 @@
 |---|---|---|
 | 격리하는 외부 시스템 | 브라우저 (Zenoh 못 씀) | DB / object store (SQL/S3) |
 | 안쪽 protocol | Zenoh | Zenoh |
-| 바깥쪽 protocol | WebSocket + HTTP | psycopg / boto3 / sqlite3 |
+| 바깥쪽 protocol | WebSocket + HTTP | SQLAlchemy ORM / boto3 |
 | 핵심 가치 | 다른 노드는 WS 모름 | 다른 노드는 SQL 모름 |
 | 위치 | PC 만 | PC 만 |
 
@@ -406,16 +406,20 @@ class ObjectStore(Protocol):
     def delete(self, key: str) -> None: ...
     def list(self, prefix: str) -> list[str]: ...
 
-# backend/modules/storage/adapters/
-class SqliteStore:              ...  # RdbStore Phase 1 — host_dev/host_pc 실 사용
-class MemoryRdbStore:           ...  # RdbStore Phase 1 — host_mock backend + 테스트 base
-class FilesystemObjectStore:    ...  # ObjectStore Phase 1 — Phase 1 사용 X, Phase 2 entity 진짜 사용
-class MemoryObjectStore:        ...  # ObjectStore Phase 1 — host_mock backend + 테스트
+# backend/modules/storage/rdb/adapters/  + object_store/adapters/
+class SqliteStore:              ...  # RdbStore — SQLAlchemy 2.x ORM 위. file SQLite + :memory: 둘 다
+class FilesystemObjectStore:    ...  # ObjectStore — Phase 2 entity (scans/meshes) 진짜 사용
+class MemoryObjectStore:        ...  # ObjectStore — host_mock backend + 테스트
 
 # Phase 3 추가
-class PostgresStore:            ...  # RdbStore Phase 3
+class PostgresStore:            ...  # RdbStore Phase 3. 같은 ORM 모델 공유 (entity 별 orm.py)
 class MinioObjectStore:         ...  # ObjectStore Phase 3 (S3 호환)
 ```
+
+ORM 모델은 entity 모듈 안에 위치 — `modules/calibration/orm.py`, `modules/scan_workflow/orm.py`.
+`storage` 모듈은 generic infrastructure (Base / Engine factory / session scope / Protocol /
+factory) 만 들고, entity 어휘 0 유지. SqliteStore 가 ORM 모델 import + 명시적 `select()` /
+`session.add()` / commit/rollback. lazy loading / dirty tracking 의존 X.
 
 ### ObjectStore 인터페이스 — 작고 보수적
 
@@ -430,9 +434,11 @@ class MinioObjectStore:         ...  # ObjectStore Phase 3 (S3 호환)
 
 ```python
 def make_rdb_store(uri: str) -> RdbStore:
-    if uri == "memory://":              return MemoryRdbStore()
-    if uri.startswith("sqlite:///"):    return SqliteStore(...)
-    if uri.startswith("postgresql://"): return PostgresStore(uri)
+    # memory:// 자리 backward-compat — sqlite:///:memory: 로 redirect.
+    if uri == "memory://":                 uri = "sqlite:///:memory:"
+    if uri == "sqlite:///:memory:":        return SqliteStore(make_engine(uri))  # in-memory
+    if uri.startswith("sqlite:///"):       return SqliteStore(make_engine(uri))  # file
+    if uri.startswith("postgresql://"):    raise NotImplementedError("Phase 3")
     raise ValueError(...)
 
 def make_object_store(uri: str) -> ObjectStore:
@@ -442,18 +448,22 @@ def make_object_store(uri: str) -> ObjectStore:
     raise ValueError(...)
 ```
 
+`make_engine` 자리 SQLite `:memory:` 자리 `StaticPool` 자리 사용 — multi-thread 자리 같은
+in-memory DB 공유 보장. file SQLite 자리 `check_same_thread=False` + WAL journal_mode +
+`PRAGMA foreign_keys=ON` (event hook) 자리 자동 적용.
+
 ### host yaml 의 storage URI
 
 ```yaml
-# host_mock.yaml — Memory backend (매번 fresh, 영속화 X)
+# host_mock.yaml / host_pc_sim.yaml — In-memory backend (매번 fresh, 영속화 X)
 storage:
-  rdb_uri:    "memory://"
+  rdb_uri:    "sqlite:///:memory:"
   object_uri: "memory://"
 
 # host_dev.yaml / host_pc.yaml — Phase 1
 storage:
-  rdb_uri:    "sqlite:///~/.local/horibot/storage.db"
-  object_uri: "file:///~/.local/horibot/blobs"
+  rdb_uri:    "sqlite:///storage/horibot.db"
+  object_uri: "file:///storage/blobs"
 
 # host_pc.yaml — Phase 3 (NAS 도입 후)
 storage:
@@ -462,6 +472,221 @@ storage:
 ```
 
 backend 갈 때 — adapter 파일 추가 + host yaml URI 만 바꿈. 다른 노드 / storage_node service handler 코드 변경 X.
+
+### SQLAlchemy 2.x ORM stack (2026-06-19)
+
+raw SQL (sqlite3 module) → SQLAlchemy 2.x ORM 전환 + `MemoryRdbStore` 제거. 동기:
+
+- **중복 구현 제거** — 옛 `MemoryRdbStore` 가 SQL JOIN / cascade / UNIQUE constraint 자리를 Python dict + nested loop 으로 재구현 (~400줄). 같은 contract 두 곳 동기화 부담 = 진짜 SSOT 위반. SQLite `:memory:` 로 통일하면 SqliteStore 한 구현으로 sim/mock/prod 자리 모두 커버.
+- **Type-safe model + 미래 확장** — entity 7-10개 (calibration / scan / reconstruction / task_run / robot / workspace) 로 늘어날 자리 → typed ORM model + SQLAlchemy `select()` builder + Alembic migration 자리 정석.
+- **Pydantic Record 와 layer 분리** — ORM model = persistence SSOT (DB schema), Pydantic Record = wire/API SSOT (Zenoh payload). DDD layer separation. `orm_to_*(orm) → record` boundary mapper 한 방향 (TypeAdapter `from_attributes` free). 역방향 `record_to_orm` 함수 X — SqliteStore 안 private helper 가 caller-specific 변환 (run_id injection / is_active override).
+
+#### 구조
+
+```
+modules/
+  calibration/
+    persistence_models.py   # Pydantic Record (wire + domain SSOT, 기존)
+    orm.py                  # SQLAlchemy ORM model + orm_to_record 변환 (신규)
+  scan_workflow/
+    persistence_models.py
+    orm.py
+  storage/
+    rdb/
+      base.py               # DeclarativeBase + make_engine + session_scope (신규)
+      store.py              # RdbStore Protocol (기존)
+      adapters/sqlite.py    # SqliteStore (ORM 위 rewrite)
+    object_store/           # ObjectStore Protocol + adapters (변경 X)
+    factory.py              # URI 분기 (memory:// → :memory: redirect)
+    transport.py            # Zenoh client transport (entity 어휘 0, 변경 X)
+    registry.py             # StorageRegistry.init + Alembic upgrade head hook (신규)
+backend/
+  alembic.ini               # Alembic config (programmatic engine 자리)
+  alembic/
+    env.py                  # config.attributes['connection'] live engine 받음
+    versions/0001_initial_schema.py  # Base.metadata.create_all 위임
+```
+
+#### 정책 (땜빵 패턴 회피)
+
+- **ORM model + 명시적 query** — `select(CalibrationResultOrm).where(...)` / `session.add(...)` / `session.commit()`. 자유롭게 `obj.field = v` 식 dirty tracking 의존 X.
+- **session-per-method** — `session_scope(engine)` context manager 안에서만 작업. lazy loading / identity map 가로지르는 long-lived session 안 만듬.
+- **`relationship` 없음** — N+1 query 자리 위험. 자식 row 필요 자리는 명시적 `IN` 절 single query (예: `list_runs` 의 results fetch).
+- **mapper layer 안 키움** — `orm.py` 안에 `orm_to_*` 함수만. 별도 `mapper.py` 파일 X (변환 로직 진짜 커지면 분리 자리 별도 evidence).
+
+#### Schema migration — Alembic (dual entry: programmatic + CLI)
+
+부팅 시 `StorageRegistry.init()` 이 schema 자리 ensure:
+
+```python
+def _ensure_schema(engine):
+    config = Config(BACKEND_ROOT / "alembic.ini")
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, "head")
+```
+
+`alembic/env.py` 자리 두 entry 자리 모두 지원 (Alembic 정석):
+
+1. **Programmatic** — `config.attributes['connection']` 자리 있으면 사용 (운영 자리. `StorageRegistry` 가 호출).
+2. **CLI standalone** — `config.attributes['connection']` 자리 없으면 `BACKEND_ROOT/.alembic_autogen.db` 자리 scratch SQLite 자리 사용 (`alembic revision --autogenerate` / `alembic upgrade head` CLI 자리). scratch DB 자리 gitignored, **운영 DB 아님** — autogenerate 가 ORM metadata 와 schema diff 자리 떠서 새 revision emit 할 *비교 대상* 자리만.
+
+**dialect portability** — `env.py` 자체 자리 SQLite / Postgres 무관. `engine_from_config` 자리 `sqlalchemy.url` 자리 dialect prefix 자리 보고 알맞은 engine 자리 자동 생성. NAS Postgres 진입 자리 = host yaml 의 `rdb_uri` 자리만 `postgresql://...` 로 교체, env.py 자리 X.
+
+`env.py` 자리 옵션 (정석):
+- `render_as_batch` — **dialect-aware** (`connection.dialect.name == "sqlite"`). SQLite 자리는 batch (ALTER TABLE 자리 table 재생성 패턴). Postgres 자리는 native ALTER (batch wrapping 자체 자리 verbose 자리 → off).
+- `compare_type=True` — autogenerate 자리 column type 변경도 잡음. 양쪽 dialect 자리 portable.
+- `compare_server_default=True` — server default 변경도 잡음. 양쪽 dialect 자리 portable.
+
+> ⚠️ **Postgres 특화 기능 진입 자리 caveat** — JSONB / UUID / GIN index / partial expression / ENUM type 자리 자리 ORM 자리에 등장 자리 시점 자리 → scratch SQLite 자리 metadata 자리 부족 자리 → autogenerate 자리 부정확한 diff 자리 emit 가능. 그때는 CLI 자리도 실 Postgres 자리 자리 붙는 방식 자리 (예: `ALEMBIC_DB_URL=postgresql://... alembic revision ...` + env.py 자리 환경변수 override 자리 추가). 지금은 ORM 자리 dialect-portable types (`Integer/String/Text/Float/Boolean`) 만 자리 쓰므로 scratch SQLite 자리 충분.
+
+`alembic.ini::file_template = %%(year)d_%%(month).2d_%%(day).2d_%%(hour).2d%%(minute).2d-%%(rev)s_%%(slug)s` — revision 파일 자리 `2026_06_19_1238-e22c93e21053_initial_schema.py` 식 chronological sort + Alembic hash + slug.
+
+#### 부팅 시 자동 schema ensure (운영 핵심 — 별도 명령 X)
+
+backend 부팅 자리 호출 체인:
+
+```
+main.py
+  └─ application_nodes 에 'storage' 있으면 (host yaml 자리)
+       └─ StorageRegistry.init(rdb_uri, object_uri)
+            ├─ make_rdb_store(rdb_uri)  →  SqliteStore(engine) 생성
+            ├─ _ensure_schema(engine)   →  command.upgrade(config, "head")  ★
+            └─ make_object_store(object_uri)
+```
+
+`command.upgrade(config, "head")` 자리 동작 — DB 의 `alembic_version` 테이블 자리 보고 분기:
+
+| DB 상태 | 동작 |
+|---|---|
+| **Fresh DB** (`alembic_version` 자리 없음, 즉 첫 부팅 자리 / `:memory:` 자리 / 사용자가 `horibot.db` 삭제 후 부팅) | `0001` 부터 `head` 까지 모든 revision 차분 적용. 6 테이블 + 7 인덱스 + `alembic_version` row 자리 생성. 마지막 revision hash 자리 row 박힘 |
+| **이미 head** (정상 운영 자리) | no-op. revision 비교 자리만 진행 후 즉시 return |
+| **중간 revision** (옛 코드 자리에서 부팅된 DB 자리 + git pull 자리 코드 update → 새 revision 자리 git 에 있음) | 현재 revision 다음 자리부터 head 까지 누락 revision 차분 적용. 기존 data 자리 보존 |
+
+핵심 성질:
+- **Idempotent** — 매 부팅 안전. 이미 head 면 schema 안 건드림.
+- **Atomic** — `engine.begin()` 자리 transaction 안 (registry.py:51) → migration 중간 실패 자리 partial schema 자리 안 남음 (rollback).
+- **Fail-fast** — migration 실패 자리 `StorageRegistry.init()` 자리 예외 발생 → 부팅 자체 abort. storage 없이 노드 띄워도 의미 없음.
+
+host yaml 별 부팅 자리 동작:
+
+| host | `rdb_uri` | 부팅 자리 schema 동작 |
+|---|---|---|
+| `host_dev` | `sqlite:///storage/horibot.db` | 첫 부팅 자리 fresh → 0001~head 자리 적용 + file 생성. 이후 부팅 자리 idempotent |
+| `host_pc` | 동일 | 동일 |
+| `host_mock` | `sqlite:///:memory:` | 매 부팅 자리 fresh (in-memory 라 process exit 시 사라짐). 매번 0001~head |
+| `host_pc_sim` | `sqlite:///:memory:` | 동일 |
+| `host_pi_motor` / `host_pi_camera` | (storage 없음) | `_ensure_schema` 호출 자체 X (application_nodes 에 storage 없음). schema 자리 PC 자리만 관리 |
+
+**즉 사용자가 schema 자리 신경 쓰지 않아도** 부팅 한 번에:
+- `backend/storage/horibot.db` 자리 통째 삭제 후 부팅 → 자동 재생성
+- 새 revision 자리 git pull 후 부팅 → 자동 차분 upgrade
+- `host_mock` / `host_pc_sim` 자리 처음 띄움 → 자동 fresh schema
+- 분산 자리 새 Pi 에 backend 자리 deploy → storage 자체 안 떠서 schema 자리 무관
+
+별도 `alembic upgrade head` CLI 호출 자리 자체 X. (CLI 자리는 *revision 생성* `alembic revision --autogenerate` 자리, 또는 디버깅용 자리 `alembic current` / `alembic history` 자리 정도.)
+
+#### Schema 변경 운영 절차 (정석 — npm/django-migrate 와 동일 패턴)
+
+**1. ORM 모델 수정**
+
+해당 entity 의 `modules/<entity>/orm.py` 자리 (예: column 추가):
+
+```python
+class CalibrationRunOrm(Base):
+    __tablename__ = "calibration_runs"
+    # ... 기존 ...
+    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)  # 새 column
+```
+
+새 *entity* 자리 추가 (예: `task_runs` 자리 새로 등장) → `modules/<new_entity>/orm.py` 자리 만들고 `Base` 상속 + `alembic/env.py` 의 import 자리 한 줄 추가:
+
+```python
+import modules.task_runs.orm  # noqa: E402, F401
+```
+
+이 import 자리 없으면 `Base.metadata` 가 새 테이블 인식 X → autogenerate 자리 자체에 안 나옴.
+
+**2. autogenerate 실행**
+
+```powershell
+cd backend
+uv run alembic revision --autogenerate -m "add quality_score to calibration_run"
+```
+
+자리 결과: `backend/alembic/versions/<YYYY_MM_DD_HHMM>-<hash>_add_quality_score_to_calibration_run.py` 자리.
+
+**3. 생성된 revision 파일 검토 (필수)**
+
+autogenerate 자리 잘 잡는 자리:
+- `op.create_table` / `op.drop_table`
+- `op.add_column` / `op.drop_column`
+- column type 변경 (`compare_type=True` 켜둬서)
+- `op.create_index` / `op.drop_index` (partial index 의 `sqlite_where` + `postgresql_where` 자리 양쪽 다 emit 검증됨)
+- FK / UniqueConstraint
+- server default 변경 (`compare_server_default=True`)
+
+autogenerate 자리 **못 잡는 / 위험한** 자리 — 직접 수정 필요:
+- **Column rename** — autogenerate 자리 `drop_column` + `add_column` 으로 잡음. **data loss**. `op.alter_column(..., new_column_name="...")` 자리 수동 변경.
+- **Table rename** — 마찬가지. `op.rename_table(...)` 자리 수동.
+- **Check constraint** — autogenerate 자리 인식 약함. 수동 추가.
+- **Data migration** — schema 외 *기존 row 의 값 backfill* 자리는 autogenerate 자리 만들지 못함. `op.execute("UPDATE ...")` 또는 `bind = op.get_bind(); session = Session(bind); ...` 자리 수동 추가.
+- **Composite ENUM / 복합 type** — Postgres 자리 ENUM/JSONB 자리 manual review.
+- **Index 이름 자동 생성 자리** — SQLAlchemy 가 이름 안 박은 자리는 autogenerate 자리 dialect-specific 이름 emit. 우리 자리 `Index("idx_...")` 자리 명시적 박아두기.
+
+**4. git commit**
+
+```powershell
+git add backend/alembic/versions/<new_revision>.py
+git add backend/modules/<entity>/orm.py
+git commit -m "feat: <entity>.<column> 추가"
+```
+
+**5. 적용 — 부팅 시 자동**
+
+다음 부팅 자리 `_ensure_schema` 가 `command.upgrade(config, "head")` 자동 호출 → DB 의 `alembic_version` 자리 보고 누락된 revision 자리 차분 적용. 별도 명령 X.
+
+수동 적용 자리 (예: 부팅 없이 DB 만 update — 마이그레이션 검증 자리):
+
+```powershell
+cd backend
+uv run alembic upgrade head        # head 까지
+uv run alembic upgrade +1          # 다음 revision 하나
+uv run alembic history             # 전체 history
+uv run alembic current             # 현재 DB 가 어느 revision 자리
+```
+
+**6. rollback (downgrade)**
+
+```powershell
+uv run alembic downgrade -1        # 직전 revision
+uv run alembic downgrade <hash>    # 특정 revision 자리
+uv run alembic downgrade base      # 통째로 (테이블 다 drop)
+```
+
+autogenerate 자리 `downgrade()` 함수 자리 자동 생성 (table drop + index drop 역순). data migration 자리 자동 X — `downgrade()` 자리 수동 작성.
+
+**7. 분산 자리 (PC + Pi)**
+
+`storage_node` 자리 PC 에만 뜸. Pi (motor / camera) 자리 `StorageRegistry.init()` 자체 호출 X → schema 변경 자리 PC 부팅 자리만 진입. revision 파일 자리 git 으로 분산 머신에 sync 되지만 alembic 자리 실행은 PC 한 자리.
+
+#### 자주 만나는 트러블
+
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| `alembic revision` 자리 `UnicodeDecodeError: 'cp949' ...` | `alembic.ini` 에 non-ASCII 한국어 박힘 (Windows configparser 자리 locale encoding 사용) | `alembic.ini` 자리 ASCII-only 유지 (한국어 주석은 `env.py` / revision file 자리에) |
+| 새 entity 추가했는데 autogenerate 자리 빈 revision emit | `alembic/env.py` 자리 ORM module import 자리 누락 | `import modules.<new_entity>.orm  # noqa` 자리 추가 |
+| `Target database is not up to date` (CLI) | DB 가 옛 revision 자리에 멈춤 | `alembic upgrade head` 또는 그냥 backend 부팅 (자동 upgrade) |
+| autogenerate 가 매번 같은 변경 자리 detect (idempotent X) | 우리 ORM 의 `default=` 자리와 DB server default 자리 mismatch / Index 자리 dialect 차이 | 생성된 revision file 검토 — `compare_server_default=True` 의 false positive 자리는 revision file 손으로 비우거나 SQLAlchemy column 자리 `server_default` 명시 |
+| `Can't locate revision identified by '<hash>'` | revision file 자리 git pull 안 됨 / 삭제됨 | `alembic/versions/` 자리 sync 확인. 절대 만들어진 revision 자리 임의로 지우지 말 것 (DB 자리 stuck) |
+
+#### 정책
+
+- **Revision file 자리 git tracked** — 모든 머신 자리 동일 history. 임의 삭제 X.
+- **`alembic_version` 테이블 자리 손대지 말 것** — alembic 이 관리. 직접 UPDATE 자리 emergency 외 금지.
+- **`backend/storage/horibot.db` 자리 git tracked** (현재 컨벤션) — 다른 PC 자리 같은 캘 데이터로 테스트. 다만 schema 자리 바뀌면 옛 DB 자리 `upgrade head` 자리 자동 진입.
+- **Squash 자리 안 함** — Alembic 의 `merge` / `squash` 자리 운영 자리 보통 안 씀. revision history 자리 그대로 쌓아둠.
+- **순서 자리 의존성** — autogenerate 자리 자기 위에 한 revision (head) 자리 base 로 emit. 동시에 두 자리에서 autogenerate 하면 branch 자리 생김 → `alembic merge` 자리 필요 (가능하면 dev 자리 한 자리 한 명만 schema 자리 변경, 또는 PR merge 자리 즉시 base 갱신).
 
 ## 9. Phase / 페이스
 
@@ -479,9 +704,8 @@ Phase 1 의 generic 토대가 Phase 2/3 에서 그대로 재사용. Phase 2 는 
 
 - ✅ `storage_node` 노드 + Zenoh service contract
 - ✅ `RdbStore` / `ObjectStore` Protocol + factory + URI 분기
-- ✅ Phase 1 adapter (4개):
-  - `SqliteStore` (host_dev/host_pc 실 사용)
-  - `MemoryRdbStore` (host_mock backend, 테스트 base)
+- ✅ Phase 1 adapter (3개):
+  - `SqliteStore` (SQLAlchemy 2.x ORM 위. host_dev/host_pc 자리 file SQLite + host_mock/host_pc_sim 자리 `:memory:`)
   - `FilesystemObjectStore` (Phase 1 사용처 없지만 Phase 2 entity 진짜 사용 위해)
   - `MemoryObjectStore` (host_mock backend)
 - ✅ 1차 entity: **캘 5종만** — 3 테이블 (`calibration_runs` / `calibration_results` / `calibration_captures`)
@@ -490,7 +714,7 @@ Phase 1 의 generic 토대가 Phase 2/3 에서 그대로 재사용. Phase 2 는 
 - ✅ 노드 측 패턴 (§7): Storage 필수 가정 + 서비스 대기 (retry loop) + 싱글톤 cache + invalidation 구독. spill / version / fallback 없음.
 - ✅ commit/activate 분리 UI flow (rollback first-class, capture race 해결)
 - ✅ ObjectStore 인터페이스 작고 보수적 (4 method)
-- ✅ host yaml storage URI 박기 — host_mock=`memory://`, host_dev/host_pc=`sqlite:///` + `file:///`
+- ✅ host yaml storage URI 박기 — host_mock/host_pc_sim=`sqlite:///:memory:` + `memory://`, host_dev/host_pc=`sqlite:///` + `file:///`
 - ✅ 마이그레이션: 기존 `robot/instances/*/calibration/*.npz` → 3 테이블 import 스크립트 1회 실행. captures 정보 없으면 빈 captures + placeholder run 으로. 각 result 는 import 후 is_active=true.
 
 **가치 — git push/pull 동기화 사라짐.** SQLite 가 PC 로컬이어도 storage_node Zenoh gateway 통해 모터 Pi / 카메라 Pi 가 동기 접근. NAS 없이도 분산 동기화 해결.
@@ -504,7 +728,7 @@ Phase 1 의 generic 토대가 Phase 2/3 에서 그대로 재사용. Phase 2 는 
   - `scans(id, session_row_id FK CASCADE, robot_id, scan_id, created_at, blob_key, num_frames, width/height/fx/fy/cx/cy/depth_scale, motor_positions JSON, arm_motor_ids JSON)` UNIQUE(session_row_id, scan_id)
   - `reconstructions(id, session_row_id FK CASCADE, robot_id, created_at, blob_key, voxel_size/sdf_trunc/depth_trunc/icp_max_dist, n_scans/n_edges/vertex_count/triangle_count/elapsed)`
 - **RdbStore Protocol +12 method** ([rdb/store.py](../backend/modules/storage/rdb/store.py)) — `insert_scan_session` / `list_scan_sessions` / `find_scan_session_by_id` / `get_scan_session` / `delete_scan_session` (CASCADE) / `allocate_scan_id` (monotonic per session) / `insert_scan` / `list_scans` / `get_scan` / `delete_scan` / `insert_reconstruction` / `list_reconstructions` / `get_reconstruction` / `delete_reconstruction`
-- **양쪽 adapter 구현 + 같은 contract 테스트 통과** — `MemoryRdbStore` ([memory.py](../backend/modules/storage/rdb/adapters/memory.py)) + `SqliteStore` ([sqlite.py](../backend/modules/storage/rdb/adapters/sqlite.py)). [tests/test_storage_phase2.py](../backend/tests/test_storage_phase2.py) parametrize 자체 18 tests
+- **SqliteStore 단일 구현** ([sqlite.py](../backend/modules/storage/rdb/adapters/sqlite.py)) — SQLAlchemy 2.x ORM 위. [tests/test_storage_phase2.py](../backend/tests/test_storage_phase2.py) parametrize 자체 `sqlite_memory` + `sqlite_file` 두 자리 자체 contract 통과
 - **ObjectStore 실 사용 시작** — `FilesystemObjectStore` + `MemoryObjectStore` 둘 다 동작. blob key 컨벤션: `scans/<robot_id>/<session_id>/<scan_id:03d>.bin` + `reconstructions/<robot_id>/<session_id>/recon_<ts>.ply`
 - **storage_node service +10** ([storage_node.py](../backend/nodes/application/storage_node.py)) — NEW_SCAN_SESSION / LIST_SCAN_SESSIONS / DELETE_SCAN_SESSION (자식 blob_key fetch 후 ObjectStore delete + RDB CASCADE) / PUT_SCAN (allocate_scan_id + blob put + INSERT atomic) / LIST_SCANS / DELETE_SCAN (blob + RDB) / GET_BLOB (generic) / PUT_RECONSTRUCTION (blob_key = `recon_<ts>.ply`) / LIST_RECONSTRUCTIONS / DELETE_RECONSTRUCTION
 - **Pydantic `Base64Bytes`** — Phase 2 entity 의 binary blob (scan blob + reconstruction PLY) 자체 `bytes` 로는 `model_dump_json` 시 utf-8 인코딩 실패. `Base64Bytes` 자체 wire 시 base64 string, Python 코드는 raw bytes. [scene3d.py](../backend/core/transport/messages/scene3d.py) + [storage.py](../backend/core/transport/messages/storage.py) 의 blob field 모두 적용
@@ -629,7 +853,7 @@ class StorageListRunsRes(StrictModel):
 
 **진행 단계:**
 
-1. ✅ **Backend `list_runs` API 추가** — `STORAGE_LIST_CALIBRATION_RUNS` Service / `CalibrationRunSummary` / `StorageListRunsReq` / `StorageListRunsRes` + RdbStore Protocol + SqliteStore (N+1 query 회피 single IN query) + MemoryRdbStore + storage_node handler + CalibrationStorageClient.list_runs + api_contract.PUBLIC_SERVICES.
+1. ✅ **Backend `list_runs` API 추가** — `STORAGE_LIST_CALIBRATION_RUNS` Service / `CalibrationRunSummary` / `StorageListRunsReq` / `StorageListRunsRes` + RdbStore Protocol + SqliteStore (N+1 query 회피 single IN query) + storage_node handler + CalibrationStorageClient.list_runs + api_contract.PUBLIC_SERVICES.
 
 2. ⏳ **`pnpm gen:types`** — backend `/openapi.json` 의 `x-contract` 가 새 service + invalidation topic 다 포함. frontend codegen 실행 → `contract.ts` / `types.ts` 갱신.
 

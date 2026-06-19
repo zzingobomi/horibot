@@ -1,20 +1,21 @@
 """Storage Phase 2 — scan workflow CRUD round-trip.
 
-Memory + Sqlite 두 adapter 자체 자리 자체 자리 자체 자리 자체 자리 자체 자리 같은 contract
-자체 자리 자체 자리 — host_mock (memory) / host_dev (sqlite) 자체 자리 자체 자리 자체 자리
-swap 호환.
+SQLite `:memory:` (sim/mock 자리) + SQLite file (dev/pc 자리) 두 fixture —
+같은 RdbStore + ScanWorkflowRepo 위 같은 contract 자체. host yaml 의 rdb_uri 만
+다른 두 운용 모드 sw 두 자리 동일 코드 경로 검증.
 
-scan_workflow.persistence_models + modules/storage/rdb/adapters/{memory,sqlite}.py
-+ modules/storage/object_store/adapters/memory.py 의 contract 통과 자체 자리 자체 자리.
+`repos` fixture 는 한 transaction 전체로 — production storage_node 의 `with
+rdb.session() as repos:` 와 같은 의미. 테스트 안 여러 operation 이 한 session
+공유 → flush 후 즉시 자기 변경 read 가능.
 """
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Iterator
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from modules.scan_workflow.persistence_models import (
     ReconstructionRecord,
@@ -22,25 +23,27 @@ from modules.scan_workflow.persistence_models import (
     ScanSessionRecord,
 )
 from modules.storage.object_store.adapters.memory import MemoryObjectStore
-from modules.storage.rdb.adapters.memory import MemoryRdbStore
-from modules.storage.rdb.adapters.sqlite import SqliteStore
-from modules.storage.rdb.store import RdbStore
+from modules.storage.rdb.base import Base, make_engine
+from modules.storage.rdb.store import RdbStore, RepoBundle
 
 
-# ─── fixture — Memory + Sqlite 양쪽 같은 contract 자체 자리 ──────
+# ─── fixture — sqlite-memory + sqlite-file 양쪽 같은 contract ──────
 
 
-@pytest.fixture(params=["memory", "sqlite"])
-def rdb(request, tmp_path: Path) -> Iterator[RdbStore]:
-    """parametrize — 같은 test 자체 자리 자체 자리 자체 자리 두 adapter 자체 자리 자체 자리."""
-    if request.param == "memory":
-        yield MemoryRdbStore()
+@pytest.fixture(params=["sqlite_memory", "sqlite_file"])
+def repos(request, tmp_path: Path) -> Iterator[RepoBundle]:
+    """parametrize — 같은 RdbStore 위 in-memory + file 두 자리. session 한 번."""
+    if request.param == "sqlite_memory":
+        engine = make_engine("sqlite:///:memory:")
     else:
-        store = SqliteStore(tmp_path / "test.db")
-        try:
-            yield store
-        finally:
-            store.close()
+        engine = make_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.create_all(engine)
+    store = RdbStore(engine)
+    try:
+        with store.session() as r:
+            yield r
+    finally:
+        store.close()
 
 
 # ─── ScanSession ──────────────────────────────────────────────
@@ -52,44 +55,44 @@ def _make_session(robot_id: str = "test_robot", session_id: str = "s1") -> ScanS
     )
 
 
-def test_scan_session_insert_get_round_trip(rdb: RdbStore):
-    row_id = rdb.insert_scan_session(_make_session())
+def test_scan_session_insert_get_round_trip(repos: RepoBundle):
+    row_id = repos.scan_workflow.insert_session(_make_session())
     assert row_id > 0
 
-    fetched = rdb.get_scan_session(row_id)
+    fetched = repos.scan_workflow.get_session(row_id)
     assert fetched is not None
     assert fetched.id == row_id
     assert fetched.robot_id == "test_robot"
     assert fetched.session_id == "s1"
 
 
-def test_scan_session_find_by_id(rdb: RdbStore):
-    rdb.insert_scan_session(_make_session(session_id="findme"))
+def test_scan_session_find_by_id(repos: RepoBundle):
+    repos.scan_workflow.insert_session(_make_session(session_id="findme"))
 
-    found = rdb.find_scan_session_by_id("test_robot", "findme")
+    found = repos.scan_workflow.find_session_by_id("test_robot", "findme")
     assert found is not None
     assert found.session_id == "findme"
 
-    not_found = rdb.find_scan_session_by_id("test_robot", "nope")
+    not_found = repos.scan_workflow.find_session_by_id("test_robot", "nope")
     assert not_found is None
 
 
-def test_scan_session_unique_constraint(rdb: RdbStore):
-    """(robot_id, session_id) unique — idempotent NEW_SCAN_SESSION 자리 의존."""
-    rdb.insert_scan_session(_make_session(session_id="dup"))
-    # Memory 자체 자리 자체 자리 ValueError, Sqlite 자체 자리 자체 자리 IntegrityError 자체 자리 자체 자리.
-    with pytest.raises((ValueError, sqlite3.IntegrityError)):
-        rdb.insert_scan_session(_make_session(session_id="dup"))
+def test_scan_session_unique_constraint(repos: RepoBundle):
+    """(robot_id, session_id) unique — idempotent NEW_SCAN_SESSION 의존."""
+    repos.scan_workflow.insert_session(_make_session(session_id="dup"))
+    # pre-check ValueError. race 시 IntegrityError 도 허용.
+    with pytest.raises((ValueError, IntegrityError)):
+        repos.scan_workflow.insert_session(_make_session(session_id="dup"))
 
 
-def test_scan_session_list_sorted_desc(rdb: RdbStore):
+def test_scan_session_list_sorted_desc(repos: RepoBundle):
     for i, ts in enumerate([100.0, 300.0, 200.0]):
-        rdb.insert_scan_session(
+        repos.scan_workflow.insert_session(
             ScanSessionRecord(
                 robot_id="r", session_id=f"s{i}", created_at=ts
             )
         )
-    sessions = rdb.list_scan_sessions("r")
+    sessions = repos.scan_workflow.list_sessions("r")
     assert [s.created_at for s in sessions] == [300.0, 200.0, 100.0]
 
 
@@ -113,43 +116,43 @@ def _make_scan(session_row_id: int, scan_id: int) -> ScanRecord:
     )
 
 
-def test_scan_allocate_id_monotonic(rdb: RdbStore):
-    sid = rdb.insert_scan_session(_make_session())
+def test_scan_allocate_id_monotonic(repos: RepoBundle):
+    sid = repos.scan_workflow.insert_session(_make_session())
 
     # 빈 session — allocate 1
-    assert rdb.allocate_scan_id(sid) == 1
+    assert repos.scan_workflow.allocate_scan_id(sid) == 1
     # 한 row 박은 후 allocate 2
-    rdb.insert_scan(_make_scan(sid, scan_id=1))
-    assert rdb.allocate_scan_id(sid) == 2
+    repos.scan_workflow.insert_scan(_make_scan(sid, scan_id=1))
+    assert repos.scan_workflow.allocate_scan_id(sid) == 2
     # 두 번째 row + 삭제 후에도 monotonic
-    rdb.insert_scan(_make_scan(sid, scan_id=2))
-    assert rdb.allocate_scan_id(sid) == 3
+    repos.scan_workflow.insert_scan(_make_scan(sid, scan_id=2))
+    assert repos.scan_workflow.allocate_scan_id(sid) == 3
 
 
-def test_scan_insert_list_get_delete(rdb: RdbStore):
-    sid = rdb.insert_scan_session(_make_session())
-    row1 = rdb.insert_scan(_make_scan(sid, scan_id=1))
-    row2 = rdb.insert_scan(_make_scan(sid, scan_id=2))
+def test_scan_insert_list_get_delete(repos: RepoBundle):
+    sid = repos.scan_workflow.insert_session(_make_session())
+    row1 = repos.scan_workflow.insert_scan(_make_scan(sid, scan_id=1))
+    row2 = repos.scan_workflow.insert_scan(_make_scan(sid, scan_id=2))
 
-    scans = rdb.list_scans(sid)
+    scans = repos.scan_workflow.list_scans(sid)
     assert [s.scan_id for s in scans] == [1, 2]
 
-    fetched = rdb.get_scan(row1)
+    fetched = repos.scan_workflow.get_scan(row1)
     assert fetched is not None
     assert fetched.scan_id == 1
-    # motor_positions JSON serde round-trip (Sqlite 자체 자리)
+    # motor_positions JSON serde round-trip
     assert fetched.motor_positions == [2048, 2048, 2048, 2048, 2048]
 
-    rdb.delete_scan(row2)
-    scans = rdb.list_scans(sid)
+    repos.scan_workflow.delete_scan(row2)
+    scans = repos.scan_workflow.list_scans(sid)
     assert [s.scan_id for s in scans] == [1]
 
 
-def test_scan_unique_constraint_within_session(rdb: RdbStore):
-    sid = rdb.insert_scan_session(_make_session())
-    rdb.insert_scan(_make_scan(sid, scan_id=1))
-    with pytest.raises((ValueError, sqlite3.IntegrityError)):
-        rdb.insert_scan(_make_scan(sid, scan_id=1))
+def test_scan_unique_constraint_within_session(repos: RepoBundle):
+    sid = repos.scan_workflow.insert_session(_make_session())
+    repos.scan_workflow.insert_scan(_make_scan(sid, scan_id=1))
+    with pytest.raises((ValueError, IntegrityError)):
+        repos.scan_workflow.insert_scan(_make_scan(sid, scan_id=1))
 
 
 # ─── Reconstruction ───────────────────────────────────────────
@@ -173,43 +176,39 @@ def _make_recon(session_row_id: int) -> ReconstructionRecord:
     )
 
 
-def test_reconstruction_insert_list_get_delete(rdb: RdbStore):
-    sid = rdb.insert_scan_session(_make_session())
+def test_reconstruction_insert_list_get_delete(repos: RepoBundle):
+    sid = repos.scan_workflow.insert_session(_make_session())
 
-    row = rdb.insert_reconstruction(_make_recon(sid))
-    recons = rdb.list_reconstructions(sid)
+    row = repos.scan_workflow.insert_reconstruction(_make_recon(sid))
+    recons = repos.scan_workflow.list_reconstructions(sid)
     assert len(recons) == 1
     assert recons[0].id == row
 
-    fetched = rdb.get_reconstruction(row)
+    fetched = repos.scan_workflow.get_reconstruction(row)
     assert fetched is not None
     assert fetched.n_scans == 3
     assert fetched.vertex_count == 1000
 
-    rdb.delete_reconstruction(row)
-    assert rdb.list_reconstructions(sid) == []
+    repos.scan_workflow.delete_reconstruction(row)
+    assert repos.scan_workflow.list_reconstructions(sid) == []
 
 
-# ─── CASCADE delete (Memory: 명시 + Sqlite: FK ON DELETE CASCADE) ─
+# ─── CASCADE delete (Sqlite: FK ON DELETE CASCADE + PRAGMA foreign_keys=ON) ─
 
 
-def test_delete_scan_session_cascade(rdb: RdbStore):
-    """delete_scan_session 자리 자식 scans / reconstructions 자체 자리 자체 자리 자동 삭제.
+def test_delete_scan_session_cascade(repos: RepoBundle):
+    """delete_session 시 자식 scans / reconstructions 자동 삭제."""
+    sid = repos.scan_workflow.insert_session(_make_session())
+    repos.scan_workflow.insert_scan(_make_scan(sid, scan_id=1))
+    repos.scan_workflow.insert_scan(_make_scan(sid, scan_id=2))
+    repos.scan_workflow.insert_reconstruction(_make_recon(sid))
 
-    Memory: 명시적 자체 자리 자체 자리 자체 자리 dict 정리.
-    Sqlite: FK ON DELETE CASCADE + PRAGMA foreign_keys=ON.
-    """
-    sid = rdb.insert_scan_session(_make_session())
-    rdb.insert_scan(_make_scan(sid, scan_id=1))
-    rdb.insert_scan(_make_scan(sid, scan_id=2))
-    rdb.insert_reconstruction(_make_recon(sid))
-
-    rdb.delete_scan_session(sid)
+    repos.scan_workflow.delete_session(sid)
 
     # 자식 다 사라짐
-    assert rdb.get_scan_session(sid) is None
-    assert rdb.list_scans(sid) == []
-    assert rdb.list_reconstructions(sid) == []
+    assert repos.scan_workflow.get_session(sid) is None
+    assert repos.scan_workflow.list_scans(sid) == []
+    assert repos.scan_workflow.list_reconstructions(sid) == []
 
 
 # ─── ObjectStore round-trip ───────────────────────────────────

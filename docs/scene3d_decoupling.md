@@ -807,7 +807,7 @@ D405 는 **SO-101 6DOF 에 장착** (`so101_6dof_0.capabilities = [move, calibra
    - **선행**: hand_eye 캘 먼저 (`/robots/so101_6dof_0/calibrate`). `BuildReconstruction` 자리 `hand_eye` 필수 (현재 없으면 raise)
    - `ScanTask` 의 `scan_poses` 자리 **N≥2** 필요 (`BuildReconstruction.MIN_SCANS = 2`). `DEFAULT_SCAN_POSES = ["home"]` 1개 자리만 default 라 본 자리 변경 필요 — robot_poses.yaml 에 scan_top / scan_front 등 추가 후 task data 로 전달
    - ScanTask run → step tree (NewSession → ForEach(MoveJ + CaptureScan) × N → BuildReconstruction) + RECONSTRUCTION_PROGRESS bar 5 stage
-3. **storage 결과 확인** — `storage/horibot.db` 의 `scan_sessions` / `scans` / `reconstructions` 테이블 row + `storage/blobs/scans/so101_6dof_0/<session>/<scan_id>.bin` + `storage/blobs/reconstructions/so101_6dof_0/<session>/recon_<ts>.ply` 파일
+3. **storage 결과 확인** — `backend/storage/horibot.db` 의 `scan_sessions` / `scans` / `reconstructions` 테이블 row + `backend/storage/blobs/scans/so101_6dof_0/<session>/<scan_id>.bin` + `backend/storage/blobs/reconstructions/so101_6dof_0/<session>/recon_<ts>.ply` 파일
 4. **진짜 분산** — PC + 모터 Pi (`host_pi_motor`) + 카메라 Pi (`host_pi_camera`) LAN 환경. localhost sim 과 별개 — multicast scout / WiFi / 방화벽 자리 (안 잡히면 `zenoh.connect` endpoint 명시)
 5. **D405 위치 자리** — [distributed_topology.md](distributed_topology.md) 따라 SO-101 의 카메라 Pi 또는 PC 결정
 6. 모두 OK → 일괄 commit (또는 의미 단위 분리)

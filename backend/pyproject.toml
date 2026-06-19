@@ -51,6 +51,12 @@ pc = [
     "open3d>=0.18.0",
     "pygame>=2.6.1",
     "zstandard>=0.22.0",
+    # Storage (storage_node — PC 전용). SQLAlchemy 2.x typed `Mapped[T]` + Alembic
+    # migration. backend swap (sqlite → postgres) 시 URI 만 변경 (docs/storage_layer.md).
+    # advanced-alchemy = SQLAlchemySyncRepository (도메인 repo CRUD baseline).
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "advanced-alchemy>=1.11.0",
     # Grounding DINO Swin-B (open-vocabulary detection).
     # v5 는 AutoModelForZeroShotObjectDetection 제거 → 4.x 로 핀.
     # 4.57.x 는 dispatch_model 경로에서 meta tensor + .to(device) 가 깨짐

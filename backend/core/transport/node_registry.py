@@ -36,7 +36,7 @@ _NODE_REGISTRY: dict[str, NodeSpec] = {
     "calibration": NodeSpec("nodes.application.calibration_node", "CalibrationNode"),
     "task": NodeSpec("nodes.application.task_node", "TaskNode"),
     "gamepad": NodeSpec("nodes.application.gamepad_node", "GamepadNode"),
-    "storage": NodeSpec("nodes.application.storage_node", "StorageNode"),
+    "storage": NodeSpec("nodes.application.storage.node", "StorageNode"),
     "reconstruction": NodeSpec(
         "nodes.application.reconstruction_node", "ReconstructionNode"
     ),

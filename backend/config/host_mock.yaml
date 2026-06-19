@@ -33,10 +33,10 @@ application_nodes:
   - reconstruction
 # gamepad — frontend UX 검증 mock 자리엔 실 펜던트 의미 X. 실 hardware 자리에만.
 
-# Memory backend — 매번 fresh, 영속화 X. mock 은 frontend UX 검증용이라
-# 캘 데이터 누적이 의도 X.
+# In-memory backend — 매번 fresh, 영속화 X. mock 은 frontend UX 검증용이라
+# 캘 데이터 누적이 의도 X. SQLite `:memory:` (RDB) + Python dict (ObjectStore).
 storage:
-  rdb_uri:    "memory://"
+  rdb_uri:    "sqlite:///:memory:"
   object_uri: "memory://"
 
 bridge:

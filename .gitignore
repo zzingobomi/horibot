@@ -69,10 +69,17 @@ robot/instances/*/logs/
 robot/instances/*/calibration/.history/
 
 # ─── Storage layer (docs/storage_layer.md) ─────────────────────
-# DB (storage/horibot.db) 는 git tracked — 다른 PC 에서 같은 캘 데이터로 테스트.
+# DB (backend/storage/horibot.db) 는 git tracked — 다른 PC 에서 같은 캘 데이터로 테스트.
 # blobs/ (대용량 mesh / scan binary) 는 ignored — 머신별 + 큰 자료.
 # SQLite WAL/SHM 임시 파일도 ignored.
-storage/blobs/
-storage/*.db-wal
-storage/*.db-shm
-storage/*.db-journal
+backend/storage/blobs/
+backend/storage/*.db-wal
+backend/storage/*.db-shm
+backend/storage/*.db-journal
+
+# ─── Alembic autogenerate scratch DB ───────────────────────────
+# backend/.alembic_autogen.db — `alembic revision --autogenerate` 가 ORM
+# metadata 와 비교할 scratch SQLite. 운영 DB (backend/storage/horibot.db) 와 별개.
+# alembic.ini::sqlalchemy.url 자리.
+backend/.alembic_autogen.db
+backend/.alembic_autogen.db-*

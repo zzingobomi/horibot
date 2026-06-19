@@ -454,7 +454,13 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
         ).encode()
 
         try:
-            replies = session.get(key, payload=req_payload, timeout=timeout)
+            # session.get 은 sync Zenoh API — timeout (기본 5s) 까지 block.
+            # async def 안 그대로 호출하면 event loop 가 reply 대기 동안 점유됨.
+            # asyncio.to_thread 로 thread pool 에 dispatch — loop 양보 + 다른 WS
+            # 클라이언트 메시지 자리 fair scheduling.
+            replies = await asyncio.to_thread(
+                session.get, key, payload=req_payload, timeout=timeout
+            )
             res = None
             for reply in replies:
                 if reply.ok is not None:

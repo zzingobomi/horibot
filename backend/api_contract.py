@@ -82,6 +82,7 @@ PUBLIC_TOPICS: dict[str, TopicPayload] = {
     Topic.CALIB_HANDEYE_PARAM_OBSERVABILITY: (
         _calibration.HandeyeParamObservabilityState
     ),
+    Topic.CALIB_HANDEYE_BA_STATUS: _calibration.HandeyeBaStatus,
     # Storage — ACTIVATE 마다 1회. frontend list 패널이 활성 row 갱신 트리거.
     Topic.STORAGE_CALIBRATION_INVALIDATED: _storage.CalibrationInvalidated,
     # Reconstruction — BuildReconstruction step 자리 progress bar 자리.
@@ -175,6 +176,10 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
     Service.STORAGE_LIST_CALIBRATION_RUNS: (
         _storage.ListCalibrationRunsReq,
         _storage.ListCalibrationRunsRes,
+    ),
+    Service.STORAGE_LIST_RUN_CAPTURES: (
+        _storage.ListRunCapturesReq,
+        _storage.ListRunCapturesRes,
     ),
     Service.STORAGE_COMMIT_CALIBRATION: (
         _storage.CommitCalibrationReq,

@@ -11,13 +11,14 @@
  *
  * 라이브 카메라는 [CalibrationCameraPanel] 이 공유 — 본 패널은 컨트롤 + 추천 + 결과만.
  */
-import { Crosshair } from "lucide-react";
+import { Crosshair, Loader2 } from "lucide-react";
 import type { IDockviewPanelProps } from "dockview";
 import { useParams } from "react-router-dom";
 import { PanelShell } from "@/components/shared/PanelShell";
 import { PanelButton } from "@/components/shared/PanelButton";
 import { Section } from "@/components/shared/Section";
 import { PoseCandidates } from "./parts/PoseCandidates";
+import { PoseImportSection } from "./parts/PoseImportSection";
 import { ParamObservabilityCard } from "./parts/ParamObservabilityCard";
 import { HandEyePoseList } from "./parts/PoseList";
 import { useCalibrationStore } from "@/domain/stores/calibration";
@@ -299,8 +300,10 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
   const observability = useCalibrationStore((s) => s.observability);
   const paramObservability = useCalibrationStore((s) => s.paramObservability);
   const manualModeActive = useCalibrationStore((s) => s.manualModeActive);
+  const baStatus = useCalibrationStore((s) => s.baStatus);
   const loading = useCalibrationStore((s) => s.loading);
   const status = useCalibrationStore((s) => s.status);
+  const baRunning = baStatus?.state === "running";
 
   const startSessionAction = useCalibrationStore((s) => s.startSession);
   const captureAction = useCalibrationStore((s) => s.capture);
@@ -399,6 +402,8 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
             </div>
           </Section>
 
+          <PoseImportSection robotId={robotId} />
+
           <Section label="다음">
             <div className="flex flex-col gap-2">
               <p className="text-[11px] text-zinc-500 leading-snug font-mono">
@@ -409,11 +414,16 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
               <PanelButton
                 variant="primary"
                 onClick={() => void handleExitManual()}
-                disabled={!canExitManual || loading}
+                disabled={!canExitManual || loading || baRunning}
               >
-                {loading
-                  ? "계산 중..."
-                  : `자동 추천 시작 (${Math.min(poses.length, minManualPoses)}/${minManualPoses})`}
+                {loading || baRunning ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    {baRunning ? "BA 계산 중…" : "계산 중…"}
+                  </span>
+                ) : (
+                  `자동 추천 시작 (${Math.min(poses.length, minManualPoses)}/${minManualPoses})`
+                )}
               </PanelButton>
             </div>
           </Section>
@@ -427,7 +437,18 @@ export function HandEyePanel(props: IDockviewPanelProps<object>) {
                 <span className="text-[11px] text-zinc-500">
                   누적 {poses.length}장
                 </span>
-                <LiveSigmaBadge sigma={liveSigma} thresholds={thresholds} />
+                <div className="flex items-center gap-2">
+                  {baRunning && (
+                    <span
+                      className="text-[10px] text-blue-300 font-mono flex items-center gap-1"
+                      title={`BA 진행 중 (${baStatus?.mode})`}
+                    >
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      BA 중…
+                    </span>
+                  )}
+                  <LiveSigmaBadge sigma={liveSigma} thresholds={thresholds} />
+                </div>
               </div>
               <VerdictBanner verdict={liveSigma?.coach_verdict ?? null} />
               <AxisDistributionTable axes={liveSigma?.axis_distributions} />

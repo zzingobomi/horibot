@@ -73,6 +73,82 @@ NO_REASON_ALL_INVISIBLE: NoCandidatesReason = "all_invisible"
 NO_REASON_USER_MARKED_FAIL: NoCandidatesReason = "user_marked_fail"
 
 
+def recommend_axis_diversify(
+    *,
+    current_joint_angles_rad: Sequence[float],
+    arm_motor_ids: list[int],
+    joint_limits_rad: list[tuple[float, float]],
+    weak_axis_motor_ids: list[int],
+    weak_axis_suggested_deg: dict[int, float | None],
+    visibility_check: VisibilityCheck | None = None,
+    excluded_ids: set[str] | None = None,
+) -> list[NextPoseRecommendation]:
+    """약한 axis 보충 후보 — current 자세에서 그 축만 suggested_deg 로 점프.
+
+    Hybrid 자리: GeometryStrategy 의 sphere shell anchor 가 보드 주변 카메라
+    위치 다양성 자리는 잡지만, *어느 축이 좁다* 정보 (coach.axis_distributions)
+    는 안 받음. narrow_sigma_good 분기에서 약한 axis 별 1 후보를 추가해 사용자가
+    그 자세로 ghost 따라가 캡처할 수 있게 함.
+
+    "current 위 그 축만 점프" 자세는 보드 가시 영역에 가까우니 visibility 통과율
+    높음. weak axis 별 1개씩 = 보통 1~3개 후보 추가.
+    """
+    out: list[NextPoseRecommendation] = []
+    n_axes = min(len(arm_motor_ids), len(joint_limits_rad))
+    excluded = excluded_ids or set()
+
+    for motor_id in weak_axis_motor_ids:
+        suggested_deg = weak_axis_suggested_deg.get(motor_id)
+        if suggested_deg is None:
+            continue
+        try:
+            axis_idx = arm_motor_ids.index(motor_id)
+        except ValueError:
+            continue
+        if axis_idx >= n_axes or len(current_joint_angles_rad) < n_axes:
+            continue
+
+        rec_id = f"axis_diversify_{motor_id}"
+        if rec_id in excluded:
+            continue
+
+        target = list(current_joint_angles_rad[:n_axes])
+        target[axis_idx] = radians(suggested_deg)
+
+        lo, hi = joint_limits_rad[axis_idx]
+        if not (lo <= target[axis_idx] <= hi):
+            continue
+
+        visible = True
+        v_reason = "unchecked"
+        if visibility_check is not None:
+            visible, v_reason = visibility_check(target)
+
+        out.append(
+            NextPoseRecommendation(
+                joints=[
+                    {"id": int(mid), "degree": float(degrees(ang))}
+                    for mid, ang in zip(arm_motor_ids[:n_axes], target)
+                ],
+                reason=(
+                    f"J{motor_id} 다양성 보충 — 현재 자세에서 J{motor_id} 만 "
+                    f"{suggested_deg:+.0f}° 로 이동. 다른 축은 현재 유지."
+                ),
+                label=f"J{motor_id} 다양성 보충 → {suggested_deg:+.0f}°",
+                primary_axis=axis_idx,
+                source="axis_diversify",
+                diagnostics={
+                    "mode": "axis_diversify",
+                    "motor_id": motor_id,
+                    "suggested_deg": suggested_deg,
+                },
+                visible=visible,
+                visibility_reason=v_reason,
+            )
+        )
+    return out
+
+
 @dataclass
 class RecommendationResult:
     recommendations: list[NextPoseRecommendation]
@@ -595,6 +671,11 @@ class RecommendContext:
     existing_joint_angles: list[list[float]] | None = None
     excluded_ids: set[str] | None = None
     max_candidates: int = MAX_RECOMMENDATIONS
+    # coach.axis_distributions 의 is_low_diversity=true 인 motor_id list.
+    # narrow_sigma_good 분기에서 caller 가 채움. 빈 list 면 hybrid 자리 skip.
+    weak_axis_motor_ids: list[int] = field(default_factory=list)
+    # 위 motor_id → suggested_deg (절대 deg, 모터 limit 안). caller 가 같이 채움.
+    weak_axis_suggested_deg: dict[int, float | None] = field(default_factory=dict)
 
 
 class PoseRecommendationStrategy(Protocol):
@@ -607,10 +688,14 @@ class GeometryStrategy:
     """6DOF (또는 wrist yaw 있는) robot 용 — anchor sphere shell + IK.
 
     임의 카메라 R 만들 수 있는 robot 에 자연 — SO-101, UR 등.
+
+    Hybrid 자리 — narrow_sigma_good 분기에서 ctx.weak_axis_motor_ids 채워주면
+    `recommend_axis_diversify` 결과를 list 앞에 prepend. sphere shell 5 anchor 만
+    으로는 *어느 axis 좁다* 정보를 못 받아 다양성 보충 못 하던 자리 fix.
     """
 
     def recommend(self, ctx: RecommendContext) -> RecommendationResult:
-        return recommend_geometry(
+        result = recommend_geometry(
             board_corners_base=ctx.board_corners_base,
             ik_fn=ctx.ik_fn,
             hand_eye_R=ctx.hand_eye_R,
@@ -622,6 +707,26 @@ class GeometryStrategy:
             visibility_check=ctx.visibility_check,
             excluded_ids=ctx.excluded_ids,
         )
+
+        # narrow_sigma_good 자리 — caller 가 weak axis 정보 채워줬으면 다양성 보충
+        # 후보 prepend. 사용자 mental model "다양성 부족 안내 ↔ 어디 캡처할지 ghost"
+        # 한 line 연결.
+        if ctx.weak_axis_motor_ids:
+            diversify = recommend_axis_diversify(
+                current_joint_angles_rad=ctx.current_joint_angles_rad,
+                arm_motor_ids=ctx.arm_motor_ids,
+                joint_limits_rad=ctx.joint_limits_rad,
+                weak_axis_motor_ids=ctx.weak_axis_motor_ids,
+                weak_axis_suggested_deg=ctx.weak_axis_suggested_deg,
+                visibility_check=ctx.visibility_check,
+                excluded_ids=ctx.excluded_ids,
+            )
+            if diversify:
+                # diversify 우선 — 사용자 mental model "약한 axis 보충" 자리 가장 먼저.
+                result.recommendations = diversify + result.recommendations
+                # 빈 list reason (no_board_estimate / all_ik_fail) 도 자연 해소
+                result.no_candidates_reason = None
+        return result
 
 
 class JointPerturbationStrategy:

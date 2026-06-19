@@ -55,6 +55,9 @@ interface CalibrationState {
   observability: HandeyeObservabilityState | null;
   // paramObservability — parameter별 식별성 (Fisher) + staged gating 결과 (Phase 2).
   paramObservability: HandeyeParamObservabilityState | null;
+  // BA 진행 상태 — frontend spinner 용. running=BA 도는 중, done/failed=끝남.
+  // CALIB_HANDEYE_BA_STATUS topic 자동 update.
+  baStatus: { state: "running" | "done" | "failed"; mode: string } | null;
 
   // ─── Phase 1/2 분기 ────────────────────────────────────────
   // manualModeActive=true → Phase 1 (수동 자유 자세, 추천/σ hide).
@@ -105,6 +108,7 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
   saturate: null,
   observability: null,
   paramObservability: null,
+  baStatus: null,
   manualModeActive: true,
 
   loading: false,
@@ -187,6 +191,18 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
       },
     );
 
+    // BA progress — frontend spinner.
+    const unsubBaStatus = bridge.subscribe(
+      Topic.CALIB_HANDEYE_BA_STATUS,
+      (data) => {
+        const s = data as unknown as {
+          state: "running" | "done" | "failed";
+          mode: string;
+        };
+        set({ baStatus: { state: s.state, mode: s.mode } });
+      },
+    );
+
     // 초기 fetch — pose list + thresholds + in_progress run id (있으면 이어하기)
     void bridge.callService(ServiceKey.CALIB_HANDEYE_LIST_POSES, {}).then(
       (res) => {
@@ -216,6 +232,7 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
         unsubSaturate,
         unsubObservability,
         unsubParamObs,
+        unsubBaStatus,
       ],
     });
   },
@@ -243,6 +260,7 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
       visited: new Set(),
       activeIndex: null,
       saturate: null,
+      baStatus: null,
       manualModeActive: true,
       loading: false,
       computing: false,

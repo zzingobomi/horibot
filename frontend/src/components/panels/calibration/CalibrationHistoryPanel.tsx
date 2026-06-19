@@ -259,18 +259,19 @@ function formatSigma(
   unit: "deg" | "mm",
 ): string {
   if (v === null || v === undefined) return "—";
-  if (unit === "deg") return `${((v * 180) / Math.PI).toFixed(2)}°`;
-  return `${(v * 1000).toFixed(1)}mm`;
+  // backend 가 이미 deg / mm 단위로 DB 에 저장 (CalibrationResultRecord.sigma_rot/sigma_t).
+  // calibration_node.py 의 finalize_run 자리 sigma_rot_deg / sigma_t_mm 그대로 넣음.
+  if (unit === "deg") return `${v.toFixed(2)}°`;
+  return `${v.toFixed(1)}mm`;
 }
 
 function bestSigma(results: CalibrationResultRecord[]): string | null {
-  // hand_eye 의 σ 를 row 헤더에 보여줌 (가장 의미 있는 자리).
   const he = results.find((r) => r.kind === "hand_eye");
   if (!he || he.sigma_rot === null || he.sigma_rot === undefined) return null;
-  const rotDeg = ((he.sigma_rot * 180) / Math.PI).toFixed(2);
+  const rotDeg = he.sigma_rot.toFixed(2);
   const tMm =
     he.sigma_t !== null && he.sigma_t !== undefined
-      ? `/${(he.sigma_t * 1000).toFixed(1)}mm`
+      ? `/${he.sigma_t.toFixed(1)}mm`
       : "";
   return `σ ${rotDeg}°${tMm}`;
 }

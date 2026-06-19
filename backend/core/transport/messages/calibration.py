@@ -205,6 +205,19 @@ class HandeyeParamObservabilityState(StrictModel):
     unlocked: list[str]  # gate 통과 블록 (joint_offset / link / sag 중)
 
 
+class HandeyeBaStatus(StrictModel):
+    """BA 진행 상태 — frontend spinner 용.
+
+    state: "running" (BA 시작), "done" (성공, σ 결과는 SIGMA topic 자세 자리),
+           "failed" (예외/수렴 실패).
+    mode: "standard" | "extended" | "physical_sag" — 어떤 BA 인지.
+    """
+
+    timestamp: float
+    state: str  # "running" | "done" | "failed"
+    mode: str
+
+
 class HandeyeSigmaState(StrictModel):
     """capture 후 자동 BA / 수동 COMPUTE 마다 publish. frontend σ live 표시.
 

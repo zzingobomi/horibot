@@ -97,6 +97,22 @@ class RealsenseDriver:
             except RuntimeError as e:
                 logger.warning(f"depth scale 조회 실패: {e}")
 
+            # Auto-exposure 끄고 manual exposure 고정 — 캘 자세별 노출 변경 시
+            # corner detection 정확도 자세별 차이 발생 (sub-pixel jitter source).
+            # 고정 시 모든 자세 같은 노이즈 특성 → BA self-consistency ↑.
+            # D405 default exposure ≈ 8500us. 어두운 환경이면 사용자가 늘려야 함.
+            try:
+                for sensor in profile.get_device().query_sensors():
+                    if sensor.supports(rs.option.enable_auto_exposure):
+                        sensor.set_option(rs.option.enable_auto_exposure, 0)
+                    if sensor.supports(rs.option.exposure):
+                        sensor.set_option(rs.option.exposure, 8500)
+                    if sensor.supports(rs.option.enable_auto_white_balance):
+                        sensor.set_option(rs.option.enable_auto_white_balance, 0)
+                logger.info("RealSense auto-exposure off, manual exposure=8500us")
+            except RuntimeError as e:
+                logger.warning(f"exposure 고정 실패: {e}")
+
             self._pipeline = pipeline
             self._opened = True
             self._running = True

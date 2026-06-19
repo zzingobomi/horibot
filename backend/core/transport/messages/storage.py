@@ -177,6 +177,16 @@ class GetInProgressCalibrationRunRes(StrictModel):
     captures: list[CalibrationCaptureRecord] = []
 
 
+class ListRunCapturesReq(StrictModel):
+    """임의 run_id 의 captures fetch — 직전 캘 자세 import (move-to-pose 흐름)."""
+
+    run_id: int
+
+
+class ListRunCapturesRes(StrictModel):
+    captures: list[CalibrationCaptureRecord]
+
+
 class DeleteCalibrationRunReq(StrictModel):
     """[리셋] — run + captures + results cascade delete."""
 

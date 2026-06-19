@@ -44,6 +44,8 @@ from core.transport.messages.storage import (
     ListCalibrationRunsRes,
     ListCalibrationsReq,
     ListCalibrationsRes,
+    ListRunCapturesReq,
+    ListRunCapturesRes,
 )
 from core.transport.topic_map import Service, Topic
 from modules.storage.registry import StorageRegistry
@@ -124,6 +126,12 @@ class CalibrationHandlers:
             FinalizeCalibrationRunReq,
             FinalizeCalibrationRunRes,
             self._srv_finalize_cal_run,
+        )
+        node.create_service(
+            Service.STORAGE_LIST_RUN_CAPTURES,
+            ListRunCapturesReq,
+            ListRunCapturesRes,
+            self._srv_list_run_captures,
         )
 
     # ─── service handlers ─────────────────────────────────────
@@ -289,6 +297,15 @@ class CalibrationHandlers:
             repos.calibration.delete_run(req.data.run_id)
         logger.info("DELETE_CAL_RUN: run_id=%d", req.data.run_id)
         return ServiceResponse(success=True, data=EmptyData())
+
+    def _srv_list_run_captures(
+        self, req: ServiceRequest[ListRunCapturesReq]
+    ) -> ServiceResponse[ListRunCapturesRes]:
+        with self._reg.rdb.session() as repos:
+            captures = repos.calibration.list_captures(req.data.run_id)
+        return ServiceResponse(
+            success=True, data=ListRunCapturesRes(captures=captures)
+        )
 
     def _srv_finalize_cal_run(
         self, req: ServiceRequest[FinalizeCalibrationRunReq]

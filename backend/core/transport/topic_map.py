@@ -31,6 +31,8 @@ class Topic:
     CALIB_HANDEYE_PARAM_OBSERVABILITY = (
         "horibot/{robot_id}/calib/state/handeye_param_observability"
     )
+    # BA 진행 상태 — frontend spinner 용. start/done/failed publish.
+    CALIB_HANDEYE_BA_STATUS = "horibot/{robot_id}/calib/state/handeye_ba_status"
 
     # ─── Task ──────────────────────────────────────────────
     TASK_STATE = "horibot/task/state"
@@ -140,6 +142,8 @@ class Service:
     STORAGE_GET_IN_PROGRESS_RUN = "horibot/storage/srv/calibration/get_in_progress_run"
     STORAGE_DELETE_CAL_RUN = "horibot/storage/srv/calibration/delete_run"
     STORAGE_FINALIZE_CAL_RUN = "horibot/storage/srv/calibration/finalize_run"
+    # 임의 run_id 의 captures fetch — 직전 캘 자세 import (move-to-pose 흐름).
+    STORAGE_LIST_RUN_CAPTURES = "horibot/storage/srv/calibration/list_run_captures"
 
     # ─── Storage Phase 2 — scan workflow ───────────────────
     # scan_sessions / scans / reconstructions. append-only blob + immutable

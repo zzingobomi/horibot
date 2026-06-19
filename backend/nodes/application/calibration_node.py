@@ -849,18 +849,47 @@ class CalibrationNode(ApplicationNode):
                 data=None,
             )
 
-        raw_positions = self._joint_cache.get_raw_motor_positions(
-            st.arm_cfgs, robot_id=robot_id
+        # ── capture sync: frame timestamp 기준 joint state interpolate ──
+        # JointStateCache.latest() + FrameCache.latest() 두 cache 가 비동기 update 라
+        # latest only 사용 시 timestamp 0-50ms mismatch → motor wobble 곱하기 → σ floor.
+        # frame ts 받아 그 시점 joint state interpolate 로 매칭.
+        ret, frame, frame_ts = self._frame_cache.get_frame_with_ts(robot_id=robot_id)
+        if not ret or frame is None or frame_ts is None:
+            return ServiceResponse(
+                success=False, message="카메라 프레임 읽기 실패", data=None
+            )
+
+        # stability check — capture 누른 시점 motor 가 실제 멈춰 있어야.
+        # Feetech servo holding PID oscillation (deadband X) 가 자세별 random noise 박음 → 막음.
+        stable, max_std_raw = self._joint_cache.is_stable(
+            st.arm_cfgs,
+            window_sec=0.15,
+            raw_std_threshold=2.0,
+            robot_id=robot_id,
         )
+        if not stable:
+            return ServiceResponse(
+                success=False,
+                message=(
+                    f"로봇이 아직 움직이는 중입니다 (motor wobble {max_std_raw:.1f} raw "
+                    f">2.0). 잠시 후 다시 시도해주세요."
+                ),
+                data=HandeyeCaptureRes(
+                    detected=False, pose_count=len(st.hand_eye.poses)
+                ),
+            )
+
+        raw_positions = self._joint_cache.get_raw_at_ts(
+            st.arm_cfgs, target_ts=frame_ts, robot_id=robot_id
+        )
+        if raw_positions is None:
+            # fallback — interpolate 범위 밖 (history 부족 또는 ts gap).
+            raw_positions = self._joint_cache.get_raw_motor_positions(
+                st.arm_cfgs, robot_id=robot_id
+            )
         if raw_positions is None:
             return ServiceResponse(
                 success=False, message="관절 상태 수신 전", data=None
-            )
-
-        ret, frame = self._frame_cache.get_frame(robot_id=robot_id)
-        if not ret or frame is None:
-            return ServiceResponse(
-                success=False, message="카메라 프레임 읽기 실패", data=None
             )
 
         # ChArUco 검출 — intrinsic pool 안 건드림 (handeye pool 과 분리).
@@ -997,12 +1026,16 @@ class CalibrationNode(ApplicationNode):
         )
 
     def _auto_ba_and_publish(self, robot_id: str) -> None:
-        """capture 마다 background 자체 자체 BA + observability + 추천. capture service
-        자체 자체 fast response 자체. 같은 robot 자체 capture 자체 자체 자체 자체 queue 자체
-        ThreadPoolExecutor(max_workers=1) 자체 자체 직렬화."""
+        """capture 마다 background BA + observability + 추천. capture service 는 fast
+        response. 같은 robot capture queue 는 ThreadPoolExecutor(max_workers=1) 직렬화.
+
+        BA 시작/끝 시 CALIB_HANDEYE_BA_STATUS publish — frontend spinner 표시.
+        """
         st = self._states[robot_id]
         if len(st.hand_eye.poses) < calib_thresholds.MIN_POSES_FOR_COMPUTE:
             return
+        self._publish_ba_status(robot_id, state="running", mode="physical_sag")
+        success = False
         try:
             auto_diag = self._run_ba_and_stash(robot_id, mode="physical_sag")
             if auto_diag is not None:
@@ -1010,12 +1043,26 @@ class CalibrationNode(ApplicationNode):
                 self._publish_param_observability(robot_id, auto_diag)
                 self._publish_saturate_state(robot_id, auto_diag)
                 self._publish_recommendations(robot_id)
+                success = True
         except Exception:
             logger.exception("[%s] 자동 BA 실패 (background)", robot_id)
+        finally:
+            self._publish_ba_status(
+                robot_id,
+                state="done" if success else "failed",
+                mode="physical_sag",
+            )
         try:
             self._publish_observability_state(robot_id, st)
         except Exception:
             logger.exception("[%s] observability 실패 (background)", robot_id)
+
+    def _publish_ba_status(self, robot_id: str, *, state: str, mode: str) -> None:
+        from core.transport.messages.calibration import HandeyeBaStatus
+        self.publish(
+            key_for(Topic.CALIB_HANDEYE_BA_STATUS, robot_id),
+            HandeyeBaStatus(timestamp=time.time(), state=state, mode=mode),
+        )
 
     def _srv_handeye_reset(
         self, _req: ServiceRequest[EmptyData], robot_id: str
@@ -1422,6 +1469,7 @@ class CalibrationNode(ApplicationNode):
         best_diag: dict | None = None
         best_sigma = float("inf")
 
+        self._publish_ba_status(robot_id, state="running", mode="multi_start")
         for mode in modes:
             try:
                 diag = self._run_ba_and_stash(robot_id, mode=mode)
@@ -1440,18 +1488,19 @@ class CalibrationNode(ApplicationNode):
                 )
 
         if best_diag is None:
+            self._publish_ba_status(robot_id, state="failed", mode="multi_start")
             return ServiceResponse(
                 success=False, message="모든 BA mode 실패", data=None
             )
 
         # 초기 solve → Phase 2 (refinement). 이후 capture 는 auto-BA.
         st.phase = "refinement"
-        # best 결과 last_compute 자체 자리 + topic publish
         st.last_compute = best_diag
         self._publish_sigma_state(robot_id, best_diag)
         self._publish_param_observability(robot_id, best_diag)
         self._publish_saturate_state(robot_id, best_diag)
         self._publish_recommendations(robot_id)
+        self._publish_ba_status(robot_id, state="done", mode="multi_start")
 
         best_rot = best_diag.get("sigma_rot_deg")
         best_t = best_diag.get("sigma_t_mm")
@@ -1580,6 +1629,26 @@ class CalibrationNode(ApplicationNode):
             R, t = st.kinematics.fk_to_matrix(list(angles))
             return np.asarray(R), np.asarray(t).reshape(3)
 
+        # narrow_sigma_good 분기에서 "약한 axis 보충" ghost 후보를 만들도록 hybrid
+        # 입력 추출. coach 가 motor_id 별 is_low_diversity + suggested_deg (절대
+        # 각도, 모터 limit 안) 를 이미 계산해 둠 — GeometryStrategy 가 sphere shell
+        # 5 anchor 끝에 그 정보를 받아 axis_diversify 후보 prepend.
+        # verdict 무관 (good 인데 표는 low_diversity 가 종종 발생) → axis_distributions
+        # 에서 직접 motor_id 추출. 항상 활성 (no-op 자리는 빈 dict).
+        coach = (st.last_compute or {}).get("coach", {})
+        axis_dists = coach.get("axis_distributions", [])
+        weak_motor_ids: list[int] = []
+        weak_suggested_deg: dict[int, float | None] = {}
+        for d in axis_dists:
+            if not d.get("is_low_diversity"):
+                continue
+            mid = d.get("motor_id")
+            sug = d.get("suggested_deg")
+            if mid is None or sug is None:
+                continue
+            weak_motor_ids.append(int(mid))
+            weak_suggested_deg[int(mid)] = float(sug)
+
         ctx = next_pose_planner.RecommendContext(
             current_joint_angles_rad=list(current),
             arm_motor_ids=arm_motor_ids,
@@ -1593,6 +1662,8 @@ class CalibrationNode(ApplicationNode):
             visibility_check=_check,
             existing_joint_angles=existing_ja,
             excluded_ids=excluded_ids,
+            weak_axis_motor_ids=weak_motor_ids,
+            weak_axis_suggested_deg=weak_suggested_deg,
         )
         result = strategy.recommend(ctx)
 

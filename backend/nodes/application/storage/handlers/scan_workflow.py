@@ -21,23 +21,23 @@ from typing import Any
 from core.transport.application_node import ApplicationNode
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.storage import (
-    StorageDeleteReconstructionReq,
-    StorageDeleteScanReq,
-    StorageDeleteScanSessionReq,
-    StorageGetBlobReq,
-    StorageGetBlobRes,
-    StorageListReconstructionsReq,
-    StorageListReconstructionsRes,
-    StorageListScanSessionsReq,
-    StorageListScanSessionsRes,
-    StorageListScansReq,
-    StorageListScansRes,
-    StorageNewScanSessionReq,
-    StorageNewScanSessionRes,
-    StoragePutReconstructionReq,
-    StoragePutReconstructionRes,
-    StoragePutScanReq,
-    StoragePutScanRes,
+    CreateScanSessionReq,
+    CreateScanSessionRes,
+    DeleteReconstructionReq,
+    DeleteScanReq,
+    DeleteScanSessionReq,
+    GetBlobReq,
+    GetBlobRes,
+    ListReconstructionsReq,
+    ListReconstructionsRes,
+    ListScanSessionsReq,
+    ListScanSessionsRes,
+    ListScansReq,
+    ListScansRes,
+    PutReconstructionReq,
+    PutReconstructionRes,
+    PutScanReq,
+    PutScanRes,
 )
 from core.transport.topic_map import Service
 from modules.scan_workflow.persistence_models import (
@@ -60,61 +60,61 @@ class ScanWorkflowHandlers:
     def register(self, node: ApplicationNode) -> None:
         node.create_service(
             Service.STORAGE_NEW_SCAN_SESSION,
-            StorageNewScanSessionReq,
-            StorageNewScanSessionRes,
+            CreateScanSessionReq,
+            CreateScanSessionRes,
             self._srv_new_scan_session,
         )
         node.create_service(
             Service.STORAGE_LIST_SCAN_SESSIONS,
-            StorageListScanSessionsReq,
-            StorageListScanSessionsRes,
+            ListScanSessionsReq,
+            ListScanSessionsRes,
             self._srv_list_scan_sessions,
         )
         node.create_service(
             Service.STORAGE_DELETE_SCAN_SESSION,
-            StorageDeleteScanSessionReq,
+            DeleteScanSessionReq,
             EmptyData,
             self._srv_delete_scan_session,
         )
         node.create_service(
             Service.STORAGE_PUT_SCAN,
-            StoragePutScanReq,
-            StoragePutScanRes,
+            PutScanReq,
+            PutScanRes,
             self._srv_put_scan,
         )
         node.create_service(
             Service.STORAGE_LIST_SCANS,
-            StorageListScansReq,
-            StorageListScansRes,
+            ListScansReq,
+            ListScansRes,
             self._srv_list_scans,
         )
         node.create_service(
             Service.STORAGE_DELETE_SCAN,
-            StorageDeleteScanReq,
+            DeleteScanReq,
             EmptyData,
             self._srv_delete_scan,
         )
         node.create_service(
             Service.STORAGE_GET_BLOB,
-            StorageGetBlobReq,
-            StorageGetBlobRes,
+            GetBlobReq,
+            GetBlobRes,
             self._srv_get_blob,
         )
         node.create_service(
             Service.STORAGE_PUT_RECONSTRUCTION,
-            StoragePutReconstructionReq,
-            StoragePutReconstructionRes,
+            PutReconstructionReq,
+            PutReconstructionRes,
             self._srv_put_reconstruction,
         )
         node.create_service(
             Service.STORAGE_LIST_RECONSTRUCTIONS,
-            StorageListReconstructionsReq,
-            StorageListReconstructionsRes,
+            ListReconstructionsReq,
+            ListReconstructionsRes,
             self._srv_list_reconstructions,
         )
         node.create_service(
             Service.STORAGE_DELETE_RECONSTRUCTION,
-            StorageDeleteReconstructionReq,
+            DeleteReconstructionReq,
             EmptyData,
             self._srv_delete_reconstruction,
         )
@@ -122,8 +122,8 @@ class ScanWorkflowHandlers:
     # ─── scan_sessions ────────────────────────────────────────
 
     def _srv_new_scan_session(
-        self, req: ServiceRequest[StorageNewScanSessionReq]
-    ) -> ServiceResponse[StorageNewScanSessionRes]:
+        self, req: ServiceRequest[CreateScanSessionReq]
+    ) -> ServiceResponse[CreateScanSessionRes]:
         data = req.data
         sid = (data.session_id or "").strip() or time.strftime(
             "session_%Y%m%d_%H%M%S"
@@ -135,7 +135,7 @@ class ScanWorkflowHandlers:
                 return ServiceResponse(
                     success=True,
                     message="이미 존재하는 session",
-                    data=StorageNewScanSessionRes(session=existing),
+                    data=CreateScanSessionRes(session=existing),
                 )
             record = ScanSessionRecord(
                 robot_id=data.robot_id,
@@ -152,22 +152,22 @@ class ScanWorkflowHandlers:
             row_id, out.robot_id, out.session_id,
         )
         return ServiceResponse(
-            success=True, data=StorageNewScanSessionRes(session=out)
+            success=True, data=CreateScanSessionRes(session=out)
         )
 
     def _srv_list_scan_sessions(
-        self, req: ServiceRequest[StorageListScanSessionsReq]
-    ) -> ServiceResponse[StorageListScanSessionsRes]:
+        self, req: ServiceRequest[ListScanSessionsReq]
+    ) -> ServiceResponse[ListScanSessionsRes]:
         with self._reg.rdb.session() as repos:
             sessions = repos.scan_workflow.list_sessions(
                 req.data.robot_id, req.data.limit
             )
         return ServiceResponse(
-            success=True, data=StorageListScanSessionsRes(sessions=sessions)
+            success=True, data=ListScanSessionsRes(sessions=sessions)
         )
 
     def _srv_delete_scan_session(
-        self, req: ServiceRequest[StorageDeleteScanSessionReq]
+        self, req: ServiceRequest[DeleteScanSessionReq]
     ) -> ServiceResponse[EmptyData]:
         sid = req.data.session_row_id
         # 자식 blob_key 먼저 모아 ObjectStore delete (CASCADE 전에).
@@ -197,8 +197,8 @@ class ScanWorkflowHandlers:
     # ─── scans ────────────────────────────────────────────────
 
     def _srv_put_scan(
-        self, req: ServiceRequest[StoragePutScanReq]
-    ) -> ServiceResponse[StoragePutScanRes]:
+        self, req: ServiceRequest[PutScanReq]
+    ) -> ServiceResponse[PutScanRes]:
         data = req.data
         with self._reg.rdb.session() as repos:
             session = repos.scan_workflow.get_session(data.session_row_id)
@@ -237,17 +237,17 @@ class ScanWorkflowHandlers:
             "PUT_SCAN: row_id=%d, session=%d, scan_id=%d (blob=%d bytes)",
             row_id, data.session_row_id, scan_id, len(data.blob_bytes),
         )
-        return ServiceResponse(success=True, data=StoragePutScanRes(scan=out))
+        return ServiceResponse(success=True, data=PutScanRes(scan=out))
 
     def _srv_list_scans(
-        self, req: ServiceRequest[StorageListScansReq]
-    ) -> ServiceResponse[StorageListScansRes]:
+        self, req: ServiceRequest[ListScansReq]
+    ) -> ServiceResponse[ListScansRes]:
         with self._reg.rdb.session() as repos:
             scans = repos.scan_workflow.list_scans(req.data.session_row_id)
-        return ServiceResponse(success=True, data=StorageListScansRes(scans=scans))
+        return ServiceResponse(success=True, data=ListScansRes(scans=scans))
 
     def _srv_delete_scan(
-        self, req: ServiceRequest[StorageDeleteScanReq]
+        self, req: ServiceRequest[DeleteScanReq]
     ) -> ServiceResponse[EmptyData]:
         with self._reg.rdb.session() as repos:
             scan = repos.scan_workflow.get_scan(req.data.scan_row_id)
@@ -266,8 +266,8 @@ class ScanWorkflowHandlers:
     # ─── blob (generic) ───────────────────────────────────────
 
     def _srv_get_blob(
-        self, req: ServiceRequest[StorageGetBlobReq]
-    ) -> ServiceResponse[StorageGetBlobRes]:
+        self, req: ServiceRequest[GetBlobReq]
+    ) -> ServiceResponse[GetBlobRes]:
         try:
             data = self._reg.objects.get(req.data.blob_key)
         except Exception as e:
@@ -275,14 +275,14 @@ class ScanWorkflowHandlers:
                 success=False, message=f"blob get 실패 ({req.data.blob_key}): {e}"
             )
         return ServiceResponse(
-            success=True, data=StorageGetBlobRes(blob_bytes=data)
+            success=True, data=GetBlobRes(blob_bytes=data)
         )
 
     # ─── reconstructions ──────────────────────────────────────
 
     def _srv_put_reconstruction(
-        self, req: ServiceRequest[StoragePutReconstructionReq]
-    ) -> ServiceResponse[StoragePutReconstructionRes]:
+        self, req: ServiceRequest[PutReconstructionReq]
+    ) -> ServiceResponse[PutReconstructionRes]:
         data = req.data
         with self._reg.rdb.session() as repos:
             session = repos.scan_workflow.get_session(data.session_row_id)
@@ -322,23 +322,23 @@ class ScanWorkflowHandlers:
             row_id, data.session_row_id, len(data.blob_bytes),
         )
         return ServiceResponse(
-            success=True, data=StoragePutReconstructionRes(reconstruction=out)
+            success=True, data=PutReconstructionRes(reconstruction=out)
         )
 
     def _srv_list_reconstructions(
-        self, req: ServiceRequest[StorageListReconstructionsReq]
-    ) -> ServiceResponse[StorageListReconstructionsRes]:
+        self, req: ServiceRequest[ListReconstructionsReq]
+    ) -> ServiceResponse[ListReconstructionsRes]:
         with self._reg.rdb.session() as repos:
             recons = repos.scan_workflow.list_reconstructions(
                 req.data.session_row_id
             )
         return ServiceResponse(
             success=True,
-            data=StorageListReconstructionsRes(reconstructions=recons),
+            data=ListReconstructionsRes(reconstructions=recons),
         )
 
     def _srv_delete_reconstruction(
-        self, req: ServiceRequest[StorageDeleteReconstructionReq]
+        self, req: ServiceRequest[DeleteReconstructionReq]
     ) -> ServiceResponse[EmptyData]:
         with self._reg.rdb.session() as repos:
             recon = repos.scan_workflow.get_reconstruction(req.data.recon_row_id)

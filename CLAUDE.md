@@ -31,6 +31,7 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 - [llm_preload_race_debug.md](docs/llm_preload_race_debug.md) — LLM/Grounding DINO preload meta-tensor race 진단 + 검증 plan (10회+ 깔짝 fix 박제 anchor, reproduction script 가 fix 보다 먼저)
 - [motion_taxonomy.md](docs/motion_taxonomy.md) — Horibot motion primitive 4 계층 (Move/Servo/Jog/Task) + UR/ABB/KUKA 산업 표준 매핑 + Phase 1.5 (2026-06-17) 자리 — Servo 의미 자리 보존 (절대 target chase = RL/Vision servo) + 신규 **Jog 계층** (human velocity, backend latch + SE(3) 적분 SSOT, LeRobot delta-pose 패턴) + SpeedJ/SpeedTcp + Ruckig velocity stream 자리 폐기.
 - [jog_drift_tuning.md](docs/jog_drift_tuning.md) — SpeedTcp/SpeedJ cartesian jog 의 transient drift 진단 + fix 박제. **2026-06-17 update v2**: root cause 자리 *resolved-rate velocity-streaming* 아키텍처 자체. SpeedJ/SpeedTcp 자리 폐기 + JogJ/JogTcp (LeRobot delta-pose) 자리 도입으로 directional transient 자체 사라짐 (수학적 보장).
+- [naming_conventions.md](docs/naming_conventions.md) — wire schema class 이름 (verb-first + sub-domain prefix, Google AIP/Kubernetes 정석) + key expression helper (`key_for`, Zenoh 어휘 정렬) 컨벤션 + migration phase 진행 status. **신규 messages / RPC 추가 시 reference**
 - [roadmap.md](docs/roadmap.md) — 진행 중/예정 작업
 
 ## 자주 쓰는 명령어

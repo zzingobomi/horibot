@@ -2,6 +2,10 @@
 
 docs/storage_layer.md §2 — Zenoh service gateway. 4 service + 1 topic.
 
+Naming: verb-first + sub-domain prefix (docs/naming_conventions.md §1).
+- calibration sub-domain — `*Calibration*` / `*CalibrationRun*` / `*CalibrationCapture*`
+- scan workflow sub-domain — `*Scan*` / `*ScanSession*` / `*Reconstruction*` / `*Blob*`
+
 Service:
 - STORAGE_GET_ACTIVE_CALIBRATION    — (req: kind, robot_id) → 활성 result 수치
 - STORAGE_LIST_CALIBRATIONS         — (req: kind, robot_id, limit) → list (history)
@@ -35,12 +39,12 @@ from modules.scan_workflow.persistence_models import (
 # ─── Service: STORAGE_GET_ACTIVE_CALIBRATION ───────────────────
 
 
-class StorageGetActiveReq(StrictModel):
+class GetActiveCalibrationReq(StrictModel):
     robot_id: str
     kind: CalibrationKind
 
 
-class StorageGetActiveRes(StrictModel):
+class GetActiveCalibrationRes(StrictModel):
     """found=False 면 활성 result 없음 — 첫 부팅 robot. caller 가 default fallback."""
 
     found: bool
@@ -50,13 +54,13 @@ class StorageGetActiveRes(StrictModel):
 # ─── Service: STORAGE_LIST_CALIBRATIONS ────────────────────────
 
 
-class StorageListReq(StrictModel):
+class ListCalibrationsReq(StrictModel):
     robot_id: str
     kind: CalibrationKind
     limit: int = 100
 
 
-class StorageListRes(StrictModel):
+class ListCalibrationsRes(StrictModel):
     results: list[CalibrationResultRecord]
 
 
@@ -74,12 +78,12 @@ class CalibrationRunSummary(StrictModel):
     results: list[CalibrationResultRecord]
 
 
-class StorageListRunsReq(StrictModel):
+class ListCalibrationRunsReq(StrictModel):
     robot_id: str
     limit: int = 50
 
 
-class StorageListRunsRes(StrictModel):
+class ListCalibrationRunsRes(StrictModel):
     """`run.started_at DESC` 정렬. 각 Run 마다 그 Run 의 모든 Result 가 묶여 옴."""
 
     runs: list[CalibrationRunSummary]
@@ -88,7 +92,7 @@ class StorageListRunsRes(StrictModel):
 # ─── Service: STORAGE_COMMIT_CALIBRATION ───────────────────────
 
 
-class StorageCommitReq(StrictModel):
+class CommitCalibrationReq(StrictModel):
     """한 Run + 그 산출물 (Result list) + Evidence (Capture list) atomic INSERT.
 
     run.id / results[*].id 는 무시 (storage 가 부여). results[*].run_id 도
@@ -104,7 +108,7 @@ class StorageCommitReq(StrictModel):
     captures: list[CalibrationCaptureRecord] = []
 
 
-class StorageCommitRes(StrictModel):
+class CommitCalibrationRes(StrictModel):
     run_id: int
     result_ids: list[int]
 
@@ -112,11 +116,11 @@ class StorageCommitRes(StrictModel):
 # ─── Service: STORAGE_ACTIVATE_CALIBRATION ─────────────────────
 
 
-class StorageActivateReq(StrictModel):
+class ActivateCalibrationReq(StrictModel):
     result_id: int
 
 
-class StorageActivateRes(StrictModel):
+class ActivateCalibrationRes(StrictModel):
     """activated result 의 robot_id / kind 는 frontend 가 invalidation 확인 시 사용."""
 
     result: CalibrationResultRecord
@@ -125,47 +129,47 @@ class StorageActivateRes(StrictModel):
 # ─── Draft run / capture-as-you-go (사용자 [캘 시작] flow) ─────
 
 
-class StorageNewCalRunReq(StrictModel):
+class CreateCalibrationRunReq(StrictModel):
     """[캘 시작] — in_progress run 생성. caller 가 run.kind 채워야 함.
     같은 (robot_id, kind) 의 기존 in_progress 가 있으면 서버가 reject."""
 
     run: CalibrationRunRecord
 
 
-class StorageNewCalRunRes(StrictModel):
+class CreateCalibrationRunRes(StrictModel):
     run_id: int
 
 
-class StorageAppendCaptureReq(StrictModel):
+class AppendCalibrationCaptureReq(StrictModel):
     """[캡처] — draft run 에 capture 1장 append. caller 가 capture.run_id 채워야 함."""
 
     capture: CalibrationCaptureRecord
 
 
-class StorageAppendCaptureRes(StrictModel):
+class AppendCalibrationCaptureRes(StrictModel):
     capture_id: int
 
 
-class StorageDeleteLastCaptureReq(StrictModel):
+class DeleteLastCalibrationCaptureReq(StrictModel):
     """[되돌리기] — 마지막 capture 1장 삭제."""
 
     run_id: int
 
 
-class StorageDeleteLastCaptureRes(StrictModel):
+class DeleteLastCalibrationCaptureRes(StrictModel):
     """deleted_pose_index None = 삭제할 capture 없음."""
 
     deleted_pose_index: int | None = None
 
 
-class StorageGetInProgressReq(StrictModel):
+class GetInProgressCalibrationRunReq(StrictModel):
     """부팅 시 복원 — 사용자 진행 중이던 세션 자리."""
 
     robot_id: str
     kind: CalibrationKind
 
 
-class StorageGetInProgressRes(StrictModel):
+class GetInProgressCalibrationRunRes(StrictModel):
     """found=False 면 진행 중 세션 없음."""
 
     found: bool
@@ -173,13 +177,13 @@ class StorageGetInProgressRes(StrictModel):
     captures: list[CalibrationCaptureRecord] = []
 
 
-class StorageDeleteCalRunReq(StrictModel):
+class DeleteCalibrationRunReq(StrictModel):
     """[리셋] — run + captures + results cascade delete."""
 
     run_id: int
 
 
-class StorageFinalizeCalRunReq(StrictModel):
+class FinalizeCalibrationRunReq(StrictModel):
     """[커밋] — in_progress → success, result rows INSERT, captures 의 residual UPDATE.
 
     capture_residuals: pose_index → (residual_rot, residual_trans, weight) 매핑.
@@ -193,7 +197,7 @@ class StorageFinalizeCalRunReq(StrictModel):
     )
 
 
-class StorageFinalizeCalRunRes(StrictModel):
+class FinalizeCalibrationRunRes(StrictModel):
     result_ids: list[int]
 
 
@@ -204,27 +208,27 @@ class StorageFinalizeCalRunRes(StrictModel):
 
 
 # ── scan_sessions
-class StorageNewScanSessionReq(StrictModel):
+class CreateScanSessionReq(StrictModel):
     robot_id: str
     session_id: str = ""  # 빈 자리 server 가 시간 기반 default
     label: str | None = None
     note: str | None = None
 
 
-class StorageNewScanSessionRes(StrictModel):
+class CreateScanSessionRes(StrictModel):
     session: ScanSessionRecord
 
 
-class StorageListScanSessionsReq(StrictModel):
+class ListScanSessionsReq(StrictModel):
     robot_id: str
     limit: int = 100
 
 
-class StorageListScanSessionsRes(StrictModel):
+class ListScanSessionsRes(StrictModel):
     sessions: list[ScanSessionRecord]
 
 
-class StorageDeleteScanSessionReq(StrictModel):
+class DeleteScanSessionReq(StrictModel):
     """CASCADE — 자식 scans / reconstructions 자리 자동 삭제 (RDB + ObjectStore blob).
 
     blob 자리도 server 가 같이 삭제 자리 — RDB row 자리 fetch 후 blob_key 순회.
@@ -234,7 +238,7 @@ class StorageDeleteScanSessionReq(StrictModel):
 
 
 # ── scans
-class StoragePutScanReq(StrictModel):
+class PutScanReq(StrictModel):
     """snapshot 자리 받아 storage 자리 commit. scan_id 자리는 server alloc."""
 
     session_row_id: int
@@ -252,35 +256,35 @@ class StoragePutScanReq(StrictModel):
     arm_motor_ids: list[int]
 
 
-class StoragePutScanRes(StrictModel):
+class PutScanRes(StrictModel):
     scan: ScanRecord
 
 
-class StorageListScansReq(StrictModel):
+class ListScansReq(StrictModel):
     session_row_id: int
 
 
-class StorageListScansRes(StrictModel):
+class ListScansRes(StrictModel):
     """metadata 만 자리 — blob 자체 X (GET_BLOB 자리 별도)."""
 
     scans: list[ScanRecord]
 
 
-class StorageDeleteScanReq(StrictModel):
+class DeleteScanReq(StrictModel):
     scan_row_id: int
 
 
 # ── blob (generic — scan / reconstruction 공통)
-class StorageGetBlobReq(StrictModel):
+class GetBlobReq(StrictModel):
     blob_key: str
 
 
-class StorageGetBlobRes(StrictModel):
+class GetBlobRes(StrictModel):
     blob_bytes: Base64Bytes
 
 
 # ── reconstructions
-class StoragePutReconstructionReq(StrictModel):
+class PutReconstructionReq(StrictModel):
     """ReconstructionNode 가 build 끝나면 호출. metadata + .ply blob."""
 
     session_row_id: int
@@ -296,19 +300,19 @@ class StoragePutReconstructionReq(StrictModel):
     elapsed: float
 
 
-class StoragePutReconstructionRes(StrictModel):
+class PutReconstructionRes(StrictModel):
     reconstruction: ReconstructionRecord
 
 
-class StorageListReconstructionsReq(StrictModel):
+class ListReconstructionsReq(StrictModel):
     session_row_id: int
 
 
-class StorageListReconstructionsRes(StrictModel):
+class ListReconstructionsRes(StrictModel):
     reconstructions: list[ReconstructionRecord]
 
 
-class StorageDeleteReconstructionReq(StrictModel):
+class DeleteReconstructionReq(StrictModel):
     recon_row_id: int
 
 

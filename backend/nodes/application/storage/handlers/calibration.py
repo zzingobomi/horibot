@@ -21,29 +21,29 @@ from typing import Any
 from core.transport.application_node import ApplicationNode
 from core.transport.messages.base import EmptyData, ServiceRequest, ServiceResponse
 from core.transport.messages.storage import (
+    ActivateCalibrationReq,
+    ActivateCalibrationRes,
+    AppendCalibrationCaptureReq,
+    AppendCalibrationCaptureRes,
     CalibrationInvalidated,
     CalibrationRunSummary,
-    StorageActivateReq,
-    StorageActivateRes,
-    StorageAppendCaptureReq,
-    StorageAppendCaptureRes,
-    StorageCommitReq,
-    StorageCommitRes,
-    StorageDeleteCalRunReq,
-    StorageDeleteLastCaptureReq,
-    StorageDeleteLastCaptureRes,
-    StorageFinalizeCalRunReq,
-    StorageFinalizeCalRunRes,
-    StorageGetActiveReq,
-    StorageGetActiveRes,
-    StorageGetInProgressReq,
-    StorageGetInProgressRes,
-    StorageListReq,
-    StorageListRes,
-    StorageListRunsReq,
-    StorageListRunsRes,
-    StorageNewCalRunReq,
-    StorageNewCalRunRes,
+    CommitCalibrationReq,
+    CommitCalibrationRes,
+    CreateCalibrationRunReq,
+    CreateCalibrationRunRes,
+    DeleteCalibrationRunReq,
+    DeleteLastCalibrationCaptureReq,
+    DeleteLastCalibrationCaptureRes,
+    FinalizeCalibrationRunReq,
+    FinalizeCalibrationRunRes,
+    GetActiveCalibrationReq,
+    GetActiveCalibrationRes,
+    GetInProgressCalibrationRunReq,
+    GetInProgressCalibrationRunRes,
+    ListCalibrationRunsReq,
+    ListCalibrationRunsRes,
+    ListCalibrationsReq,
+    ListCalibrationsRes,
 )
 from core.transport.topic_map import Service, Topic
 from modules.storage.registry import StorageRegistry
@@ -61,111 +61,111 @@ class CalibrationHandlers:
     def register(self, node: ApplicationNode) -> None:
         node.create_service(
             Service.STORAGE_GET_ACTIVE_CALIBRATION,
-            StorageGetActiveReq,
-            StorageGetActiveRes,
+            GetActiveCalibrationReq,
+            GetActiveCalibrationRes,
             self._srv_get_active,
         )
         node.create_service(
             Service.STORAGE_LIST_CALIBRATIONS,
-            StorageListReq,
-            StorageListRes,
+            ListCalibrationsReq,
+            ListCalibrationsRes,
             self._srv_list,
         )
         node.create_service(
             Service.STORAGE_LIST_CALIBRATION_RUNS,
-            StorageListRunsReq,
-            StorageListRunsRes,
+            ListCalibrationRunsReq,
+            ListCalibrationRunsRes,
             self._srv_list_runs,
         )
         node.create_service(
             Service.STORAGE_COMMIT_CALIBRATION,
-            StorageCommitReq,
-            StorageCommitRes,
+            CommitCalibrationReq,
+            CommitCalibrationRes,
             self._srv_commit,
         )
         node.create_service(
             Service.STORAGE_ACTIVATE_CALIBRATION,
-            StorageActivateReq,
-            StorageActivateRes,
+            ActivateCalibrationReq,
+            ActivateCalibrationRes,
             self._srv_activate,
         )
         node.create_service(
             Service.STORAGE_NEW_CAL_RUN,
-            StorageNewCalRunReq,
-            StorageNewCalRunRes,
+            CreateCalibrationRunReq,
+            CreateCalibrationRunRes,
             self._srv_new_cal_run,
         )
         node.create_service(
             Service.STORAGE_APPEND_CAPTURE,
-            StorageAppendCaptureReq,
-            StorageAppendCaptureRes,
+            AppendCalibrationCaptureReq,
+            AppendCalibrationCaptureRes,
             self._srv_append_capture,
         )
         node.create_service(
             Service.STORAGE_DELETE_LAST_CAPTURE,
-            StorageDeleteLastCaptureReq,
-            StorageDeleteLastCaptureRes,
+            DeleteLastCalibrationCaptureReq,
+            DeleteLastCalibrationCaptureRes,
             self._srv_delete_last_capture,
         )
         node.create_service(
             Service.STORAGE_GET_IN_PROGRESS_RUN,
-            StorageGetInProgressReq,
-            StorageGetInProgressRes,
+            GetInProgressCalibrationRunReq,
+            GetInProgressCalibrationRunRes,
             self._srv_get_in_progress_run,
         )
         node.create_service(
             Service.STORAGE_DELETE_CAL_RUN,
-            StorageDeleteCalRunReq,
+            DeleteCalibrationRunReq,
             EmptyData,
             self._srv_delete_cal_run,
         )
         node.create_service(
             Service.STORAGE_FINALIZE_CAL_RUN,
-            StorageFinalizeCalRunReq,
-            StorageFinalizeCalRunRes,
+            FinalizeCalibrationRunReq,
+            FinalizeCalibrationRunRes,
             self._srv_finalize_cal_run,
         )
 
     # ─── service handlers ─────────────────────────────────────
 
     def _srv_get_active(
-        self, req: ServiceRequest[StorageGetActiveReq]
-    ) -> ServiceResponse[StorageGetActiveRes]:
+        self, req: ServiceRequest[GetActiveCalibrationReq]
+    ) -> ServiceResponse[GetActiveCalibrationRes]:
         with self._reg.rdb.session() as repos:
             record = repos.calibration.get_active_result(
                 req.data.robot_id, req.data.kind
             )
         return ServiceResponse(
             success=True,
-            data=StorageGetActiveRes(
+            data=GetActiveCalibrationRes(
                 found=record is not None, result=record
             ),
         )
 
     def _srv_list(
-        self, req: ServiceRequest[StorageListReq]
-    ) -> ServiceResponse[StorageListRes]:
+        self, req: ServiceRequest[ListCalibrationsReq]
+    ) -> ServiceResponse[ListCalibrationsRes]:
         with self._reg.rdb.session() as repos:
             records = repos.calibration.list_results(
                 req.data.robot_id, req.data.kind, req.data.limit
             )
-        return ServiceResponse(success=True, data=StorageListRes(results=records))
+        return ServiceResponse(success=True, data=ListCalibrationsRes(results=records))
 
     def _srv_list_runs(
-        self, req: ServiceRequest[StorageListRunsReq]
-    ) -> ServiceResponse[StorageListRunsRes]:
+        self, req: ServiceRequest[ListCalibrationRunsReq]
+    ) -> ServiceResponse[ListCalibrationRunsRes]:
         with self._reg.rdb.session() as repos:
             rows = repos.calibration.list_runs(req.data.robot_id, req.data.limit)
         summaries = [
             CalibrationRunSummary(run=run, results=results) for run, results in rows
         ]
         return ServiceResponse(
-            success=True, data=StorageListRunsRes(runs=summaries)
+            success=True, data=ListCalibrationRunsRes(runs=summaries)
         )
 
     def _srv_commit(
-        self, req: ServiceRequest[StorageCommitReq]
-    ) -> ServiceResponse[StorageCommitRes]:
+        self, req: ServiceRequest[CommitCalibrationReq]
+    ) -> ServiceResponse[CommitCalibrationRes]:
         with self._reg.rdb.session() as repos:
             run_id, result_ids = repos.calibration.commit(
                 req.data.run, req.data.results, req.data.captures
@@ -180,12 +180,12 @@ class CalibrationHandlers:
         )
         return ServiceResponse(
             success=True,
-            data=StorageCommitRes(run_id=run_id, result_ids=result_ids),
+            data=CommitCalibrationRes(run_id=run_id, result_ids=result_ids),
         )
 
     def _srv_activate(
-        self, req: ServiceRequest[StorageActivateReq]
-    ) -> ServiceResponse[StorageActivateRes]:
+        self, req: ServiceRequest[ActivateCalibrationReq]
+    ) -> ServiceResponse[ActivateCalibrationRes]:
         try:
             with self._reg.rdb.session() as repos:
                 activated = repos.calibration.activate_result(req.data.result_id)
@@ -211,14 +211,14 @@ class CalibrationHandlers:
             activated.kind,
         )
         return ServiceResponse(
-            success=True, data=StorageActivateRes(result=activated)
+            success=True, data=ActivateCalibrationRes(result=activated)
         )
 
     # ─── Draft run handlers (사용자 [캘 시작] flow) ───────────
 
     def _srv_new_cal_run(
-        self, req: ServiceRequest[StorageNewCalRunReq]
-    ) -> ServiceResponse[StorageNewCalRunRes]:
+        self, req: ServiceRequest[CreateCalibrationRunReq]
+    ) -> ServiceResponse[CreateCalibrationRunRes]:
         run = req.data.run
         if run.kind is None:
             return ServiceResponse(
@@ -242,48 +242,48 @@ class CalibrationHandlers:
             "NEW_CAL_RUN: run_id=%d (robot=%s, kind=%s, algorithm=%s)",
             run_id, run.robot_id, run.kind, run.algorithm,
         )
-        return ServiceResponse(success=True, data=StorageNewCalRunRes(run_id=run_id))
+        return ServiceResponse(success=True, data=CreateCalibrationRunRes(run_id=run_id))
 
     def _srv_append_capture(
-        self, req: ServiceRequest[StorageAppendCaptureReq]
-    ) -> ServiceResponse[StorageAppendCaptureRes]:
+        self, req: ServiceRequest[AppendCalibrationCaptureReq]
+    ) -> ServiceResponse[AppendCalibrationCaptureRes]:
         capture = req.data.capture
         with self._reg.rdb.session() as repos:
             capture_id = repos.calibration.append_capture(capture)
         return ServiceResponse(
             success=True,
-            data=StorageAppendCaptureRes(capture_id=capture_id),
+            data=AppendCalibrationCaptureRes(capture_id=capture_id),
         )
 
     def _srv_delete_last_capture(
-        self, req: ServiceRequest[StorageDeleteLastCaptureReq]
-    ) -> ServiceResponse[StorageDeleteLastCaptureRes]:
+        self, req: ServiceRequest[DeleteLastCalibrationCaptureReq]
+    ) -> ServiceResponse[DeleteLastCalibrationCaptureRes]:
         with self._reg.rdb.session() as repos:
             deleted = repos.calibration.delete_last_capture(req.data.run_id)
         return ServiceResponse(
             success=True,
-            data=StorageDeleteLastCaptureRes(deleted_pose_index=deleted),
+            data=DeleteLastCalibrationCaptureRes(deleted_pose_index=deleted),
         )
 
     def _srv_get_in_progress_run(
-        self, req: ServiceRequest[StorageGetInProgressReq]
-    ) -> ServiceResponse[StorageGetInProgressRes]:
+        self, req: ServiceRequest[GetInProgressCalibrationRunReq]
+    ) -> ServiceResponse[GetInProgressCalibrationRunRes]:
         with self._reg.rdb.session() as repos:
             result = repos.calibration.get_in_progress_run(
                 req.data.robot_id, req.data.kind
             )
         if result is None:
             return ServiceResponse(
-                success=True, data=StorageGetInProgressRes(found=False)
+                success=True, data=GetInProgressCalibrationRunRes(found=False)
             )
         run, captures = result
         return ServiceResponse(
             success=True,
-            data=StorageGetInProgressRes(found=True, run=run, captures=captures),
+            data=GetInProgressCalibrationRunRes(found=True, run=run, captures=captures),
         )
 
     def _srv_delete_cal_run(
-        self, req: ServiceRequest[StorageDeleteCalRunReq]
+        self, req: ServiceRequest[DeleteCalibrationRunReq]
     ) -> ServiceResponse[EmptyData]:
         with self._reg.rdb.session() as repos:
             repos.calibration.delete_run(req.data.run_id)
@@ -291,8 +291,8 @@ class CalibrationHandlers:
         return ServiceResponse(success=True, data=EmptyData())
 
     def _srv_finalize_cal_run(
-        self, req: ServiceRequest[StorageFinalizeCalRunReq]
-    ) -> ServiceResponse[StorageFinalizeCalRunRes]:
+        self, req: ServiceRequest[FinalizeCalibrationRunReq]
+    ) -> ServiceResponse[FinalizeCalibrationRunRes]:
         try:
             with self._reg.rdb.session() as repos:
                 result_ids = repos.calibration.finalize_run(
@@ -305,5 +305,5 @@ class CalibrationHandlers:
             req.data.run_id, result_ids,
         )
         return ServiceResponse(
-            success=True, data=StorageFinalizeCalRunRes(result_ids=result_ids),
+            success=True, data=FinalizeCalibrationRunRes(result_ids=result_ids),
         )

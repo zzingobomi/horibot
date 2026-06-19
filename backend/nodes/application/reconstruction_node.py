@@ -25,12 +25,12 @@ from core.transport.messages.reconstruction import (
     ReconstructionProgress,
 )
 from core.transport.messages.storage import (
-    StorageGetBlobReq,
-    StorageGetBlobRes,
-    StorageListScansReq,
-    StorageListScansRes,
-    StoragePutReconstructionReq,
-    StoragePutReconstructionRes,
+    GetBlobReq,
+    GetBlobRes,
+    ListScansReq,
+    ListScansRes,
+    PutReconstructionReq,
+    PutReconstructionRes,
 )
 from core.transport.topic_map import Service, Topic
 from modules.motor.motor_config import load_motor_layout
@@ -79,8 +79,8 @@ class ReconstructionNode(ApplicationNode):
         # 1. scan list fetch
         list_res = self.call_service(
             Service.STORAGE_LIST_SCANS,
-            StorageListScansReq(session_row_id=sid),
-            StorageListScansRes,
+            ListScansReq(session_row_id=sid),
+            ListScansRes,
         )
         if not list_res.success or list_res.data is None:
             return ServiceResponse(
@@ -111,8 +111,8 @@ class ReconstructionNode(ApplicationNode):
             )
             blob_res = self.call_service(
                 Service.STORAGE_GET_BLOB,
-                StorageGetBlobReq(blob_key=record.blob_key),
-                StorageGetBlobRes,
+                GetBlobReq(blob_key=record.blob_key),
+                GetBlobRes,
                 timeout=30.0,
             )
             if not blob_res.success or blob_res.data is None:
@@ -176,7 +176,7 @@ class ReconstructionNode(ApplicationNode):
         # 4. storage put
         put_res = self.call_service(
             Service.STORAGE_PUT_RECONSTRUCTION,
-            StoragePutReconstructionReq(
+            PutReconstructionReq(
                 session_row_id=sid,
                 blob_bytes=result.mesh_bytes,
                 voxel_size=voxel_size,
@@ -189,7 +189,7 @@ class ReconstructionNode(ApplicationNode):
                 triangle_count=result.triangle_count,
                 elapsed=result.elapsed,
             ),
-            StoragePutReconstructionRes,
+            PutReconstructionRes,
             timeout=60.0,
         )
         if not put_res.success or put_res.data is None:

@@ -143,6 +143,19 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ActivateCalibrationReq */
+        ActivateCalibrationReq: {
+            /** Result Id */
+            result_id: number;
+        };
+        /**
+         * ActivateCalibrationRes
+         * @description activated result 의 robot_id / kind 는 frontend 가 invalidation 확인 시 사용.
+         */
+        ActivateCalibrationRes: {
+            /** Result */
+            result: components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"];
+        };
         /**
          * AxisDistributionEntry
          * @description coach.axis_distributions 원소. UI 의 자세 다양성 표 + low_diversity 색 분기.
@@ -366,6 +379,72 @@ export interface components {
             depth_scale: number;
         };
         /**
+         * CommitCalibrationReq
+         * @description 한 Run + 그 산출물 (Result list) + Evidence (Capture list) atomic INSERT.
+         *
+         *     run.id / results[*].id 는 무시 (storage 가 부여). results[*].run_id 도
+         *     무시 (storage 가 새 run_id 로 덮어씀). caller 가 임시 placeholder 채우거나
+         *     None 두면 됨.
+         *
+         *     INSERT 시 모든 result.is_active=false — caller 가 받은 result_id 로
+         *     ACTIVATE 별도 호출.
+         */
+        CommitCalibrationReq: {
+            run: components["schemas"]["CalibrationRunRecord"];
+            /** Results */
+            results: (components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"])[];
+            /**
+             * Captures
+             * @default []
+             */
+            captures: components["schemas"]["CalibrationCaptureRecord"][];
+        };
+        /** CommitCalibrationRes */
+        CommitCalibrationRes: {
+            /** Run Id */
+            run_id: number;
+            /** Result Ids */
+            result_ids: number[];
+        };
+        /** CreateScanSessionReq */
+        CreateScanSessionReq: {
+            /** Robot Id */
+            robot_id: string;
+            /**
+             * Session Id
+             * @default
+             */
+            session_id: string;
+            /** Label */
+            label?: string | null;
+            /** Note */
+            note?: string | null;
+        };
+        /** CreateScanSessionRes */
+        CreateScanSessionRes: {
+            session: components["schemas"]["ScanSessionRecord"];
+        };
+        /** DeleteReconstructionReq */
+        DeleteReconstructionReq: {
+            /** Recon Row Id */
+            recon_row_id: number;
+        };
+        /** DeleteScanReq */
+        DeleteScanReq: {
+            /** Scan Row Id */
+            scan_row_id: number;
+        };
+        /**
+         * DeleteScanSessionReq
+         * @description CASCADE — 자식 scans / reconstructions 자리 자동 삭제 (RDB + ObjectStore blob).
+         *
+         *     blob 자리도 server 가 같이 삭제 자리 — RDB row 자리 fetch 후 blob_key 순회.
+         */
+        DeleteScanSessionReq: {
+            /** Session Row Id */
+            session_row_id: number;
+        };
+        /**
          * DetectorState
          * @description DETECTOR_STATE publish — YOLO raw 5fps.
          */
@@ -380,6 +459,26 @@ export interface components {
          * @description payload 가 빈 service request / response 용.
          */
         EmptyData: Record<string, never>;
+        /** GetActiveCalibrationReq */
+        GetActiveCalibrationReq: {
+            /** Robot Id */
+            robot_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
+        };
+        /**
+         * GetActiveCalibrationRes
+         * @description found=False 면 활성 result 없음 — 첫 부팅 robot. caller 가 default fallback.
+         */
+        GetActiveCalibrationRes: {
+            /** Found */
+            found: boolean;
+            /** Result */
+            result?: (components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"]) | null;
+        };
         /**
          * GroundedDetectReq
          * @description open-vocabulary prompt (예: "cube", "red mug").
@@ -911,6 +1010,82 @@ export interface components {
             kind: "link_offset";
             result_data: components["schemas"]["LinkOffsetResultData"];
         };
+        /** ListCalibrationRunsReq */
+        ListCalibrationRunsReq: {
+            /** Robot Id */
+            robot_id: string;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+        };
+        /**
+         * ListCalibrationRunsRes
+         * @description `run.started_at DESC` 정렬. 각 Run 마다 그 Run 의 모든 Result 가 묶여 옴.
+         */
+        ListCalibrationRunsRes: {
+            /** Runs */
+            runs: components["schemas"]["CalibrationRunSummary"][];
+        };
+        /** ListCalibrationsReq */
+        ListCalibrationsReq: {
+            /** Robot Id */
+            robot_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
+            /**
+             * Limit
+             * @default 100
+             */
+            limit: number;
+        };
+        /** ListCalibrationsRes */
+        ListCalibrationsRes: {
+            /** Results */
+            results: (components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"])[];
+        };
+        /** ListReconstructionsReq */
+        ListReconstructionsReq: {
+            /** Session Row Id */
+            session_row_id: number;
+        };
+        /** ListReconstructionsRes */
+        ListReconstructionsRes: {
+            /** Reconstructions */
+            reconstructions: components["schemas"]["ReconstructionRecord"][];
+        };
+        /** ListScanSessionsReq */
+        ListScanSessionsReq: {
+            /** Robot Id */
+            robot_id: string;
+            /**
+             * Limit
+             * @default 100
+             */
+            limit: number;
+        };
+        /** ListScanSessionsRes */
+        ListScanSessionsRes: {
+            /** Sessions */
+            sessions: components["schemas"]["ScanSessionRecord"][];
+        };
+        /** ListScansReq */
+        ListScansReq: {
+            /** Session Row Id */
+            session_row_id: number;
+        };
+        /**
+         * ListScansRes
+         * @description metadata 만 자리 — blob 자체 X (GET_BLOB 자리 별도).
+         */
+        ListScansRes: {
+            /** Scans */
+            scans: components["schemas"]["ScanRecord"][];
+        };
         /**
          * LogMessage
          * @description SYSTEM_LOG 페이로드. BaseNode.log("info", "...") 호출 시 발행.
@@ -1118,12 +1293,23 @@ export interface components {
          * @description OpenAPI schema export only — auto-built from api_contract.
          */
         OpenApiSchemaRegistry: {
+            ActivateCalibrationReq?: components["schemas"]["ActivateCalibrationReq"] | null;
+            ActivateCalibrationRes?: components["schemas"]["ActivateCalibrationRes"] | null;
             BeginRefinementReq?: components["schemas"]["BeginRefinementReq"] | null;
             BeginRefinementRes?: components["schemas"]["BeginRefinementRes"] | null;
             CalibrationInvalidated?: components["schemas"]["CalibrationInvalidated"] | null;
             CameraStatus?: components["schemas"]["CameraStatus"] | null;
+            CommitCalibrationReq?: components["schemas"]["CommitCalibrationReq"] | null;
+            CommitCalibrationRes?: components["schemas"]["CommitCalibrationRes"] | null;
+            CreateScanSessionReq?: components["schemas"]["CreateScanSessionReq"] | null;
+            CreateScanSessionRes?: components["schemas"]["CreateScanSessionRes"] | null;
+            DeleteReconstructionReq?: components["schemas"]["DeleteReconstructionReq"] | null;
+            DeleteScanReq?: components["schemas"]["DeleteScanReq"] | null;
+            DeleteScanSessionReq?: components["schemas"]["DeleteScanSessionReq"] | null;
             DetectorState?: components["schemas"]["DetectorState"] | null;
             EmptyData?: components["schemas"]["EmptyData"] | null;
+            GetActiveCalibrationReq?: components["schemas"]["GetActiveCalibrationReq"] | null;
+            GetActiveCalibrationRes?: components["schemas"]["GetActiveCalibrationRes"] | null;
             GroundedDetectReq?: components["schemas"]["GroundedDetectReq"] | null;
             GroundedDetectionResult?: components["schemas"]["GroundedDetectionResult"] | null;
             HandeyeCaptureRes?: components["schemas"]["HandeyeCaptureRes"] | null;
@@ -1142,6 +1328,16 @@ export interface components {
             IntrinsicSaveRes?: components["schemas"]["IntrinsicSaveRes"] | null;
             JogJReq?: components["schemas"]["JogJReq"] | null;
             JogTcpReq?: components["schemas"]["JogTcpReq"] | null;
+            ListCalibrationRunsReq?: components["schemas"]["ListCalibrationRunsReq"] | null;
+            ListCalibrationRunsRes?: components["schemas"]["ListCalibrationRunsRes"] | null;
+            ListCalibrationsReq?: components["schemas"]["ListCalibrationsReq"] | null;
+            ListCalibrationsRes?: components["schemas"]["ListCalibrationsRes"] | null;
+            ListReconstructionsReq?: components["schemas"]["ListReconstructionsReq"] | null;
+            ListReconstructionsRes?: components["schemas"]["ListReconstructionsRes"] | null;
+            ListScanSessionsReq?: components["schemas"]["ListScanSessionsReq"] | null;
+            ListScanSessionsRes?: components["schemas"]["ListScanSessionsRes"] | null;
+            ListScansReq?: components["schemas"]["ListScansReq"] | null;
+            ListScansRes?: components["schemas"]["ListScansRes"] | null;
             LogMessage?: components["schemas"]["LogMessage"] | null;
             MotionTcpPose?: components["schemas"]["MotionTcpPose"] | null;
             MotionTrajState?: components["schemas"]["MotionTrajState"] | null;
@@ -1164,27 +1360,6 @@ export interface components {
             Scene3DState?: components["schemas"]["Scene3DState"] | null;
             ServoJReq?: components["schemas"]["ServoJReq"] | null;
             ServoTcpReq?: components["schemas"]["ServoTcpReq"] | null;
-            StorageActivateReq?: components["schemas"]["StorageActivateReq"] | null;
-            StorageActivateRes?: components["schemas"]["StorageActivateRes"] | null;
-            StorageCommitReq?: components["schemas"]["StorageCommitReq"] | null;
-            StorageCommitRes?: components["schemas"]["StorageCommitRes"] | null;
-            StorageDeleteReconstructionReq?: components["schemas"]["StorageDeleteReconstructionReq"] | null;
-            StorageDeleteScanReq?: components["schemas"]["StorageDeleteScanReq"] | null;
-            StorageDeleteScanSessionReq?: components["schemas"]["StorageDeleteScanSessionReq"] | null;
-            StorageGetActiveReq?: components["schemas"]["StorageGetActiveReq"] | null;
-            StorageGetActiveRes?: components["schemas"]["StorageGetActiveRes"] | null;
-            StorageListReconstructionsReq?: components["schemas"]["StorageListReconstructionsReq"] | null;
-            StorageListReconstructionsRes?: components["schemas"]["StorageListReconstructionsRes"] | null;
-            StorageListReq?: components["schemas"]["StorageListReq"] | null;
-            StorageListRes?: components["schemas"]["StorageListRes"] | null;
-            StorageListRunsReq?: components["schemas"]["StorageListRunsReq"] | null;
-            StorageListRunsRes?: components["schemas"]["StorageListRunsRes"] | null;
-            StorageListScanSessionsReq?: components["schemas"]["StorageListScanSessionsReq"] | null;
-            StorageListScanSessionsRes?: components["schemas"]["StorageListScanSessionsRes"] | null;
-            StorageListScansReq?: components["schemas"]["StorageListScansReq"] | null;
-            StorageListScansRes?: components["schemas"]["StorageListScansRes"] | null;
-            StorageNewScanSessionReq?: components["schemas"]["StorageNewScanSessionReq"] | null;
-            StorageNewScanSessionRes?: components["schemas"]["StorageNewScanSessionRes"] | null;
             TaskStepIdReq?: components["schemas"]["TaskStepIdReq"] | null;
         };
         /** ReconstructionProgress */
@@ -1487,181 +1662,6 @@ export interface components {
             position: number[];
             /** Quaternion */
             quaternion?: number[] | null;
-        };
-        /** StorageActivateReq */
-        StorageActivateReq: {
-            /** Result Id */
-            result_id: number;
-        };
-        /**
-         * StorageActivateRes
-         * @description activated result 의 robot_id / kind 는 frontend 가 invalidation 확인 시 사용.
-         */
-        StorageActivateRes: {
-            /** Result */
-            result: components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"];
-        };
-        /**
-         * StorageCommitReq
-         * @description 한 Run + 그 산출물 (Result list) + Evidence (Capture list) atomic INSERT.
-         *
-         *     run.id / results[*].id 는 무시 (storage 가 부여). results[*].run_id 도
-         *     무시 (storage 가 새 run_id 로 덮어씀). caller 가 임시 placeholder 채우거나
-         *     None 두면 됨.
-         *
-         *     INSERT 시 모든 result.is_active=false — caller 가 받은 result_id 로
-         *     ACTIVATE 별도 호출.
-         */
-        StorageCommitReq: {
-            run: components["schemas"]["CalibrationRunRecord"];
-            /** Results */
-            results: (components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"])[];
-            /**
-             * Captures
-             * @default []
-             */
-            captures: components["schemas"]["CalibrationCaptureRecord"][];
-        };
-        /** StorageCommitRes */
-        StorageCommitRes: {
-            /** Run Id */
-            run_id: number;
-            /** Result Ids */
-            result_ids: number[];
-        };
-        /** StorageDeleteReconstructionReq */
-        StorageDeleteReconstructionReq: {
-            /** Recon Row Id */
-            recon_row_id: number;
-        };
-        /** StorageDeleteScanReq */
-        StorageDeleteScanReq: {
-            /** Scan Row Id */
-            scan_row_id: number;
-        };
-        /**
-         * StorageDeleteScanSessionReq
-         * @description CASCADE — 자식 scans / reconstructions 자리 자동 삭제 (RDB + ObjectStore blob).
-         *
-         *     blob 자리도 server 가 같이 삭제 자리 — RDB row 자리 fetch 후 blob_key 순회.
-         */
-        StorageDeleteScanSessionReq: {
-            /** Session Row Id */
-            session_row_id: number;
-        };
-        /** StorageGetActiveReq */
-        StorageGetActiveReq: {
-            /** Robot Id */
-            robot_id: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
-        };
-        /**
-         * StorageGetActiveRes
-         * @description found=False 면 활성 result 없음 — 첫 부팅 robot. caller 가 default fallback.
-         */
-        StorageGetActiveRes: {
-            /** Found */
-            found: boolean;
-            /** Result */
-            result?: (components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"]) | null;
-        };
-        /** StorageListReconstructionsReq */
-        StorageListReconstructionsReq: {
-            /** Session Row Id */
-            session_row_id: number;
-        };
-        /** StorageListReconstructionsRes */
-        StorageListReconstructionsRes: {
-            /** Reconstructions */
-            reconstructions: components["schemas"]["ReconstructionRecord"][];
-        };
-        /** StorageListReq */
-        StorageListReq: {
-            /** Robot Id */
-            robot_id: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
-            /**
-             * Limit
-             * @default 100
-             */
-            limit: number;
-        };
-        /** StorageListRes */
-        StorageListRes: {
-            /** Results */
-            results: (components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"])[];
-        };
-        /** StorageListRunsReq */
-        StorageListRunsReq: {
-            /** Robot Id */
-            robot_id: string;
-            /**
-             * Limit
-             * @default 50
-             */
-            limit: number;
-        };
-        /**
-         * StorageListRunsRes
-         * @description `run.started_at DESC` 정렬. 각 Run 마다 그 Run 의 모든 Result 가 묶여 옴.
-         */
-        StorageListRunsRes: {
-            /** Runs */
-            runs: components["schemas"]["CalibrationRunSummary"][];
-        };
-        /** StorageListScanSessionsReq */
-        StorageListScanSessionsReq: {
-            /** Robot Id */
-            robot_id: string;
-            /**
-             * Limit
-             * @default 100
-             */
-            limit: number;
-        };
-        /** StorageListScanSessionsRes */
-        StorageListScanSessionsRes: {
-            /** Sessions */
-            sessions: components["schemas"]["ScanSessionRecord"][];
-        };
-        /** StorageListScansReq */
-        StorageListScansReq: {
-            /** Session Row Id */
-            session_row_id: number;
-        };
-        /**
-         * StorageListScansRes
-         * @description metadata 만 자리 — blob 자체 X (GET_BLOB 자리 별도).
-         */
-        StorageListScansRes: {
-            /** Scans */
-            scans: components["schemas"]["ScanRecord"][];
-        };
-        /** StorageNewScanSessionReq */
-        StorageNewScanSessionReq: {
-            /** Robot Id */
-            robot_id: string;
-            /**
-             * Session Id
-             * @default
-             */
-            session_id: string;
-            /** Label */
-            label?: string | null;
-            /** Note */
-            note?: string | null;
-        };
-        /** StorageNewScanSessionRes */
-        StorageNewScanSessionRes: {
-            session: components["schemas"]["ScanSessionRecord"];
         };
         /**
          * SystemMetrics

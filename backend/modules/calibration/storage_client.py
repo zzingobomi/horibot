@@ -19,29 +19,29 @@ from typing import Callable
 import zenoh
 
 from core.transport.messages.storage import (
+    ActivateCalibrationReq,
+    ActivateCalibrationRes,
+    AppendCalibrationCaptureReq,
+    AppendCalibrationCaptureRes,
     CalibrationInvalidated,
     CalibrationRunSummary,
-    StorageActivateReq,
-    StorageActivateRes,
-    StorageAppendCaptureReq,
-    StorageAppendCaptureRes,
-    StorageCommitReq,
-    StorageCommitRes,
-    StorageDeleteCalRunReq,
-    StorageDeleteLastCaptureReq,
-    StorageDeleteLastCaptureRes,
-    StorageFinalizeCalRunReq,
-    StorageFinalizeCalRunRes,
-    StorageGetActiveReq,
-    StorageGetActiveRes,
-    StorageGetInProgressReq,
-    StorageGetInProgressRes,
-    StorageListReq,
-    StorageListRes,
-    StorageListRunsReq,
-    StorageListRunsRes,
-    StorageNewCalRunReq,
-    StorageNewCalRunRes,
+    CommitCalibrationReq,
+    CommitCalibrationRes,
+    CreateCalibrationRunReq,
+    CreateCalibrationRunRes,
+    DeleteCalibrationRunReq,
+    DeleteLastCalibrationCaptureReq,
+    DeleteLastCalibrationCaptureRes,
+    FinalizeCalibrationRunReq,
+    FinalizeCalibrationRunRes,
+    GetActiveCalibrationReq,
+    GetActiveCalibrationRes,
+    GetInProgressCalibrationRunReq,
+    GetInProgressCalibrationRunRes,
+    ListCalibrationRunsReq,
+    ListCalibrationRunsRes,
+    ListCalibrationsReq,
+    ListCalibrationsRes,
 )
 from core.transport.messages.base import EmptyData
 from core.transport.topic_map import Service, Topic
@@ -67,8 +67,8 @@ class CalibrationStorageClient:
     ) -> CalibrationResultRecord | None:
         res = self._t.call(
             Service.STORAGE_GET_ACTIVE_CALIBRATION,
-            StorageGetActiveReq(robot_id=robot_id, kind=kind),
-            StorageGetActiveRes,
+            GetActiveCalibrationReq(robot_id=robot_id, kind=kind),
+            GetActiveCalibrationRes,
         )
         return res.result if res.found else None
 
@@ -77,8 +77,8 @@ class CalibrationStorageClient:
     ) -> list[CalibrationResultRecord]:
         res = self._t.call(
             Service.STORAGE_LIST_CALIBRATIONS,
-            StorageListReq(robot_id=robot_id, kind=kind, limit=limit),
-            StorageListRes,
+            ListCalibrationsReq(robot_id=robot_id, kind=kind, limit=limit),
+            ListCalibrationsRes,
         )
         return res.results
 
@@ -89,8 +89,8 @@ class CalibrationStorageClient:
         모든 kind Result 가 묶여 옴 (storage_layer.md Stage 4 design A)."""
         res = self._t.call(
             Service.STORAGE_LIST_CALIBRATION_RUNS,
-            StorageListRunsReq(robot_id=robot_id, limit=limit),
-            StorageListRunsRes,
+            ListCalibrationRunsReq(robot_id=robot_id, limit=limit),
+            ListCalibrationRunsRes,
         )
         return res.runs
 
@@ -104,16 +104,16 @@ class CalibrationStorageClient:
     ) -> tuple[int, list[int]]:
         res = self._t.call(
             Service.STORAGE_COMMIT_CALIBRATION,
-            StorageCommitReq(run=run, results=results, captures=captures or []),
-            StorageCommitRes,
+            CommitCalibrationReq(run=run, results=results, captures=captures or []),
+            CommitCalibrationRes,
         )
         return res.run_id, res.result_ids
 
     def activate(self, result_id: int) -> CalibrationResultRecord:
         res = self._t.call(
             Service.STORAGE_ACTIVATE_CALIBRATION,
-            StorageActivateReq(result_id=result_id),
-            StorageActivateRes,
+            ActivateCalibrationReq(result_id=result_id),
+            ActivateCalibrationRes,
         )
         return res.result
 
@@ -123,8 +123,8 @@ class CalibrationStorageClient:
         """[캘 시작] — in_progress run 생성. run.kind 채워야 함."""
         res = self._t.call(
             Service.STORAGE_NEW_CAL_RUN,
-            StorageNewCalRunReq(run=run),
-            StorageNewCalRunRes,
+            CreateCalibrationRunReq(run=run),
+            CreateCalibrationRunRes,
         )
         return res.run_id
 
@@ -132,8 +132,8 @@ class CalibrationStorageClient:
         """[캡처] — draft run 에 capture 1장 append. caller 가 capture.run_id 채워야 함."""
         res = self._t.call(
             Service.STORAGE_APPEND_CAPTURE,
-            StorageAppendCaptureReq(capture=capture),
-            StorageAppendCaptureRes,
+            AppendCalibrationCaptureReq(capture=capture),
+            AppendCalibrationCaptureRes,
         )
         return res.capture_id
 
@@ -141,8 +141,8 @@ class CalibrationStorageClient:
         """[되돌리기] — 마지막 capture 1장 삭제. 삭제된 pose_index, 없으면 None."""
         res = self._t.call(
             Service.STORAGE_DELETE_LAST_CAPTURE,
-            StorageDeleteLastCaptureReq(run_id=run_id),
-            StorageDeleteLastCaptureRes,
+            DeleteLastCalibrationCaptureReq(run_id=run_id),
+            DeleteLastCalibrationCaptureRes,
         )
         return res.deleted_pose_index
 
@@ -152,8 +152,8 @@ class CalibrationStorageClient:
         """부팅 시 복원 — 진행 중이던 세션. 없으면 None."""
         res = self._t.call(
             Service.STORAGE_GET_IN_PROGRESS_RUN,
-            StorageGetInProgressReq(robot_id=robot_id, kind=kind),
-            StorageGetInProgressRes,
+            GetInProgressCalibrationRunReq(robot_id=robot_id, kind=kind),
+            GetInProgressCalibrationRunRes,
         )
         if not res.found or res.run is None:
             return None
@@ -163,7 +163,7 @@ class CalibrationStorageClient:
         """[리셋] — run + captures + results cascade delete."""
         self._t.call(
             Service.STORAGE_DELETE_CAL_RUN,
-            StorageDeleteCalRunReq(run_id=run_id),
+            DeleteCalibrationRunReq(run_id=run_id),
             EmptyData,
         )
 
@@ -177,12 +177,12 @@ class CalibrationStorageClient:
         """[커밋] — in_progress → success, result rows INSERT, captures residual UPDATE."""
         res = self._t.call(
             Service.STORAGE_FINALIZE_CAL_RUN,
-            StorageFinalizeCalRunReq(
+            FinalizeCalibrationRunReq(
                 run_id=run_id,
                 results=results,
                 capture_residuals=capture_residuals,
             ),
-            StorageFinalizeCalRunRes,
+            FinalizeCalibrationRunRes,
         )
         return res.result_ids
 

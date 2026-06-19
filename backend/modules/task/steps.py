@@ -43,10 +43,10 @@ from core.transport.messages.scene3d import (
     Scene3DSnapshotRes,
 )
 from core.transport.messages.storage import (
-    StorageNewScanSessionReq,
-    StorageNewScanSessionRes,
-    StoragePutScanReq,
-    StoragePutScanRes,
+    CreateScanSessionReq,
+    CreateScanSessionRes,
+    PutScanReq,
+    PutScanRes,
 )
 from core.robot.robot_poses import load_pose
 from core.transport.topic_map import Service
@@ -456,8 +456,8 @@ class NewSession(Step[int]):
         robot_id = ctx.node.robot_id or RobotRegistry().default_robot_id()
         res = ctx.call_service(
             Service.STORAGE_NEW_SCAN_SESSION,
-            StorageNewScanSessionReq(robot_id=robot_id, label=self.session_label),
-            StorageNewScanSessionRes,
+            CreateScanSessionReq(robot_id=robot_id, label=self.session_label),
+            CreateScanSessionRes,
         )
         if not res.success or res.data is None:
             raise RuntimeError(f"NEW_SCAN_SESSION 실패: {res.message}")
@@ -501,7 +501,7 @@ class CaptureScan(Step[int]):
         blob_bytes = scan_blob.encode(snap.color_bgr_jpeg, snap.depth_z16_zstd)
         put_res = ctx.call_service(
             Service.STORAGE_PUT_SCAN,
-            StoragePutScanReq(
+            PutScanReq(
                 session_row_id=session_row_id,
                 blob_bytes=blob_bytes,
                 num_frames=snap.num_frames,
@@ -515,7 +515,7 @@ class CaptureScan(Step[int]):
                 motor_positions=snap.motor_positions,
                 arm_motor_ids=snap.arm_motor_ids,
             ),
-            StoragePutScanRes,
+            PutScanRes,
             timeout=15.0,
         )
         if not put_res.success or put_res.data is None:

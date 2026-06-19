@@ -18,7 +18,7 @@ from core.transport.messages.detector import (
     YoloDetection,
 )
 from core.transport.messages.motion import MotionTcpPose
-from core.transport.topic_map import Service, Topic, topic_for
+from core.transport.topic_map import Service, Topic, key_for
 from modules.calibration.calibration_cache import CalibrationCache
 from modules.calibration.loader import CalibrationData
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
@@ -76,17 +76,17 @@ class DetectorNode(ApplicationNode):
         for rid in self.enabled_robot_ids:
             self._frame_cache.subscribe(self, robot_id=rid)
             self.create_raw_subscriber(
-                topic_for(Topic.CAMERA_DEPTH_FRAME, rid),
+                key_for(Topic.CAMERA_DEPTH_FRAME, rid),
                 lambda payload, _rid=rid: self._on_depth_frame(_rid, payload),
             )
             self.create_service(
-                topic_for(Service.DETECT_SERVICE, rid),
+                key_for(Service.DETECT_SERVICE, rid),
                 EmptyData,
                 DetectResult,
                 lambda req, _rid=rid: self._handle_detect(req, _rid),
             )
             self.create_service(
-                topic_for(Service.PERCEPTION_GROUNDED_DETECT, rid),
+                key_for(Service.PERCEPTION_GROUNDED_DETECT, rid),
                 GroundedDetectReq,
                 GroundedDetectionResult,
                 lambda req, _rid=rid: self._handle_grounded_detect(req, _rid),
@@ -143,7 +143,7 @@ class DetectorNode(ApplicationNode):
                         YoloDetection.model_validate(d) for d in raw_results
                     ]
                     self.publish(
-                        topic_for(Topic.DETECTOR_STATE, rid),
+                        key_for(Topic.DETECTOR_STATE, rid),
                         DetectorState(
                             timestamp=time.time(),
                             detections=detections,
@@ -200,7 +200,7 @@ class DetectorNode(ApplicationNode):
 
         # ── FK: get_tcp → R_be, t_be ──────────────
         res = self.call_service(
-            topic_for(Service.MOTION_GET_TCP, robot_id),
+            key_for(Service.MOTION_GET_TCP, robot_id),
             EmptyData(),
             MotionTcpPose,
         )
@@ -278,7 +278,7 @@ class DetectorNode(ApplicationNode):
 
         if need_enable:
             res = self.call_service(
-                topic_for(Service.CAMERA_SET_DEPTH_STREAM, robot_id),
+                key_for(Service.CAMERA_SET_DEPTH_STREAM, robot_id),
                 CameraSetDepthStreamReq(enabled=True),
                 CameraSetDepthStreamRes,
             )
@@ -357,7 +357,7 @@ class DetectorNode(ApplicationNode):
 
         # ── TCP pose ────────────────────────────────────
         res = self.call_service(
-            topic_for(Service.MOTION_GET_TCP, robot_id),
+            key_for(Service.MOTION_GET_TCP, robot_id),
             EmptyData(),
             MotionTcpPose,
         )
@@ -432,7 +432,7 @@ class DetectorNode(ApplicationNode):
 
         try:
             self.publish(
-                topic_for(Topic.PERCEPTION_GROUNDED_STATE, robot_id), result
+                key_for(Topic.PERCEPTION_GROUNDED_STATE, robot_id), result
             )
         except Exception as exc:
             logger.warning("[%s] grounded_state publish 실패: %s", robot_id, exc)

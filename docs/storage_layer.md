@@ -839,11 +839,11 @@ class CalibrationRunSummary(StrictModel):
     run: CalibrationRunRecord
     results: list[CalibrationResultRecord]  # 그 Run 의 모든 kind
 
-class StorageListRunsReq(StrictModel):
+class ListCalibrationRunsReq(StrictModel):
     robot_id: str
     limit: int = 50
 
-class StorageListRunsRes(StrictModel):
+class ListCalibrationRunsRes(StrictModel):
     runs: list[CalibrationRunSummary]  # run.started_at DESC 정렬
 ```
 
@@ -853,7 +853,7 @@ class StorageListRunsRes(StrictModel):
 
 **진행 단계:**
 
-1. ✅ **Backend `list_runs` API 추가** — `STORAGE_LIST_CALIBRATION_RUNS` Service / `CalibrationRunSummary` / `StorageListRunsReq` / `StorageListRunsRes` + RdbStore Protocol + SqliteStore (N+1 query 회피 single IN query) + storage_node handler + CalibrationStorageClient.list_runs + api_contract.PUBLIC_SERVICES.
+1. ✅ **Backend `list_runs` API 추가** — `STORAGE_LIST_CALIBRATION_RUNS` Service / `CalibrationRunSummary` / `ListCalibrationRunsReq` / `ListCalibrationRunsRes` + RdbStore Protocol + SqliteStore (N+1 query 회피 single IN query) + storage_node handler + CalibrationStorageClient.list_runs + api_contract.PUBLIC_SERVICES.
 
 2. ⏳ **`pnpm gen:types`** — backend `/openapi.json` 의 `x-contract` 가 새 service + invalidation topic 다 포함. frontend codegen 실행 → `contract.ts` / `types.ts` 갱신.
 

@@ -32,7 +32,7 @@ from core.transport.messages.calibration import (
     BeginRefinementRes,
     SagOffsetEntry,
 )
-from core.transport.topic_map import Service, Topic, topic_for
+from core.transport.topic_map import Service, Topic, key_for
 from core.cache.frame_cache import FrameCache
 from core.cache.joint_state_cache import JointStateCache
 from modules.motor.motor_config import MotorConfig, load_motor_layout
@@ -328,77 +328,77 @@ class CalibrationNode(ApplicationNode):
             self._frame_cache.subscribe(self, robot_id=rid)
             # 내부 캘리브레이션
             self.create_service(
-                topic_for(Service.CALIB_INTRINSIC_CAPTURE, rid),
+                key_for(Service.CALIB_INTRINSIC_CAPTURE, rid),
                 EmptyData,
                 IntrinsicCaptureRes,
                 lambda req, _rid=rid: self._srv_intrinsic_capture(req, _rid),
             )
             self.create_service(
-                topic_for(Service.CALIB_INTRINSIC_START, rid),
+                key_for(Service.CALIB_INTRINSIC_START, rid),
                 EmptyData,
                 EmptyData,
                 lambda req, _rid=rid: self._srv_intrinsic_start(req, _rid),
             )
             self.create_service(
-                topic_for(Service.CALIB_INTRINSIC_SAVE, rid),
+                key_for(Service.CALIB_INTRINSIC_SAVE, rid),
                 EmptyData,
                 IntrinsicSaveRes,
                 lambda req, _rid=rid: self._srv_intrinsic_save(req, _rid),
             )
             # Hand-Eye 캘리브레이션
             self.create_service(
-                topic_for(Service.CALIB_HANDEYE_CAPTURE, rid),
+                key_for(Service.CALIB_HANDEYE_CAPTURE, rid),
                 EmptyData,
                 HandeyeCaptureRes,
                 lambda req, _rid=rid: self._srv_handeye_capture(req, _rid),
             )
             self.create_service(
-                topic_for(Service.CALIB_HANDEYE_RESET, rid),
+                key_for(Service.CALIB_HANDEYE_RESET, rid),
                 EmptyData,
                 HandeyeResetRes,
                 lambda req, _rid=rid: self._srv_handeye_reset(req, _rid),
             )
             self.create_service(
-                topic_for(Service.CALIB_HANDEYE_COMPUTE, rid),
+                key_for(Service.CALIB_HANDEYE_COMPUTE, rid),
                 lambda req, _rid=rid: self._srv_handeye_compute(req, _rid),
             )
             self.create_service(
-                topic_for(Service.CALIB_HANDEYE_COMMIT, rid),
+                key_for(Service.CALIB_HANDEYE_COMMIT, rid),
                 EmptyData,
                 HandeyeCommitRes,
                 lambda req, _rid=rid: self._srv_handeye_commit(req, _rid),
             )
             self.create_service(
-                topic_for(Service.CALIB_HANDEYE_LIST_POSES, rid),
+                key_for(Service.CALIB_HANDEYE_LIST_POSES, rid),
                 EmptyData,
                 HandeyeListPosesRes,
                 lambda req, _rid=rid: self._srv_handeye_list_poses(req, _rid),
             )
             self.create_service(
-                topic_for(Service.CALIB_HANDEYE_PREVIEW_ENABLE, rid),
+                key_for(Service.CALIB_HANDEYE_PREVIEW_ENABLE, rid),
                 HandeyePreviewEnableReq,
                 HandeyePreviewEnableRes,
                 lambda req, _rid=rid: self._srv_handeye_preview_enable(req, _rid),
             )
             self.create_service(
-                topic_for(Service.CALIB_HANDEYE_THRESHOLDS, rid),
+                key_for(Service.CALIB_HANDEYE_THRESHOLDS, rid),
                 lambda req, _rid=rid: self._srv_handeye_thresholds(req, _rid),
             )
             self.create_service(
-                topic_for(Service.CALIB_HANDEYE_BEGIN_REFINEMENT, rid),
+                key_for(Service.CALIB_HANDEYE_BEGIN_REFINEMENT, rid),
                 BeginRefinementReq,
                 BeginRefinementRes,
                 lambda req, _rid=rid: self._srv_handeye_begin_refinement(req, _rid),
             )
             # Draft run flow — 사용자 [캘 시작] / [되돌리기].
             self.create_service(
-                topic_for(Service.CALIB_HANDEYE_START, rid),
+                key_for(Service.CALIB_HANDEYE_START, rid),
                 EmptyData,
                 HandeyeStartRes,
                 lambda req, _rid=rid: self._srv_handeye_start(req, _rid),
             )
             self.create_service(
-                topic_for(Service.CALIB_HANDEYE_UNDO_LAST_CAPTURE, rid),
+                key_for(Service.CALIB_HANDEYE_UNDO_LAST_CAPTURE, rid),
                 EmptyData,
                 HandeyeUndoLastCaptureRes,
                 lambda req, _rid=rid: self._srv_handeye_undo_last_capture(
@@ -647,7 +647,7 @@ class CalibrationNode(ApplicationNode):
                 )
 
         self.publish(
-            topic_for(Topic.CALIB_HANDEYE_SATURATE, robot_id),
+            key_for(Topic.CALIB_HANDEYE_SATURATE, robot_id),
             {
                 "timestamp": time.time(),
                 "saturate": saturate,
@@ -669,7 +669,7 @@ class CalibrationNode(ApplicationNode):
             logger.debug("[%s] 추천 계산 실패: %s", robot_id, e)
             return
         self.publish(
-            topic_for(Topic.CALIB_HANDEYE_RECOMMENDATIONS, robot_id),
+            key_for(Topic.CALIB_HANDEYE_RECOMMENDATIONS, robot_id),
             {
                 "timestamp": time.time(),
                 "recommendations": result["recommendations"],
@@ -707,7 +707,7 @@ class CalibrationNode(ApplicationNode):
         v_short = "A" if v.startswith("A") else ("B" if v.startswith("B") else "mid")
 
         self.publish(
-            topic_for(Topic.CALIB_HANDEYE_OBSERVABILITY, robot_id),
+            key_for(Topic.CALIB_HANDEYE_OBSERVABILITY, robot_id),
             {
                 "timestamp": time.time(),
                 "pose_count": rep.n_poses,
@@ -732,7 +732,7 @@ class CalibrationNode(ApplicationNode):
         if not po:
             return
         self.publish(
-            topic_for(Topic.CALIB_HANDEYE_PARAM_OBSERVABILITY, robot_id),
+            key_for(Topic.CALIB_HANDEYE_PARAM_OBSERVABILITY, robot_id),
             {
                 "timestamp": time.time(),
                 "pose_count": int(po.get("n_poses", 0)),
@@ -749,7 +749,7 @@ class CalibrationNode(ApplicationNode):
         표시. verdict 4 상태 분기와 같이 UI 가 "어느 axis 변주 캡처" 안내 가능.
         """
         self.publish(
-            topic_for(Topic.CALIB_HANDEYE_SIGMA, robot_id),
+            key_for(Topic.CALIB_HANDEYE_SIGMA, robot_id),
             {
                 "timestamp": time.time(),
                 "sigma_rot_deg": diag.get("sigma_rot_deg"),
@@ -1683,7 +1683,7 @@ class CalibrationNode(ApplicationNode):
                     ret, frame = self._frame_cache.get_frame(robot_id=rid)
                     if not ret or frame is None:
                         self.publish(
-                            topic_for(Topic.CALIB_HANDEYE_PREVIEW, rid),
+                            key_for(Topic.CALIB_HANDEYE_PREVIEW, rid),
                             {
                                 "timestamp": time.time(),
                                 "detected": False,
@@ -1763,7 +1763,7 @@ class CalibrationNode(ApplicationNode):
                     self._add_capture_quality(payload, rid, st, bool(ok), cur_tilt,
                                               cur_R, cur_t)
 
-                    self.publish(topic_for(Topic.CALIB_HANDEYE_PREVIEW, rid), payload)
+                    self.publish(key_for(Topic.CALIB_HANDEYE_PREVIEW, rid), payload)
                 except Exception as e:
                     logger.debug("[%s] preview loop 오류: %s", rid, e)
 

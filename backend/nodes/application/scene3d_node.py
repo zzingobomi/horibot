@@ -41,7 +41,7 @@ from core.transport.messages.scene3d import (
     Scene3DState,
 )
 from core.cache.joint_state_cache import JointStateCache
-from core.transport.topic_map import Service, Topic, topic_for
+from core.transport.topic_map import Service, Topic, key_for
 from modules.camera.depth_frame import DepthFrame, decode as decode_depth_frame
 from modules.motor.motor_config import MotorConfig, load_motor_layout
 from modules.scene3d import consensus
@@ -86,19 +86,19 @@ class Scene3DNode(ApplicationNode):
     def start(self) -> None:
         for rid in self._states.keys():
             self.create_service(
-                topic_for(Service.SCENE3D_SNAPSHOT, rid),
+                key_for(Service.SCENE3D_SNAPSHOT, rid),
                 Scene3DSnapshotReq,
                 Scene3DSnapshotRes,
                 lambda req, _rid=rid: self._srv_snapshot(req, _rid),
             )
             self.create_service(
-                topic_for(Service.SCENE3D_SET_STREAM, rid),
+                key_for(Service.SCENE3D_SET_STREAM, rid),
                 Scene3DSetStreamReq,
                 Scene3DSetStreamRes,
                 lambda req, _rid=rid: self._srv_set_stream(req, _rid),
             )
             self.create_raw_subscriber(
-                topic_for(Topic.CAMERA_DEPTH_FRAME, rid),
+                key_for(Topic.CAMERA_DEPTH_FRAME, rid),
                 lambda payload, _rid=rid: self._on_depth_frame(_rid, payload),
             )
 
@@ -143,7 +143,7 @@ class Scene3DNode(ApplicationNode):
             st.consumers.add(token)
         if was_empty:
             res = self.call_service(
-                topic_for(Service.CAMERA_SET_DEPTH_STREAM, robot_id),
+                key_for(Service.CAMERA_SET_DEPTH_STREAM, robot_id),
                 CameraSetDepthStreamReq(enabled=True),
                 CameraSetDepthStreamRes,
             )
@@ -169,7 +169,7 @@ class Scene3DNode(ApplicationNode):
             now_empty = len(st.consumers) == 0
         if now_empty:
             res = self.call_service(
-                topic_for(Service.CAMERA_SET_DEPTH_STREAM, robot_id),
+                key_for(Service.CAMERA_SET_DEPTH_STREAM, robot_id),
                 CameraSetDepthStreamReq(enabled=False),
                 CameraSetDepthStreamRes,
             )
@@ -302,7 +302,7 @@ class Scene3DNode(ApplicationNode):
         st = self._states[robot_id]
         with st.cfg_lock:
             self.publish(
-                topic_for(Topic.SCENE3D_STATE, robot_id),
+                key_for(Topic.SCENE3D_STATE, robot_id),
                 Scene3DState(
                     timestamp=time.time(),
                     enabled=st.enabled,
@@ -344,7 +344,7 @@ class Scene3DNode(ApplicationNode):
 
                 try:
                     self.session.put(
-                        topic_for(Topic.SCENE3D_STREAM, rid), payload
+                        key_for(Topic.SCENE3D_STREAM, rid), payload
                     )
                     last_processed_ts[rid] = frame.timestamp
                     any_processed = True

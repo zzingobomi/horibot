@@ -16,7 +16,7 @@ import type { components } from "@/api/generated/types";
 
 export type CalibrationRunSummary = components["schemas"]["CalibrationRunSummary"];
 export type CalibrationResultRecord =
-  components["schemas"]["StorageListRunsRes"]["runs"][number]["results"][number];
+  components["schemas"]["ListCalibrationRunsRes"]["runs"][number]["results"][number];
 
 const LIMIT = 50;
 

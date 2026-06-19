@@ -163,54 +163,54 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
         EmptyData,
         _calibration.HandeyeUndoLastCaptureRes,
     ),
-    # ─ Storage (Phase 1 — 캘 4 service)
+    # ─ Storage (Phase 1 — 캘 5 service)
     Service.STORAGE_GET_ACTIVE_CALIBRATION: (
-        _storage.StorageGetActiveReq,
-        _storage.StorageGetActiveRes,
+        _storage.GetActiveCalibrationReq,
+        _storage.GetActiveCalibrationRes,
     ),
     Service.STORAGE_LIST_CALIBRATIONS: (
-        _storage.StorageListReq,
-        _storage.StorageListRes,
+        _storage.ListCalibrationsReq,
+        _storage.ListCalibrationsRes,
     ),
     Service.STORAGE_LIST_CALIBRATION_RUNS: (
-        _storage.StorageListRunsReq,
-        _storage.StorageListRunsRes,
+        _storage.ListCalibrationRunsReq,
+        _storage.ListCalibrationRunsRes,
     ),
     Service.STORAGE_COMMIT_CALIBRATION: (
-        _storage.StorageCommitReq,
-        _storage.StorageCommitRes,
+        _storage.CommitCalibrationReq,
+        _storage.CommitCalibrationRes,
     ),
     Service.STORAGE_ACTIVATE_CALIBRATION: (
-        _storage.StorageActivateReq,
-        _storage.StorageActivateRes,
+        _storage.ActivateCalibrationReq,
+        _storage.ActivateCalibrationRes,
     ),
     # ─ Storage Phase 2 — scan workflow (frontend TasksPage scan task 자리)
     Service.STORAGE_NEW_SCAN_SESSION: (
-        _storage.StorageNewScanSessionReq,
-        _storage.StorageNewScanSessionRes,
+        _storage.CreateScanSessionReq,
+        _storage.CreateScanSessionRes,
     ),
     Service.STORAGE_LIST_SCAN_SESSIONS: (
-        _storage.StorageListScanSessionsReq,
-        _storage.StorageListScanSessionsRes,
+        _storage.ListScanSessionsReq,
+        _storage.ListScanSessionsRes,
     ),
     Service.STORAGE_DELETE_SCAN_SESSION: (
-        _storage.StorageDeleteScanSessionReq,
+        _storage.DeleteScanSessionReq,
         EmptyData,
     ),
     Service.STORAGE_LIST_SCANS: (
-        _storage.StorageListScansReq,
-        _storage.StorageListScansRes,
+        _storage.ListScansReq,
+        _storage.ListScansRes,
     ),
     Service.STORAGE_DELETE_SCAN: (
-        _storage.StorageDeleteScanReq,
+        _storage.DeleteScanReq,
         EmptyData,
     ),
     Service.STORAGE_LIST_RECONSTRUCTIONS: (
-        _storage.StorageListReconstructionsReq,
-        _storage.StorageListReconstructionsRes,
+        _storage.ListReconstructionsReq,
+        _storage.ListReconstructionsRes,
     ),
     Service.STORAGE_DELETE_RECONSTRUCTION: (
-        _storage.StorageDeleteReconstructionReq,
+        _storage.DeleteReconstructionReq,
         EmptyData,
     ),
     # ── Internal (의도적 미등재 — backend 노드 간 호출만, blob 자리 wire 큰

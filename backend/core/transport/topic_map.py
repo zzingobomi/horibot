@@ -165,7 +165,7 @@ class Service:
     SCENE3D_SET_STREAM = "horibot/{robot_id}/scene3d/srv/set_stream"
 
 
-def topic_for(template: str, robot_id: str) -> str:
+def key_for(template: str, robot_id: str) -> str:
     if "{robot_id}" not in template:
         return template
     return template.format(robot_id=robot_id)

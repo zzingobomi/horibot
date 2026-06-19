@@ -97,21 +97,34 @@ class RealsenseDriver:
             except RuntimeError as e:
                 logger.warning(f"depth scale 조회 실패: {e}")
 
-            # Auto-exposure 끄고 manual exposure 고정 — 캘 자세별 노출 변경 시
-            # corner detection 정확도 자세별 차이 발생 (sub-pixel jitter source).
-            # 고정 시 모든 자세 같은 노이즈 특성 → BA self-consistency ↑.
-            # D405 default exposure ≈ 8500us. 어두운 환경이면 사용자가 늘려야 함.
+            # 자세별 노출 변경이 corner detection sub-pixel 위치를 흔드는 noise source.
+            # → auto-exposure 켜놓고 ~1초 환경 적응 → 현재 값 읽어 manual 로 lock.
+            # 사용자 환경 (밝기) 자동 적응 + 자세별 일관성 둘 다 확보.
             try:
-                for sensor in profile.get_device().query_sensors():
+                sensors = list(profile.get_device().query_sensors())
+                # Step 1: auto-exposure 켜고 ~1초 환경 적응
+                for sensor in sensors:
                     if sensor.supports(rs.option.enable_auto_exposure):
-                        sensor.set_option(rs.option.enable_auto_exposure, 0)
+                        sensor.set_option(rs.option.enable_auto_exposure, 1)
+                    if sensor.supports(rs.option.enable_auto_white_balance):
+                        sensor.set_option(rs.option.enable_auto_white_balance, 1)
+                time.sleep(1.0)
+                # Step 2: 현재 auto 가 정착시킨 값 읽어 manual 로 lock
+                for sensor in sensors:
                     if sensor.supports(rs.option.exposure):
-                        sensor.set_option(rs.option.exposure, 8500)
+                        current = float(sensor.get_option(rs.option.exposure))
+                        if sensor.supports(rs.option.enable_auto_exposure):
+                            sensor.set_option(rs.option.enable_auto_exposure, 0)
+                        sensor.set_option(rs.option.exposure, current)
+                        logger.info(
+                            "RealSense %s: exposure locked at %.0fus",
+                            sensor.get_info(rs.camera_info.name),
+                            current,
+                        )
                     if sensor.supports(rs.option.enable_auto_white_balance):
                         sensor.set_option(rs.option.enable_auto_white_balance, 0)
-                logger.info("RealSense auto-exposure off, manual exposure=8500us")
             except RuntimeError as e:
-                logger.warning(f"exposure 고정 실패: {e}")
+                logger.warning(f"exposure 자동→manual lock 실패: {e}")
 
             self._pipeline = pipeline
             self._opened = True

@@ -173,12 +173,15 @@ class ReconstructionNode(ApplicationNode):
             progress=_on_progress,
         )
 
-        # 4. storage put
+        # 4. storage put. Pydantic Base64Bytes 자리 input 자리 base64-encoded string 자리
+        # 자리. raw bytes 자리 넘기면 silent corruption (~99% byte 손실).
+        import base64
+        mesh_b64 = base64.b64encode(result.mesh_bytes).decode("ascii")
         put_res = self.call_service(
             Service.STORAGE_PUT_RECONSTRUCTION,
             PutReconstructionReq(
                 session_row_id=sid,
-                blob_bytes=result.mesh_bytes,
+                blob_bytes=mesh_b64,  # type: ignore[arg-type]
                 voxel_size=voxel_size,
                 sdf_trunc=sdf_trunc,
                 depth_trunc=depth_trunc,

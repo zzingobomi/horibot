@@ -1,5 +1,4 @@
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
 
 from bridge.schemas import CalibrationResults, JointOffsetSchema
 from core.coords.joint_coordinates import JointCoordinates

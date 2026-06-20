@@ -20,11 +20,13 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from modules.calibration.persistence_models import (
+    CalibrationCaptureArtifactRecord,
     CalibrationCaptureRecord,
     CalibrationResultRecord,
     CalibrationResultRecordAdapter,
@@ -113,7 +115,13 @@ class CalibrationResultOrm(Base):
 
 
 class CalibrationCaptureOrm(Base):
-    """Evidence — per-pose 자세 정보 (BA 입력 + 출력 residual + IRLS weight)."""
+    """Evidence — per-pose raw sensor 데이터 + BA 입력 캐시 + 출력 residual.
+
+    `motor_positions` = raw int SSOT (drift-free).
+    Blob (primary .bin + 디버깅 artifact 들) 는 별도 정규화 테이블
+    `calibration_capture_artifacts` 에서 관리 — kind ('primary'/'color'/'depth'/
+    'depth_vis'/'ply') 별 ObjectStore key.
+    """
 
     __tablename__ = "calibration_captures"
 
@@ -124,15 +132,55 @@ class CalibrationCaptureOrm(Base):
         nullable=False,
     )
     pose_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    # joint_angles: list[float] — JSON. board_in_cam: 4x4 matrix or None.
-    joint_angles: Mapped[str] = mapped_column(Text, nullable=False)
+    # JSON dict[int, int] — motor_id → raw position. nullable (intrinsic 캡처).
+    motor_positions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 4x4 matrix (PnP board_in_cam 캐시) — JSON list[list[float]].
     board_in_cam: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ChArUco 검출 결과 캐시. corners_2d: (N,2) sub-pixel, corner_ids: (N,) int. JSON.
+    corners_2d: Mapped[str | None] = mapped_column(Text, nullable=True)
+    corner_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 진단 metric.
+    reproj_rms_px: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tilt_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # BA output — offline 분석 결과 backfill 자리.
     residual_rot: Mapped[float | None] = mapped_column(Float, nullable=True)
     residual_trans: Mapped[float | None] = mapped_column(Float, nullable=True)
     weight: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     __table_args__ = (
         Index("idx_calibration_captures_run", "run_id", "pose_index"),
+    )
+
+
+class CalibrationCaptureArtifactOrm(Base):
+    """Capture 1장의 ObjectStore blob 1개 — primary .bin 또는 디버깅 artifact.
+
+    한 capture 는 0..N artifacts (보통 5개: primary + color + depth + depth_vis + ply).
+    `kind` 는 도메인 vocabulary — DB schema 는 string 자유 허용 (Pydantic 자리 validate).
+    UNIQUE(capture_id, kind) — 같은 capture 의 같은 kind 자리 2개 금지.
+    """
+
+    __tablename__ = "calibration_capture_artifacts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    capture_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("calibration_captures.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    blob_key: Mapped[str] = mapped_column(String, nullable=False)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "idx_calibration_capture_artifacts_capture",
+            "capture_id",
+        ),
+        # 같은 capture 의 같은 kind 2개 금지 — upsert 일관성.
+        UniqueConstraint("capture_id", "kind"),
     )
 
 
@@ -180,18 +228,65 @@ def capture_record_to_orm(
     *,
     run_id: int,
 ) -> CalibrationCaptureOrm:
+    # dict[int, int] 의 key 는 SQLite Text JSON 직렬화 시 str 로 변환됨 — 역으로
+    # 읽을 때 int(key) 캐스팅 필요 (orm_to_capture 자리).
+    # 주의: artifacts 는 별도 테이블이라 본 mapper 가 다루지 X. caller (repo) 가
+    # capture INSERT 후 artifact_record_to_orm 으로 별도 INSERT.
     return CalibrationCaptureOrm(
         run_id=run_id,
         pose_index=capture.pose_index,
-        joint_angles=json.dumps(capture.joint_angles),
+        motor_positions=(
+            json.dumps(capture.motor_positions)
+            if capture.motor_positions is not None
+            else None
+        ),
         board_in_cam=(
             json.dumps(capture.board_in_cam)
             if capture.board_in_cam is not None
             else None
         ),
+        corners_2d=(
+            json.dumps(capture.corners_2d)
+            if capture.corners_2d is not None
+            else None
+        ),
+        corner_ids=(
+            json.dumps(capture.corner_ids)
+            if capture.corner_ids is not None
+            else None
+        ),
+        reproj_rms_px=capture.reproj_rms_px,
+        tilt_deg=capture.tilt_deg,
         residual_rot=capture.residual_rot,
         residual_trans=capture.residual_trans,
         weight=capture.weight,
+    )
+
+
+def artifact_record_to_orm(
+    rec: CalibrationCaptureArtifactRecord, *, capture_id: int
+) -> CalibrationCaptureArtifactOrm:
+    return CalibrationCaptureArtifactOrm(
+        capture_id=capture_id,
+        kind=rec.kind,
+        blob_key=rec.blob_key,
+        size_bytes=rec.size_bytes,
+        content_type=rec.content_type,
+        created_at=rec.created_at,
+    )
+
+
+def orm_to_artifact(
+    orm: CalibrationCaptureArtifactOrm,
+) -> CalibrationCaptureArtifactRecord:
+    return CalibrationCaptureArtifactRecord(
+        id=orm.id,
+        capture_id=orm.capture_id,
+        kind=orm.kind,  # type: ignore[arg-type]
+        blob_key=orm.blob_key,
+        size_bytes=orm.size_bytes,
+        content_type=orm.content_type,
+        created_at=orm.created_at,
     )
 
 
@@ -228,15 +323,32 @@ def orm_to_result(orm: CalibrationResultOrm) -> CalibrationResultRecord:
     )
 
 
-def orm_to_capture(orm: CalibrationCaptureOrm) -> CalibrationCaptureRecord:
-    board = json.loads(orm.board_in_cam) if orm.board_in_cam else None
+def orm_to_capture(
+    orm: CalibrationCaptureOrm,
+    *,
+    artifacts: list[CalibrationCaptureArtifactRecord] | None = None,
+) -> CalibrationCaptureRecord:
+    # motor_positions: JSON dict 의 key 가 str 로 직렬화되어 있으니 int 로 캐스팅.
+    motor_positions_raw = (
+        json.loads(orm.motor_positions) if orm.motor_positions else None
+    )
+    motor_positions = (
+        {int(k): int(v) for k, v in motor_positions_raw.items()}
+        if motor_positions_raw is not None
+        else None
+    )
     return CalibrationCaptureRecord(
         id=orm.id,
         run_id=orm.run_id,
         pose_index=orm.pose_index,
-        joint_angles=json.loads(orm.joint_angles),
-        board_in_cam=board,
+        motor_positions=motor_positions,
+        board_in_cam=json.loads(orm.board_in_cam) if orm.board_in_cam else None,
+        corners_2d=json.loads(orm.corners_2d) if orm.corners_2d else None,
+        corner_ids=json.loads(orm.corner_ids) if orm.corner_ids else None,
+        reproj_rms_px=orm.reproj_rms_px,
+        tilt_deg=orm.tilt_deg,
         residual_rot=orm.residual_rot,
         residual_trans=orm.residual_trans,
         weight=orm.weight,
+        artifacts=artifacts or [],
     )

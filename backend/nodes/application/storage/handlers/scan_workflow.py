@@ -274,8 +274,12 @@ class ScanWorkflowHandlers:
             return ServiceResponse(
                 success=False, message=f"blob get 실패 ({req.data.blob_key}): {e}"
             )
+        # Pydantic Base64Bytes 가 raw bytes input 을 base64-DECODE 시도해 손상.
+        # 미리 base64-encode 후 전달.
+        import base64
+        b64 = base64.b64encode(data).decode("ascii")
         return ServiceResponse(
-            success=True, data=GetBlobRes(blob_bytes=data)
+            success=True, data=GetBlobRes(blob_bytes=b64)  # type: ignore[arg-type]
         )
 
     # ─── reconstructions ──────────────────────────────────────

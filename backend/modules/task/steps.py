@@ -498,12 +498,16 @@ class CaptureScan(Step[int]):
             raise RuntimeError(f"SCENE3D_SNAPSHOT 실패: {snap_res.message}")
         snap = snap_res.data
 
+        # Pydantic Base64Bytes 자리 input 자리 base64-encoded string 자리 자리.
+        # raw bytes 자리 넘기면 silent corruption (~99% byte 손실).
+        import base64
         blob_bytes = scan_blob.encode(snap.color_bgr_jpeg, snap.depth_z16_zstd)
+        blob_b64 = base64.b64encode(blob_bytes).decode("ascii")
         put_res = ctx.call_service(
             Service.STORAGE_PUT_SCAN,
             PutScanReq(
                 session_row_id=session_row_id,
-                blob_bytes=blob_bytes,
+                blob_bytes=blob_b64,  # type: ignore[arg-type]
                 num_frames=snap.num_frames,
                 width=snap.intrinsic.width,
                 height=snap.intrinsic.height,

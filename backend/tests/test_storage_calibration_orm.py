@@ -89,13 +89,17 @@ def _make_capture(pose_index: int) -> CalibrationCaptureRecord:
     return CalibrationCaptureRecord(
         run_id=0,
         pose_index=pose_index,
-        joint_angles=[0.1 * pose_index, 0.2, 0.3, 0.4, 0.5],
+        motor_positions={1: 2048 + pose_index, 2: 2048, 3: 2048, 4: 2048, 5: 2048},
         board_in_cam=[
             [1.0, 0.0, 0.0, 0.01],
             [0.0, 1.0, 0.0, 0.02],
             [0.0, 0.0, 1.0, 0.30],
             [0.0, 0.0, 0.0, 1.0],
         ],
+        corners_2d=[[100.0, 100.0], [200.0, 100.0]],
+        corner_ids=[0, 1],
+        reproj_rms_px=0.5,
+        tilt_deg=45.0,
     )
 
 
@@ -213,7 +217,9 @@ def test_draft_run_append_finalize(store: RepoBundle):
     assert [c.pose_index for c in caps] == [0, 1, 2]
 
     # delete last → pose_index 2 사라짐.
-    deleted = store.calibration.delete_last_capture(run_id)
+    result = store.calibration.delete_last_capture(run_id)
+    assert result is not None
+    deleted, _artifacts = result
     assert deleted == 2
 
     caps = store.calibration.list_captures(run_id)

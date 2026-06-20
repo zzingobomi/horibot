@@ -21,18 +21,10 @@ class Topic:
     SYSTEM_LOG = "horibot/system/log"
 
     # ─── Calibration ───────────────────────────────────────
+    # capture-only 시나리오 — 실시간 G/Y/R traffic light + ChArUco overlay.
+    # online BA / 추천 / observability / sigma / saturate / ba_status 자리 전부 폐기
+    # (offline Python 스크립트가 분석).
     CALIB_HANDEYE_PREVIEW = "horibot/{robot_id}/calib/state/handeye_preview"
-    CALIB_HANDEYE_SIGMA = "horibot/{robot_id}/calib/state/handeye_sigma"
-    CALIB_HANDEYE_RECOMMENDATIONS = "horibot/{robot_id}/calib/state/handeye_recommendations"
-    CALIB_HANDEYE_SATURATE = "horibot/{robot_id}/calib/state/handeye_saturate"
-    CALIB_HANDEYE_OBSERVABILITY = "horibot/{robot_id}/calib/state/handeye_observability"
-    # per-parameter observability (Fisher 식별성 + staged gating 결과). 위 geometry
-    # observability(A/B/mid) 와 별개 — 블록별 score/verdict/unlock.
-    CALIB_HANDEYE_PARAM_OBSERVABILITY = (
-        "horibot/{robot_id}/calib/state/handeye_param_observability"
-    )
-    # BA 진행 상태 — frontend spinner 용. start/done/failed publish.
-    CALIB_HANDEYE_BA_STATUS = "horibot/{robot_id}/calib/state/handeye_ba_status"
 
     # ─── Task ──────────────────────────────────────────────
     TASK_STATE = "horibot/task/state"
@@ -90,20 +82,20 @@ class Service:
     SYSTEM_NODE_STATUS = "horibot/system/srv/node_status"
 
     # ─── Calibration ───────────────────────────────────────
+    # intrinsic — 별개 kind (5종 중 1). flow 변경 없음.
     CALIB_INTRINSIC_START = "horibot/{robot_id}/calib/srv/intrinsic/start"
     CALIB_INTRINSIC_SAVE = "horibot/{robot_id}/calib/srv/intrinsic/save"
+    CALIB_INTRINSIC_CAPTURE = "horibot/{robot_id}/calib/srv/intrinsic/capture"
+    # hand-eye — capture-only 시나리오. online BA / commit / 추천 / refinement 폐기.
+    # offline Python 스크립트가 captures + blobs read → BA → finalize_run + activate.
+    CALIB_HANDEYE_START = "horibot/{robot_id}/calib/srv/handeye/start"
     CALIB_HANDEYE_CAPTURE = "horibot/{robot_id}/calib/srv/handeye/capture"
     CALIB_HANDEYE_RESET = "horibot/{robot_id}/calib/srv/handeye/reset"
-    CALIB_HANDEYE_COMPUTE = "horibot/{robot_id}/calib/srv/handeye/compute"
-    CALIB_HANDEYE_COMMIT = "horibot/{robot_id}/calib/srv/handeye/commit"
+    CALIB_HANDEYE_UNDO_LAST_CAPTURE = "horibot/{robot_id}/calib/srv/handeye/undo_last_capture"
+    CALIB_HANDEYE_FINALIZE = "horibot/{robot_id}/calib/srv/handeye/finalize"
     CALIB_HANDEYE_LIST_POSES = "horibot/{robot_id}/calib/srv/handeye/list_poses"
     CALIB_HANDEYE_PREVIEW_ENABLE = "horibot/{robot_id}/calib/srv/handeye/preview_enable"
     CALIB_HANDEYE_THRESHOLDS = "horibot/{robot_id}/calib/srv/handeye/thresholds"
-    CALIB_HANDEYE_BEGIN_REFINEMENT = "horibot/{robot_id}/calib/srv/handeye/begin_refinement"
-    # Draft run flow — 사용자 [캘 시작] / [되돌리기]. storage_layer.md §13.
-    CALIB_HANDEYE_START = "horibot/{robot_id}/calib/srv/handeye/start"
-    CALIB_HANDEYE_UNDO_LAST_CAPTURE = "horibot/{robot_id}/calib/srv/handeye/undo_last_capture"
-    CALIB_INTRINSIC_CAPTURE = "horibot/{robot_id}/calib/srv/intrinsic/capture"
 
     # ─── Task ──────────────────────────────────────────────
     TASK_RUN = "horibot/task/srv/run"
@@ -141,8 +133,12 @@ class Service:
     STORAGE_DELETE_LAST_CAPTURE = "horibot/storage/srv/calibration/delete_last_capture"
     STORAGE_GET_IN_PROGRESS_RUN = "horibot/storage/srv/calibration/get_in_progress_run"
     STORAGE_DELETE_CAL_RUN = "horibot/storage/srv/calibration/delete_run"
+    # [세션 종료] — in_progress → ready_for_analysis 전이. offline 분석 대기 진입.
+    STORAGE_MARK_CAL_RUN_READY = "horibot/storage/srv/calibration/mark_run_ready"
+    # [BA 끝] — ready_for_analysis (or in_progress legacy) → success + Result INSERT.
+    # offline 스크립트가 호출.
     STORAGE_FINALIZE_CAL_RUN = "horibot/storage/srv/calibration/finalize_run"
-    # 임의 run_id 의 captures fetch — 직전 캘 자세 import (move-to-pose 흐름).
+    # 임의 run_id 의 captures fetch — offline 스크립트 / 진단 도구 자리.
     STORAGE_LIST_RUN_CAPTURES = "horibot/storage/srv/calibration/list_run_captures"
 
     # ─── Storage Phase 2 — scan workflow ───────────────────

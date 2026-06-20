@@ -1,6 +1,9 @@
 import { useEffect } from "react";
-import { ModeDockview, type PanelSpec } from "./ModeDockview";
+import { useParams } from "react-router-dom";
+
 import { useCalibrationStore } from "@/domain/stores/calibration";
+
+import { ModeDockview, type PanelSpec } from "./ModeDockview";
 
 const PANELS: PanelSpec[] = [
   {
@@ -14,8 +17,8 @@ const PANELS: PanelSpec[] = [
     id: "calibration",
     component: "calibration",
     title: "Calibration",
-    width: 260,
-    height: 260,
+    width: 300,
+    height: 480,
   },
   {
     id: "calibration-camera",
@@ -25,25 +28,11 @@ const PANELS: PanelSpec[] = [
     height: 420,
   },
   {
-    id: "hand-eye",
-    component: "handEye",
-    title: "Hand-Eye",
-    width: 320,
-    height: 640,
-  },
-  {
     id: "intrinsic",
     component: "intrinsic",
     title: "Intrinsic",
     width: 280,
     height: 420,
-  },
-  {
-    id: "calibration-history",
-    component: "calibrationHistory",
-    title: "Calibration History",
-    width: 380,
-    height: 400,
   },
   {
     id: "motion",
@@ -55,13 +44,15 @@ const PANELS: PanelSpec[] = [
 ];
 
 export function RobotCalibrateMode() {
+  const { id: robotId } = useParams<{ id: string }>();
   // calibrationStore 라이프사이클 — mode 진입 시 subscribe + initial fetch,
   // 이탈 시 unsubscribe + state clear. 각 panel 의 mount/unmount 와 분리
   // (panel 들이 close 되어도 mode 가 살아있으면 store 유지).
   useEffect(() => {
-    useCalibrationStore.getState().bootstrap();
+    if (!robotId) return;
+    useCalibrationStore.getState().bootstrap(robotId);
     return () => useCalibrationStore.getState().dispose();
-  }, []);
+  }, [robotId]);
 
   return <ModeDockview mode="calibrate" panels={PANELS} />;
 }

@@ -141,13 +141,28 @@ class CreateCalibrationRunRes(StrictModel):
 
 
 class AppendCalibrationCaptureReq(StrictModel):
-    """[캡처] — draft run 에 capture 1장 append. caller 가 capture.run_id 채워야 함."""
+    """[캡처] — draft run 에 capture 1장 append + ObjectStore blob 저장.
+
+    `blob_bytes` 가 b"" 가 아니면 server 가 blob_key 생성 (
+    `calib_captures/{robot_id}/{run_id}/{pose_index:03d}.bin`) 후 ObjectStore.put +
+    `capture.blob_key` 자동 설정. caller 가 채운 `capture.blob_key` 는 무시. blob 이
+    없으면 (intrinsic 캡처 등) blob_bytes=b"" 보내고 capture.blob_key=None 두면 됨.
+
+    blob 페이로드 포맷: 기존 `depth_frame.py` 의
+        [u32 header_len][JSON header][u32 jpeg_len][color JPEG][zstd Z16 depth]
+    재사용. header={timestamp, width, height, depth_scale, fx, fy, cx, cy, ...}.
+
+    caller 가 capture.run_id / capture.pose_index 채워야 함.
+    """
 
     capture: CalibrationCaptureRecord
+    blob_bytes: Base64Bytes = b""  # 비어있으면 ObjectStore.put 안 함
+    robot_id: str  # blob_key 경로 구성용 (capture 에는 없음)
 
 
 class AppendCalibrationCaptureRes(StrictModel):
     capture_id: int
+    blob_key: str | None = None  # 저장된 경우 server 가 부여한 키
 
 
 class DeleteLastCalibrationCaptureReq(StrictModel):
@@ -188,9 +203,26 @@ class ListRunCapturesRes(StrictModel):
 
 
 class DeleteCalibrationRunReq(StrictModel):
-    """[리셋] — run + captures + results cascade delete."""
+    """[리셋] — run + captures + results cascade delete.
+
+    server 가 자식 capture row 들의 blob_key 도 ObjectStore 에서 같이 삭제.
+    """
 
     run_id: int
+
+
+class MarkCalibrationRunReadyReq(StrictModel):
+    """[세션 종료] — in_progress → ready_for_analysis 전이.
+
+    이후 capture append 차단 — offline 분석 스크립트가 처리해야 success/failed 로
+    진입. server 가 run.status 확인 후 in_progress 만 허용.
+    """
+
+    run_id: int
+
+
+class MarkCalibrationRunReadyRes(StrictModel):
+    run: CalibrationRunRecord
 
 
 class FinalizeCalibrationRunReq(StrictModel):

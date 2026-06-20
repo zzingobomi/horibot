@@ -42,9 +42,14 @@ CalibrationKind = Literal[
 ]
 
 
-# Run status — draft / 종료 상태 분리. 사용자가 commit 누르기 전 단계 자체는 in_progress.
-# 캡처 row 들은 in_progress run 에 append (FK 가 commit 시점에야 생기는 문제 해결).
-CalibrationRunStatus = Literal["in_progress", "success", "failed"]
+# Run status — capture flow 의 4-stage:
+#   in_progress       — 사용자가 [캘 시작] 누른 직후. 캡처 가능. [세션 종료] 누르면 다음 단계로.
+#   ready_for_analysis — 캡처 끝. immutable (더 이상 캡처 X). offline 스크립트 처리 대기.
+#   success           — offline 스크립트 BA 끝 + Result row 들 INSERT. 완료.
+#   failed            — 사용자 reset 또는 분석 실패 (현재는 거의 안 씀, future-proof).
+CalibrationRunStatus = Literal[
+    "in_progress", "ready_for_analysis", "success", "failed"
+]
 
 
 # ─── Run ──────────────────────────────────────────────────────
@@ -134,15 +139,76 @@ CalibrationResultRecordAdapter: TypeAdapter[CalibrationResultRecord] = TypeAdapt
 # ─── Capture (Evidence) ───────────────────────────────────────
 
 
+CalibrationArtifactKind = Literal["primary", "color", "depth", "depth_vis", "ply"]
+
+
+class CalibrationCaptureArtifactRecord(StrictModel):
+    """Capture 1장의 ObjectStore blob 1개 — primary .bin 또는 디버깅 artifact.
+
+    별도 정규화 테이블 `calibration_capture_artifacts`. `kind` 자리:
+      - "primary"  — `depth_frame.py` encode 결과 (color JPEG + zstd Z16 depth +
+                     header). offline 분석 자리 입력.
+      - "color"    — color.jpg. 탐색기 viewable.
+      - "depth"    — depth.png 16-bit raw. ImageJ 자리.
+      - "depth_vis"— 8-bit colorized depth.png. 사람용.
+      - "ply"      — binary color point cloud. CloudCompare/MeshLab 자리.
+    """
+
+    id: int | None = None
+    capture_id: int  # FK → calibration_captures.id
+    kind: CalibrationArtifactKind
+    blob_key: str  # ObjectStore key — handler 가 결정
+    size_bytes: int | None = None
+    content_type: str | None = None  # e.g. "image/jpeg" / "application/octet-stream"
+    created_at: float  # epoch seconds
+
+
 class CalibrationCaptureRecord(StrictModel):
-    """Evidence — per-pose 자세 정보 (BA 입력 + 출력 residual + IRLS weight)."""
+    """Evidence — per-pose 자세 정보 + raw sensor 데이터 캐시.
+
+    drift-free 저장 — `motor_positions` 만이 robot 측 SSOT. joint_angles (rad) 는
+    캡처 시점 캘에 잠겨버리니까 저장 안 함 (offline 분석 시 raw → rad 재계산).
+
+    Blob (primary .bin + 디버깅 artifact) 는 정규화 별도 테이블
+    `calibration_capture_artifacts` 에 — `artifacts` 자리 list 로 동봉.
+
+    BA output (residual_rot/trans/weight) 는 offline 스크립트가 finalize 시 UPDATE.
+    """
 
     id: int | None = None
     run_id: int  # FK → calibration_runs.id
     pose_index: int
-    joint_angles: list[float]
-    # ChArUco 검출 결과 4x4 matrix (board_in_cam). intrinsic 캘에는 None.
+    # raw motor positions — `motor_id → raw int (0..4095)`. drift-free SSOT.
+    # intrinsic 캡처는 dict 무관 (joint 무용) — empty dict 또는 None 허용.
+    motor_positions: dict[int, int] | None = None
+    # PnP 결과 4x4 matrix (board_in_cam) — 재현용 캐시. offline 스크립트가 신뢰 안
+    # 하면 corners_2d 로 재PnP 가능. intrinsic 캡처는 None.
     board_in_cam: list[list[float]] | None = None
+    # ChArUco 검출 결과 캐시 — corners_2d (N,2) sub-pixel + corner_ids (N,).
+    corners_2d: list[list[float]] | None = None
+    corner_ids: list[int] | None = None
+    # 캡처 시점 PnP 품질 (reprojection RMS, px) + 보드 tilt (deg). 진단 / outlier
+    # 필터링용.
+    reproj_rms_px: float | None = None
+    tilt_deg: float | None = None
+    # BA output — offline 스크립트가 finalize 시 채움.
     residual_rot: float | None = None
     residual_trans: float | None = None
     weight: float | None = None  # IRLS Huber weight (1.0 = 정상)
+    # Artifacts — repo 가 selectinload 자리 채움. 비어있으면 capture 만 fetch 한 자리.
+    artifacts: list[CalibrationCaptureArtifactRecord] = []
+
+    def find_artifact(
+        self, kind: CalibrationArtifactKind
+    ) -> CalibrationCaptureArtifactRecord | None:
+        """편의 — kind 의 artifact 자리 찾음. 없으면 None."""
+        for a in self.artifacts:
+            if a.kind == kind:
+                return a
+        return None
+
+    @property
+    def primary_blob_key(self) -> str | None:
+        """backward-compat 편의 — primary artifact 의 blob_key."""
+        a = self.find_artifact("primary")
+        return a.blob_key if a is not None else None

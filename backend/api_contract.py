@@ -74,15 +74,6 @@ PUBLIC_TOPICS: dict[str, TopicPayload] = {
     Topic.TASK_TREE: None,
     Topic.TASK_STEP_RESULT: None,
     Topic.CALIB_HANDEYE_PREVIEW: None,
-    Topic.CALIB_HANDEYE_SIGMA: _calibration.HandeyeSigmaState,
-    # 추천 자세 + saturate state — 동적 dict (recommendations list 자체 자리, sigma_history list)
-    Topic.CALIB_HANDEYE_RECOMMENDATIONS: None,
-    Topic.CALIB_HANDEYE_SATURATE: None,
-    Topic.CALIB_HANDEYE_OBSERVABILITY: _calibration.HandeyeObservabilityState,
-    Topic.CALIB_HANDEYE_PARAM_OBSERVABILITY: (
-        _calibration.HandeyeParamObservabilityState
-    ),
-    Topic.CALIB_HANDEYE_BA_STATUS: _calibration.HandeyeBaStatus,
     # Storage — ACTIVATE 마다 1회. frontend list 패널이 활성 row 갱신 트리거.
     Topic.STORAGE_CALIBRATION_INVALIDATED: _storage.CalibrationInvalidated,
     # Reconstruction — BuildReconstruction step 자리 progress bar 자리.
@@ -142,27 +133,25 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
         _detector.GroundedDetectReq,
         _detector.GroundedDetectionResult,
     ),
-    # ─ Calibration
+    # ─ Calibration — capture-only 시나리오 (offline Python 스크립트가 BA + commit)
     Service.CALIB_INTRINSIC_CAPTURE: (EmptyData, _calibration.IntrinsicCaptureRes),
     Service.CALIB_INTRINSIC_START: (EmptyData, EmptyData),
     Service.CALIB_INTRINSIC_SAVE: (EmptyData, _calibration.IntrinsicSaveRes),
+    Service.CALIB_HANDEYE_START: (EmptyData, _calibration.HandeyeStartRes),
     Service.CALIB_HANDEYE_CAPTURE: (EmptyData, _calibration.HandeyeCaptureRes),
     Service.CALIB_HANDEYE_RESET: (EmptyData, _calibration.HandeyeResetRes),
-    Service.CALIB_HANDEYE_COMMIT: (EmptyData, _calibration.HandeyeCommitRes),
+    Service.CALIB_HANDEYE_UNDO_LAST_CAPTURE: (
+        EmptyData,
+        _calibration.HandeyeUndoLastCaptureRes,
+    ),
+    Service.CALIB_HANDEYE_FINALIZE: (
+        EmptyData,
+        _calibration.HandeyeFinalizeRes,
+    ),
     Service.CALIB_HANDEYE_LIST_POSES: (EmptyData, _calibration.HandeyeListPosesRes),
     Service.CALIB_HANDEYE_PREVIEW_ENABLE: (
         _calibration.HandeyePreviewEnableReq,
         _calibration.HandeyePreviewEnableRes,
-    ),
-    Service.CALIB_HANDEYE_BEGIN_REFINEMENT: (
-        _calibration.BeginRefinementReq,
-        _calibration.BeginRefinementRes,
-    ),
-    # Draft run flow — 사용자 [캘 시작] / [되돌리기]. storage_layer.md §13.
-    Service.CALIB_HANDEYE_START: (EmptyData, _calibration.HandeyeStartRes),
-    Service.CALIB_HANDEYE_UNDO_LAST_CAPTURE: (
-        EmptyData,
-        _calibration.HandeyeUndoLastCaptureRes,
     ),
     # ─ Storage (Phase 1 — 캘 5 service)
     Service.STORAGE_GET_ACTIVE_CALIBRATION: (
@@ -243,7 +232,6 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
     Service.TASK_RUN: (None, None),
     Service.TASK_STATUS: (EmptyData, None),
     Service.TASK_PREVIEW: (None, None),
-    Service.CALIB_HANDEYE_COMPUTE: (None, None),
     Service.CALIB_HANDEYE_THRESHOLDS: (EmptyData, None),
     # ── Internal (의도적 미등재) ──
     # Service.MOTOR_GRIPPER          — task / gamepad 만 호출

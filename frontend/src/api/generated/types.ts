@@ -156,39 +156,6 @@ export interface components {
             result: components["schemas"]["HandEyeResultRecord"] | components["schemas"]["IntrinsicResultRecord"] | components["schemas"]["JointOffsetResultRecord"] | components["schemas"]["LinkOffsetResultRecord"] | components["schemas"]["SagOffsetResultRecord"];
         };
         /**
-         * AxisDistributionEntry
-         * @description coach.axis_distributions 원소. UI 의 자세 다양성 표 + low_diversity 색 분기.
-         *
-         *     motor_id ─ J{motor_id} 로 표시. std_deg ─ 캡처 자세의 표준편차.
-         *     threshold_deg ─ thresholds.JOINT_DIVERSITY_THRESHOLD_DEG 의 해당 axis 값.
-         *     is_low_diversity ─ std < threshold. suggested_deg ─ planner 가 권장하는 다음
-         *     각도 (있으면 NextPoseCard 와 별개로 status 패널에서 안내 가능).
-         */
-        AxisDistributionEntry: {
-            /** Motor Id */
-            motor_id: number;
-            /** Name Ko */
-            name_ko: string;
-            /** Std Deg */
-            std_deg: number;
-            /** Min Deg */
-            min_deg: number;
-            /** Max Deg */
-            max_deg: number;
-            /** Threshold Deg */
-            threshold_deg: number;
-            /** Is Low Diversity */
-            is_low_diversity: boolean;
-            /** Motor Limit Min Deg */
-            motor_limit_min_deg: number;
-            /** Motor Limit Max Deg */
-            motor_limit_max_deg: number;
-            /** Suggested Deg */
-            suggested_deg: number | null;
-            /** Suggestion Text */
-            suggestion_text: string;
-        };
-        /**
          * BasePoseSchema
          * @description World frame 의 robot base pose (m + deg).
          */
@@ -214,42 +181,17 @@ export interface components {
             y2: number;
         };
         /**
-         * BeginRefinementReq
-         * @description Multi-start BA 명시 트리거 — random init 다중 시도 → 가장 좋은 σ 선택.
-         *
-         *     Local minimum 자리 escape. 사용자가 saturate 알림 받고 시도, 또는
-         *     [수동 모드 종료] 시점 자동 트리거.
-         */
-        BeginRefinementReq: {
-            /**
-             * N Starts
-             * @default 10
-             */
-            n_starts: number;
-            /**
-             * Mode
-             * @default physical_sag
-             */
-            mode: string;
-        };
-        /** BeginRefinementRes */
-        BeginRefinementRes: {
-            /** N Tried */
-            n_tried: number;
-            /** N Converged */
-            n_converged: number;
-            /** Sigma Rot Deg */
-            sigma_rot_deg: number | null;
-            /** Sigma T Mm */
-            sigma_t_mm: number | null;
-            /** Improvement Rot Deg */
-            improvement_rot_deg: number | null;
-            /** Improvement T Mm */
-            improvement_t_mm: number | null;
-        };
-        /**
          * CalibrationCaptureRecord
-         * @description Evidence — per-pose 자세 정보 (BA 입력 + 출력 residual + IRLS weight).
+         * @description Evidence — per-pose 자세 정보 + raw sensor 데이터 캐시.
+         *
+         *     drift-free 저장 — `motor_positions` 만이 robot 측 SSOT. joint_angles (rad) 는
+         *     캡처 시점 캘에 잠겨버리니까 저장 안 함 (offline 분석 시 raw → rad 재계산).
+         *
+         *     raw color JPEG + zstd depth 는 ObjectStore blob (`blob_key`) 에 별도 저장 —
+         *     `STORAGE_GET_BLOB(blob_key)` 로 fetch. blob 페이로드 포맷은 기존 `depth_frame.py`
+         *     재사용 ([header_len][JSON header][jpeg_len][color JPEG][zstd depth]).
+         *
+         *     BA output (residual_rot/trans/weight) 는 offline 스크립트가 finalize 시 UPDATE.
          */
         CalibrationCaptureRecord: {
             /** Id */
@@ -258,10 +200,22 @@ export interface components {
             run_id: number;
             /** Pose Index */
             pose_index: number;
-            /** Joint Angles */
-            joint_angles: number[];
+            /** Motor Positions */
+            motor_positions?: {
+                [key: string]: number;
+            } | null;
             /** Board In Cam */
             board_in_cam?: number[][] | null;
+            /** Corners 2D */
+            corners_2d?: number[][] | null;
+            /** Corner Ids */
+            corner_ids?: number[] | null;
+            /** Reproj Rms Px */
+            reproj_rms_px?: number | null;
+            /** Tilt Deg */
+            tilt_deg?: number | null;
+            /** Blob Key */
+            blob_key?: string | null;
             /** Residual Rot */
             residual_rot?: number | null;
             /** Residual Trans */
@@ -340,7 +294,7 @@ export interface components {
              * @default success
              * @enum {string}
              */
-            status: "in_progress" | "success" | "failed";
+            status: "in_progress" | "ready_for_analysis" | "success" | "failed";
             /** Kind */
             kind?: ("intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag") | null;
         };
@@ -563,22 +517,6 @@ export interface components {
             t: number[][];
         };
         /**
-         * HandeyeBaStatus
-         * @description BA 진행 상태 — frontend spinner 용.
-         *
-         *     state: "running" (BA 시작), "done" (성공, σ 결과는 SIGMA topic 자세 자리),
-         *            "failed" (예외/수렴 실패).
-         *     mode: "standard" | "extended" | "physical_sag" — 어떤 BA 인지.
-         */
-        HandeyeBaStatus: {
-            /** Timestamp */
-            timestamp: number;
-            /** State */
-            state: string;
-            /** Mode */
-            mode: string;
-        };
-        /**
          * HandeyeCaptureRes
          * @description detected=False 인 경우도 success=True (가이드 의미). pose_count 는 누적.
          */
@@ -588,29 +526,22 @@ export interface components {
             /** Pose Count */
             pose_count: number;
         };
-        /** HandeyeCommitRes */
-        HandeyeCommitRes: {
-            /** Method */
-            method: string;
-            /** Joint Offsets Applied */
-            joint_offsets_applied: boolean;
-            /** Joint Offsets */
-            joint_offsets: components["schemas"]["JointOffsetEntry"][];
-            /** Link Offsets Applied */
-            link_offsets_applied: boolean;
-            /** Link Offsets */
-            link_offsets: components["schemas"]["core__transport__messages__calibration__LinkOffsetEntry"][];
-            /** Sag Offsets Applied */
-            sag_offsets_applied: boolean;
-            /** Sag Offsets */
-            sag_offsets: components["schemas"]["SagOffsetEntry"][];
-            /** Restart Required */
-            restart_required: boolean;
+        /**
+         * HandeyeFinalizeRes
+         * @description [세션 종료] — in_progress → ready_for_analysis. immutable 전이.
+         *
+         *     이후 capture 불가. offline Python 스크립트가 captures + blobs read → BA →
+         *     finalize_run + activate. frontend 무관.
+         */
+        HandeyeFinalizeRes: {
+            /** Run Id */
+            run_id: number;
+            /** Pose Count */
+            pose_count: number;
         };
         /**
          * HandeyeListPosesRes
-         * @description `run_id` 가 None 이면 in_progress draft 없음 (사용자 [캘 시작] 안 누름).
-         *     아니면 draft run id — frontend 가 in_progress 여부 / 이어하기 UI 결정 자료.
+         * @description `run_id` 가 None 이면 in_progress draft 없음.
          */
         HandeyeListPosesRes: {
             /** Poses */
@@ -621,75 +552,17 @@ export interface components {
             run_id?: number | null;
         };
         /**
-         * HandeyeObservabilityState
-         * @description 매 capture 후 자동 발행. 캡처된 자세들의 *기하학적 observability* 진단.
-         *
-         *     개발자 진단용 metric 이지만 verdict ('A'/'B'/'mid') 만 frontend 표시 (4 metric
-         *     숫자 X). 사용자는:
-         *       - verdict='A' (다양성 충분) → 추가 자세 의미 있음 안내
-         *       - verdict='B' (구조적 부족) → 보드 위치 / 거리 변경 안내
-         *       - verdict='mid' → 중립
-         *
-         *     metric 4가지는 docs/observability.md 참조 — 광축 펼침 / tilt / 회전축 spanning
-         *     / wrist roll.
-         */
-        HandeyeObservabilityState: {
-            /** Timestamp */
-            timestamp: number;
-            /** Pose Count */
-            pose_count: number;
-            /** Axis Spread Deg */
-            axis_spread_deg: number;
-            /** Tilt Min Deg */
-            tilt_min_deg: number;
-            /** Tilt Max Deg */
-            tilt_max_deg: number;
-            /** Tilt Std Deg */
-            tilt_std_deg: number;
-            /** Tilt In Range Count */
-            tilt_in_range_count: number;
-            /** Rotation Axis Ratio */
-            rotation_axis_ratio: number;
-            /** Wrist Roll Range Raw */
-            wrist_roll_range_raw: number;
-            /** Verdict */
-            verdict: string;
-        };
-        /**
-         * HandeyeParamObservabilityState
-         * @description 매 compute(physical_sag) 후 발행 — *parameter별* 식별성 + staged gating 결과.
-         *
-         *     위 HandeyeObservabilityState(geometry A/B/mid)와 별개. BA 정보행렬(Fisher)에서
-         *     블록(handeye_rot / handeye_trans / joint_offset / link / sag)별 식별성 score
-         *     ∈[0,1] + verdict(OK/WEAK/INSUFFICIENT) 산출. unlocked = gate 통과해 BA 가 실제
-         *     추정한 블록 (나머지는 freeze=정보부족). docs/handeye_ux_solver_v3_plan.md §3.
-         *
-         *     frontend 는 블록별 색 dot (수치 노출 X) — "어느 보정값이 잘 잡혔나 / 자세 보강 필요".
-         */
-        HandeyeParamObservabilityState: {
-            /** Timestamp */
-            timestamp: number;
-            /** Pose Count */
-            pose_count: number;
-            /** Scores */
-            scores: {
-                [key: string]: number;
-            };
-            /** Verdicts */
-            verdicts: {
-                [key: string]: string;
-            };
-            /** Unlocked */
-            unlocked: string[];
-        };
-        /**
          * HandeyePoseMeta
-         * @description `HandEyeCalibration.list_poses_meta()` 의 element. 표시용.
+         * @description capture 1장 요약 — frontend PoseList 표시용.
          *
-         *     실제 필드는 hand_eye.py 의 list_poses_meta 출력에 따름. 동적 필드가 추가될
-         *     수 있어 extra="allow".
+         *     `extra="allow"` 로 향후 진단 필드 추가에 유연 (e.g. reproj_rms_px).
          */
         HandeyePoseMeta: {
+            /** Pose Index */
+            pose_index: number;
+            /** Tilt Deg */
+            tilt_deg?: number | null;
+        } & {
             [key: string]: unknown;
         };
         /** HandeyePreviewEnableReq */
@@ -711,46 +584,8 @@ export interface components {
             pose_count: number;
         };
         /**
-         * HandeyeSigmaState
-         * @description capture 후 자동 BA / 수동 COMPUTE 마다 publish. frontend σ live 표시.
-         *
-         *     BA 실패 / 포즈 부족 시에는 publish 안 함 (직전 σ 유지 또는 frontend 가 unknown).
-         *
-         *     `axis_distributions` 는 4-상태 verdict (good / narrow_sigma_good / needs_work /
-         *     bad) 와 묶여 UI 의 자세 다양성 표시 → 사용자가 *어느 axis 가 부족한지* 매 capture
-         *     후 즉시 확인. trauma source 의 root cause fix.
-         */
-        HandeyeSigmaState: {
-            /** Timestamp */
-            timestamp: number;
-            /** Sigma Rot Deg */
-            sigma_rot_deg: number | null;
-            /** Sigma T Mm */
-            sigma_t_mm: number | null;
-            /** Pose Count */
-            pose_count: number;
-            /** Ba Mode */
-            ba_mode: string | null;
-            /** Ba Converged */
-            ba_converged: boolean;
-            /** Coach Verdict */
-            coach_verdict: string | null;
-            /** Joint Offset Estimated */
-            joint_offset_estimated: boolean;
-            /** Link Offset Estimated */
-            link_offset_estimated: boolean;
-            /** Sag Offset Estimated */
-            sag_offset_estimated: boolean;
-            /**
-             * Axis Distributions
-             * @default []
-             */
-            axis_distributions: components["schemas"]["AxisDistributionEntry"][];
-        };
-        /**
          * HandeyeStartRes
-         * @description [캘 시작] — draft run 생성. 기존 in_progress 있으면 reject (frontend 가
-         *     먼저 GET_IN_PROGRESS 로 확인 후 호출).
+         * @description [캘 시작] — draft run 생성. 기존 in_progress 있으면 reject.
          */
         HandeyeStartRes: {
             /** Run Id */
@@ -760,7 +595,7 @@ export interface components {
         };
         /**
          * HandeyeUndoLastCaptureRes
-         * @description [되돌리기] — 마지막 capture 1장 삭제. deleted=False 면 삭제할 거 없음.
+         * @description [되돌리기] — 마지막 capture 1장 + blob 삭제. deleted=False 면 삭제할 거 없음.
          */
         HandeyeUndoLastCaptureRes: {
             /** Deleted */
@@ -932,13 +767,6 @@ export interface components {
             /** Degree */
             degree: number;
         };
-        /** JointOffsetEntry */
-        JointOffsetEntry: {
-            /** Motor Id */
-            motor_id: number;
-            /** Offset Rad */
-            offset_rad: number;
-        };
         /**
          * JointOffsetResultData
          * @description 모터 raw zero 오차 보정. motor_id (int) → offset_rad (float).
@@ -989,13 +817,22 @@ export interface components {
             /** Offset Rad */
             offset_rad: number;
         };
+        /** LinkOffsetEntry */
+        LinkOffsetEntry: {
+            /** Joint Id */
+            joint_id: number;
+            /** Trans M */
+            trans_m: number[];
+            /** Rot Rad */
+            rot_rad: number[];
+        };
         /**
          * LinkOffsetResultData
          * @description URDF 링크 기하 오차 — 부팅 시 URDF patch 에 반영 (restart 필요).
          */
         LinkOffsetResultData: {
             /** Offsets */
-            offsets: components["schemas"]["modules__calibration__result_models__LinkOffsetEntry"][];
+            offsets: components["schemas"]["LinkOffsetEntry"][];
             /** Method */
             method: string;
         };
@@ -1323,8 +1160,6 @@ export interface components {
         OpenApiSchemaRegistry: {
             ActivateCalibrationReq?: components["schemas"]["ActivateCalibrationReq"] | null;
             ActivateCalibrationRes?: components["schemas"]["ActivateCalibrationRes"] | null;
-            BeginRefinementReq?: components["schemas"]["BeginRefinementReq"] | null;
-            BeginRefinementRes?: components["schemas"]["BeginRefinementRes"] | null;
             CalibrationInvalidated?: components["schemas"]["CalibrationInvalidated"] | null;
             CameraStatus?: components["schemas"]["CameraStatus"] | null;
             CommitCalibrationReq?: components["schemas"]["CommitCalibrationReq"] | null;
@@ -1340,16 +1175,12 @@ export interface components {
             GetActiveCalibrationRes?: components["schemas"]["GetActiveCalibrationRes"] | null;
             GroundedDetectReq?: components["schemas"]["GroundedDetectReq"] | null;
             GroundedDetectionResult?: components["schemas"]["GroundedDetectionResult"] | null;
-            HandeyeBaStatus?: components["schemas"]["HandeyeBaStatus"] | null;
             HandeyeCaptureRes?: components["schemas"]["HandeyeCaptureRes"] | null;
-            HandeyeCommitRes?: components["schemas"]["HandeyeCommitRes"] | null;
+            HandeyeFinalizeRes?: components["schemas"]["HandeyeFinalizeRes"] | null;
             HandeyeListPosesRes?: components["schemas"]["HandeyeListPosesRes"] | null;
-            HandeyeObservabilityState?: components["schemas"]["HandeyeObservabilityState"] | null;
-            HandeyeParamObservabilityState?: components["schemas"]["HandeyeParamObservabilityState"] | null;
             HandeyePreviewEnableReq?: components["schemas"]["HandeyePreviewEnableReq"] | null;
             HandeyePreviewEnableRes?: components["schemas"]["HandeyePreviewEnableRes"] | null;
             HandeyeResetRes?: components["schemas"]["HandeyeResetRes"] | null;
-            HandeyeSigmaState?: components["schemas"]["HandeyeSigmaState"] | null;
             HandeyeStartRes?: components["schemas"]["HandeyeStartRes"] | null;
             HandeyeUndoLastCaptureRes?: components["schemas"]["HandeyeUndoLastCaptureRes"] | null;
             Heartbeat?: components["schemas"]["Heartbeat"] | null;
@@ -1475,13 +1306,6 @@ export interface components {
             robots: components["schemas"]["RobotInfo"][];
             /** Default */
             default: string | null;
-        };
-        /** SagOffsetEntry */
-        SagOffsetEntry: {
-            /** Motor Id */
-            motor_id: number;
-            /** K Rad Per M */
-            k_rad_per_m: number;
         };
         /**
          * SagOffsetResultData
@@ -1773,24 +1597,6 @@ export interface components {
             bbox: number[];
             /** Conf */
             conf: number;
-        };
-        /** LinkOffsetEntry */
-        core__transport__messages__calibration__LinkOffsetEntry: {
-            /** Motor Id */
-            motor_id: number;
-            /** Trans M */
-            trans_m: number[];
-            /** Rot Rad */
-            rot_rad: number[];
-        };
-        /** LinkOffsetEntry */
-        modules__calibration__result_models__LinkOffsetEntry: {
-            /** Joint Id */
-            joint_id: number;
-            /** Trans M */
-            trans_m: number[];
-            /** Rot Rad */
-            rot_rad: number[];
         };
     };
     responses: never;

@@ -20,10 +20,13 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from modules.calibration.orm import (
+    CalibrationCaptureArtifactOrm,
     CalibrationCaptureOrm,
     CalibrationResultOrm,
     CalibrationRunOrm,
+    artifact_record_to_orm,
     capture_record_to_orm,
+    orm_to_artifact,
     orm_to_capture,
     orm_to_result,
     orm_to_run,
@@ -31,6 +34,7 @@ from modules.calibration.orm import (
     run_record_to_orm,
 )
 from modules.calibration.persistence_models import (
+    CalibrationCaptureArtifactRecord,
     CalibrationCaptureRecord,
     CalibrationKind,
     CalibrationResultRecord,
@@ -58,6 +62,10 @@ class _CaptureRepo(SQLAlchemySyncRepository[CalibrationCaptureOrm]):  # type: ig
     model_type = CalibrationCaptureOrm
 
 
+class _ArtifactRepo(SQLAlchemySyncRepository[CalibrationCaptureArtifactOrm]):  # type: ignore[type-var]
+    model_type = CalibrationCaptureArtifactOrm
+
+
 # ─── Domain facade ───
 
 
@@ -69,6 +77,30 @@ class CalibrationRepo:
         self.runs = _RunRepo(session=session, wrap_exceptions=False)
         self.results = _ResultRepo(session=session, wrap_exceptions=False)
         self.captures = _CaptureRepo(session=session, wrap_exceptions=False)
+        self.artifacts = _ArtifactRepo(session=session, wrap_exceptions=False)
+
+    # ─── Capture + Artifact 결합 read helpers ────────────────
+
+    def _artifacts_for_captures(
+        self, capture_ids: list[int]
+    ) -> dict[int, list[CalibrationCaptureArtifactRecord]]:
+        """capture_id → artifacts list 매핑 — N+1 query 회피."""
+        if not capture_ids:
+            return {}
+        orms = self.session.scalars(
+            select(CalibrationCaptureArtifactOrm)
+            .where(CalibrationCaptureArtifactOrm.capture_id.in_(capture_ids))
+            .order_by(
+                CalibrationCaptureArtifactOrm.capture_id,
+                CalibrationCaptureArtifactOrm.kind,
+            )
+        ).all()
+        out: dict[int, list[CalibrationCaptureArtifactRecord]] = {
+            cid: [] for cid in capture_ids
+        }
+        for o in orms:
+            out.setdefault(o.capture_id, []).append(orm_to_artifact(o))
+        return out
 
     # ─── Read ────────────────────────────────────────────────
 
@@ -134,7 +166,12 @@ class CalibrationRepo:
             CalibrationCaptureOrm.run_id == run_id,
             order_by=CalibrationCaptureOrm.pose_index.asc(),
         )
-        return [orm_to_capture(o) for o in orms]
+        ids = [o.id for o in orms if o.id is not None]
+        arts_by_cap = self._artifacts_for_captures(ids)
+        return [
+            orm_to_capture(o, artifacts=arts_by_cap.get(o.id, []) if o.id else [])
+            for o in orms
+        ]
 
     # ─── Write (atomic transaction per method) ───────────────
 
@@ -170,15 +207,40 @@ class CalibrationRepo:
         assert orm.id is not None
         return orm.id
 
-    def append_capture(self, capture: CalibrationCaptureRecord) -> int:
+    def append_capture(
+        self,
+        capture: CalibrationCaptureRecord,
+        artifacts: list[CalibrationCaptureArtifactRecord] | None = None,
+    ) -> int:
+        """capture row + artifacts (옵션) atomic INSERT. capture.id 반환.
+
+        in_progress run 만 허용. artifacts 자리 capture row 의 id 채워 같이 INSERT.
+        """
+        run_orm = self.runs.get_one_or_none(CalibrationRunOrm.id == capture.run_id)
+        if run_orm is None:
+            raise KeyError(f"run id={capture.run_id} 없음")
+        if run_orm.status != "in_progress":
+            raise ValueError(
+                f"run id={capture.run_id} status={run_orm.status!r} — "
+                "capture append 불가 (in_progress 만 허용)"
+            )
         orm = self.captures.add(
             capture_record_to_orm(capture, run_id=capture.run_id)
         )
         assert orm.id is not None
-        return orm.id
+        cid = orm.id
+        if artifacts:
+            self.artifacts.add_many(
+                [artifact_record_to_orm(a, capture_id=cid) for a in artifacts]
+            )
+        return cid
 
-    def delete_last_capture(self, run_id: int) -> int | None:
-        # get_one_or_none 자리 order_by 자리 없음 — raw statement 자리.
+    def delete_last_capture(
+        self, run_id: int
+    ) -> tuple[int, list[CalibrationCaptureArtifactRecord]] | None:
+        """마지막 capture row + 자식 artifact 들 cascade 삭제. 삭제된 artifact
+        record 목록 반환 — caller (handler) 가 ObjectStore cleanup.
+        """
         orm = self.session.scalars(
             select(CalibrationCaptureOrm)
             .where(CalibrationCaptureOrm.run_id == run_id)
@@ -188,9 +250,17 @@ class CalibrationRepo:
         if orm is None:
             return None
         pose_index = orm.pose_index
-        self.session.delete(orm)
+        cid = orm.id
+        # artifacts 자리 cascade 자리 삭제되기 전 fetch.
+        artifact_orms = self.session.scalars(
+            select(CalibrationCaptureArtifactOrm).where(
+                CalibrationCaptureArtifactOrm.capture_id == cid
+            )
+        ).all()
+        artifacts = [orm_to_artifact(a) for a in artifact_orms]
+        self.session.delete(orm)  # CASCADE 가 자식 artifact row 자동 삭제.
         self.session.flush()
-        return pose_index
+        return pose_index, artifacts
 
     def get_in_progress_run(
         self, robot_id: str, kind: CalibrationKind
@@ -213,15 +283,56 @@ class CalibrationRepo:
             CalibrationCaptureOrm.run_id == run_orm.id,
             order_by=CalibrationCaptureOrm.pose_index.asc(),
         )
-        captures = [orm_to_capture(c) for c in cap_orms]
+        ids = [c.id for c in cap_orms if c.id is not None]
+        arts_by_cap = self._artifacts_for_captures(ids)
+        captures = [
+            orm_to_capture(c, artifacts=arts_by_cap.get(c.id, []) if c.id else [])
+            for c in cap_orms
+        ]
         return run, captures
 
+    def list_run_artifacts(
+        self, run_id: int
+    ) -> list[CalibrationCaptureArtifactRecord]:
+        """run 의 모든 capture artifacts — delete_run 전 ObjectStore cleanup 용."""
+        cap_ids = self.session.scalars(
+            select(CalibrationCaptureOrm.id).where(
+                CalibrationCaptureOrm.run_id == run_id
+            )
+        ).all()
+        if not cap_ids:
+            return []
+        orms = self.session.scalars(
+            select(CalibrationCaptureArtifactOrm).where(
+                CalibrationCaptureArtifactOrm.capture_id.in_(list(cap_ids))
+            )
+        ).all()
+        return [orm_to_artifact(a) for a in orms]
+
     def delete_run(self, run_id: int) -> None:
-        # FK ON DELETE CASCADE + PRAGMA foreign_keys=ON → 자식 captures / results 자동.
+        # FK ON DELETE CASCADE + PRAGMA foreign_keys=ON → 자식 captures / results /
+        # artifacts 자동. ObjectStore blob 자리 호출자 (handler) 가 list_run_artifacts
+        # 먼저 fetch 후 별도 ObjectStore.delete — RDB cascade 가 외부 store 까지 못 미침.
         orm = self.runs.get_one_or_none(CalibrationRunOrm.id == run_id)
         if orm is not None:
             self.session.delete(orm)
             self.session.flush()
+
+    def mark_run_ready(self, run_id: int) -> CalibrationRunRecord:
+        """in_progress → ready_for_analysis. 다른 status 는 ValueError.
+
+        ready_for_analysis 진입 후엔 capture append 차단 (handler 가 status 체크).
+        """
+        orm = self.runs.get_one_or_none(CalibrationRunOrm.id == run_id)
+        if orm is None:
+            raise KeyError(f"run id={run_id} 없음")
+        if orm.status != "in_progress":
+            raise ValueError(
+                f"run id={run_id} status={orm.status!r} — in_progress 가 아님"
+            )
+        orm.status = "ready_for_analysis"
+        self.session.flush()
+        return orm_to_run(orm)
 
     def finalize_run(
         self,
@@ -231,8 +342,13 @@ class CalibrationRepo:
         | None = None,
     ) -> list[int]:
         run = self.runs.get_one_or_none(CalibrationRunOrm.id == run_id)
-        if run is None or run.status != "in_progress":
-            raise KeyError(f"in_progress run id={run_id} 없음 / 이미 종료")
+        # ready_for_analysis (offline 스크립트 정상 경로) + in_progress (legacy /
+        # 직접 finalize 경로) 둘 다 허용.
+        if run is None or run.status not in ("in_progress", "ready_for_analysis"):
+            raise KeyError(
+                f"finalize 가능 run id={run_id} 없음 / 이미 종료 "
+                f"(status={run.status if run else 'None'!r})"
+            )
 
         ended_at = results[0].created_at if results else run.started_at
         run.status = "success"

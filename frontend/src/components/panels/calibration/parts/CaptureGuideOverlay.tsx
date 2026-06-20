@@ -1,12 +1,14 @@
-import type { HandEyePreview } from "./types";
+import type { HandEyePreview } from "@/domain/stores/calibration";
 
 interface Props {
   preview: HandEyePreview | null;
   stale: boolean;
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
-// Phase 1 Traffic Light — verdict 는 backend 가 계산 (검출+tilt+diversity 종합,
-// handeye_ux_solver_v3_plan.md §5). frontend 는 색 + 사유만 표시.
+// Traffic light verdict — backend 가 계산 (검출 + tilt + pose diversity 종합).
+// frontend 는 색 + 사유만 표시 (capture_verdict / capture_reasons).
 const VERDICT_STYLE: Record<string, string> = {
   green: "bg-emerald-500/15 border border-emerald-500/40 text-emerald-300",
   yellow: "bg-amber-500/15 border border-amber-500/40 text-amber-300",
@@ -18,7 +20,12 @@ const VERDICT_HEAD: Record<string, string> = {
   red: "🔴 캡처 금지",
 };
 
-export function CaptureGuideOverlay({ preview, stale }: Props) {
+export function CaptureGuideOverlay({
+  preview,
+  stale,
+  imageWidth = 1280,
+  imageHeight = 720,
+}: Props) {
   if (!preview) {
     return (
       <div className="absolute top-2 right-2 rounded border border-zinc-700/60 bg-zinc-900/70 px-2 py-1 font-mono text-[11px] text-zinc-400 backdrop-blur-sm">
@@ -27,18 +34,19 @@ export function CaptureGuideOverlay({ preview, stale }: Props) {
     );
   }
 
-  const [w, h] = preview.image_size ?? [1280, 720];
   const detected = preview.detected && !stale;
-  const corners = preview.corners ?? [];
-  const markers = preview.markers ?? [];
-  const bbox = preview.bbox;
-  const tilt = preview.tilt_deg ?? null;
+  const corners = preview.corners_2d ?? [];
+  const markers = preview.marker_outlines ?? [];
+  const tilt = preview.tilt_deg;
 
-  // 신호 끊김은 frontend-only (timeout). 그 외엔 backend verdict 사용.
-  const verdict = stale ? "red" : (preview.capture_verdict ?? "red");
+  const verdict = stale ? "red" : preview.capture_verdict;
   const reasons = stale
     ? ["신호 끊김"]
-    : preview.capture_reasons ?? (preview.detected ? [] : ["미검출"]);
+    : preview.capture_reasons.length
+      ? preview.capture_reasons
+      : preview.detected
+        ? []
+        : ["미검출"];
   const badgeClass = VERDICT_STYLE[verdict] ?? VERDICT_STYLE.red;
   const tiltStr =
     verdict !== "red" && tilt != null ? ` · tilt ${tilt.toFixed(0)}°` : "";
@@ -49,51 +57,19 @@ export function CaptureGuideOverlay({ preview, stale }: Props) {
     <>
       <svg
         className="pointer-events-none absolute inset-0 h-full w-full"
-        viewBox={`0 0 ${w} ${h}`}
+        viewBox={`0 0 ${imageWidth} ${imageHeight}`}
         preserveAspectRatio="xMidYMid meet"
       >
-        {detected && bbox && (
-          <rect
-            x={bbox[0]}
-            y={bbox[1]}
-            width={bbox[2]}
-            height={bbox[3]}
-            fill="none"
-            stroke="rgba(16,185,129,0.45)"
-            strokeWidth={2}
-            strokeDasharray="10 6"
-          />
-        )}
-        {markers.map((m) => {
-          const pts = m.corners.map(([x, y]) => `${x},${y}`).join(" ");
-          const cx =
-            m.corners.reduce((s, [x]) => s + x, 0) / m.corners.length;
-          const cy =
-            m.corners.reduce((s, [, y]) => s + y, 0) / m.corners.length;
+        {markers.map((m, i) => {
+          const pts = m.map(([x, y]) => `${x},${y}`).join(" ");
           return (
-            <g key={m.id}>
-              <polygon
-                points={pts}
-                fill="rgba(16,185,129,0.12)"
-                stroke="rgba(16,185,129,0.85)"
-                strokeWidth={2}
-              />
-              <text
-                x={cx}
-                y={cy}
-                fill="rgba(220,252,231,0.95)"
-                stroke="rgba(6,78,59,0.7)"
-                strokeWidth={3}
-                paintOrder="stroke"
-                fontFamily="JetBrains Mono, monospace"
-                fontSize={14}
-                fontWeight={700}
-                textAnchor="middle"
-                dominantBaseline="central"
-              >
-                {m.id}
-              </text>
-            </g>
+            <polygon
+              key={i}
+              points={pts}
+              fill="rgba(16,185,129,0.12)"
+              stroke="rgba(16,185,129,0.85)"
+              strokeWidth={2}
+            />
           );
         })}
         {detected &&

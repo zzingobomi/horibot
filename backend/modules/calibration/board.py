@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import cv2
 import numpy as np
@@ -93,19 +94,15 @@ def detect(
     return True, ch_corners, ch_ids
 
 
-def detect_full(
-    gray: np.ndarray,
-) -> tuple[
-    np.ndarray | None,
-    np.ndarray | None,
-    np.ndarray | None,
-    np.ndarray | None,
-]:
+def detect_full(gray: np.ndarray) -> tuple[Any, Any, Any, Any]:
     """ChArUco corner + marker 둘 다 반환 (preview overlay 용).
+
+    cv2 의 type stub 자리 marker_corners 가 `Sequence[MatLike]` 자리 자리 일관성 X 라
+    return 자리 `Any` — caller 가 None / len 자리 자리 check 후 자리 자리.
 
     Returns:
         (charuco_corners (N,1,2), charuco_ids (N,1),
-         marker_corners (M,1,4,2), marker_ids (M,1))
+         marker_corners list[(1,4,2)], marker_ids (M,1))
         검출 안 된 자리는 None.
     """
     return _detector().detectBoard(gray)
@@ -128,6 +125,21 @@ def match_object_points(
 def draw(image: np.ndarray, ch_corners: np.ndarray, ch_ids: np.ndarray) -> None:
     """검출 overlay (in-place)."""
     cv2.aruco.drawDetectedCornersCharuco(image, ch_corners, ch_ids)
+
+
+def spec_as_dict() -> dict:
+    """보드 spec snapshot — capture run.algorithm_params 에 freeze 자리.
+
+    offline 분석 스크립트가 이 snapshot 으로 BA 입력 (보드 차원 / dictionary) 재현.
+    """
+    return {
+        "squares_x": SQUARES_X,
+        "squares_y": SQUARES_Y,
+        "square_length_m": SQUARE_LENGTH_M,
+        "marker_length_m": MARKER_LENGTH_M,
+        "aruco_dict_id": ARUCO_DICT_ID,
+        "min_corners": MIN_CORNERS,
+    }
 
 
 def board_corner_points_3d() -> np.ndarray:

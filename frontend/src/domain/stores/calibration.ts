@@ -1,95 +1,98 @@
 /**
- * Calibration UI state — Hand-Eye capture / compute / commit flow 의 single source.
+ * Calibration UI state — capture-only 시나리오 (online BA / 추천 / σ / observability
+ * 전부 폐기, offline Python 스크립트가 분석).
  *
- * 분리된 panel (CalibrationCameraPanel / HandEyePanel) 들이 같은 state 를 읽고
- * 같은 action 을 호출. 컴포넌트 local useState 였으면 panel 간 sync 가 안 됨
- * (camera 의 overlay preview ↔ hand-eye 의 capture/σ 동기화 필요 등).
- *
- * 라이프사이클: RobotCalibrateMode mount 시 `bootstrap()` 1회 호출, unmount 시
- * `dispose()`. capture/compute panel 들은 mount/unmount 와 무관 — store 가
+ * 라이프사이클: RobotCalibrateMode mount 시 `bootstrap()` 1회, unmount 시 `dispose()`.
+ * panel 들 (CalibrationPanel / CameraPanel) mount/unmount 와 무관 — store 가
  * subscribe handle 들을 들고 있음.
  */
 import { create } from "zustand";
+
 import { bridge } from "@/api/bridge";
 import { ServiceKey, Topic } from "@/constants/topics";
-import type {
-  CalibThresholds,
-  ComputeData,
-  HandEyePreview,
-  HandeyeRecommendationsState,
-  HandeyeObservabilityState,
-  HandeyeParamObservabilityState,
-  HandeyeSaturateState,
-  HandEyeSigmaState,
-  BeginRefinementRes,
-  NextPoseRecommendation,
-  NoCandidatesReason,
-  PoseMeta,
-} from "@/components/panels/calibration/parts/types";
 
 const PREVIEW_STALE_MS = 1500;
+
+// Scene3DNode 의 SCENE3D_SET_STREAM 자리 acquire/release. 캘 세션과 lifecycle 동기화 —
+// 사용자 토글 따로 안 해도 [캘 시작] 자리 depth stream on, [세션 종료]/[리셋] 자리 off.
+// 같은 "stream" 토큰 자리라 Scene Controls UI 의 토글 상태와 일치.
+async function setDepthStream(robotId: string, enabled: boolean): Promise<void> {
+  try {
+    await bridge.callService(
+      ServiceKey.SCENE3D_SET_STREAM,
+      { enabled },
+      { robotId },
+    );
+  } catch (e) {
+    console.warn("SCENE3D_SET_STREAM 실패", e);
+  }
+}
+
+// ─── Wire types ─────────────────────────────────────────────────
+
+export interface PoseMeta {
+  pose_index: number;
+  tilt_deg: number | null;
+}
+
+export interface HandEyePreview {
+  timestamp: number;
+  detected: boolean;
+  tilt_deg: number | null;
+  pose_count: number;
+  session_active: boolean;
+  capture_verdict: "green" | "yellow" | "red";
+  capture_reasons: string[];
+  corners_2d: [number, number][];
+  marker_outlines: [number, number][][];
+}
+
+export interface CalibThresholds {
+  handeye_pnp_rms_warn_px: number;
+  handeye_pnp_rms_reject_px: number;
+  capture_similar_joint_deg: number;
+  capture_rot_diversity_deg: number;
+  capture_trans_diversity_m: number;
+  capture_tilt_edge_margin_deg: number;
+  tilt_min_deg: number;
+  tilt_max_deg: number;
+  intrinsic_rms_good_px: number;
+  intrinsic_rms_warn_px: number;
+  intrinsic_min_captures: number;
+  intrinsic_recommended_captures: number;
+  intrinsic_grid_coverage_good: number;
+}
 
 interface CalibrationState {
   // ─── 데이터 ───────────────────────────────────────────────
   preview: HandEyePreview | null;
   previewStale: boolean;
   // draft run id — null = 사용자 [캘 시작] 안 누름. 캡처 가능 여부 gate.
-  // storage_layer.md §13 — in_progress run id, 부팅 시 자동 복원.
   hand_eye_run_id: number | null;
   poses: PoseMeta[];
-  liveSigma: HandEyeSigmaState | null;
-  compute: ComputeData | null;
-  computeStale: boolean;
-  // recommendations — CALIB_HANDEYE_RECOMMENDATIONS topic 자동 갱신 (매 capture 마다).
-  // Phase 1 (manualModeActive=true) frontend 자체 자리 hide.
-  recommendations: NextPoseRecommendation[] | null;
-  // 빈 추천 시 *왜* 인지 분리 — PoseCandidates 가 분기별 메시지 표시.
-  // null = 아직 publish 안 됨 (Phase 1) 또는 recommendations 채워짐 (분기 N/A).
-  noCandidatesReason: NoCandidatesReason | null;
-  visited: Set<number>;
-  activeIndex: number | null;
   thresholds: CalibThresholds | null;
-  // saturate — σ 변화율 추적 결과. Phase 2 표시.
-  saturate: HandeyeSaturateState | null;
-  // observability — 자세 분포의 기하학적 관측성. verdict 만 사용자 안내.
-  observability: HandeyeObservabilityState | null;
-  // paramObservability — parameter별 식별성 (Fisher) + staged gating 결과 (Phase 2).
-  paramObservability: HandeyeParamObservabilityState | null;
-  // BA 진행 상태 — frontend spinner 용. running=BA 도는 중, done/failed=끝남.
-  // CALIB_HANDEYE_BA_STATUS topic 자동 update.
-  baStatus: { state: "running" | "done" | "failed"; mode: string } | null;
-
-  // ─── Phase 1/2 분기 ────────────────────────────────────────
-  // manualModeActive=true → Phase 1 (수동 자유 자세, 추천/σ hide).
-  // 사용자 [수동 모드 종료] 누르면 → exitManualMode() → multi-start BA → false → Phase 2.
-  // [리셋] 누르면 다시 true.
-  manualModeActive: boolean;
 
   // ─── UI 플래그 ─────────────────────────────────────────────
   loading: boolean;
-  computing: boolean;
   status: string;
 
-  // ─── 내부: subscribe handle / preview stale timer ─────────
+  // ─── 내부 ──────────────────────────────────────────────────
   _unsubscribes: (() => void)[];
   _previewTimer: ReturnType<typeof setTimeout> | null;
   _booted: boolean;
 
   // ─── 라이프사이클 ─────────────────────────────────────────
-  bootstrap: () => void;
+  bootstrap: (robotId: string) => void;
   dispose: () => void;
+  // 현재 robot 의 캘 세션 상태 자리 (mode 진입 시 + invalidation 시) 동기화.
+  refreshPoses: (robotId: string) => Promise<void>;
 
-  // ─── actions (panel 들이 호출) ─────────────────────────────
-  refreshPoses: () => Promise<void>;
-  startSession: () => Promise<{ success: boolean; message: string }>;
-  capture: () => Promise<void>;
-  undoLastCapture: () => Promise<void>;
-  reset: () => Promise<void>;
-  compute_: () => Promise<void>;
-  commit: () => Promise<{ success: boolean; message: string }>;
-  moved: (index: number) => void;
-  // Phase 1 → 2 전환. [자동 추천 시작] 버튼 → begin_refinement (초기 solve).
-  exitManualMode: () => Promise<BeginRefinementRes | null>;
+  // ─── actions ───────────────────────────────────────────────
+  startSession: (robotId: string) => Promise<{ success: boolean; message: string }>;
+  capture: (robotId: string) => Promise<void>;
+  undoLastCapture: (robotId: string) => Promise<void>;
+  reset: (robotId: string) => Promise<void>;
+  finalize: (robotId: string) => Promise<{ success: boolean; message: string }>;
 }
 
 export const useCalibrationStore = create<CalibrationState>((set, get) => ({
@@ -97,356 +100,206 @@ export const useCalibrationStore = create<CalibrationState>((set, get) => ({
   previewStale: false,
   hand_eye_run_id: null,
   poses: [],
-  liveSigma: null,
-  compute: null,
-  computeStale: false,
-  recommendations: null,
-  noCandidatesReason: null,
-  visited: new Set(),
-  activeIndex: null,
   thresholds: null,
-  saturate: null,
-  observability: null,
-  paramObservability: null,
-  baStatus: null,
-  manualModeActive: true,
 
   loading: false,
-  computing: false,
   status: "",
 
   _unsubscribes: [],
   _previewTimer: null,
   _booted: false,
 
-  bootstrap: () => {
+  bootstrap: (robotId: string) => {
     if (get()._booted) return;
-    set({ _booted: true });
 
-    // preview enable + topic 구독
-    void bridge.callService(ServiceKey.CALIB_HANDEYE_PREVIEW_ENABLE, {
-      enabled: true,
+    // Preview subscribe — traffic light verdict + ChArUco overlay corners.
+    const previewKey = Topic.CALIB_HANDEYE_PREVIEW.replace(
+      "{robot_id}",
+      robotId,
+    );
+    const unsubPreview = bridge.subscribe(previewKey, (data: unknown) => {
+      const preview = data as HandEyePreview;
+      set({ preview, previewStale: false });
+      const prev = get()._previewTimer;
+      if (prev) clearTimeout(prev);
+      const timer = setTimeout(
+        () => set({ previewStale: true }),
+        PREVIEW_STALE_MS,
+      );
+      set({ _previewTimer: timer });
     });
-    const unsubPreview = bridge.subscribe(
-      Topic.CALIB_HANDEYE_PREVIEW,
-      (data) => {
-        const prev = get()._previewTimer;
-        if (prev) clearTimeout(prev);
-        const timer = setTimeout(
-          () => set({ previewStale: true }),
-          PREVIEW_STALE_MS,
-        );
-        set({
-          preview: data as unknown as HandEyePreview,
-          previewStale: false,
-          _previewTimer: timer,
-        });
-      },
+
+    // Preview enable on mount.
+    void bridge.callService(
+      ServiceKey.CALIB_HANDEYE_PREVIEW_ENABLE,
+      { enabled: true },
+      { robotId },
     );
 
-    // σ live — capture 마다 backend 자동 BA 결과.
-    // computeStale 도 함께 false 로 리셋 — capture action 이 stale=true 박지만
-    // 자동 BA 응답이 도착하면 fresh σ 가 박힌 거니 [COMMIT] 활성화 자리.
-    const unsubSigma = bridge.subscribe(Topic.CALIB_HANDEYE_SIGMA, (data) => {
-      set({
-        liveSigma: data as unknown as HandEyeSigmaState,
-        computeStale: false,
+    // Thresholds — mount 1회 fetch.
+    void bridge
+      .callService(ServiceKey.CALIB_HANDEYE_THRESHOLDS, {}, { robotId })
+      .then((res) => {
+        if (res?.success && res.data) {
+          set({ thresholds: res.data as CalibThresholds });
+        }
       });
-    });
 
-    // 추천 자세 — capture 마다 backend 자동 publish (Phase 1 자체 자리 hide, Phase 2 show).
-    const unsubRecs = bridge.subscribe(
-      Topic.CALIB_HANDEYE_RECOMMENDATIONS,
-      (data) => {
-        const s = data as unknown as HandeyeRecommendationsState;
-        set({
-          recommendations: s.recommendations ?? [],
-          noCandidatesReason: s.no_candidates_reason ?? null,
-        });
-      },
-    );
-
-    // Saturate state — σ 변화율 추적 결과. Phase 2 알림.
-    const unsubSaturate = bridge.subscribe(
-      Topic.CALIB_HANDEYE_SATURATE,
-      (data) => {
-        set({ saturate: data as unknown as HandeyeSaturateState });
-      },
-    );
-
-    // Observability — 매 capture 후 자세 분포 진단. verdict 만 사용자 안내.
-    const unsubParamObs = bridge.subscribe(
-      Topic.CALIB_HANDEYE_PARAM_OBSERVABILITY,
-      (data) => {
-        set({
-          paramObservability: data as unknown as HandeyeParamObservabilityState,
-        });
-      },
-    );
-
-    const unsubObservability = bridge.subscribe(
-      Topic.CALIB_HANDEYE_OBSERVABILITY,
-      (data) => {
-        set({ observability: data as unknown as HandeyeObservabilityState });
-      },
-    );
-
-    // BA progress — frontend spinner.
-    const unsubBaStatus = bridge.subscribe(
-      Topic.CALIB_HANDEYE_BA_STATUS,
-      (data) => {
-        const s = data as unknown as {
-          state: "running" | "done" | "failed";
-          mode: string;
-        };
-        set({ baStatus: { state: s.state, mode: s.mode } });
-      },
-    );
-
-    // 초기 fetch — pose list + thresholds + in_progress run id (있으면 이어하기)
-    void bridge.callService(ServiceKey.CALIB_HANDEYE_LIST_POSES, {}).then(
-      (res) => {
-        if (!res.success) return;
-        const data = res.data as unknown as {
-          poses: PoseMeta[];
-          run_id: number | null;
-        };
-        set({
-          poses: data.poses ?? [],
-          hand_eye_run_id: data.run_id ?? null,
-        });
-      },
-    );
-    void bridge.callService(ServiceKey.CALIB_HANDEYE_THRESHOLDS, {}).then(
-      (res) => {
-        if (!res.success) return;
-        set({ thresholds: res.data as unknown as CalibThresholds });
-      },
-    );
+    // 현재 진행 중 draft + 누적 capture 복원. 진행 중이면 depth stream 켜둠
+    // (backend 재시작 / 브라우저 reload 경로 자체 자체).
+    void get()
+      .refreshPoses(robotId)
+      .then(() => {
+        if (get().hand_eye_run_id != null) {
+          void setDepthStream(robotId, true);
+        }
+      });
 
     set({
-      _unsubscribes: [
-        unsubPreview,
-        unsubSigma,
-        unsubRecs,
-        unsubSaturate,
-        unsubObservability,
-        unsubParamObs,
-        unsubBaStatus,
-      ],
+      _unsubscribes: [unsubPreview],
+      _booted: true,
     });
   },
 
   dispose: () => {
-    const { _unsubscribes, _previewTimer } = get();
-    for (const u of _unsubscribes) u();
-    if (_previewTimer) clearTimeout(_previewTimer);
-    void bridge.callService(ServiceKey.CALIB_HANDEYE_PREVIEW_ENABLE, {
-      enabled: false,
-    });
+    for (const u of get()._unsubscribes) u();
+    const timer = get()._previewTimer;
+    if (timer) clearTimeout(timer);
     set({
       _unsubscribes: [],
       _previewTimer: null,
       _booted: false,
-      // state 초기화 — 다음 mount 시 깔끔하게
       preview: null,
       previewStale: false,
+      hand_eye_run_id: null,
       poses: [],
-      liveSigma: null,
-      compute: null,
-      computeStale: false,
-      recommendations: null,
-      noCandidatesReason: null,
-      visited: new Set(),
-      activeIndex: null,
-      saturate: null,
-      baStatus: null,
-      manualModeActive: true,
-      loading: false,
-      computing: false,
+      thresholds: null,
       status: "",
     });
   },
 
-  refreshPoses: async () => {
+  refreshPoses: async (robotId: string) => {
     const res = await bridge.callService(
       ServiceKey.CALIB_HANDEYE_LIST_POSES,
       {},
+      { robotId },
     );
-    if (res.success) {
+    if (res?.success && res.data) {
       const data = res.data as unknown as {
         poses: PoseMeta[];
+        pose_count: number;
         run_id: number | null;
       };
       set({
-        poses: data.poses ?? [],
-        hand_eye_run_id: data.run_id ?? null,
+        poses: data.poses,
+        hand_eye_run_id: data.run_id,
       });
     }
   },
 
-  startSession: async () => {
+  startSession: async (robotId: string) => {
     set({ loading: true });
-    const res = await bridge.callService(ServiceKey.CALIB_HANDEYE_START, {});
+    // depth stream 자리 먼저 켬 — 첫 [캡처] 자리 fresh depth_frame 확보.
+    await setDepthStream(robotId, true);
+    const res = await bridge.callService(
+      ServiceKey.CALIB_HANDEYE_START,
+      {},
+      { robotId },
+    );
     set({ loading: false });
-    if (res.success) {
+    if (res?.success && res.data) {
       const data = res.data as { run_id: number; pose_count: number };
       set({
         hand_eye_run_id: data.run_id,
-        status: `▶ 캘 세션 시작 (run_id=${data.run_id})`,
-        // 새 세션 — 이전 잔재 자체 자체 비우기
         poses: [],
-        compute: null,
-        computeStale: false,
-        recommendations: null,
-        noCandidatesReason: null,
-        visited: new Set(),
-        activeIndex: null,
-        liveSigma: null,
-        saturate: null,
-        manualModeActive: true,
+        status: `✅ 세션 시작 (run_id=${data.run_id})`,
       });
-    } else {
-      set({ status: `❌ ${res.message}` });
+      return { success: true, message: res.message ?? "" };
     }
-    return { success: res.success, message: res.message };
+    // 시작 실패 시 깰깰 acquire 한 depth stream 되돌림.
+    await setDepthStream(robotId, false);
+    return { success: false, message: res?.message ?? "세션 시작 실패" };
   },
 
-  capture: async () => {
+  capture: async (robotId: string) => {
     set({ loading: true });
-    const res = await bridge.callService(ServiceKey.CALIB_HANDEYE_CAPTURE, {});
+    const res = await bridge.callService(
+      ServiceKey.CALIB_HANDEYE_CAPTURE,
+      {},
+      { robotId },
+    );
     set({ loading: false });
-    if (res.success) {
-      const data = res.data as { pose_count: number; detected: boolean };
-      set({
-        status: `✅ 포즈 기록됨 (${data.pose_count}개)`,
-        computeStale: true,
-      });
-      await get().refreshPoses();
+    if (res?.success && res.data) {
+      const data = res.data as { detected: boolean; pose_count: number };
+      set({ status: `✅ 캡처 #${data.pose_count}` });
+      await get().refreshPoses(robotId);
     } else {
-      set({ status: `❌ ${res.message}` });
+      set({ status: `❌ ${res?.message ?? "캡처 실패"}` });
     }
   },
 
-  undoLastCapture: async () => {
+  undoLastCapture: async (robotId: string) => {
     set({ loading: true });
     const res = await bridge.callService(
       ServiceKey.CALIB_HANDEYE_UNDO_LAST_CAPTURE,
       {},
+      { robotId },
     );
     set({ loading: false });
-    if (res.success) {
+    if (res?.success && res.data) {
       const data = res.data as { deleted: boolean; pose_count: number };
-      set({
-        status: data.deleted
-          ? `↶ 마지막 포즈 삭제됨 (${data.pose_count}개 남음)`
-          : "삭제할 포즈 없음",
-        computeStale: true,
-      });
-      await get().refreshPoses();
+      if (data.deleted) {
+        set({ status: "↩ 마지막 capture 삭제" });
+        await get().refreshPoses(robotId);
+      } else {
+        set({ status: "삭제할 capture 없음" });
+      }
     } else {
-      set({ status: `❌ ${res.message}` });
+      set({ status: `❌ ${res?.message ?? "되돌리기 실패"}` });
     }
   },
 
-  reset: async () => {
+  reset: async (robotId: string) => {
     set({ loading: true });
-    const res = await bridge.callService(ServiceKey.CALIB_HANDEYE_RESET, {});
-    set({ loading: false });
-    if (res.success) {
-      set({
-        hand_eye_run_id: null,
-        status: "리셋됨 — [캘 시작] 후 다시 캡처 가능",
-        compute: null,
-        computeStale: false,
-        recommendations: null,
-        noCandidatesReason: null,
-        visited: new Set(),
-        activeIndex: null,
-        liveSigma: null,
-        saturate: null,
-        manualModeActive: true,
-      });
-      await get().refreshPoses();
-    }
-  },
-
-  compute_: async () => {
-    set({ loading: true, computing: true });
     const res = await bridge.callService(
-      ServiceKey.CALIB_HANDEYE_COMPUTE,
+      ServiceKey.CALIB_HANDEYE_RESET,
       {},
-      { timeoutMs: 5 * 60 * 1000 },
+      { robotId },
     );
-    set({ loading: false, computing: false });
-    if (res.success) {
-      const data = res.data as ComputeData;
+    set({ loading: false });
+    if (res?.success) {
       set({
-        compute: data,
-        computeStale: false,
-        recommendations: data.recommendations ?? [],
-        visited: new Set(),
-        activeIndex: null,
-        status: "계산 완료. 후보 [이동]→[캡처] 반복, 만족하면 COMMIT.",
-      });
-    } else {
-      set({ compute: null, status: `❌ ${res.message}` });
-    }
-  },
-
-  commit: async () => {
-    set({ loading: true });
-    const res = await bridge.callService(ServiceKey.CALIB_HANDEYE_COMMIT, {});
-    if (res.success) {
-      // commit 후 backend 자체 자체 세션 종료 — frontend 자체 자체 자체 sync.
-      set({
-        loading: false,
-        status: `✅ ${res.message}`,
         hand_eye_run_id: null,
         poses: [],
-        compute: null,
-        computeStale: false,
-        recommendations: null,
-        noCandidatesReason: null,
-        visited: new Set(),
-        activeIndex: null,
-        liveSigma: null,
-        saturate: null,
-        manualModeActive: true,
+        status: "↺ 세션 리셋",
       });
+      await setDepthStream(robotId, false);
     } else {
-      set({ loading: false, status: `❌ ${res.message}` });
+      set({ status: `❌ ${res?.message ?? "리셋 실패"}` });
     }
-    return { success: res.success, message: res.message };
   },
 
-  moved: (index) => {
-    set((s) => {
-      const next = new Set(s.visited);
-      next.add(index);
-      return { activeIndex: index, visited: next };
-    });
-  },
-
-  exitManualMode: async () => {
-    // Phase 1 → 2 전환. multi-start BA 자동 호출 (local minimum escape).
-    set({ loading: true, status: "Multi-start BA 실행 중..." });
+  finalize: async (robotId: string) => {
+    set({ loading: true });
     const res = await bridge.callService(
-      ServiceKey.CALIB_HANDEYE_BEGIN_REFINEMENT,
-      { n_starts: 10, mode: "physical_sag" },
-      { timeoutMs: 5 * 60 * 1000 },
+      ServiceKey.CALIB_HANDEYE_FINALIZE,
+      {},
+      { robotId },
     );
     set({ loading: false });
-    if (res.success) {
-      const data = res.data as unknown as BeginRefinementRes;
+    if (res?.success && res.data) {
+      const data = res.data as { run_id: number; pose_count: number };
       set({
-        manualModeActive: false,
-        status: `자동 모드 진입 — σ_rot=${data.sigma_rot_deg?.toFixed(2)}° / σ_t=${data.sigma_t_mm?.toFixed(1)}mm (n_converged=${data.n_converged}/${data.n_tried})`,
+        hand_eye_run_id: null,
+        poses: [],
+        status: (
+          `✅ 세션 종료 — run_id=${data.run_id}, ${data.pose_count}장 저장. ` +
+          `offline 분석 스크립트 실행 자리.`
+        ),
       });
-      return data;
-    } else {
-      set({ status: `❌ 초기 solve 실패: ${res.message}` });
-      return null;
+      await setDepthStream(robotId, false);
+      return { success: true, message: res.message ?? "" };
     }
+    return { success: false, message: res?.message ?? "세션 종료 실패" };
   },
 }));

@@ -11,10 +11,10 @@ robots:
     # 기존 OMX 모터 Pi (host_pi_motor) 의 OpenRB-150 자리에 Waveshare 보드 +
     # SO-101 결선. OMX 모터 디바이스 detach. 통합 검증 후 다시 enabled=true.
     enabled: false
-    capabilities: [move, calibrate, rgbd]   # D405 보유 → RGBD primitive. SO-101 도착 시 USB cam 으로 바뀌면 rgbd 자리 제거.
+    capabilities: [move, calibrate]   # USB cam (UVC) — RGBD 아님. D405 는 so101_6dof_0 로 이전.
     motor_backend: dynamixel
     kinematics_backend: pybullet
-    camera_backend: realsense    # Phase 2 (distributed_topology.md §1): omx_f → opencv (UVC)
+    camera_backend: opencv    # USB UVC 카메라 (distributed_topology.md §1)
     # Hand-Eye 캘 추천 자세 전략. 5DOF (wrist yaw 없음) 라 임의 R IK 못 풀림 →
     # joint space perturbation (FK only). geometry (6DOF anchor + IK) 는 SO-101 에서.
     pose_recommend_strategy: joint_perturbation

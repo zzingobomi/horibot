@@ -849,47 +849,18 @@ class CalibrationNode(ApplicationNode):
                 data=None,
             )
 
-        # ── capture sync: frame timestamp 기준 joint state interpolate ──
-        # JointStateCache.latest() + FrameCache.latest() 두 cache 가 비동기 update 라
-        # latest only 사용 시 timestamp 0-50ms mismatch → motor wobble 곱하기 → σ floor.
-        # frame ts 받아 그 시점 joint state interpolate 로 매칭.
-        ret, frame, frame_ts = self._frame_cache.get_frame_with_ts(robot_id=robot_id)
-        if not ret or frame is None or frame_ts is None:
-            return ServiceResponse(
-                success=False, message="카메라 프레임 읽기 실패", data=None
-            )
-
-        # stability check — capture 누른 시점 motor 가 실제 멈춰 있어야.
-        # Feetech servo holding PID oscillation (deadband X) 가 자세별 random noise 박음 → 막음.
-        stable, max_std_raw = self._joint_cache.is_stable(
-            st.arm_cfgs,
-            window_sec=0.15,
-            raw_std_threshold=2.0,
-            robot_id=robot_id,
+        raw_positions = self._joint_cache.get_raw_motor_positions(
+            st.arm_cfgs, robot_id=robot_id
         )
-        if not stable:
-            return ServiceResponse(
-                success=False,
-                message=(
-                    f"로봇이 아직 움직이는 중입니다 (motor wobble {max_std_raw:.1f} raw "
-                    f">2.0). 잠시 후 다시 시도해주세요."
-                ),
-                data=HandeyeCaptureRes(
-                    detected=False, pose_count=len(st.hand_eye.poses)
-                ),
-            )
-
-        raw_positions = self._joint_cache.get_raw_at_ts(
-            st.arm_cfgs, target_ts=frame_ts, robot_id=robot_id
-        )
-        if raw_positions is None:
-            # fallback — interpolate 범위 밖 (history 부족 또는 ts gap).
-            raw_positions = self._joint_cache.get_raw_motor_positions(
-                st.arm_cfgs, robot_id=robot_id
-            )
         if raw_positions is None:
             return ServiceResponse(
                 success=False, message="관절 상태 수신 전", data=None
+            )
+
+        ret, frame = self._frame_cache.get_frame(robot_id=robot_id)
+        if not ret or frame is None:
+            return ServiceResponse(
+                success=False, message="카메라 프레임 읽기 실패", data=None
             )
 
         # ChArUco 검출 — intrinsic pool 안 건드림 (handeye pool 과 분리).

@@ -24,6 +24,7 @@ export const Topic = {
   CALIB_HANDEYE_SATURATE: "horibot/{robot_id}/calib/state/handeye_saturate",
   CALIB_HANDEYE_OBSERVABILITY: "horibot/{robot_id}/calib/state/handeye_observability",
   CALIB_HANDEYE_PARAM_OBSERVABILITY: "horibot/{robot_id}/calib/state/handeye_param_observability",
+  CALIB_HANDEYE_BA_STATUS: "horibot/{robot_id}/calib/state/handeye_ba_status",
   STORAGE_CALIBRATION_INVALIDATED: "horibot/storage/state/calibration_invalidated",
   RECONSTRUCTION_PROGRESS: "horibot/reconstruction/state/progress",
   MOTION_JOG_TCP_STREAM: "horibot/{robot_id}/motion/cmd/jog_tcp_stream",
@@ -55,6 +56,7 @@ export type TopicPayloadMap = {
   "horibot/{robot_id}/calib/state/handeye_saturate": unknown;
   "horibot/{robot_id}/calib/state/handeye_observability": components["schemas"]["HandeyeObservabilityState"];
   "horibot/{robot_id}/calib/state/handeye_param_observability": components["schemas"]["HandeyeParamObservabilityState"];
+  "horibot/{robot_id}/calib/state/handeye_ba_status": components["schemas"]["HandeyeBaStatus"];
   "horibot/storage/state/calibration_invalidated": components["schemas"]["CalibrationInvalidated"];
   "horibot/reconstruction/state/progress": components["schemas"]["ReconstructionProgress"];
   "horibot/{robot_id}/motion/cmd/jog_tcp_stream": components["schemas"]["JogTcpReq"];
@@ -91,6 +93,7 @@ export const ServiceKey = {
   STORAGE_GET_ACTIVE_CALIBRATION: "horibot/storage/srv/calibration/get_active",
   STORAGE_LIST_CALIBRATIONS: "horibot/storage/srv/calibration/list",
   STORAGE_LIST_CALIBRATION_RUNS: "horibot/storage/srv/calibration/list_runs",
+  STORAGE_LIST_RUN_CAPTURES: "horibot/storage/srv/calibration/list_run_captures",
   STORAGE_COMMIT_CALIBRATION: "horibot/storage/srv/calibration/commit",
   STORAGE_ACTIVATE_CALIBRATION: "horibot/storage/srv/calibration/activate",
   STORAGE_NEW_SCAN_SESSION: "horibot/storage/srv/scan/new_session",
@@ -146,6 +149,7 @@ export type ServiceMap = {
   "horibot/storage/srv/calibration/get_active": { req: components["schemas"]["GetActiveCalibrationReq"]; res: components["schemas"]["GetActiveCalibrationRes"] };
   "horibot/storage/srv/calibration/list": { req: components["schemas"]["ListCalibrationsReq"]; res: components["schemas"]["ListCalibrationsRes"] };
   "horibot/storage/srv/calibration/list_runs": { req: components["schemas"]["ListCalibrationRunsReq"]; res: components["schemas"]["ListCalibrationRunsRes"] };
+  "horibot/storage/srv/calibration/list_run_captures": { req: components["schemas"]["ListRunCapturesReq"]; res: components["schemas"]["ListRunCapturesRes"] };
   "horibot/storage/srv/calibration/commit": { req: components["schemas"]["CommitCalibrationReq"]; res: components["schemas"]["CommitCalibrationRes"] };
   "horibot/storage/srv/calibration/activate": { req: components["schemas"]["ActivateCalibrationReq"]; res: components["schemas"]["ActivateCalibrationRes"] };
   "horibot/storage/srv/scan/new_session": { req: components["schemas"]["CreateScanSessionReq"]; res: components["schemas"]["CreateScanSessionRes"] };

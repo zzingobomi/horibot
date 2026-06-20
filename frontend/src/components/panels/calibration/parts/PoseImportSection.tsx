@@ -2,8 +2,7 @@
  * 직전 캘 자세 가져오기 — Phase 1 (수동 자유 자세) 에서 노출.
  *
  * 새 cal_run 시작 후 사용자가 *기존 commit 된 자세* 로 robot 이동만 시킬 수 있게.
- * 캘판이 그대로 고정돼 있으면 같은 자세 = 같은 board pose → capture-time fix
- * (timestamp align + stability wait + fixed exposure) 적용된 새 capture 로 σ 호전.
+ * 캘판이 그대로 고정돼 있으면 같은 자세 = 같은 board pose → 재캡처로 σ 호전 검증.
  *
  * flow:
  *   1. run dropdown — hand_eye kind, status=success runs 만

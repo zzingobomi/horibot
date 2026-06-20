@@ -454,36 +454,33 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
         ).encode()
 
         try:
-            # session.get 은 sync Zenoh API — timeout (기본 5s) 까지 block.
-            # async def 안 그대로 호출하면 event loop 가 reply 대기 동안 점유됨.
-            # asyncio.to_thread 로 thread pool 에 dispatch — loop 양보 + 다른 WS
-            # 클라이언트 메시지 자리 fair scheduling.
-            replies = await asyncio.to_thread(
-                session.get, key, payload=req_payload, timeout=timeout
-            )
-            res = None
-            for reply in replies:
-                if reply.ok is not None:
-                    res = json.loads(reply.ok.payload.to_bytes())
-                else:
+            # session.get 은 query 를 발사만 하고 *receiver (iterator)* 가 reply
+            # 도착할 때까지 block 하는 패턴. session.get 만 to_thread 로 감싸면
+            # iterator 가 event loop 위에서 block 되어 무의미 (블로킹 자리만 옮긴
+            # 게 아니라 그대로 두는 꼴). reply 수집 / 파싱까지 전부 thread 안에서
+            # 처리해야 event loop 양보 + 다른 WS 클라이언트 fair scheduling.
+            def _service_call() -> dict:
+                replies = session.get(key, payload=req_payload, timeout=timeout)
+                for reply in replies:
+                    if reply.ok is not None:
+                        return json.loads(reply.ok.payload.to_bytes())
                     err = reply.err
                     err_msg = (
                         err.payload.to_string()
                         if err is not None and err.payload is not None
                         else "서비스 err reply"
                     )
-                    res = {"success": False, "message": err_msg, "data": {}}
-                break
+                    return {"success": False, "message": err_msg, "data": {}}
+                return {"success": False, "message": "응답 없음", "data": {}}
+
+            res = await asyncio.to_thread(_service_call)
 
             await ws.send_text(
                 json.dumps(
                     {
                         "type": MsgType.SERVICE_RESPONSE,
                         "request_id": request_id,
-                        **(
-                            res
-                            or {"success": False, "message": "응답 없음", "data": {}}
-                        ),
+                        **res,
                     }
                 )
             )

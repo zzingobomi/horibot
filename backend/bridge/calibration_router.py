@@ -13,31 +13,22 @@ calibration_router = APIRouter(tags=["calibration"])
 @calibration_router.get(
     "/robots/{robot_id}/calibration/results",
     response_model=CalibrationResults,
-    responses={
-        400: {"description": "Calibration data is not ready"},
-        404: {"description": "Robot not found"},
-    },
+    responses={404: {"description": "Robot not found"}},
 )
 async def get_calibration_results(robot_id: str):
-    """robot 의 calibration .npz 들을 모아 JSON 으로 반환.
+    """robot 의 calibration 결과를 JSON 으로 반환.
 
-    Hand-Eye / Intrinsic 은 npz 가 없으면 필드 생략. joint_offsets 는 항상 포함
-    (없으면 빈 리스트). 분산 모드에서도 PC 가 git 에 있는 같은 파일을 보므로
-    프론트엔드는 mount 시 이 엔드포인트 한 번 fetch 로 fresh 한 상태를 받음.
-
-    not-ready (intrinsic & hand_eye 둘 다 누락) 시 400.
+    Intrinsic / Hand-Eye 는 캘 안 됐으면 null 필드. joint_offsets 는 항상 포함
+    (없으면 빈 리스트). "캘 안 됨" 은 valid initial state — 200 으로 null 필드
+    반환. (이전엔 400 으로 떨어뜨려 frontend useResource 가 영구 fetch-failed
+    상태 → useJointOffsetsRad 의 `?? {}` 가 매 render 새 ref → React loop 트리거.)
     """
     try:
         RobotRegistry().get(robot_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"robot '{robot_id}' 없음")
 
-    data = CalibrationCache().get(robot_id)
-    if not data.is_ready():
-        return JSONResponse(
-            content={"error": "Calibration data is not ready"}, status_code=400
-        )
-    raw = to_json(data)
+    raw = to_json(CalibrationCache().get(robot_id))
     return CalibrationResults(
         intrinsic=raw.get("intrinsic"),
         hand_eye=raw.get("hand_eye"),

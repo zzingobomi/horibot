@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import TYPE_CHECKING
 
 import cv2
@@ -46,10 +45,6 @@ class FrameCache:
         self._initialized = True
         self._lock = threading.Lock()
         self._latest_jpeg_by_robot: dict[str, bytes] = {}
-        # frame 수신 시점 timestamp — capture sync (JointStateCache interpolate 기준) 용.
-        # 진짜 camera capture 시점은 camera node 가 payload header 로 보내면 그쪽 우선 사용
-        # 가능 — 현재는 backend 수신 시점 (LAN+decode latency ~10-30ms 포함).
-        self._latest_ts_by_robot: dict[str, float] = {}
         self._latest_status_by_robot: dict[str, CameraStatus] = {}
         self._subscribed_robots: set[str] = set()
 
@@ -77,10 +72,8 @@ class FrameCache:
         )
 
     def _on_frame(self, robot_id: str, payload: bytes) -> None:
-        ts = time.time()
         with self._lock:
             self._latest_jpeg_by_robot[robot_id] = payload
-            self._latest_ts_by_robot[robot_id] = ts
 
     def _on_status(self, robot_id: str, status: CameraStatus) -> None:
         with self._lock:
@@ -103,26 +96,6 @@ class FrameCache:
         except Exception as e:
             logger.error("FrameCache JPEG decode 실패 (robot=%s): %s", rid, e)
             return False, None
-
-    def get_frame_with_ts(
-        self, robot_id: str | None = None
-    ) -> tuple[bool, np.ndarray | None, float | None]:
-        """frame + 수신 timestamp — capture sync (JointStateCache interpolate) 용."""
-        rid = self._resolve(robot_id)
-        with self._lock:
-            jpeg = self._latest_jpeg_by_robot.get(rid)
-            ts = self._latest_ts_by_robot.get(rid)
-        if jpeg is None or ts is None:
-            return False, None, None
-        try:
-            arr = np.frombuffer(jpeg, dtype=np.uint8)
-            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if frame is None:
-                return False, None, None
-            return True, frame, ts
-        except Exception as e:
-            logger.error("FrameCache JPEG decode 실패 (robot=%s): %s", rid, e)
-            return False, None, None
 
     def width(self, robot_id: str | None = None) -> int | None:
         rid = self._resolve(robot_id)

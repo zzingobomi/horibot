@@ -37,7 +37,6 @@ context 옵션:
 from __future__ import annotations
 
 import sys
-from logging.config import fileConfig
 from pathlib import Path
 
 from alembic import context
@@ -60,8 +59,9 @@ import modules.scan_workflow.orm  # noqa: E402, F401
 
 config = context.config
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# Logging 은 host 가 소유 — alembic.ini 의 [loggers] 섹션 자체를 비웠음.
+# 정석 (Alembic embedding pattern): logging.basicConfig 는 main.py (programmatic
+# 자리) 또는 사용자 환경 (CLI 자리) SSOT, env.py 는 손 X.
 
 target_metadata = Base.metadata
 

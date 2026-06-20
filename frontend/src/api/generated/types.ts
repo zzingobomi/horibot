@@ -13,13 +13,12 @@ export interface paths {
         };
         /**
          * Get Calibration Results
-         * @description robot 의 calibration .npz 들을 모아 JSON 으로 반환.
+         * @description robot 의 calibration 결과를 JSON 으로 반환.
          *
-         *     Hand-Eye / Intrinsic 은 npz 가 없으면 필드 생략. joint_offsets 는 항상 포함
-         *     (없으면 빈 리스트). 분산 모드에서도 PC 가 git 에 있는 같은 파일을 보므로
-         *     프론트엔드는 mount 시 이 엔드포인트 한 번 fetch 로 fresh 한 상태를 받음.
-         *
-         *     not-ready (intrinsic & hand_eye 둘 다 누락) 시 400.
+         *     Intrinsic / Hand-Eye 는 캘 안 됐으면 null 필드. joint_offsets 는 항상 포함
+         *     (없으면 빈 리스트). "캘 안 됨" 은 valid initial state — 200 으로 null 필드
+         *     반환. (이전엔 400 으로 떨어뜨려 frontend useResource 가 영구 fetch-failed
+         *     상태 → useJointOffsetsRad 의 `?? {}` 가 매 render 새 ref → React loop 트리거.)
          */
         get: operations["get_calibration_results_robots__robot_id__calibration_results_get"];
         put?: never;
@@ -564,6 +563,22 @@ export interface components {
             t: number[][];
         };
         /**
+         * HandeyeBaStatus
+         * @description BA 진행 상태 — frontend spinner 용.
+         *
+         *     state: "running" (BA 시작), "done" (성공, σ 결과는 SIGMA topic 자세 자리),
+         *            "failed" (예외/수렴 실패).
+         *     mode: "standard" | "extended" | "physical_sag" — 어떤 BA 인지.
+         */
+        HandeyeBaStatus: {
+            /** Timestamp */
+            timestamp: number;
+            /** State */
+            state: string;
+            /** Mode */
+            mode: string;
+        };
+        /**
          * HandeyeCaptureRes
          * @description detected=False 인 경우도 success=True (가이드 의미). pose_count 는 누적.
          */
@@ -1058,6 +1073,19 @@ export interface components {
             /** Reconstructions */
             reconstructions: components["schemas"]["ReconstructionRecord"][];
         };
+        /**
+         * ListRunCapturesReq
+         * @description 임의 run_id 의 captures fetch — 직전 캘 자세 import (move-to-pose 흐름).
+         */
+        ListRunCapturesReq: {
+            /** Run Id */
+            run_id: number;
+        };
+        /** ListRunCapturesRes */
+        ListRunCapturesRes: {
+            /** Captures */
+            captures: components["schemas"]["CalibrationCaptureRecord"][];
+        };
         /** ListScanSessionsReq */
         ListScanSessionsReq: {
             /** Robot Id */
@@ -1312,6 +1340,7 @@ export interface components {
             GetActiveCalibrationRes?: components["schemas"]["GetActiveCalibrationRes"] | null;
             GroundedDetectReq?: components["schemas"]["GroundedDetectReq"] | null;
             GroundedDetectionResult?: components["schemas"]["GroundedDetectionResult"] | null;
+            HandeyeBaStatus?: components["schemas"]["HandeyeBaStatus"] | null;
             HandeyeCaptureRes?: components["schemas"]["HandeyeCaptureRes"] | null;
             HandeyeCommitRes?: components["schemas"]["HandeyeCommitRes"] | null;
             HandeyeListPosesRes?: components["schemas"]["HandeyeListPosesRes"] | null;
@@ -1334,6 +1363,8 @@ export interface components {
             ListCalibrationsRes?: components["schemas"]["ListCalibrationsRes"] | null;
             ListReconstructionsReq?: components["schemas"]["ListReconstructionsReq"] | null;
             ListReconstructionsRes?: components["schemas"]["ListReconstructionsRes"] | null;
+            ListRunCapturesReq?: components["schemas"]["ListRunCapturesReq"] | null;
+            ListRunCapturesRes?: components["schemas"]["ListRunCapturesRes"] | null;
             ListScanSessionsReq?: components["schemas"]["ListScanSessionsReq"] | null;
             ListScanSessionsRes?: components["schemas"]["ListScanSessionsRes"] | null;
             ListScansReq?: components["schemas"]["ListScansReq"] | null;
@@ -1789,13 +1820,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["CalibrationResults"];
                 };
-            };
-            /** @description Calibration data is not ready */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
             /** @description Robot not found */
             404: {

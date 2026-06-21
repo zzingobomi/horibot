@@ -22,6 +22,7 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 - [scan_pipeline_readiness.md](docs/scan_pipeline_readiness.md) — **SO-101 scan/TSDF 시작 전 코드 검토 (2026-06-21)**. 4-노드 구조 mature. (단 robot_poses.yaml missing 항목은 scan_interactive_design 으로 무효)
 - [scan_interactive_design.md](docs/scan_interactive_design.md) — **Scan interactive workflow design (2026-06-21, 논의 중)**. 결정: Task DSL 안 interactive (별도 mode/node X) + 새 `WaitForUserInput(signal)` step 범용 primitive + ScanTask 변형 (자동 motion 제거) + `CaptureScan` orchestration. 미해결 §4 4 항목 — 다음 세션 진입점.
 - [move_page_pointcloud_issues.md](docs/move_page_pointcloud_issues.md) — **Move 페이지 Live PointCloud 이슈 5건 (2026-06-21, 다음 세션 anchor)**. ★ URDF joint limits 너무 좁음 (root cause of 사선) + DEFAULT_ROBOT_ID hardcoded + React infinite loop on toggle + zenoh stale queryable + Live PC 사선. 진단 끝, 수정 대기.
+- [urdf_visual_corrected_fk_mismatch.md](docs/urdf_visual_corrected_fk_mismatch.md) — **3D viewer 빨간 box (URDF tcp visual) ↔ TCP 좌표축 (backend corrected FK) 어긋남 (2026-06-22, 추후 논의 anchor)**. root cause = frontend urdf-loader raw URDF + sag 없음 vs backend link_offset patch + sag. 시각 cosmetic 만 (명령/캘/모션 영향 0). Fix 옵션 A (patched URDF endpoint) / B (per-link pose topic) / C (그대로) 결정 보류.
 - [step_dsl.md](docs/step_dsl.md) — typed Slot 기반 lego Step DSL (Step/Slot/StepContext/Recipe + 다이어그램 + 확장 가이드)
 - [random_palletizing.md](docs/random_palletizing.md) — 사이즈 가변 직육면체 팔레타이징 design (3-track: 휴리스틱 / 정석 / iterative sim2real RL)
 - [so101_6dof_plan.md](docs/so101_6dof_plan.md) — SO-101 6DOF 두 번째 로봇 하드웨어 plan (모터 SDK 추상화 / wrist yaw mod / D405 마운트)

@@ -33,6 +33,15 @@ class CameraNode(DeviceNode):
         self._depth_enabled = False
 
     def start(self) -> None:
+        # D405 factory intrinsic seed — storage 살아날 때까지 blocking retry.
+        # motor 의 motion_node.start() 가 fetch_active 자리 무한 retry 하는 패턴과
+        # 통일. camera.open() *전* 에 호출 — factory_intrinsic 가 자체 RealSense
+        # pipeline 짧게 열어 firmware intrinsic 추출하므로 우리 pipeline 과 충돌
+        # 회피.
+        from modules.camera.factory_intrinsic import seed_d405_intrinsic_to_storage
+        assert self.robot_id is not None, "DeviceNode 의 robot_id 누락"
+        seed_d405_intrinsic_to_storage(robot_id=self.robot_id)
+
         connected = self.camera.open()
         self._publish_status(connected)
         if connected:

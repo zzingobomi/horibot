@@ -144,14 +144,6 @@ def main():
 
         StorageRegistry.init(rdb_uri, object_uri)
 
-    # ─── D405 intrinsic seed (camera 노드 robot 마다) ──────────
-    # storage 의 active intrinsic 없을 때만 D405 SDK 의 factory intrinsic 을
-    # commit + activate. idempotent — N회 부팅 = commit 최대 1회.
-    if "camera" in device_node_names:
-        from modules.camera.factory_intrinsic import seed_d405_intrinsic_to_storage
-        for rid in robots:
-            seed_d405_intrinsic_to_storage(robot_id=rid)
-
     # ─── 노드 인스턴스 생성 ───────────────────────────────────
     # Application 먼저, Device 다음 — main loop 가 dict iteration 순으로 start()
     # 호출하는데, motion_node.start() 가 storage service (joint/link/sag offsets

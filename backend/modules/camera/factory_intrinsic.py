@@ -11,8 +11,12 @@ flow:
 idempotent — Pi N회 부팅 = commit 최대 1회 (첫 부팅에만). 사용자가 chessboard
 캘을 별도로 돌리면 그게 active 가 되고 factory seed 는 history row 로 남음.
 
-storage 미연결 / D405 미연결 자리는 warn + skip (Pi 부팅 안 막음). 다음 부팅
-또는 storage 가 살아난 후 retry. docs/storage_layer.md §7.
+storage 미연결 자리는 `load_active_blocking` 가 무한 retry — motor Pi 의
+motion_node 패턴과 통일. PC 가 늦게 떠도 살아나면 자동 seed. caller
+(camera_node.start) 가 blocking. storage 는 본 프로젝트의 essential 인프라
+(5종 캘 + scan + metadata SSOT) — 없으면 시스템 자체가 의미 없으므로 graceful
+camera-only fallback 안 둠. D405 미연결 자리는 warn + skip (hardware 부재 자리
+retry 의미 없음). docs/storage_layer.md §7.
 """
 
 from __future__ import annotations
@@ -28,7 +32,10 @@ from modules.calibration.persistence_models import (
     IntrinsicResultRecord,
 )
 from modules.calibration.result_models import IntrinsicResultData
-from modules.calibration.storage_client import CalibrationStorageClient
+from modules.calibration.storage_client import (
+    CalibrationStorageClient,
+    load_active_blocking,
+)
 from modules.storage.transport import StorageUnavailable
 
 # stub 미흡 — pipeline / config / stream / format 동적 attribute 허용용 Any rebind.
@@ -42,21 +49,19 @@ def seed_d405_intrinsic_to_storage(
     width: int = 1280,
     height: int = 720,
 ) -> bool:
-    """D405 factory intrinsic 을 storage 에 idempotent seed.
+    """D405 factory intrinsic 을 storage 에 idempotent seed (blocking).
 
-    Returns True 면 새로 commit + activate 함, False 면 skip (이미 있음 / 실패).
+    storage 미연결 자리는 `load_active_blocking` 가 무한 retry — caller 자리
+    storage 살아날 때까지 막힘. motor 의 motion_node.start() 패턴과 통일.
+
+    Returns True 면 새로 commit + activate 함, False 면 skip (이미 있음 /
+    D405 미연결).
     """
     client = CalibrationStorageClient()
 
     # 이미 storage 에 active intrinsic 있나 — 사용자 캘 결과 덮어쓰지 않음.
-    try:
-        existing = client.get_active(robot_id, "intrinsic")
-    except StorageUnavailable as e:
-        logger.warning(
-            "factory intrinsic seed skip — storage 미연결 (robot=%s): %s",
-            robot_id, e,
-        )
-        return False
+    # storage 미연결 자리는 무한 retry (motor 의 fetch_active 패턴과 통일).
+    existing = load_active_blocking(robot_id, "intrinsic")
 
     if existing is not None:
         logger.info(
@@ -65,7 +70,7 @@ def seed_d405_intrinsic_to_storage(
         )
         return False
 
-    # D405 SDK 에서 factory intrinsic 자체 자체 — 짧은 pipeline open 으로 추출.
+    # D405 SDK 에서 factory intrinsic 추출 — 짧은 pipeline open 으로.
     try:
         pipeline = rs.pipeline()
         config = rs.config()
@@ -116,15 +121,18 @@ def seed_d405_intrinsic_to_storage(
             image_size=image_size,
         ),
     )
-    try:
-        run_id, result_ids = client.commit(run, [record], [])
-        client.activate(result_ids[0])
-    except StorageUnavailable as e:
-        logger.warning(
-            "factory intrinsic commit 실패 — storage 미연결 (robot=%s): %s",
-            robot_id, e,
-        )
-        return False
+    # commit 자리 transient race (load_active_blocking 직후 storage 가 잠시
+    # 끊김) 자리 retry. motor 패턴과 같은 1초 간격.
+    while True:
+        try:
+            run_id, result_ids = client.commit(run, [record], [])
+            client.activate(result_ids[0])
+            break
+        except StorageUnavailable as e:
+            logger.info(
+                "factory intrinsic commit 대기 중 (robot=%s): %s", robot_id, e,
+            )
+            time.sleep(1.0)
 
     logger.info(
         "factory intrinsic seed 완료 (robot=%s, run_id=%d)", robot_id, run_id

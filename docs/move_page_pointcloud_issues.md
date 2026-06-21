@@ -3,6 +3,81 @@
 > SO-101 + D405 setup 자리 frontend Move 페이지의 PointCloud 토글로 실시간 point
 > cloud 확인 시도 중 발견된 issue 5 가지. 사용자 피곤해서 진단만 끝, 수정은 다음 세션.
 
+---
+
+## 2026-06-22 세션 update — 진척 + disprove + 다음 진입점
+
+### 이번 세션 한 것
+
+1. **PyBullet self-collision 적용** (별개 task) — `PybulletKinematics` 의 `URDF_USE_SELF_COLLISION` flag + `self_collision()` 실 구현 + `ik()` 통합. SO-101 URDF 의 18개 visual 을 collision 으로 mirror. live PC issue 와 무관, 안전망 추가
+2. **factory_intrinsic retry 패턴 fix** — motor 와 비대칭 해소. 처음에 async wrapper 도입했다가 사용자 지적으로 다시 blocking 으로 (storage = essential 인프라). `seed_d405_intrinsic_to_storage` 가 `load_active_blocking` 사용, `camera_node.start()` 에서 `self.camera.open()` 직전 호출. 사용자가 처음에 "캘 못 읽어와서 그런 거 아냐?" 라고 의심한 자리 — 일단 fix 들어감
+
+### Disprove — "cal-fetching 이 root cause" 는 empirical 으로 무너짐
+
+- 사용자가 한 번 pi_camera 재시작 + cal fetch 후 → live PC 동작
+- 그러나 *재차 시도 시 다시 안 됨* — cal 이 root cause 라면 fix 후 안정적이어야 함, 아니므로 **cal hypothesis 폐기**
+- factory_intrinsic retry fix 자체는 valid (motor 비대칭 해소) 라 revert 안 함. 단 *live PC issue 와는 무관*
+
+### 강력한 의심 — Pi 의 leftover process / 좀비
+
+- 첫 시도 동작 ↔ 두 번째 안 됨 = 어떤 *intermittent state* 가 시스템에 누적됨
+- 사용자 instinct: pi_camera 를 ctrl+C 로 끈 뒤 *child python 이 좀비로 남아* RealSense USB / Zenoh queryable 을 계속 점유
+- [[feedback-uv-run-subprocess-orphan]] 의 동형 패턴 (Windows 사례) — Linux 에선 검증 안 됨, 하지만 uv wrapper + signal 핸들링 한계로 가능성 충분
+- [[feedback-distributed-broadcast-affects-real-robot]] 와 결합 — 같은 LAN 의 좀비 process 가 zenoh peer 로 살아있으면 stale queryable / 중복 publish 유발
+
+### 다음 세션 첫 작업 — Linux 진단 명령어
+
+라즈베리파이 `hori2` SSH 접속 후 (camera Pi):
+
+```bash
+# 1. python process 다 보기 (현재 + 좀비)
+ps aux | grep -E 'python|horibot' | grep -v grep
+pgrep -af python
+
+# 2. zenoh default port (7447) 점유 확인
+sudo lsof -iTCP:7447 -sTCP:LISTEN
+ss -tnlp | grep 7447
+
+# 3. RealSense USB device 점유 확인
+lsusb | grep -i intel
+sudo lsof | grep -i realsense
+sudo fuser -v /dev/bus/usb/*/* 2>/dev/null | grep -v '^$'
+
+# 4. 좀비 process
+ps -eo pid,ppid,stat,comm | awk '$3 ~ /Z/ {print}'
+
+# 5. uv 의 child python pid — uv wrapper 가 죽어도 child 살아있나
+ps --ppid 1 | grep python    # init 으로 reparent 된 orphan
+ps -eo pid,ppid,etime,comm | grep python
+```
+
+### 만약 좀비 / orphan 확인되면
+
+현재 `shutdown` 핸들러 ([main.py:194](../backend/main.py#L194)) 가 `sys.exit(0)` 로 force exit → daemon thread 가 abort 되면서 RealSense USB / zenoh socket 을 잡힌 채로 죽을 가능성. fix 후보:
+
+- signal 핸들러가 RealSense pipeline 명시적 close + zenoh session close 까지 *완료 wait*
+- daemon thread 가 아니라 non-daemon + 명시적 join (단 main 종료 보장 빡빡해짐)
+- `atexit` 핸들러로 RealSense / zenoh cleanup 이중 보장
+
+### 의심 ranking 재배치 (2026-06-22)
+
+| # | 항목 | 이번 세션 update |
+|---|---|---|
+| 1 | URDF joint limits 너무 좁음 | 미수정 — 사선 root cause 후보 (cloud 보일 때) |
+| 2 | DEFAULT_ROBOT_ID hardcoded | 미수정 |
+| 3 | React infinite loop on toggle | 미수정 — *intermittent 패턴* 의 일부일 가능성 |
+| 4 | Zenoh stale queryable on PC restart | **★★★ 격상** — leftover process 가 이걸 유발할 가능성 |
+| 5 | Live PC 사선 | (#1 의존) |
+| 신규 | **pi_camera 좀비 process (의심)** | **★★★ 신규** — Linux 진단 1순위 |
+
+### 검증 안 된 self-warn
+
+- "ctrl+C → cal fetch → 동작" 의 cal fetch 가 실제 무엇이었는지 사용자가 명시 안 함. PC backend log 도 없음
+- "또 안 되네" 의 정확한 symptom (안 뜸 / freeze / 사선 / 기타) 명시 안 함 — 다음 세션 첫 질문 자리
+- factory_intrinsic retry fix 가 *어쩌면* live PC 와 *간접* 연관 가능 (storage 가 늦게 떠도 fix 후 자동 retry → 다른 노드의 cal load 도 결국 채워짐). 그러나 *intermittent 자체* 는 설명 X
+
+---
+
 ## Critical issue 우선순위
 
 | # | 항목 | 시급도 | 코드 vs 데이터 |

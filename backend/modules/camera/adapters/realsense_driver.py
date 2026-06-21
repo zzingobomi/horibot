@@ -120,11 +120,26 @@ class RealsenseDriver:
             if self._producer_thread:
                 self._producer_thread.join(timeout=2.0)
                 self._producer_thread = None
-            try:
-                if self._pipeline is not None:
-                    self._pipeline.stop()
-            except RuntimeError as e:
-                logger.warning(f"RealSense 종료 중 오류: {e}")
+            # pipeline.stop() 은 librealsense USB device 상태에 따라 blocking
+            # 영구 stuck 가능 (2차 부팅 후 1차 종료 시 USB 자체 자리 dirty release
+            # 사례). daemon thread 로 호출 + timeout — main process exit 막지 않음.
+            pipeline = self._pipeline
+            if pipeline is not None:
+                def _stop_safe() -> None:
+                    try:
+                        pipeline.stop()
+                    except RuntimeError as e:
+                        logger.warning(f"RealSense 종료 중 오류: {e}")
+                stopper = threading.Thread(
+                    target=_stop_safe, name="rs-stop", daemon=True,
+                )
+                stopper.start()
+                stopper.join(timeout=3.0)
+                if stopper.is_alive():
+                    logger.warning(
+                        "RealSense pipeline.stop() 3s timeout — "
+                        "daemon thread 로 leak (process exit 시 자동 die)"
+                    )
             self._pipeline = None
             self._opened = False
             with self._frame_lock:

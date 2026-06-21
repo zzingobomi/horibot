@@ -65,6 +65,11 @@ class CameraNode(DeviceNode):
 
     def stop(self) -> None:
         super().stop()
+        # depth/align 자체 자리 active 인 채로 close 하면 librealsense 의 align
+        # internal dispatch thread 와 pipeline.stop() 이 충돌해 blocking — 2차
+        # 부팅 후 Ctrl+C 자체 자리 종료 안 됨 사례. align 먼저 끄기 → producer
+        # loop 가 align.process 호출 안 함 → pipeline.stop() clean exit.
+        self.camera.set_cloud_enabled(False)
         self.camera.close()
 
     # ─── Color 스트림 ────────────────────────────────────────

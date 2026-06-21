@@ -19,6 +19,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="0.00489886 -0.0272511 0.0461" rpy="-0 -0 -0"/>
+      <geometry>
+        <mesh filename="meshes/sts3215.stl"/>
+      </geometry>
+    </collision>
     <!-- Part base_motor_holder -->
     <visual>
       <origin xyz="-0.0129122 -0.0276006 0.0381" rpy="1.5708 0 1.5708"/>
@@ -29,6 +35,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="-0.0129122 -0.0276006 0.0381" rpy="1.5708 0 1.5708"/>
+      <geometry>
+        <mesh filename="meshes/base_motor_holder.stl"/>
+      </geometry>
+    </collision>
     <!-- Part base -->
     <visual>
       <origin xyz="-0.0275011 -0.0275011 0" rpy="1.5708 0 1.5708"/>
@@ -39,6 +51,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="-0.0275011 -0.0275011 0" rpy="1.5708 0 1.5708"/>
+      <geometry>
+        <mesh filename="meshes/base.stl"/>
+      </geometry>
+    </collision>
   </link>
   <!-- Link base_rotation -->
   <link name="base_rotation">
@@ -57,6 +75,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="0.0328847 9.91675e-05 -0.01" rpy="-3.14159 0 -0"/>
+      <geometry>
+        <mesh filename="meshes/arm_motor_holder.stl"/>
+      </geometry>
+    </collision>
     <!-- Part base_rotation -->
     <visual>
       <origin xyz="0 0 0.0181" rpy="3.14159 -0 3.14159"/>
@@ -67,6 +91,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="0 0 0.0181" rpy="3.14159 -0 3.14159"/>
+      <geometry>
+        <mesh filename="meshes/base_rotation.stl"/>
+      </geometry>
+    </collision>
     <!-- Part sts3215_2 -->
     <visual>
       <origin xyz="0.0306 -0.0004 -0.0417" rpy="-1.5708 1.5708 0"/>
@@ -77,6 +107,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="0.0306 -0.0004 -0.0417" rpy="-1.5708 1.5708 0"/>
+      <geometry>
+        <mesh filename="meshes/sts3215.stl"/>
+      </geometry>
+    </collision>
   </link>
   <!-- Link upper_arm -->
   <link name="upper_arm">
@@ -95,6 +131,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="0.11257 0.0155 0.0187" rpy="-3.14159 -0 1.5708"/>
+      <geometry>
+        <mesh filename="meshes/sts3215.stl"/>
+      </geometry>
+    </collision>
     <!-- Part upper_arm -->
     <visual>
       <origin xyz="0.065085 -0.012 0.0182" rpy="3.14159 -0 -3.14159"/>
@@ -105,6 +147,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="0.065085 -0.012 0.0182" rpy="3.14159 -0 -3.14159"/>
+      <geometry>
+        <mesh filename="meshes/upper_arm.stl"/>
+      </geometry>
+    </collision>
   </link>
   <!-- Link under_arm -->
   <link name="under_arm">
@@ -123,6 +171,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="0.0698937 0.012 0.0180425" rpy="-1.5708 -0 3.14159"/>
+      <geometry>
+        <mesh filename="meshes/under_arm.stl"/>
+      </geometry>
+    </collision>
     <!-- Part sts3215_4 -->
     <visual>
       <origin xyz="0.1224 -0.0052 0.0187" rpy="3.14159 0 -0"/>
@@ -133,6 +187,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="0.1224 -0.0052 0.0187" rpy="3.14159 0 -0"/>
+      <geometry>
+        <mesh filename="meshes/sts3215.stl"/>
+      </geometry>
+    </collision>
     <!-- Part wrist_motor_holder -->
     <visual>
       <origin xyz="0.0906998 -0.00291526 0.0181008" rpy="1.5708 0 1.5708"/>
@@ -143,6 +203,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="0.0906998 -0.00291526 0.0181008" rpy="1.5708 0 1.5708"/>
+      <geometry>
+        <mesh filename="meshes/wrist_motor_holder.stl"/>
+      </geometry>
+    </collision>
   </link>
   <!-- Link wrist_yaw_back -->
   <link name="wrist_yaw_back">
@@ -161,6 +227,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="-0 0 0.0183" rpy="-1.5708 0 -3.14159"/>
+      <geometry>
+        <mesh filename="meshes/wrist_yaw_back.stl"/>
+      </geometry>
+    </collision>
   </link>
   <!-- Link wrist_yaw_front -->
   <link name="wrist_yaw_front">
@@ -179,6 +251,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="-0.0125 -0 -0.0187" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/sts3215.stl"/>
+      </geometry>
+    </collision>
     <!-- Part sts3215_6 -->
     <visual>
       <origin xyz="-0.0428 0 0.025043" rpy="0 -1.5708 0"/>
@@ -189,6 +267,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="-0.0428 0 0.025043" rpy="0 -1.5708 0"/>
+      <geometry>
+        <mesh filename="meshes/sts3215.stl"/>
+      </geometry>
+    </collision>
     <!-- Part wrist_yaw_front -->
     <visual>
       <origin xyz="-0.0283 0 0.0037965" rpy="-3.14159 0 -3.14159"/>
@@ -199,6 +283,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="-0.0283 0 0.0037965" rpy="-3.14159 0 -3.14159"/>
+      <geometry>
+        <mesh filename="meshes/wrist_yaw_front.stl"/>
+      </geometry>
+    </collision>
   </link>
   <!-- Link gripper_fixed -->
   <link name="gripper_fixed">
@@ -217,6 +307,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="-7.96855e-07 0.000218213 0.000949706" rpy="3.14159 0 -3.13794"/>
+      <geometry>
+        <mesh filename="meshes/wrist_roll_d405_holder.stl"/>
+      </geometry>
+    </collision>
     <!-- Part sts3215_7 -->
     <visual>
       <origin xyz="-0.00770031 7.18812e-05 -0.0234" rpy="-1.5708 0 -3.13794"/>
@@ -227,6 +323,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="-0.00770031 7.18812e-05 -0.0234" rpy="-1.5708 0 -3.13794"/>
+      <geometry>
+        <mesh filename="meshes/sts3215.stl"/>
+      </geometry>
+    </collision>
   </link>
   <!-- Frame gripper_center (dummy link + fixed joint) -->
   <link name="gripper_center">
@@ -275,6 +377,12 @@
         <color rgba="0.235294 0.235294 0.235294 1"/>
       </material>
     </visual>
+    <collision>
+      <origin xyz="0.000944365 0.000490215 0.0189" rpy="0 0 -0.000410248"/>
+      <geometry>
+        <mesh filename="meshes/gripper_jaw.stl"/>
+      </geometry>
+    </collision>
   </link>
   <!-- Joint from gripper_fixed to gripper_jaw -->
   <joint name="joint7" type="revolute">

@@ -104,9 +104,15 @@ class PybulletKinematics:
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(patched_text)
+                # URDF_USE_SELF_COLLISION_EXCLUDE_PARENT — 인접 link 자리 false
+                # positive 차단 (joint 에서 항상 닿음). 비-인접 link 만 충돌 검사.
                 self._robot = p.loadURDF(
                     temp_path,
                     useFixedBase=True,
+                    flags=(
+                        p.URDF_USE_SELF_COLLISION
+                        | p.URDF_USE_SELF_COLLISION_EXCLUDE_PARENT
+                    ),
                     physicsClientId=self._client,
                 )
             finally:
@@ -206,6 +212,11 @@ class PybulletKinematics:
             if error > IK_POS_ERROR_LIMIT:
                 return None
 
+            # self-collision 검사 — joint limit 통과해도 자체 충돌 자세면 reject.
+            # 모든 cartesian motion (MoveL/C/P/ServoTcp/JogTcp) 자연 차단.
+            if self._check_self_collision_unlocked():
+                return None
+
             return angles
 
     def fk_to_matrix(
@@ -227,9 +238,26 @@ class PybulletKinematics:
         return pairs[:n] if n is not None else pairs
 
     def self_collision(self, joint_angles: Sequence[float]) -> bool:
-        # PyBullet 의 self-collision 검사 — 현재 미구현. 미래.
-        # 단순 stub: 항상 False (collision 없음 가정).
-        return False
+        self._require_initialized()
+        with self._sim_lock:
+            self._set_joint_positions(list(joint_angles))
+            return self._check_self_collision_unlocked()
+
+    def _check_self_collision_unlocked(self) -> bool:
+        """lock 잡힌 상태 + joint position 이미 set 된 가정에서 호출. URDF 에
+        `<collision>` 없는 link 는 contact query 가 빈 list → 자연스럽게 무시.
+
+        contactDistance < 0 (진짜 침투) 만 collision 으로 카운트. PyBullet 이
+        가까이만 있어도 contact list 에 넣는 quirk + URDF 모델링 미세 overlap
+        (인접 link 의 motor housing geometry 등) 의 false positive 차단.
+        """
+        p.performCollisionDetection(physicsClientId=self._client)
+        contacts = p.getContactPoints(
+            bodyA=self._robot,
+            bodyB=self._robot,
+            physicsClientId=self._client,
+        )
+        return any(c[8] < 0.0 for c in contacts)
 
     def tcp_twist_to_joint_vel(
         self,

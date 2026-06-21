@@ -4,14 +4,19 @@ import * as SliderPrimitive from "@radix-ui/react-slider";
 import { PanelButton } from "@/components/shared/PanelButton";
 import { useService, useTopic } from "@/framework";
 import { ServiceKey, Topic } from "@/constants/topics";
-import { rawToDeg } from "@/lib/robot/utils";
+import { rawToUrdfDeg } from "@/lib/robot/utils";
 import { useArmJoints, useMotorConfigs } from "@/lib/robot/config";
+import { useJointOffsetsRad } from "@/hooks/useCalibrationResults";
 
 export function MoveJControl() {
   const { id: robotId = "" } = useParams<{ id: string }>();
   const joints = useTopic(Topic.MOTOR_STATE_JOINT, robotId)?.joints ?? [];
   const configs = useMotorConfigs(robotId);
   const armJoints = useArmJoints(robotId);
+  // backend MoveJ handler 가 사용자 input degree 를 *URDF degree* (joint_offset
+  // 적용된 kinematic frame) 로 해석. 표시 / input / slider 모두 같은 frame 으로
+  // 통일 — 다르면 "현재 자세 → 실행" 자리 joint_offset 만큼 robot 이 움직임.
+  const jointOffsetsRad = useJointOffsetsRad(robotId);
   const traj = useTopic(Topic.MOTION_STATE_TRAJ, robotId);
   const moveJ = useService(ServiceKey.MOTION_MOVE_J, robotId);
   const stop = useService(ServiceKey.MOTION_STOP, robotId);
@@ -28,11 +33,12 @@ export function MoveJControl() {
     setTargetDeg((prev) => {
       const next = { ...prev };
       currentJoints.forEach((j) => {
-        next[j.id] = Math.round(j.degree * 100) / 100;
+        const urdfDeg = rawToUrdfDeg(j.position, jointOffsetsRad[j.id] ?? 0);
+        next[j.id] = Math.round(urdfDeg * 100) / 100;
       });
       return next;
     });
-  }, [currentJoints]);
+  }, [currentJoints, jointOffsetsRad]);
 
   // 탭 mount 시 1회 자동 sync — 탭 unmount/remount 시 target 이 0 으로 reset 되어
   // 사용자가 [실행] 누르면 모든 joint 가 0° 로 큰 동작하는 위험 차단.
@@ -65,8 +71,10 @@ export function MoveJControl() {
           const current = currentJoints.find((c) => c.id === j.id);
           const target = targetDeg[j.id] ?? 0;
           const hw = configs.find((c) => c.id === j.id);
-          const minDeg = rawToDeg(hw?.limit.min ?? 0);
-          const maxDeg = rawToDeg(hw?.limit.max ?? 4095);
+          const offsetRad = jointOffsetsRad[j.id] ?? 0;
+          // motor raw limit → URDF degree (사용자 표시 frame 과 동일).
+          const minDeg = rawToUrdfDeg(hw?.limit.min ?? 0, offsetRad);
+          const maxDeg = rawToUrdfDeg(hw?.limit.max ?? 4095, offsetRad);
           const clipped = Math.max(minDeg, Math.min(maxDeg, target));
 
           return (
@@ -75,7 +83,7 @@ export function MoveJControl() {
                 <div className="text-[11px] text-zinc-300">{j.name}</div>
                 {current && (
                   <div className="text-[9px] text-zinc-600 tabular-nums">
-                    {current.degree.toFixed(2)}°
+                    {rawToUrdfDeg(current.position, offsetRad).toFixed(2)}°
                   </div>
                 )}
               </div>

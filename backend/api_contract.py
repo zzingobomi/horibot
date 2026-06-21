@@ -63,6 +63,7 @@ PUBLIC_TOPICS: dict[str, TopicPayload] = {
     Topic.CAMERA_STATE_STATUS: _camera.CameraStatus,
     # Motion
     Topic.MOTION_STATE_TRAJ: _motion.MotionTrajState,
+    Topic.MOTION_STATE_TCP: _motion.MotionTcpState,
     # Detector / Perception
     Topic.DETECTOR_STATE: _detector.DetectorState,
     Topic.PERCEPTION_GROUNDED_STATE: _detector.GroundedDetectionResult,

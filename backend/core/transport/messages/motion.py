@@ -8,6 +8,7 @@ motion_taxonomy.md 의 4 계층 taxonomy:
 
 토픽:
 - MOTION_STATE_TRAJ (publish) — MotionTrajState
+- MOTION_STATE_TCP  (publish) — MotionTcpState (corrected EE pose, sag+link+joint_offset 적용)
 - MOTION_JOG_TCP_STREAM (subscribe) — JogTcpReq (frontend/gamepad 50Hz velocity)
 - MOTION_JOG_J_STREAM (subscribe) — JogJReq (frontend/gamepad 50Hz velocity)
 - (MOTOR_CMD_JOINT publish — motor.py 의 MotorCmd 재사용)
@@ -63,6 +64,27 @@ class MotionTcpPose(StrictModel):
 
     position: list[float]
     quaternion: list[float]
+
+
+# ─── Topic: MOTION_STATE_TCP ─────────────────────────────────────────
+
+
+class MotionTcpState(StrictModel):
+    """corrected EE pose stream — joint state 갱신마다 publish.
+
+    Backend `MotionModes.get_tcp_pose()` 의 결과 (sag + link_offset + joint_offset
+    가 모두 적용된 corrected FK) 를 wire 로 노출. frontend 의 PointCloud / TCP
+    AxisFrame / CameraFrustum 자리 SSOT — frontend 가 자체 URDF FK 로 cameraMatrix
+    재계산 X (sag/link_offset 누락 → 사선 PC bug 자리 회귀 차단).
+
+    `MOTION_GET_TCP` service 와 같은 값. 차이는:
+      - service = 단발 query (호출자가 fresh 보장 필요한 자리, detector_node)
+      - topic   = streaming push (motor state 와 같은 rate, 시각화/뷰어 자리)
+    """
+
+    position: list[float]
+    quaternion: list[float]
+    timestamp: float
 
 
 # ─── Service: MOTION_SERVO_TCP ───────────────────────────────────────

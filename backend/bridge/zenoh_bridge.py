@@ -445,6 +445,10 @@ async def _handle_message(ws: WebSocket, msg: dict) -> None:
         request_id = msg.get("request_id", "")
         data = msg.get("data", {})
         timeout = float(msg.get("timeout") or 5.0)
+        logger.info(
+            "[bridge] SERVICE 요청 수신: key=%s data=%s req_id=%s",
+            key, data, request_id,
+        )
 
         req_payload = json.dumps(
             {

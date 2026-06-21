@@ -3,11 +3,7 @@ import * as THREE from "three";
 import URDFLoader from "urdf-loader";
 import type { URDFRobot } from "urdf-loader";
 import { BASE_URL } from "@/constants";
-import {
-  TCP_LINK_NAME,
-  useMotorConfigs,
-  type MotorConfigItem,
-} from "@/lib/robot/config";
+import { useMotorConfigs, type MotorConfigItem } from "@/lib/robot/config";
 import type { RobotBasePose } from "@/types/robot";
 
 interface URDFRobotProps {
@@ -22,20 +18,9 @@ interface URDFRobotProps {
   opacity?: number;
   /** material color overlay (hex). ghost preview (주황 #ff8c1a) 등. null=원본 색. */
   tint?: string | null;
-  onTCPMatrix?: (matrix: THREE.Matrix4) => void;
   onLinksLoaded?: (linkNames: string[]) => void;
   linkVisibility?: Record<string, boolean>;
   visible?: boolean;
-}
-
-function emitTCP(
-  robot: URDFRobot,
-  cb: ((m: THREE.Matrix4) => void) | undefined,
-) {
-  if (!cb || !robot.links?.[TCP_LINK_NAME]) return;
-  const link = robot.links[TCP_LINK_NAME];
-  link.updateWorldMatrix(true, false);
-  cb(link.matrixWorld.clone());
 }
 
 /** material 1개에 opacity (+ 선택적 tint color overlay) 적용. */
@@ -97,7 +82,6 @@ export function RobotModel({
   basePose,
   opacity = 1.0,
   tint = null,
-  onTCPMatrix,
   onLinksLoaded,
   linkVisibility,
   visible = true,
@@ -110,10 +94,6 @@ export function RobotModel({
   // 들이 re-run 하면서 URDF mount 직후 최신 상태로 동기화. 안 두면 URDF 가
   // 늦게 로드된 자리는 다음 topic update 까지 default pose 로 잠시 보인다.
   const [robotReady, setRobotReady] = useState(false);
-  const onTCPMatrixRef = useRef(onTCPMatrix);
-  useEffect(() => {
-    onTCPMatrixRef.current = onTCPMatrix;
-  }, [onTCPMatrix]);
 
   // opacity 를 ref 로 stash — URDFLoader 의 loadMeshCb 는 mesh 가 async 로 들어올
   // 때마다 호출되는데 그 시점의 *현재* opacity 를 써야 늦게 들어오는 mesh 도
@@ -198,7 +178,6 @@ export function RobotModel({
           const names = Object.keys(robot.links).sort();
           onLinksLoaded?.(names);
         }
-        emitTCP(robot, onTCPMatrixRef.current);
         setRobotReady(true);
       },
       undefined,
@@ -217,21 +196,12 @@ export function RobotModel({
     };
   }, [robotType, onLinksLoaded]);
 
-  // Joint 각도 적용
-  //
-  // 무한루프 주의 — 부모 (RobotLayer / RobotScene) 가 onTCPMatrix 를 인라인
-  // arrow 로 전달하면 매 렌더마다 새 함수 참조. 이 effect 의 dep 에 prop 을
-  // 직접 두면: emit → 부모 setState → 리렌더 → 새 onTCPMatrix → dep 변경 →
-  // effect 재실행 → emit → ... 무한 루프 → React reconciler stall → 라우팅까지
-  // 막힘. emitTCP 는 latest callback ref 로만 호출하고 dep 은 jointAngles 만.
-  //
-  // robotReady 도 dep — URDF 가 늦게 로드된 자리에서 mount 직후 최신 joint
-  // 적용 (안 두면 다음 topic update 50ms 까지 URDF default pose 잠깐 보임).
+  // Joint 각도 적용. robotReady dep — URDF 가 늦게 로드된 자리에서 mount 직후
+  // 최신 joint 적용 (안 두면 다음 topic update 50ms 까지 URDF default pose 잠깐 보임).
   useEffect(() => {
     const robot = robotRef.current;
     if (!robot) return;
     applyJoints(robot, motorCfgs, jointAngles);
-    emitTCP(robot, onTCPMatrixRef.current);
   }, [jointAngles, motorCfgs, robotReady]);
 
   // 전체 visible

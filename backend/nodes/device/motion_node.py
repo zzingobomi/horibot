@@ -17,6 +17,7 @@ from core.transport.messages.motion import (
     JogJReq,
     JogTcpReq,
     MotionTcpPose,
+    MotionTcpState,
     MotionTrajState,
     MoveCReq,
     MoveJReq,
@@ -210,6 +211,16 @@ class MotionNode(DeviceNode):
         )
         self.create_service(
             self.r(Service.MOTION_STOP), EmptyData, EmptyData, self._srv_stop
+        )
+
+        # corrected TCP pose 를 motor state 갱신마다 publish — frontend /
+        # 시각화 자리가 자체 URDF FK 안 돌리고 backend SSOT 만 신뢰 (sag +
+        # link_offset + joint_offset 다 적용). MotionTcpState 의 docstring 참조.
+        # JointStateCache 가 같은 토픽 별도 subscriber 로 받지만, callback 호출
+        # 순서가 Zenoh 자리 보장 X — 자체적으로 payload 직접 파싱 (legacy dict).
+        self.create_subscriber(
+            self.r(Topic.MOTOR_STATE_JOINT),
+            self._on_motor_state_publish_tcp,
         )
 
     # ─── Lifecycle (cross-process calibration apply) ───────────
@@ -547,6 +558,40 @@ class MotionNode(DeviceNode):
             MotionTrajState(
                 status=status,
                 progress=round(progress, 3),
+                timestamp=time.time(),
+            ),
+        )
+
+    def _on_motor_state_publish_tcp(self, data: dict) -> None:
+        """motor state 도착 시 corrected TCP pose publish.
+
+        backend SSOT 인 `MotionModes.get_tcp_pose()` (= SagCorrectedKinematics.fk,
+        sag + link_offset + joint_offset 모두 적용) 결과를 streaming wire 로 노출.
+        frontend / 시각화 자리는 본 topic 만 신뢰 — 자체 URDF FK 로 cameraMatrix
+        재계산 X (sag/link_offset 누락 → 사선 PC 회귀 차단).
+        """
+        coords = JointCoordinates()
+        joints = data.get("joints", [])
+        if not joints:
+            return
+        raw_by_id = {int(j["id"]): int(j["position"]) for j in joints}
+        try:
+            angles = [
+                coords.motor_to_urdf(raw_by_id[cfg.id], cfg, robot_id=self.robot_id)
+                for cfg in self._arm_cfgs
+            ]
+        except KeyError:
+            return  # 일부 arm 모터 미수신 — 다음 update 까지 대기
+        try:
+            pose = self._motion.get_tcp_pose(angles)
+        except Exception as e:
+            logger.debug(f"MOTION_STATE_TCP publish — FK 실패: {e}")
+            return
+        self.publish(
+            self.r(Topic.MOTION_STATE_TCP),
+            MotionTcpState(
+                position=list(pose.position),
+                quaternion=list(pose.quaternion),
                 timestamp=time.time(),
             ),
         )

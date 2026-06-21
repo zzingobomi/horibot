@@ -12,6 +12,7 @@ export const Topic = {
   MOTOR_CMD_JOINT: "horibot/{robot_id}/motor/cmd/joint",
   CAMERA_STATE_STATUS: "horibot/{robot_id}/camera/state/status",
   MOTION_STATE_TRAJ: "horibot/{robot_id}/motion/state/trajectory",
+  MOTION_STATE_TCP: "horibot/{robot_id}/motion/state/tcp",
   DETECTOR_STATE: "horibot/{robot_id}/detector/state",
   PERCEPTION_GROUNDED_STATE: "horibot/{robot_id}/perception/state/grounded",
   SCENE3D_STATE: "horibot/{robot_id}/scene3d/state",
@@ -38,6 +39,7 @@ export type TopicPayloadMap = {
   "horibot/{robot_id}/motor/cmd/joint": components["schemas"]["MotorCmd"];
   "horibot/{robot_id}/camera/state/status": components["schemas"]["CameraStatus"];
   "horibot/{robot_id}/motion/state/trajectory": components["schemas"]["MotionTrajState"];
+  "horibot/{robot_id}/motion/state/tcp": components["schemas"]["MotionTcpState"];
   "horibot/{robot_id}/detector/state": components["schemas"]["DetectorState"];
   "horibot/{robot_id}/perception/state/grounded": components["schemas"]["GroundedDetectionResult"];
   "horibot/{robot_id}/scene3d/state": components["schemas"]["Scene3DState"];

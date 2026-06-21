@@ -9,7 +9,6 @@
  * subscribe) 의 jointAngles 가 focus robot 에만 전달, 나머지는 home pose.
  * Slice C 에서 robot 별 store dict 화 시 jointAnglesByRobot 으로 확장.
  */
-import * as THREE from "three";
 import { RobotModel } from "./RobotModel";
 import type { RobotInfo } from "@/types/robot";
 
@@ -18,7 +17,6 @@ export interface RobotLayerProps {
   focusId: string | null;
   jointAngles: number[];
   onLinksLoaded?: (linkNames: string[]) => void;
-  onTCPMatrix?: (m: THREE.Matrix4 | null) => void;
   /** focus 모드에서 dim 정도. 0.0–1.0. default 0.25 — 만져보고 조정 자리. */
   dimOpacity?: number;
   /** RobotModel.visible passthrough (focus / world 양쪽 다 hide 가능). */
@@ -34,7 +32,6 @@ export function RobotLayer({
   focusId,
   jointAngles,
   onLinksLoaded,
-  onTCPMatrix,
   dimOpacity = 0.25,
   showRobot = true,
 }: RobotLayerProps) {
@@ -43,8 +40,8 @@ export function RobotLayer({
       {robots.map((r) => {
         const isFocus = focusId === null || r.id === focusId;
         const opacity = isFocus ? 1.0 : dimOpacity;
-        // 콜백은 focus robot 1개만 — RobotScene 의 TCP/Camera layer 가 그 한 대
-        // 의 데이터로 그려짐. WorldPage(focusId=null) 에선 첫 번째 enabled robot.
+        // links 콜백은 focus robot 1개만 — link visibility 패널이 그 한 대 기준.
+        // WorldPage(focusId=null) 에선 첫 번째 enabled robot.
         const isCallbackTarget =
           focusId === r.id ||
           (focusId === null && r.id === (robots.find((x) => x.enabled)?.id ?? robots[0]?.id));
@@ -58,7 +55,6 @@ export function RobotLayer({
             opacity={opacity}
             jointAngles={isFocus ? jointAngles : HOME_JOINTS}
             visible={showRobot}
-            onTCPMatrix={isCallbackTarget ? onTCPMatrix ?? undefined : undefined}
             onLinksLoaded={isCallbackTarget ? onLinksLoaded : undefined}
           />
         );

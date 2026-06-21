@@ -19,7 +19,9 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 - [handeye_sigma_floor_so101.md](docs/handeye_sigma_floor_so101.md) — **SO-101+D405 σ floor 진단 (2026-06-21)**. algorithmic optimum effective σ_R 0.801°/σ_t 7.53mm. STS3215 backlash ±0.87° 가 σ_R 0.5° hardware ceiling. cv2_seed + MCMC 4 chain (R̂ 1.0023) + Stage E + Kalib 다 reject. **다음 캘 trauma 진입 시 anchor — 동일 옵션 또 검토 안 해도 됨**
 - [handeye_robust_irls_plan.md](docs/handeye_robust_irls_plan.md) — 캘 trauma 영구 fix plan (IRLS + Huber + Strategy 패턴). **§12 진행 결과 (2026-06-12) — PnP gate / IRLS / observability / JointPerturbationStrategy / LOOCV 외부 정확도 발견까지**
 - [tsdf_pipeline.md](docs/tsdf_pipeline.md) — multi-way ICP + TSDF mesh 빌드 결정사항
-- [scan_pipeline_readiness.md](docs/scan_pipeline_readiness.md) — **SO-101 scan/TSDF 시작 전 코드 검토 (2026-06-21)**. 4-노드 구조 mature, BLOCKING 2: `robot_poses.yaml (so101)` missing + frontend PLY mesh layer 없음. 첫 scan 체크리스트.
+- [scan_pipeline_readiness.md](docs/scan_pipeline_readiness.md) — **SO-101 scan/TSDF 시작 전 코드 검토 (2026-06-21)**. 4-노드 구조 mature. (단 robot_poses.yaml missing 항목은 scan_interactive_design 으로 무효)
+- [scan_interactive_design.md](docs/scan_interactive_design.md) — **Scan interactive workflow design (2026-06-21, 논의 중)**. 결정: Task DSL 안 interactive (별도 mode/node X) + 새 `WaitForUserInput(signal)` step 범용 primitive + ScanTask 변형 (자동 motion 제거) + `CaptureScan` orchestration. 미해결 §4 4 항목 — 다음 세션 진입점.
+- [move_page_pointcloud_issues.md](docs/move_page_pointcloud_issues.md) — **Move 페이지 Live PointCloud 이슈 5건 (2026-06-21, 다음 세션 anchor)**. ★ URDF joint limits 너무 좁음 (root cause of 사선) + DEFAULT_ROBOT_ID hardcoded + React infinite loop on toggle + zenoh stale queryable + Live PC 사선. 진단 끝, 수정 대기.
 - [step_dsl.md](docs/step_dsl.md) — typed Slot 기반 lego Step DSL (Step/Slot/StepContext/Recipe + 다이어그램 + 확장 가이드)
 - [random_palletizing.md](docs/random_palletizing.md) — 사이즈 가변 직육면체 팔레타이징 design (3-track: 휴리스틱 / 정석 / iterative sim2real RL)
 - [so101_6dof_plan.md](docs/so101_6dof_plan.md) — SO-101 6DOF 두 번째 로봇 하드웨어 plan (모터 SDK 추상화 / wrist yaw mod / D405 마운트)
@@ -34,6 +36,7 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 - [motion_taxonomy.md](docs/motion_taxonomy.md) — Horibot motion primitive 4 계층 (Move/Servo/Jog/Task) + UR/ABB/KUKA 산업 표준 매핑 + Phase 1.5 (2026-06-17) 자리 — Servo 의미 자리 보존 (절대 target chase = RL/Vision servo) + 신규 **Jog 계층** (human velocity, backend latch + SE(3) 적분 SSOT, LeRobot delta-pose 패턴) + SpeedJ/SpeedTcp + Ruckig velocity stream 자리 폐기.
 - [jog_drift_tuning.md](docs/jog_drift_tuning.md) — SpeedTcp/SpeedJ cartesian jog 의 transient drift 진단 + fix 박제. **2026-06-17 update v2**: root cause 자리 *resolved-rate velocity-streaming* 아키텍처 자체. SpeedJ/SpeedTcp 자리 폐기 + JogJ/JogTcp (LeRobot delta-pose) 자리 도입으로 directional transient 자체 사라짐 (수학적 보장).
 - [naming_conventions.md](docs/naming_conventions.md) — wire schema class 이름 (verb-first + sub-domain prefix, Google AIP/Kubernetes 정석) + key expression helper (`key_for`, Zenoh 어휘 정렬) 컨벤션 + migration phase 진행 status. **신규 messages / RPC 추가 시 reference**
+- [testing_strategy.md](docs/testing_strategy.md) — 기능 추가 시 실 hardware 검증 *전* 까지 자동 돌릴 4 계층 검증 (L1 lint/type → L2 unit + 합성 회귀 차단 → L3 host_mock + WS bridge mirror → L4 cross-process Zenoh peer). 새 wire 추가 체크리스트 + verify 스크립트 템플릿 + verify 스크립트 자체 함정 (Windows cp949, WS message field 등). **새 기능/wire 추가 시 mandatory pre-handoff, 사용자 burn cycle 최소화 목적**
 - [roadmap.md](docs/roadmap.md) — 진행 중/예정 작업
 
 ## 자주 쓰는 명령어

@@ -19,6 +19,8 @@ import * as SliderPrimitive from "@radix-ui/react-slider";
 import { useTopic } from "@/framework";
 import { Topic } from "@/constants/topics";
 import { useArmJoints } from "@/lib/robot/config";
+import { useJointOffsetsRad } from "@/hooks/useCalibrationResults";
+import { rawToUrdfDeg } from "@/lib/robot/utils";
 import { bridge } from "@/api/bridge";
 
 const PUBLISH_DT_MS = 20; // 50Hz
@@ -28,6 +30,8 @@ export function JogJControl() {
   const { id: robotId = "" } = useParams<{ id: string }>();
   const armJoints = useArmJoints(robotId);
   const joints = useTopic(Topic.MOTOR_STATE_JOINT, robotId)?.joints ?? [];
+  // URDF degree (joint_offset 적용 frame) — 모든 frontend 표시 SSOT.
+  const jointOffsetsRad = useJointOffsetsRad(robotId);
 
   const armIds = useMemo(() => new Set(armJoints.map((j) => j.id)), [armJoints]);
   const currentJoints = joints.filter((j) => armIds.has(j.id));
@@ -123,7 +127,7 @@ export function JogJControl() {
                 <div className="text-[11px] text-zinc-300">{j.name}</div>
                 {current && (
                   <div className="text-[9px] text-zinc-600 tabular-nums">
-                    {current.degree.toFixed(2)}°
+                    {rawToUrdfDeg(current.position, jointOffsetsRad[j.id] ?? 0).toFixed(2)}°
                   </div>
                 )}
               </div>

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { CalibrationResults } from "@/types/calibration";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Grid, Environment } from "@react-three/drei";
@@ -26,7 +26,9 @@ interface RobotSceneProps {
   options: SceneOptions;
   linkVisibility?: Record<string, boolean>;
   onLinksLoaded?: (names: string[]) => void;
-  onTCPMatrix?: (m: THREE.Matrix4 | null) => void;
+  /** focus robot 의 corrected TCP pose (R3F y-up world frame). null = 아직 수신 X.
+   *  source = Container 의 `MOTION_STATE_TCP` topic subscribe (backend SSOT). */
+  tcpMatrix?: THREE.Matrix4 | null;
   /** robots.yaml enumeration. 비어있으면 (legacy) default 단일 omx_f. */
   robots?: RobotInfo[];
   /** focus robot id — null = WorldPage (모두 동등). */
@@ -66,20 +68,13 @@ function SceneContent({
   options,
   linkVisibility,
   onLinksLoaded,
-  onTCPMatrix,
+  tcpMatrix = null,
   robots,
   focusId,
   cameraTarget,
 }: RobotSceneProps) {
-  const [tcpMatrix, setTcpMatrix] = useState<THREE.Matrix4 | null>(null);
-
-  const handleTCPMatrix = useCallback(
-    (m: THREE.Matrix4) => {
-      setTcpMatrix(m.clone());
-      onTCPMatrix?.(m);
-    },
-    [onTCPMatrix]
-  );
+  // tcpMatrix 는 Container 에서 MOTION_STATE_TCP topic 으로 받음 (backend SSOT).
+  // 자체 URDF FK 로 다시 계산하지 X — sag/link_offset 누락 회귀 차단.
 
   // tool flange(wrist) 기준과 tool tip 기준(gripper 끝)이 있음
   // 현재 방식은 gripper tip 기준
@@ -134,12 +129,12 @@ function SceneContent({
         </group>
       )}
 
-      {/* RobotLayer 가 N robot 동시 마운트. focus 모드는 others dim. */}
+      {/* RobotLayer 가 N robot 동시 마운트. focus 모드는 others dim.
+          onTCPMatrix 콜백 폐지 — TCP pose 는 Container 가 backend topic 으로 받음. */}
       <RobotLayer
         robots={robots && robots.length > 0 ? robots : LEGACY_ROBOTS}
         focusId={focusId ?? null}
         jointAngles={jointAngles}
-        onTCPMatrix={(m) => handleTCPMatrix(m ?? new THREE.Matrix4())}
         onLinksLoaded={onLinksLoaded}
         showRobot={options.showRobot}
       />

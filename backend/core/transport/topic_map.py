@@ -10,6 +10,10 @@ class Topic:
 
     # ─── Motion ────────────────────────────────────────────
     MOTION_STATE_TRAJ = "horibot/{robot_id}/motion/state/trajectory"
+    # corrected EE pose stream (sag + link_offset + joint_offset 적용).
+    # MOTION_GET_TCP service 와 같은 값을 streaming 으로 push — frontend 가 자체
+    # URDF FK 안 돌리고 backend SSOT 만 신뢰. motor state 와 같은 20Hz.
+    MOTION_STATE_TCP = "horibot/{robot_id}/motion/state/tcp"
     # Jog stream (frontend / gamepad 50Hz publish — motion_taxonomy.md §Jog).
     # service 50Hz RTT 회피 위해 topic publish (fire-and-forget). backend
     # JogJCommand / JogTcpCommand 가 ref latch + 적분 + IK + publish_cmd.

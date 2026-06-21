@@ -532,6 +532,10 @@ export interface components {
             sigma_rot?: number | null;
             /** Sigma T */
             sigma_t?: number | null;
+            /** Effective Sigma Rot */
+            effective_sigma_rot?: number | null;
+            /** Effective Sigma T */
+            effective_sigma_t?: number | null;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -707,6 +711,10 @@ export interface components {
             sigma_rot?: number | null;
             /** Sigma T */
             sigma_t?: number | null;
+            /** Effective Sigma Rot */
+            effective_sigma_rot?: number | null;
+            /** Effective Sigma T */
+            effective_sigma_t?: number | null;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -833,6 +841,10 @@ export interface components {
             sigma_rot?: number | null;
             /** Sigma T */
             sigma_t?: number | null;
+            /** Effective Sigma Rot */
+            effective_sigma_rot?: number | null;
+            /** Effective Sigma T */
+            effective_sigma_t?: number | null;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -888,6 +900,10 @@ export interface components {
             sigma_rot?: number | null;
             /** Sigma T */
             sigma_t?: number | null;
+            /** Effective Sigma Rot */
+            effective_sigma_rot?: number | null;
+            /** Effective Sigma T */
+            effective_sigma_t?: number | null;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1012,6 +1028,27 @@ export interface components {
             position: number[];
             /** Quaternion */
             quaternion: number[];
+        };
+        /**
+         * MotionTcpState
+         * @description corrected EE pose stream — joint state 갱신마다 publish.
+         *
+         *     Backend `MotionModes.get_tcp_pose()` 의 결과 (sag + link_offset + joint_offset
+         *     가 모두 적용된 corrected FK) 를 wire 로 노출. frontend 의 PointCloud / TCP
+         *     AxisFrame / CameraFrustum 자리 SSOT — frontend 가 자체 URDF FK 로 cameraMatrix
+         *     재계산 X (sag/link_offset 누락 → 사선 PC bug 자리 회귀 차단).
+         *
+         *     `MOTION_GET_TCP` service 와 같은 값. 차이는:
+         *       - service = 단발 query (호출자가 fresh 보장 필요한 자리, detector_node)
+         *       - topic   = streaming push (motor state 와 같은 rate, 시각화/뷰어 자리)
+         */
+        MotionTcpState: {
+            /** Position */
+            position: number[];
+            /** Quaternion */
+            quaternion: number[];
+            /** Timestamp */
+            timestamp: number;
         };
         /**
          * MotionTrajState
@@ -1235,6 +1272,7 @@ export interface components {
             ListScansRes?: components["schemas"]["ListScansRes"] | null;
             LogMessage?: components["schemas"]["LogMessage"] | null;
             MotionTcpPose?: components["schemas"]["MotionTcpPose"] | null;
+            MotionTcpState?: components["schemas"]["MotionTcpState"] | null;
             MotionTrajState?: components["schemas"]["MotionTrajState"] | null;
             MotorCmd?: components["schemas"]["MotorCmd"] | null;
             MotorEnableReq?: components["schemas"]["MotorEnableReq"] | null;
@@ -1371,6 +1409,10 @@ export interface components {
             sigma_rot?: number | null;
             /** Sigma T */
             sigma_t?: number | null;
+            /** Effective Sigma Rot */
+            effective_sigma_rot?: number | null;
+            /** Effective Sigma T */
+            effective_sigma_t?: number | null;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}

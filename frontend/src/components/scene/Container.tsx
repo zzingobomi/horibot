@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { RobotScene } from "@/components/scene/Scene";
 import { useTopic } from "@/framework";
@@ -70,17 +70,51 @@ export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) 
     return [cx, cy, cz + 0.1];
   }, [robots, effectiveFocus]);
 
-  const handleTCPMatrix = useCallback(
-    (m: THREE.Matrix4 | null) => {
-      if (!m) {
-        setTcpPos(null);
-        return;
-      }
-      const v = new THREE.Vector3().setFromMatrixPosition(m);
-      setTcpPos([v.x, v.y, v.z]);
-    },
-    [setTcpPos],
-  );
+  // TCP pose 의 SSOT = backend MOTION_STATE_TCP topic (sag + link_offset +
+  // joint_offset 적용된 corrected FK). 자체 URDF FK 로 cameraMatrix 만들지 X —
+  // 그렇게 하면 sag/link_offset 빠져 PC 가 사선으로 나옴 (회귀 차단). URDF
+  // visual model 의 시각 위치는 여전히 자체 FK 라 backend tcp 와 미세 mismatch
+  // 가능 (≤ 4°), critical 하지 않으므로 별도 작업으로 미룸.
+  const tcpState = useTopic(Topic.MOTION_STATE_TCP, calibRobotId);
+  const tcpRobotBaseMatrix = useMemo(() => {
+    // z-up world (robot frame) → R3F y-up world 변환 + base_pose 적용.
+    // RobotModel 의 outer/inner group 구조 (rotation [-π/2, 0, 0] · translate ·
+    // rotZ(yaw)) 와 동일 사상 — TCP pose 가 URDF z-up frame 에 있어 같은 chain.
+    const r = robots.find((x) => x.id === calibRobotId);
+    if (!r) return null;
+    const outer = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+    const inner = new THREE.Matrix4().compose(
+      new THREE.Vector3(r.base_pose.x, r.base_pose.y, r.base_pose.z),
+      new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(0, 0, 1),
+        (r.base_pose.yaw_deg * Math.PI) / 180,
+      ),
+      new THREE.Vector3(1, 1, 1),
+    );
+    return outer.multiply(inner);
+  }, [robots, calibRobotId]);
+
+  const tcpMatrix = useMemo<THREE.Matrix4 | null>(() => {
+    if (!tcpState || !tcpRobotBaseMatrix) return null;
+    const [px, py, pz] = tcpState.position;
+    const [qx, qy, qz, qw] = tcpState.quaternion;
+    const local = new THREE.Matrix4().compose(
+      new THREE.Vector3(px, py, pz),
+      new THREE.Quaternion(qx, qy, qz, qw),
+      new THREE.Vector3(1, 1, 1),
+    );
+    // world (R3F y-up) ← robot_base (z-up) · tcp_local
+    return tcpRobotBaseMatrix.clone().multiply(local);
+  }, [tcpState, tcpRobotBaseMatrix]);
+
+  useEffect(() => {
+    if (!tcpMatrix) {
+      setTcpPos(null);
+      return;
+    }
+    const v = new THREE.Vector3().setFromMatrixPosition(tcpMatrix);
+    setTcpPos([v.x, v.y, v.z]);
+  }, [tcpMatrix, setTcpPos]);
 
   return (
     <RobotScene
@@ -89,7 +123,7 @@ export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) 
       options={options}
       linkVisibility={linkVisibility}
       onLinksLoaded={setLinkNames}
-      onTCPMatrix={handleTCPMatrix}
+      tcpMatrix={tcpMatrix}
       robots={robots}
       focusId={effectiveFocus}
       cameraTarget={cameraTarget}

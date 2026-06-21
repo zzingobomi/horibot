@@ -306,7 +306,7 @@
     <parent link="under_arm"/>
     <child link="wrist_yaw_back"/>
     <axis xyz="0 0 1"/>
-    <limit effort="3.3" velocity="5" lower="-1.22173" upper="1.22173"/>
+    <limit effort="3.3" velocity="5" lower="-1.51844" upper="1.51844"/>
   </joint>
   <!-- Joint from upper_arm to under_arm -->
   <joint name="joint3" type="revolute">
@@ -314,7 +314,7 @@
     <parent link="upper_arm"/>
     <child link="under_arm"/>
     <axis xyz="0 0 1"/>
-    <limit effort="3.3" velocity="5" lower="-2.0944" upper="0"/>
+    <limit effort="3.3" velocity="5" lower="-3.05433" upper="-0.0872665"/>
   </joint>
   <!-- Joint from base_rotation to upper_arm -->
   <joint name="joint2" type="revolute">
@@ -322,7 +322,7 @@
     <parent link="base_rotation"/>
     <child link="upper_arm"/>
     <axis xyz="0 0 1"/>
-    <limit effort="3.3" velocity="5" lower="0" upper="2.0944"/>
+    <limit effort="3.3" velocity="5" lower="-0.174533" upper="2.61799"/>
   </joint>
   <!-- Joint from base to base_rotation -->
   <joint name="joint1" type="revolute">
@@ -335,7 +335,7 @@
   <joint name="tcp_joint" type="fixed">
     <parent link="gripper_center"/>
     <child link="tcp"/>
-    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <origin rpy="0 0 0" xyz="0.04 0 0"/>
   </joint>
   <link name="tcp">
     <visual>

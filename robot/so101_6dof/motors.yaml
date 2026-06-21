@@ -37,9 +37,10 @@ motors:
     mode: "position"
     home: 2048
     limit:
-      # shoulder mechanical 한계 — 0° 에서 음수로 가면 충돌, 양수는 +120° 까지.
-      min: 2048   # URDF 0 rad (0°, home 과 동일 = lower boundary)
-      max: 3413   # URDF +2.0944 rad (+120°)
+      # 사용자 실측 mechanical 한계 + 보수 마진 (2026-06-21 update).
+      # URDF lower=-0.174533 rad / upper=+2.61799 rad = -10°..+150°.
+      min: 1935   # URDF -0.174533 rad (-10°), conservative ceil
+      max: 3754   # URDF +2.61799 rad (+150°), conservative floor
     reverse: false
     profile:
       velocity_dps: 60.0      # shoulder — 무거운 STS3250, 보수적
@@ -52,10 +53,10 @@ motors:
     mode: "position"
     home: 2048
     limit:
-      # 양수 방향에서 elbow 가 lower link 와 충돌 → upper = 0° 로 양수 차단.
-      # 음수 방향은 -120° 까지만 (CAD -97° 보다 더 줆 = 운용 reach 충분).
-      min: 683    # URDF -2.0944 rad (-120°)
-      max: 2048   # URDF 0 rad (0°, home 과 동일 = upper boundary)
+      # 사용자 실측 mechanical 한계 + 보수 마진 (2026-06-21 update).
+      # URDF lower=-3.05433 rad / upper=-0.0872665 rad = -175°..-5°.
+      min: 58     # URDF -3.05433 rad (-175°), conservative ceil
+      max: 1991   # URDF -0.0872665 rad (-5°), conservative floor
     reverse: false
     profile:
       velocity_dps: 70.0      # elbow
@@ -67,9 +68,10 @@ motors:
     mode: "position"
     home: 2048
     limit:
-      # ts_flake CAD 한계 (-84°/+94°) 보다 더 좁힌 ±70° 대칭 — 안전 마진 + reach 충분.
-      min: 1252   # URDF -1.22173 rad (-70°)
-      max: 2844   # URDF +1.22173 rad (+70°)
+      # 사용자 실측 mechanical 한계 + 보수 마진 (2026-06-21 update).
+      # URDF ±1.51844 rad = ±87° — J5 와 동일 한계 (대칭).
+      min: 1059   # URDF -1.51844 rad (-87°), conservative ceil
+      max: 3037   # URDF +1.51844 rad (+87°), conservative floor
     reverse: false
     profile:
       velocity_dps: 100.0     # wrist pitch — 작은 부하, 빠르게 OK

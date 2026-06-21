@@ -19,7 +19,8 @@ import { PanelShell } from "@/components/shared/PanelShell";
 import { PanelButton } from "@/components/shared/PanelButton";
 import { Section } from "@/components/shared/Section";
 import { loadPose } from "@/lib/robot/robotPoses";
-import { formatDeg, rawToDeg } from "@/lib/robot/utils";
+import { formatDeg, rawToUrdfDeg } from "@/lib/robot/utils";
+import { useArmJoints } from "@/lib/robot/config";
 import type { Joint } from "@/types/motor";
 
 const EMPTY_JOINTS: Joint[] = [];
@@ -29,6 +30,8 @@ export function RobotStatePanel(props: IDockviewPanelProps<object>) {
   const joints = useTopic(Topic.MOTOR_STATE_JOINT, robotId)?.joints ?? EMPTY_JOINTS;
   const jointOffsetsRad = useJointOffsetsRad(robotId);
   const tcpPos = useSceneStore((s) => s.tcpPos);
+  // robots.yaml 의 arm motors SSOT — DOF 자리 hardcode 폐기 (5DOF/6DOF 일반화).
+  const armJoints = useArmJoints(robotId);
 
   const cfgSvc = useService(ServiceKey.MOTOR_GET_CONFIG, robotId);
   const configs = cfgSvc.data?.motors ?? [];
@@ -39,21 +42,21 @@ export function RobotStatePanel(props: IDockviewPanelProps<object>) {
   const [jogOpen, setJogOpen] = useState(false);
   const [cmdPositions, setCmdPositions] = useState<Record<number, number>>({});
 
+  // URDF rad (joint_offset 적용된 kinematic frame). 모든 frontend 표시 frame SSOT.
   const jointAngles = useMemo(() => {
-    if (!joints.length) return Array(5).fill(0) as number[];
-    return joints
-      .filter((j) => j.id >= 1 && j.id <= 5)
-      .sort((a, b) => a.id - b.id)
-      .map((j) => {
-        const baseRad =
-          j.degree !== undefined
-            ? (j.degree * Math.PI) / 180
-            : j.position !== undefined
-              ? ((j.position - 2048) / 4095) * 2 * Math.PI
-              : 0;
-        return baseRad + (jointOffsetsRad[j.id] ?? 0);
-      });
-  }, [joints, jointOffsetsRad]);
+    if (!armJoints.length) return [];
+    return armJoints.map((cfg) => {
+      const j = joints.find((x) => x.id === cfg.id);
+      if (!j) return 0;
+      const baseRad =
+        j.degree !== undefined
+          ? (j.degree * Math.PI) / 180
+          : j.position !== undefined
+            ? ((j.position - 2048) / 4095) * 2 * Math.PI
+            : 0;
+      return baseRad + (jointOffsetsRad[cfg.id] ?? 0);
+    });
+  }, [armJoints, joints, jointOffsetsRad]);
 
   const handleJointCmd = useCallback(
     (id: number, position: number) => {
@@ -214,6 +217,7 @@ export function RobotStatePanel(props: IDockviewPanelProps<object>) {
                         cmdPosition={cmdPositions[joint.id] ?? joint.position}
                         limitMin={cfg?.limit.min ?? 0}
                         limitMax={cfg?.limit.max ?? 4095}
+                        offsetRad={jointOffsetsRad[joint.id] ?? 0}
                         onValueChange={handleJointCmd}
                       />
                     );
@@ -239,12 +243,15 @@ function JogSliderRow({
   cmdPosition,
   limitMin,
   limitMax,
+  offsetRad,
   onValueChange,
 }: {
   joint: Joint;
   cmdPosition: number;
   limitMin: number;
   limitMax: number;
+  /** kinematic frame 변환 (URDF degree = rawToDeg + offset_deg). default 0. */
+  offsetRad: number;
   onValueChange: (id: number, position: number) => void;
 }) {
   const toPercent = (val: number) =>
@@ -279,14 +286,14 @@ function JogSliderRow({
       </SliderPrimitive.Root>
 
       <span className="w-11 text-right text-blue-400 shrink-0">
-        {formatDeg(rawToDeg(cmdPosition))}°
+        {formatDeg(rawToUrdfDeg(cmdPosition, offsetRad))}°
       </span>
       <span
         className={`w-11 text-right shrink-0 ${
           isLagging ? "text-orange-400" : "text-zinc-500"
         }`}
       >
-        {formatDeg(rawToDeg(joint.position))}°
+        {formatDeg(rawToUrdfDeg(joint.position, offsetRad))}°
       </span>
     </div>
   );

@@ -14,6 +14,27 @@ export function rawToDeg(raw: number): number {
   return ((raw - RAW_CENTER) / RAW_RANGE) * 360;
 }
 
+/**
+ * raw motor position → URDF degree (joint_offset 적용된 kinematic frame).
+ *
+ * UI 의 모든 joint 각도 표시 frame 의 SSOT. backend `JointCoordinates.motor_to_urdf`
+ * (raw → rad + joint_offset) 와 같은 의미 — 단 frontend 자리는 degree.
+ *
+ * backend MoveJ handler 가 사용자 input degree 를 *URDF degree* 로 해석하므로,
+ * 모든 표시 / input 자리 본 함수 결과를 쓰면 robot 의 실제 자세 ↔ 사용자 input
+ * 자리 일관 (= "[현재 자세] → [실행]" 자리 robot 이 그 자리 그대로 머무름).
+ */
+export function rawToUrdfDeg(raw: number, offsetRad = 0): number {
+  return rawToDeg(raw) + (offsetRad * 180) / Math.PI;
+}
+
+/**
+ * URDF degree → raw motor position (위 함수의 역).
+ */
+export function urdfDegToRaw(urdfDeg: number, offsetRad = 0): number {
+  return degToRaw(urdfDeg - (offsetRad * 180) / Math.PI);
+}
+
 export function formatDeg(deg: number): number {
   return Math.round(deg * 10) / 10;
 }

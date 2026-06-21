@@ -170,10 +170,15 @@ class StageResult:
     n_iters: int = 0
     n_residuals: int = 0
     reproj_rms_px: float = float("inf")
+    # σ 두 종류 (project_calibration_sigma_dual_metric):
+    #   sigma_handeye_*           = BA Jacobian σ (parameter confidence — (JᵀJ)⁻¹·σ²)
+    #   effective_sigma_handeye_* = board_in_base std (accuracy). commit 결정 metric.
     sigma_handeye_rot_deg: float = float("inf")  # from BA covariance
     sigma_handeye_t_mm: float = float("inf")
     sigma_target_rot_deg: float = float("inf")
     sigma_target_t_mm: float = float("inf")
+    effective_sigma_handeye_rot_deg: float = float("inf")
+    effective_sigma_handeye_t_mm: float = float("inf")
     per_pose_rms_px: list[float] = field(default_factory=list)
     per_pose_weight: list[float] = field(default_factory=list)
     n_outliers: int = 0  # weight < 0.5
@@ -725,6 +730,59 @@ def estimate_target_seed(
     return average_se3(Rs, ts)
 
 
+def measure_effective_sigma(
+    captures: list[CapturePose],
+    fk_chain,
+    arm_cfgs: list[MotorConfig],
+    result: "StageResult",
+) -> tuple[float, float]:
+    """BA fit 적용 후 board_in_base 의 std → (σ_R deg, σ_t mm).
+
+    BA Jacobian σ (parameter confidence) 와 다른 metric — 같은 fit 으로 reproject 한
+    target pose 들이 *얼마나 한 자리에 모이나* 의 accuracy 지표. commit 결정 기준.
+    [[project-calibration-sigma-dual-metric]].
+    """
+    n_arm = fk_chain.n_arm
+    joint_off = np.zeros(n_arm)
+    link_t = np.zeros((n_arm, 3))
+    link_r = np.zeros((n_arm, 3))
+    for i, c in enumerate(arm_cfgs):
+        joint_off[i] = result.joint_offsets.get(c.id, 0.0)
+        if c.id in result.link_trans:
+            link_t[i] = result.link_trans[c.id]
+        if c.id in result.link_rot:
+            link_r[i] = result.link_rot[c.id]
+
+    origins, rots = [], []
+    for cap in captures:
+        angles = cap.joint_angles_rad_raw + joint_off
+        R_g2b, t_g2b = fk_chain.fk(angles, link_t, link_r)
+        R_c2b = R_g2b @ result.handeye_R
+        t_c2b = R_g2b @ result.handeye_t + t_g2b
+        R_t2b = R_c2b @ cap.R_target2cam_seed
+        t_t2b = R_c2b @ cap.t_target2cam_seed + t_c2b
+        origins.append(t_t2b)
+        rots.append(R_t2b)
+
+    origins_arr = np.array(origins)
+    pos_std_mm = float(np.linalg.norm(origins_arr.std(axis=0) * 1000.0))
+
+    qs = np.array([Rot.from_matrix(R).as_quat() for R in rots])
+    for i in range(1, len(qs)):
+        if np.dot(qs[0], qs[i]) < 0:
+            qs[i] = -qs[i]
+    M = qs.T @ qs
+    _, ev = np.linalg.eigh(M)
+    R_mean = Rot.from_quat(ev[:, -1]).as_matrix()
+    angs = []
+    for R in rots:
+        R_rel = R @ R_mean.T
+        tr = (np.trace(R_rel) - 1.0) * 0.5
+        angs.append(np.arccos(np.clip(tr, -1.0, 1.0)))
+    rot_std_deg = float(np.rad2deg(np.std(angs)))
+    return rot_std_deg, pos_std_mm
+
+
 def _per_pose_residual_breakdown(
     r_full: np.ndarray,
     captures: list[CapturePose],
@@ -908,7 +966,7 @@ def run_ba_stage(
         for i, arm_idx in enumerate(sag_arm_indices):
             sag_k[arm_cfgs[arm_idx].id] = float(sag_sparse[i])
 
-    return StageResult(
+    stage = StageResult(
         name=name,
         estimated=(
             {"handeye"}
@@ -936,6 +994,17 @@ def run_ba_stage(
         per_pose_weight=weights.tolist(),
         n_outliers=int(np.sum(weights < 0.5)),
     )
+
+    try:
+        eff_R, eff_t = measure_effective_sigma(
+            captures, fk_chain, arm_cfgs, stage
+        )
+        stage.effective_sigma_handeye_rot_deg = eff_R
+        stage.effective_sigma_handeye_t_mm = eff_t
+    except Exception:
+        logger.exception("effective σ 계산 실패 — inf 유지")
+
+    return stage
 
 
 # ─── Sanity checks ──────────────────────────────────────────────
@@ -1338,7 +1407,8 @@ def commit_results(
         result_ids: list[tuple[str, int]] = []
         method = f"offline_BA_stage_{result.name}"
 
-        # 1. Hand-eye 항상 commit.
+        # 1. Hand-eye 항상 commit. σ 두 종류 박음 — sigma_* = Jacobian (confidence),
+        # effective_sigma_* = board_in_base std (accuracy, commit 결정 metric).
         he_data = {
             "R_cam2gripper": result.handeye_R.tolist(),
             "t_cam2gripper": result.handeye_t.reshape(3, 1).tolist(),
@@ -1346,11 +1416,14 @@ def commit_results(
         }
         cur.execute(
             "INSERT INTO calibration_results "
-            "(run_id, robot_id, kind, created_at, is_active, sigma_rot, sigma_t, result_data) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "(run_id, robot_id, kind, created_at, is_active, "
+            "sigma_rot, sigma_t, effective_sigma_rot, effective_sigma_t, result_data) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 run_id, robot_id, "hand_eye", now, 0,
                 result.sigma_handeye_rot_deg, result.sigma_handeye_t_mm,
+                result.effective_sigma_handeye_rot_deg,
+                result.effective_sigma_handeye_t_mm,
                 json.dumps(he_data),
             ),
         )

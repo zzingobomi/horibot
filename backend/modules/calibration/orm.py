@@ -87,8 +87,14 @@ class CalibrationResultOrm(Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    # σ 두 종류 (project_calibration_sigma_dual_metric):
+    #   sigma_*           = BA Jacobian σ (parameter confidence — (JᵀJ)⁻¹·σ²)
+    #   effective_sigma_* = effective σ (accuracy — board_in_base std). commit 결정 metric.
+    # joint_offset / link_offset / sag 등 σ 무관 kind 자리는 둘 다 None.
     sigma_rot: Mapped[float | None] = mapped_column(Float, nullable=True)
     sigma_t: Mapped[float | None] = mapped_column(Float, nullable=True)
+    effective_sigma_rot: Mapped[float | None] = mapped_column(Float, nullable=True)
+    effective_sigma_t: Mapped[float | None] = mapped_column(Float, nullable=True)
     # result_data: 5종 Pydantic ResultData (kind discriminator) JSON 직렬화.
     # ORM 은 raw text 들고 있고, orm_to_result 가 TypeAdapter 로 union arm
     # 자동 선택 + validate.
@@ -219,6 +225,8 @@ def result_record_to_orm(
         is_active=is_active,
         sigma_rot=record.sigma_rot,
         sigma_t=record.sigma_t,
+        effective_sigma_rot=record.effective_sigma_rot,
+        effective_sigma_t=record.effective_sigma_t,
         result_data=record.result_data.model_dump_json(),
     )
 
@@ -318,6 +326,8 @@ def orm_to_result(orm: CalibrationResultOrm) -> CalibrationResultRecord:
             "is_active": bool(orm.is_active),
             "sigma_rot": orm.sigma_rot,
             "sigma_t": orm.sigma_t,
+            "effective_sigma_rot": orm.effective_sigma_rot,
+            "effective_sigma_t": orm.effective_sigma_t,
             "result_data": json.loads(orm.result_data),
         }
     )

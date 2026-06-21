@@ -1,5 +1,3 @@
-# 분산 모드에서 PC 역할 — heavy compute + bridge.
-# USB 직결 robot 없음 (robots: []). application 노드만 띄움.
 # 실행:
 #   uv sync
 #   uv run --no-sync python main.py --host pc
@@ -7,8 +5,6 @@ host_name: pc
 
 zenoh:
   mode: peer
-  # 같은 LAN + 멀티캐스트 정상이면 Pi 자동 발견.
-  # 안 잡히면 endpoint 명시:
   connect: []
   # - "tcp/192.168.0.101:7447"  # pi-motor
   # - "tcp/192.168.0.102:7447"  # pi-camera
@@ -29,14 +25,8 @@ application_nodes:
   - reconstruction
   - gamepad
 
-# 영속성 인프라 (docs/storage_layer.md). PC 만 storage_node 띄움 — 모터/카메라
-# Pi 는 application_nodes 비어있어 init() 호출 X. Phase 3 NAS 도입 시
-# postgresql:// / s3:// 로 URI 만 교체.
-#
-# Path 는 main.py cwd (backend/) 기준 relative. DB 는 git tracked (다른 PC 에서 같은
-# 캘 데이터 쓰게), blobs/ 는 git ignored (mesh / 큰 binary 자리, .gitignore 박혀 있음).
 storage:
-  rdb_uri:    "sqlite:///storage/horibot.db"
+  rdb_uri: "sqlite:///storage/horibot.db"
   object_uri: "file:///storage/blobs"
 
 bridge:

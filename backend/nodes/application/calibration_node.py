@@ -1,22 +1,3 @@
-"""Calibration node — capture-only 시나리오 (offline BA 스크립트 분리).
-
-새 시나리오 (handeye_ux_solver_v3_plan 폐기 후 단순화):
-  1. [캘 시작]  → draft run + session intrinsic/board 스냅샷 (run.algorithm_params)
-  2. 토크오프 + 자유 자세 → preview loop 가 traffic light G/Y/R 안내 (capture_quality)
-  3. [캡처]     → ChArUco + PnP + raw color/depth blob + CalibrationCaptureRecord 저장
-                  (motor_positions raw + corners_2d + board_in_cam + reproj_rms + tilt)
-                  blob 페이로드 = `depth_frame.py` encode 결과 (color JPEG + zstd depth)
-  4. [되돌리기] → 마지막 capture row + blob 삭제
-  5. [세션 종료] → run status: in_progress → ready_for_analysis (immutable)
-  6. (offline)  → Python 분석 스크립트가 captures + blobs read → BA → finalize_run +
-                  activate. frontend 무관.
-
-intrinsic 캘 흐름은 변경 X (별개 kind). hand-eye 만 새 시나리오로 단순화.
-
-BA / observability / 추천 / Phase 1/2 / multi-start 코드 *전부 제거됨* — offline 스크립트
-가 모든 분석 책임.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -83,12 +64,6 @@ DEPTH_FRAME_FRESH_SEC = 2.0  # 캡처 시 depth_frame 최대 허용 나이
 
 @dataclass
 class _CapturePose:
-    """capture_quality 비교 + restore 용 in-memory 자세 캐시.
-
-    DB row 의 일부 (motor_positions + board_in_cam) 와 동일한 정보 — 보존 후 BA 자체
-    가 필요한 시점이 없어 list 만으로 충분 (HandEyeCalibration 자리 폐기).
-    """
-
     motor_positions: dict[int, int]
     R_target2cam: np.ndarray  # (3, 3)
     t_target2cam: np.ndarray  # (3,)
@@ -97,19 +72,12 @@ class _CapturePose:
 
 @dataclass
 class _RobotState:
-    """robot 별 캘리브레이션 상태 — capture-only 시나리오."""
-
     arm_cfgs: list[MotorConfig]
-    intrinsic: IntrinsicCalibration  # intrinsic 캘 in-memory accumulator (별개 flow)
-    # Hand-eye 세션 상태 — DB SSOT 의 in-memory 캐시.
+    intrinsic: IntrinsicCalibration
     hand_eye_run_id: int | None = None
-    # 세션 시작 시 freeze 한 intrinsic snapshot. PnP 전용 — 모든 capture 가 같은
-    # intrinsic 으로 BA 입력 (run.algorithm_params 에도 같이 저장 → offline 스크립트 SSOT).
     session_intrinsic: IntrinsicResult | None = None
     captures: list[_CapturePose] = field(default_factory=list)
     preview_enabled: bool = False
-    # 최신 depth_frame raw blob — STORAGE_APPEND_CAPTURE 의 blob_bytes 로 그대로 전송
-    # (재인코딩 X — bandwidth + CPU 절약).
     latest_depth_blob: bytes | None = None
     latest_depth_blob_ts: float = 0.0
 
@@ -192,7 +160,8 @@ class CalibrationNode(ApplicationNode):
                     intrinsic_rec.result_data.dist_coeffs, dtype=np.float64
                 ),
                 image_size=(
-                    tuple(intrinsic_rec.result_data.image_size)  # type: ignore[arg-type]
+                    # type: ignore[arg-type]
+                    tuple(intrinsic_rec.result_data.image_size)
                     if intrinsic_rec.result_data.image_size is not None
                     else None
                 ),
@@ -262,14 +231,18 @@ class CalibrationNode(ApplicationNode):
         run, captures = existing
         st.hand_eye_run_id = run.id
         # session_intrinsic 복원 — run.algorithm_params["intrinsic_snapshot"].
-        snap = run.algorithm_params.get("intrinsic_snapshot") if run.algorithm_params else None
+        snap = run.algorithm_params.get(
+            "intrinsic_snapshot") if run.algorithm_params else None
         if isinstance(snap, dict):
             try:
                 st.session_intrinsic = IntrinsicResult(
-                    camera_matrix=np.array(snap["camera_matrix"], dtype=np.float64),
-                    dist_coeffs=np.array(snap["dist_coeffs"], dtype=np.float64),
+                    camera_matrix=np.array(
+                        snap["camera_matrix"], dtype=np.float64),
+                    dist_coeffs=np.array(
+                        snap["dist_coeffs"], dtype=np.float64),
                     rms_error=float(snap.get("rms_error", 0.0)),
-                    image_size=tuple(snap.get("image_size", (0, 0))),  # type: ignore[arg-type]
+                    # type: ignore[arg-type]
+                    image_size=tuple(snap.get("image_size", (0, 0))),
                     captured_count=0,
                     coverage_cells=[],
                 )
@@ -635,7 +608,8 @@ class CalibrationNode(ApplicationNode):
             return ServiceResponse(
                 success=False,
                 message="세션 없음 — [캘 시작] 부터 눌러주세요",
-                data=HandeyeCaptureRes(detected=False, pose_count=len(st.captures)),
+                data=HandeyeCaptureRes(
+                    detected=False, pose_count=len(st.captures)),
             )
 
         # 1. 최신 depth_frame raw + decoded — blob 그대로 storage 로 넘김 (재인코딩 X).
@@ -646,7 +620,8 @@ class CalibrationNode(ApplicationNode):
                 message=(
                     "depth 스트림 OFF — Scene Controls 의 Point Cloud 를 켜주세요"
                 ),
-                data=HandeyeCaptureRes(detected=False, pose_count=len(st.captures)),
+                data=HandeyeCaptureRes(
+                    detected=False, pose_count=len(st.captures)),
             )
         blob_bytes, df = latest
 
@@ -658,7 +633,8 @@ class CalibrationNode(ApplicationNode):
             return ServiceResponse(
                 success=False,
                 message="모터 상태 미수신",
-                data=HandeyeCaptureRes(detected=False, pose_count=len(st.captures)),
+                data=HandeyeCaptureRes(
+                    detected=False, pose_count=len(st.captures)),
             )
 
         # 3. ChArUco 검출 — depth_frame 의 (aligned) color 위에서.
@@ -668,7 +644,8 @@ class CalibrationNode(ApplicationNode):
             return ServiceResponse(
                 success=False,
                 message="ChArUco 보드 미감지",
-                data=HandeyeCaptureRes(detected=False, pose_count=len(st.captures)),
+                data=HandeyeCaptureRes(
+                    detected=False, pose_count=len(st.captures)),
             )
         obj_pts, img_pts = calib_board.match_object_points(ch_corners, ch_ids)
 
@@ -703,7 +680,8 @@ class CalibrationNode(ApplicationNode):
         R_t2c, _ = cv2.Rodrigues(rvec)
         # 보드 +Z normal — camera 자리 정면 자리 자리 정렬 자리 자리 dot product.
         board_normal_cam = R_t2c[:, 2]
-        tilt_rad = float(np.arccos(np.clip(abs(board_normal_cam[2]), -1.0, 1.0)))
+        tilt_rad = float(
+            np.arccos(np.clip(abs(board_normal_cam[2]), -1.0, 1.0)))
         tilt_deg = float(np.degrees(tilt_rad))
 
         # 7. board_in_cam 4x4.
@@ -717,7 +695,8 @@ class CalibrationNode(ApplicationNode):
             pose_index=pose_index,
             motor_positions=dict(raw_positions),
             board_in_cam=board_in_cam.tolist(),
-            corners_2d=[[float(c[0]), float(c[1])] for c in img_pts.reshape(-1, 2)],
+            corners_2d=[[float(c[0]), float(c[1])]
+                        for c in img_pts.reshape(-1, 2)],
             corner_ids=[int(i) for i in ch_ids.reshape(-1)],
             reproj_rms_px=reproj_rms,
             tilt_deg=tilt_deg,
@@ -846,7 +825,8 @@ class CalibrationNode(ApplicationNode):
                 np.degrees(np.arccos(np.clip(abs(normal[2]), -1.0, 1.0)))
             )
             poses.append(
-                HandeyePoseMeta(pose_index=cap.pose_index, tilt_deg=tilt)  # type: ignore[call-arg]
+                # type: ignore[call-arg]
+                HandeyePoseMeta(pose_index=cap.pose_index, tilt_deg=tilt)
             )
         return ServiceResponse(
             success=True,
@@ -929,7 +909,8 @@ class CalibrationNode(ApplicationNode):
                     R, _ = cv2.Rodrigues(rvec)
                     normal = R[:, 2]
                     tilt_deg = float(
-                        np.degrees(np.arccos(np.clip(abs(normal[2]), -1.0, 1.0)))
+                        np.degrees(
+                            np.arccos(np.clip(abs(normal[2]), -1.0, 1.0)))
                     )
                     current_R = R
                     current_t = np.asarray(tvec).reshape(3)
@@ -1000,7 +981,8 @@ class CalibrationNode(ApplicationNode):
         if marker_corners is not None and len(marker_corners) > 0:
             for m in marker_corners:
                 marker_outline_payload.append(
-                    [[float(p[0]), float(p[1])] for p in np.asarray(m).reshape(-1, 2)]
+                    [[float(p[0]), float(p[1])]
+                     for p in np.asarray(m).reshape(-1, 2)]
                 )
 
         self.publish(
@@ -1017,5 +999,3 @@ class CalibrationNode(ApplicationNode):
                 "marker_outlines": marker_outline_payload,
             },
         )
-
-

@@ -89,8 +89,14 @@ class _ResultRecordBase(StrictModel):
     robot_id: str
     created_at: float  # epoch seconds
     is_active: bool = False
-    sigma_rot: float | None = None  # joint_offset 등 σ 없는 kind 는 None
+    # σ 두 종류 ([[project-calibration-sigma-dual-metric]]):
+    #   sigma_*           = BA Jacobian σ (parameter confidence, (JᵀJ)⁻¹·σ²)
+    #   effective_sigma_* = effective σ (accuracy, board_in_base std) — commit 결정 metric
+    # joint_offset / link_offset / sag 등 σ 무관 kind 자리는 둘 다 None.
+    sigma_rot: float | None = None
     sigma_t: float | None = None
+    effective_sigma_rot: float | None = None
+    effective_sigma_t: float | None = None
 
 
 class HandEyeResultRecord(_ResultRecordBase):

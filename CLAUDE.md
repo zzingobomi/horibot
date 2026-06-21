@@ -15,9 +15,11 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 - [operations.md](docs/operations.md) — Pi/IP/OS, pyrealsense2 빌드 노트는 [pyrealsense2-build-guide.md](docs/pyrealsense2-build-guide.md)
 - [calibration_workflow.md](docs/calibration_workflow.md) — 캡처 절차 + 결과 해석 가이드
 - [calibration_apply_flow.md](docs/calibration_apply_flow.md) — 4종 캘 산출물의 적용 메커니즘
-- [hand_eye_extended_ba.md](docs/hand_eye_extended_ba.md) — 확장 BA + 물리 sag 모델 (σ_rot 0.65°/σ_t 7.94mm 도달기)
+- [hand_eye_extended_ba.md](docs/hand_eye_extended_ba.md) — 확장 BA + 물리 sag 모델 (OMX 시대, σ_rot 0.65°/σ_t 7.94mm 도달기)
+- [handeye_sigma_floor_so101.md](docs/handeye_sigma_floor_so101.md) — **SO-101+D405 σ floor 진단 (2026-06-21)**. algorithmic optimum effective σ_R 0.801°/σ_t 7.53mm. STS3215 backlash ±0.87° 가 σ_R 0.5° hardware ceiling. cv2_seed + MCMC 4 chain (R̂ 1.0023) + Stage E + Kalib 다 reject. **다음 캘 trauma 진입 시 anchor — 동일 옵션 또 검토 안 해도 됨**
 - [handeye_robust_irls_plan.md](docs/handeye_robust_irls_plan.md) — 캘 trauma 영구 fix plan (IRLS + Huber + Strategy 패턴). **§12 진행 결과 (2026-06-12) — PnP gate / IRLS / observability / JointPerturbationStrategy / LOOCV 외부 정확도 발견까지**
 - [tsdf_pipeline.md](docs/tsdf_pipeline.md) — multi-way ICP + TSDF mesh 빌드 결정사항
+- [scan_pipeline_readiness.md](docs/scan_pipeline_readiness.md) — **SO-101 scan/TSDF 시작 전 코드 검토 (2026-06-21)**. 4-노드 구조 mature, BLOCKING 2: `robot_poses.yaml (so101)` missing + frontend PLY mesh layer 없음. 첫 scan 체크리스트.
 - [step_dsl.md](docs/step_dsl.md) — typed Slot 기반 lego Step DSL (Step/Slot/StepContext/Recipe + 다이어그램 + 확장 가이드)
 - [random_palletizing.md](docs/random_palletizing.md) — 사이즈 가변 직육면체 팔레타이징 design (3-track: 휴리스틱 / 정석 / iterative sim2real RL)
 - [so101_6dof_plan.md](docs/so101_6dof_plan.md) — SO-101 6DOF 두 번째 로봇 하드웨어 plan (모터 SDK 추상화 / wrist yaw mod / D405 마운트)
@@ -336,7 +338,24 @@ StorageNode (PC) — Phase 2 scan workflow CRUD (storage_layer.md §11):
 | link_offset  | URDF 링크 기하 오차 | **URDF 자체를 patch**해서 PyBullet 로드    | 백엔드 재시작 (PyBullet 1회 로드) |
 | sag_offset   | J2/J3 자세 의존 중력 처짐 | `SagCorrectedKinematics.fk`/`ik` 양방향 적용 (Decorator) | 즉시 (`_reload_caches`) |
 
-확장 BA + 물리 sag 모델로 현재 σ_rot **0.65°** / σ_t **7.94mm** ([docs/hand_eye_extended_ba.md](docs/hand_eye_extended_ba.md)). TSDF GOOD threshold(σ_rot <1°, σ_t <10mm) 안. 산출물별 코드 흐름 + COMMIT 후 어디까지 자동 반영되는지는 [docs/calibration_apply_flow.md](docs/calibration_apply_flow.md), 캘 절차/UI 사용법은 [docs/calibration_workflow.md](docs/calibration_workflow.md).
+확장 BA + 물리 sag 모델 도달 σ:
+- OMX_F (2026-05): σ_rot **0.65°** / σ_t **7.94mm** ([hand_eye_extended_ba.md](docs/hand_eye_extended_ba.md))
+- SO-101 + D405 (2026-06): **effective σ_R 0.801° / σ_t 7.53mm** (algorithmic floor — STS3215 backlash ±0.87° 가 σ_R 0.5° hardware ceiling, [handeye_sigma_floor_so101.md](docs/handeye_sigma_floor_so101.md))
+
+σ **두 metric** ([[project-calibration-sigma-dual-metric]]):
+- **effective σ** = `measure_effective_sigma` (board_in_base std, data consistency, commit 결정 metric). DB `calibration_results.effective_sigma_rot/t` 컬럼
+- **Jacobian σ** = `(JᵀJ)⁻¹·σ²` block trace (parameter confidence). DB `calibration_results.sigma_rot/t` 컬럼
+- [commit_results](backend/scripts/calibrate_offline.py) 가 hand_eye row INSERT 시 둘 다 박음
+
+산출물별 코드 흐름 + COMMIT 후 어디까지 자동 반영되는지는 [docs/calibration_apply_flow.md](docs/calibration_apply_flow.md), 캘 절차/UI 사용법은 [docs/calibration_workflow.md](docs/calibration_workflow.md).
+
+### 캘 분석 / 진단 script ([backend/scripts/](backend/scripts/))
+
+새 캘 분석 시 순서:
+1. [calibrate_offline.py](backend/scripts/calibrate_offline.py) — 5 stage BA + sanity + LOOCV. `--commit` 으로 DB activate
+2. [calibrate_squeeze.py](backend/scripts/calibrate_squeeze.py) — outlier squeeze iter (LOOCV 줄어들 때까지 drop 추가). best drop set 식별만, commit X. 출력 마지막 줄에 `calibrate_offline.py --commit --drop-poses ...` 명령 안내
+
+trauma cycle 진입 시 [handeye_sigma_floor_so101.md](docs/handeye_sigma_floor_so101.md) 먼저 — algorithmic optimum 진단 결과 (cv2_seed + MCMC unimodal + Stage E reject + Kalib NO-GO) 박혀있음. **진단용 script 들 (cv2_seed / validate_opencv / mcmc / push / diagnose / effective_sigma) 은 한 번 답 나왔으니 2026-06-21 정리 시 제거** — 필요 시 git history 에서 복원 가능.
 
 **Commit + Rollback (DB 기반, storage_layer)** — `_srv_handeye_commit` 가 `_storage.finalize_run` (draft run status in_progress→success + Result rows INSERT, is_active=0) → 각 result `_storage.activate` (atomic: 같은 robot+kind 직전 active 해제 → 새 result 활성). 즉 **COMMIT = DB 저장 + activate 동시**. 적용은 storage invalidation → CalibrationCache refetch + (link_offset 은 URDF patch 라) 백엔드 재시작.
 **Rollback = DB history 의 과거 run 재활성** — 모든 commit 이 run 으로 영구 보존. frontend [`CalibrationHistoryPanel`](frontend/src/components/panels/calibration/CalibrationHistoryPanel.tsx) 가 run 목록 → kind 별 `ACTIVATE` (`STORAGE_ACTIVATE_CALIBRATION`) → `activate_result` 가 atomic 하게 현재 해제 + 과거 활성. (옛 npz `.history` / `backup.py` / `CALIB_BACKUP_*` 는 storage DB 전환으로 폐기 — DB history 가 롤백.)

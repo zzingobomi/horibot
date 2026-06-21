@@ -181,15 +181,45 @@ export interface components {
             y2: number;
         };
         /**
+         * CalibrationCaptureArtifactRecord
+         * @description Capture 1장의 ObjectStore blob 1개 — primary .bin 또는 디버깅 artifact.
+         *
+         *     별도 정규화 테이블 `calibration_capture_artifacts`. `kind` 자리:
+         *       - "primary"  — `depth_frame.py` encode 결과 (color JPEG + zstd Z16 depth +
+         *                      header). offline 분석 자리 입력.
+         *       - "color"    — color.jpg. 탐색기 viewable.
+         *       - "depth"    — depth.png 16-bit raw. ImageJ 자리.
+         *       - "depth_vis"— 8-bit colorized depth.png. 사람용.
+         *       - "ply"      — binary color point cloud. CloudCompare/MeshLab 자리.
+         */
+        CalibrationCaptureArtifactRecord: {
+            /** Id */
+            id?: number | null;
+            /** Capture Id */
+            capture_id: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "primary" | "color" | "depth" | "depth_vis" | "ply";
+            /** Blob Key */
+            blob_key: string;
+            /** Size Bytes */
+            size_bytes?: number | null;
+            /** Content Type */
+            content_type?: string | null;
+            /** Created At */
+            created_at: number;
+        };
+        /**
          * CalibrationCaptureRecord
          * @description Evidence — per-pose 자세 정보 + raw sensor 데이터 캐시.
          *
          *     drift-free 저장 — `motor_positions` 만이 robot 측 SSOT. joint_angles (rad) 는
          *     캡처 시점 캘에 잠겨버리니까 저장 안 함 (offline 분석 시 raw → rad 재계산).
          *
-         *     raw color JPEG + zstd depth 는 ObjectStore blob (`blob_key`) 에 별도 저장 —
-         *     `STORAGE_GET_BLOB(blob_key)` 로 fetch. blob 페이로드 포맷은 기존 `depth_frame.py`
-         *     재사용 ([header_len][JSON header][jpeg_len][color JPEG][zstd depth]).
+         *     Blob (primary .bin + 디버깅 artifact) 는 정규화 별도 테이블
+         *     `calibration_capture_artifacts` 에 — `artifacts` 자리 list 로 동봉.
          *
          *     BA output (residual_rot/trans/weight) 는 offline 스크립트가 finalize 시 UPDATE.
          */
@@ -214,14 +244,17 @@ export interface components {
             reproj_rms_px?: number | null;
             /** Tilt Deg */
             tilt_deg?: number | null;
-            /** Blob Key */
-            blob_key?: string | null;
             /** Residual Rot */
             residual_rot?: number | null;
             /** Residual Trans */
             residual_trans?: number | null;
             /** Weight */
             weight?: number | null;
+            /**
+             * Artifacts
+             * @default []
+             */
+            artifacts: components["schemas"]["CalibrationCaptureArtifactRecord"][];
         };
         /**
          * CalibrationInvalidated

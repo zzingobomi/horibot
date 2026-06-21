@@ -79,6 +79,8 @@ def upgrade() -> None:
     sa.Column('is_active', sa.Boolean(), nullable=False),
     sa.Column('sigma_rot', sa.Float(), nullable=True),
     sa.Column('sigma_t', sa.Float(), nullable=True),
+    sa.Column('effective_sigma_rot', sa.Float(), nullable=True),
+    sa.Column('effective_sigma_t', sa.Float(), nullable=True),
     sa.Column('result_data', sa.Text(), nullable=False),
     sa.ForeignKeyConstraint(['run_id'], ['calibration_runs.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')

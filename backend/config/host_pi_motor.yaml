@@ -1,7 +1,3 @@
-# 모터 Pi (192.168.0.101). 사용자 (2026-06-14) — OMX OFF 후 OpenRB-150 자리에
-# Waveshare bus servo driver 연결, SO-101 6DOF mod (모터 7개) 운영.
-# motor + motion 같은 머신 (100Hz 제어 명령이 네트워크 안 넘게).
-#
 # 시작 예:
 #   uv sync --no-default-groups --group pi-motor      # feetech-servo-sdk 자동 포함
 #   uv run --no-sync python main.py --host pi_motor
@@ -9,8 +5,6 @@ host_name: pi_motor
 
 zenoh:
   mode: peer
-  # 같은 LAN + 멀티캐스트 정상이면 자동 발견.
-  # 라우터/스위치가 멀티캐스트를 막거나 IPv6/멀티 NIC 환경이면 명시:
   connect: []
   # - "tcp/192.168.0.5:7447"    # PC
   # - "tcp/192.168.0.102:7447"  # pi-camera
@@ -19,7 +13,7 @@ zenoh:
   #   - "tcp/0.0.0.0:7447"
 
 robots:
-  - so101_6dof_0   # OMX 통합 검증 후 omx_f_0 복귀 또는 dual-arm 추가 (Phase 2+)
+  - so101_6dof_0
 
 device_nodes:
   - motor

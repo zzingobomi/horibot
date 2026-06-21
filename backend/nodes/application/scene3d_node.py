@@ -189,17 +189,27 @@ class Scene3DNode(ApplicationNode):
     def _srv_set_stream(
         self, req: ServiceRequest[Scene3DSetStreamReq], robot_id: str
     ) -> ServiceResponse[Scene3DSetStreamRes]:
+        st = self._states[robot_id]
+        # voxel_size 갱신 — 요청 시 동봉 (frontend Live PointCloud 패널 자체 자리).
+        # set_stream(enabled=False) 시에도 voxel_size 만 갱신 가능 (다음 enable 시 적용).
+        if req.data.voxel_size_m is not None:
+            with st.cfg_lock:
+                st.voxel_size = float(req.data.voxel_size_m)
         ok = self._set_stream(robot_id, req.data.enabled)
         if ok is None:
             return ServiceResponse(
                 success=False, message="카메라 depth 스트림 전환 실패", data=None
             )
-        st = self._states[robot_id]
         with st.cfg_lock:
-            current = st.enabled
+            current_enabled = st.enabled
+            current_voxel = st.voxel_size
+        # state topic echo — frontend store 가 enabled/voxel_size 동기화.
+        self._publish_state(robot_id)
         return ServiceResponse(
             success=True, message="ok",
-            data=Scene3DSetStreamRes(enabled=current),
+            data=Scene3DSetStreamRes(
+                enabled=current_enabled, voxel_size_m=current_voxel
+            ),
         )
 
     def _set_stream(self, robot_id: str, enabled: bool) -> bool | None:

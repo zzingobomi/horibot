@@ -10,18 +10,23 @@
  */
 import { onConnect, onTopic } from "@/framework";
 import { Topic } from "@/constants/topics";
+import { bridge } from "@/api/bridge";
 import { useSystemStore } from "@/domain/stores/system";
 import { useTaskResultStore, type StepResultPayload } from "@/domain/stores/taskResult";
 import { useScene3DStore } from "@/domain/stores/scene3D";
 
-// 재연결 시 멱등 — 이전 unsub 호출 후 재attach.
+// Scene3D 는 binary 토픽 — bootstrap useEffect(2) 가 BINARY_TOPICS 자리 skip 하므로
+// store 자체 attach. 단 robot-scoped 라 bridge.defaultRobotId 변경 시 *re-attach
+// 필수* — 안 두면 첫 connect 시점의 옛 DEFAULT_ROBOT_ID (constants hardcoded)
+// 로 영구 sub → 실 robot publish 미수신 (PointCloud 안 보이는 회귀).
 let unsubScene3D: (() => void) | null = null;
-
-onConnect(() => {
-  // Scene3D 는 binary 토픽 — bootstrap 가 BINARY_TOPICS 는 skip 하므로 store 자체 attach.
+function _reattachScene3D(): void {
   if (unsubScene3D) unsubScene3D();
   unsubScene3D = useScene3DStore.getState()._attach();
-});
+}
+
+onConnect(_reattachScene3D);
+bridge.onDefaultRobotIdChange(_reattachScene3D);
 
 onTopic(Topic.SYSTEM_HEARTBEAT, (hb) => {
   useSystemStore.getState().updateNode(

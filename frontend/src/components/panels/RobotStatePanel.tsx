@@ -13,7 +13,6 @@ import type { IDockviewPanelProps } from "dockview";
 import { useService, useTopic } from "@/framework";
 import { ServiceKey, Topic } from "@/constants/topics";
 import { useJointOffsetsRad } from "@/hooks/useCalibrationResults";
-import { useSceneStore } from "@/domain/stores/scene";
 import { bridge } from "@/api/bridge";
 import { PanelShell } from "@/components/shared/PanelShell";
 import { PanelButton } from "@/components/shared/PanelButton";
@@ -29,7 +28,10 @@ export function RobotStatePanel(props: IDockviewPanelProps<object>) {
   const { id: robotId = "" } = useParams<{ id: string }>();
   const joints = useTopic(Topic.MOTOR_STATE_JOINT, robotId)?.joints ?? EMPTY_JOINTS;
   const jointOffsetsRad = useJointOffsetsRad(robotId);
-  const tcpPos = useSceneStore((s) => s.tcpPos);
+  // TCP 위치 SSOT = backend MOTION_STATE_TCP topic. 옛 useSceneStore.tcpPos 자리
+  // 자체 자리 Container 의 useEffect setTcpPos 자리 cycle 자리 일으켰음 (PR 회귀).
+  const tcpState = useTopic(Topic.MOTION_STATE_TCP, robotId);
+  const tcpPos = tcpState?.position ?? null;
   // robots.yaml 의 arm motors SSOT — DOF 자리 hardcode 폐기 (5DOF/6DOF 일반화).
   const armJoints = useArmJoints(robotId);
 

@@ -74,9 +74,24 @@ class BridgeClient {
   private pendingServices = new Map<string, ServiceResolver>();
   private onStatusChange?: (connected: boolean) => void;
   private defaultRobotId: string = DEFAULT_ROBOT_ID;
+  // defaultRobotId 변경 시 호출되는 listener — useRobots fetch 가 완료된 후
+  // bootstrap 의 robot-scoped sub 갱신 외에 *binary 토픽* (bootstrap skip 대상)
+  // 자리도 새 robotId 로 re-attach 가능하게 한다. 안 두면 _attach 가 처음 connect
+  // 시점의 옛 default (omx_f_0) 로 영구 sub → 실제 robot (so101) publish 자리
+  // 자체 자리 frontend 미수신 (PointCloud 안 보임 회귀).
+  private defaultRobotListeners = new Set<(robotId: string) => void>();
 
   setDefaultRobotId(robotId: string): void {
+    if (this.defaultRobotId === robotId) return;
     this.defaultRobotId = robotId;
+    for (const l of this.defaultRobotListeners) l(robotId);
+  }
+
+  onDefaultRobotIdChange(listener: (robotId: string) => void): () => void {
+    this.defaultRobotListeners.add(listener);
+    return () => {
+      this.defaultRobotListeners.delete(listener);
+    };
   }
 
   /**

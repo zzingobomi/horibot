@@ -1503,11 +1503,15 @@ export interface components {
         Scene3DSetStreamReq: {
             /** Enabled */
             enabled: boolean;
+            /** Voxel Size M */
+            voxel_size_m?: number | null;
         };
         /** Scene3DSetStreamRes */
         Scene3DSetStreamRes: {
             /** Enabled */
             enabled: boolean;
+            /** Voxel Size M */
+            voxel_size_m: number;
         };
         /**
          * Scene3DSnapshotReq

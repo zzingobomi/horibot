@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import * as THREE from "three";
 import { RobotScene } from "@/components/scene/Scene";
 import { useTopic } from "@/framework";
@@ -55,7 +55,6 @@ export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) 
   const options = useSceneStore((s) => s.options);
   const linkVisibility = useSceneStore((s) => s.linkVisibility);
   const setLinkNames = useSceneStore((s) => s.setLinkNames);
-  const setTcpPos = useSceneStore((s) => s.setTcpPos);
 
   // focus robot 의 base_pose 로 OrbitControls target. WorldPage(null) = 중심.
   const cameraTarget = useMemo<[number, number, number]>(() => {
@@ -107,14 +106,10 @@ export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) 
     return tcpRobotBaseMatrix.clone().multiply(local);
   }, [tcpState, tcpRobotBaseMatrix]);
 
-  useEffect(() => {
-    if (!tcpMatrix) {
-      setTcpPos(null);
-      return;
-    }
-    const v = new THREE.Vector3().setFromMatrixPosition(tcpMatrix);
-    setTcpPos([v.x, v.y, v.z]);
-  }, [tcpMatrix, setTcpPos]);
+  // TCP 위치 표시는 RobotStatePanel 이 *직접* MOTION_STATE_TCP topic subscribe.
+  // 본 Container 가 setTcpPos useEffect 로 우회한 자리는 매 message 새 array set
+  // 자체 자리 React reconciler 자리 cycle / stall (2026-06-21 사선 PC 회귀 사례)
+  // → SSOT 정석: backend topic 한 source 만 신뢰, intermediate store 자리 폐기.
 
   return (
     <RobotScene

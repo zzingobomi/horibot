@@ -73,7 +73,11 @@ class Scene3DSnapshotRes(StrictModel):
 
 class Scene3DSetStreamReq(StrictModel):
     enabled: bool
+    # m 단위 voxel down-sample 크기. None = backend default (5mm) 유지.
+    # frontend Live PointCloud 패널 슬라이더 (mm 입력 → /1000) 에서 같이 전송.
+    voxel_size_m: float | None = None
 
 
 class Scene3DSetStreamRes(StrictModel):
     enabled: bool
+    voxel_size_m: float

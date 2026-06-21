@@ -173,6 +173,7 @@ sub.undeclare(); session.close()
 | WS message field `action` vs `type` | `received 0 msgs` (조용히) | bridge `_handle_message` 의 `msg_type` 자리 확인 — 컨벤션은 `"type"` |
 | pyrealsense2 import 자리 분산 Pi 에서 import fail | `--no-install-package pyrealsense2` 후 별도 .whl install | [pyrealsense2-build-guide.md](pyrealsense2-build-guide.md) |
 | zenoh peer discovery hang | 무한 대기 | localhost multicast loopback 안 되는 환경은 `connect: ["tcp/127.0.0.1:7447"]` 명시 |
+| **`uv run` subprocess + `p.terminate()` 자리 child python 안 죽음** | `wmic process where "name='python.exe'"` 자리 잔여 python — 같은 LAN 자리 frontend 자리 *중복 publish 자리 깜빡임* + 같은 topic conflict + 메모리 누수 (LLM 로딩한 3GB+ 자리 자체 자리 계속) | (A) `subprocess.Popen([str(BACKEND / ".venv/Scripts/python.exe"), "main.py", "--host", ...])` 자리 `uv run` 우회 — child 자리 단일 process 자리 `terminate()` 작동. (B) verify 스크립트 종료 후 `wmic process ... | grep main.py` 자리 잔여 자리 검사 |
 
 ## 5.1 ⚠️ 분산 transport 의 부수효과 — **pytest / sim 도 실 robot 으로 broadcast 됨**
 

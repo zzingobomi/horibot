@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import type { CalibrationResults } from "@/types/calibration";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Grid, Environment } from "@react-three/drei";
@@ -206,20 +206,35 @@ function SceneContent({
   );
 }
 
+// Canvas 의 prop 객체 자리 매 render 자리 새 ref 면 R3F reconciler 가 commit
+// 안에서 setState (camera/gl reset) → "Maximum update depth exceeded" cycle.
+// 모두 stable ref 필수 — focus 별 camera position 만 props 변화로 받음.
+const GL_OPTS = { antialias: true, alpha: false };
+const STYLE = { background: "#080c12" };
+const NEAR_FAR = { fov: 45, near: 0.001, far: 10 };
+
 export function RobotScene(props: RobotSceneProps) {
   // 카메라 default — focus 모드는 가까이, world overview 는 멀리.
-  const defaultCam: [number, number, number] =
-    props.focusId === null ? [0.7, 0.6, 0.7] : [0.35, 0.35, 0.35];
-  const camPos = props.cameraPosition ?? defaultCam;
+  const camPos = useMemo<[number, number, number]>(
+    () =>
+      props.cameraPosition ??
+      (props.focusId === null ? [0.7, 0.6, 0.7] : [0.35, 0.35, 0.35]),
+    [props.cameraPosition, props.focusId],
+  );
+  const cameraOpts = useMemo(
+    () => ({ ...NEAR_FAR, position: camPos }),
+    [camPos],
+  );
+  const onCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
+    gl.shadowMap.enabled = true;
+    gl.shadowMap.type = THREE.PCFShadowMap;
+  }, []);
   return (
     <Canvas
-      camera={{ position: camPos, fov: 45, near: 0.001, far: 10 }}
-      gl={{ antialias: true, alpha: false }}
-      onCreated={({ gl }) => {
-        gl.shadowMap.enabled = true;
-        gl.shadowMap.type = THREE.PCFShadowMap;
-      }}
-      style={{ background: "#080c12" }}
+      camera={cameraOpts}
+      gl={GL_OPTS}
+      onCreated={onCreated}
+      style={STYLE}
     >
       <SceneContent {...props} />
     </Canvas>

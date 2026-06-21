@@ -1,9 +1,9 @@
 /**
- * Scene UI state — R3F overlay toggle / link visibility / TCP marker.
+ * Scene UI state — R3F overlay toggle / link visibility.
  *
  * 토픽 / 서비스 자리 아님 — 순수 frontend UI 상태.
+ * TCP 위치는 본 store 가 아니라 MOTION_STATE_TCP topic 자리 직접 — backend SSOT.
  */
-import type { Vector3Tuple } from "three";
 import { create } from "zustand";
 import type { SceneOptions } from "@/components/scene/Scene";
 
@@ -13,13 +13,11 @@ interface SceneState {
   options: SceneOptions;
   linkNames: string[];
   linkVisibility: Record<string, boolean>;
-  tcpPos: Vector3Tuple | null;
 
   toggleOption: (key: keyof SceneOptions) => void;
   setLinkNames: (names: string[]) => void;
   toggleLink: (name: string) => void;
   toggleAllLinks: () => void;
-  setTcpPos: (pos: Vector3Tuple | null) => void;
 }
 
 export const useSceneStore = create<SceneState>((set, get) => ({
@@ -32,7 +30,6 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
   linkNames: [],
   linkVisibility: {},
-  tcpPos: null,
 
   toggleOption: (key) =>
     set((s) => ({ options: { ...s.options, [key]: !s.options[key] } })),
@@ -57,6 +54,4 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       ),
     });
   },
-
-  setTcpPos: (pos) => set({ tcpPos: pos }),
 }));

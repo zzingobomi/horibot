@@ -1,5 +1,6 @@
 import { RobotStatePanel } from "@/components/panels/RobotStatePanel";
 import { SceneControlsPanel } from "@/components/panels/SceneControlsPanel";
+import { LivePointCloudPanel } from "@/components/panels/LivePointCloudPanel";
 import { CalibrationPanel } from "@/components/panels/calibration/CalibrationPanel";
 import { CameraPanel } from "@/components/panels/calibration/CameraPanel";
 import { IntrinsicPanel } from "@/components/panels/calibration/IntrinsicPanel";
@@ -11,6 +12,7 @@ import { MotionPanel } from "@/components/panels/motion";
 export const PANEL_COMPONENTS = {
   robotState: RobotStatePanel,
   sceneControls: SceneControlsPanel,
+  livePointCloud: LivePointCloudPanel,
   calibration: CalibrationPanel,
   calibrationCamera: CameraPanel,
   intrinsic: IntrinsicPanel,

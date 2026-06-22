@@ -25,6 +25,15 @@ def _ensure_schema(engine: Engine) -> None:
 
 
 class StorageRegistry:
+    """RDB + ObjectStore 핸들 + Alembic schema migration 한 묶음.
+
+    Process Infrastructure (외부 자원 보유 — DB connection + filesystem/S3).
+    main.py 가 application_nodes 에 'storage' 있을 때 host yaml 의 URI 로
+    `StorageRegistry.init()` 호출 — Alembic `upgrade head` 도 안에서 자동.
+    다른 코드는 `StorageRegistry.get()` 으로 받아 사용 — 미초기화 시
+    RuntimeError 로 fail-fast. Process-wide Memory State (`Foo()` 패턴) 와 대비됨.
+    """
+
     _instance: "StorageRegistry | None" = None
 
     def __init__(self, rdb: RdbStore, objects: ObjectStore) -> None:

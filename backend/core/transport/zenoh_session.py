@@ -8,6 +8,11 @@ logger = logging.getLogger(__name__)
 
 
 class ZenohSession:
+    """프로세스당 하나의 Zenoh runtime 세션 — 모든 노드가 공유하는 transport.
+
+    Process Infrastructure (외부 자원 보유 — Zenoh runtime).
+    """
+
     _session: zenoh.Session | None = None
 
     @classmethod

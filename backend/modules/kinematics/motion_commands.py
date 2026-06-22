@@ -24,10 +24,8 @@ PublishCmdFn = Callable[[list[float]], None]
 # 자리 받음. caller (motion_node) 가 wrap.
 GetCurrentJointsFn = Callable[[], list[float] | None]
 # Jog 의 fk 자리 — joint URDF rad → (position, quaternion). motion_modes.get_tcp_pose
-# 가 SagCorrectedKinematics 통해 sag 보정된 FK. tool_offset 자리는 별도.
+# 가 SagCorrectedKinematics 통해 sag 보정된 FK.
 FkFn = Callable[[list[float]], tuple[np.ndarray, np.ndarray]]
-# Tool offset (base frame, m) — 현재 자세에서 실제 끝점 - URDF EE 의 base 벡터.
-ToolOffsetBaseFn = Callable[[list[float]], np.ndarray]
 
 # Jog 의 idle 자리 — 마지막 publish 후 본 시간 넘으면 다음 publish 자리에서
 # joint_cache 로 fresh latch. button up 후 모터 settled 자리에 다시 hold 시
@@ -265,14 +263,14 @@ class JogTcpCommand(MotionCommand):
 
     Caller (frontend Jog UI / gamepad) 는 *twist (linear + angular + frame) 만*
     보냄. backend 가:
-      1. 첫 publish 또는 JOG_IDLE_RESET_S 이상 끊긴 자리 → joint_cache → fk +
-         tool_offset 으로 *실 끝점 pose* fresh latch (URDF EE pose + tool offset).
+      1. 첫 publish 또는 JOG_IDLE_RESET_S 이상 끊긴 자리 → joint_cache → fk 로
+         URDF EE pose fresh latch.
       2. 실 측정 dt 로 SE(3) 적분:
          - linear, frame="base": pos_real += linear * dt
          - linear, frame="tcp" : pos_real += R(quat) @ linear * dt
          - angular: scipy Rotation.from_rotvec(angular * dt), base 자리 premultiply,
            tcp 자리 postmultiply.
-      3. IK target = pos_real - tool_offset_base(current_joints), quat_real → IK.
+      3. IK target = pos_real, quat_real → IK.
       4. publish_cmd(joint_target).
 
     모든 caller 가 같은 wire — SE(3) 적분 SSOT = backend (frontend Three.js /
@@ -287,14 +285,12 @@ class JogTcpCommand(MotionCommand):
         publish_cmd: PublishCmdFn,
         get_current_joints: GetCurrentJointsFn,
         fk: FkFn,
-        tool_offset_base: ToolOffsetBaseFn,
     ) -> None:
         self._solve_servo = solve_servo
         self._publish_cmd = publish_cmd
         self._get_current_joints = get_current_joints
         self._fk = fk
-        self._tool_offset_base = tool_offset_base
-        # ref state — *실 끝점 pose* (user frame, tool offset 포함).
+        # ref state — URDF EE pose.
         self._last_pos: np.ndarray | None = None  # (3,) m
         self._last_quat: np.ndarray | None = None  # (4,) [x,y,z,w]
         self._last_publish_t = 0.0
@@ -333,18 +329,16 @@ class JogTcpCommand(MotionCommand):
             raise ValueError("joint_cache 비어있음 — motor state 수신 전")
 
         if idle_too_long:
-            # Fresh latch — fk + tool_offset → 실 끝점 pose (user frame).
+            # Fresh latch — fk → URDF EE pose.
             pos_urdf, quat_urdf = self._fk(current_joints)
-            tool_base = self._tool_offset_base(current_joints)
-            last_pos = np.asarray(pos_urdf, dtype=float) + tool_base
+            last_pos = np.asarray(pos_urdf, dtype=float)
             last_quat = np.asarray(quat_urdf, dtype=float)
             self._last_pos = last_pos
             self._last_quat = last_quat
             self._last_publish_t = now
             # 첫 publish — 적분 없이 latched ref 그대로 (현재 위치).
-            urdf_target = last_pos - tool_base
             result = self._solve_servo(
-                tuple(urdf_target.tolist()),
+                tuple(last_pos.tolist()),
                 tuple(last_quat.tolist()),
                 current_joints,
             )
@@ -380,11 +374,9 @@ class JogTcpCommand(MotionCommand):
                 new_R = cur_R * delta_R  # tcp rotation = postmultiply
             new_quat = new_R.as_quat()
 
-        # IK + publish — 현재 자세에서 tool_offset 적용.
-        tool_base = self._tool_offset_base(current_joints)
-        urdf_target = new_pos - tool_base
+        # IK + publish — URDF target = ref pose 그대로.
         result = self._solve_servo(
-            tuple(urdf_target.tolist()),
+            tuple(new_pos.tolist()),
             tuple(new_quat.tolist()),
             current_joints,
         )

@@ -25,7 +25,7 @@ import numpy as np
 import pybullet as p
 
 from core.coords.urdf_patcher import patch_urdf_text
-from modules.calibration.link_offsets import LinkOffsets
+from modules.calibration.result_models import LinkOffsetResultData
 from modules.kinematics.kinematics import (
     Position3,
     Quaternion,
@@ -58,7 +58,9 @@ class PybulletKinematics:
         self._urdf_path = Path(urdf_path)
         self._sim_lock = threading.Lock()
         self._initialized = False
-        self._link_offsets: LinkOffsets = LinkOffsets()
+        self._link_offsets: LinkOffsetResultData = LinkOffsetResultData(
+            offsets=[], method="empty"
+        )
 
         self._client: int = -1
         self._robot: int = -1
@@ -68,7 +70,7 @@ class PybulletKinematics:
         self._upper_limits: list[float] = []
         self._joint_ranges: list[float] = []
 
-    def apply_link_offsets(self, offsets: LinkOffsets) -> None:
+    def apply_link_offsets(self, offsets: LinkOffsetResultData) -> None:
         """initialize() 호출 전에 link_offsets 주입. 이미 initialized 면 RuntimeError —
         URDF patch 가 부팅 시 1회만 (docs/storage_layer.md §7 원칙 4).
         """

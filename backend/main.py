@@ -82,7 +82,9 @@ def main():
     logger.info("=== Horibot 시작 (host=%s) ===", host_name)
     logger.info(
         "robots=%s  device_nodes=%s  application_nodes=%s",
-        robots, device_node_names, application_node_names,
+        robots,
+        device_node_names,
+        application_node_names,
     )
 
     # ─── 검증: robots.yaml 존재 + layer 위치 ───────────────────
@@ -98,9 +100,7 @@ def main():
 
     for name in device_node_names:
         if name not in known_nodes():
-            raise ValueError(
-                f"알 수 없는 노드 '{name}'. 등록: {known_nodes()}"
-            )
+            raise ValueError(f"알 수 없는 노드 '{name}'. 등록: {known_nodes()}")
         if not issubclass(get_class(name), DeviceNode):
             raise ValueError(
                 f"'{name}' 은 DeviceNode 아님. application_nodes 로 옮겨야 함."
@@ -108,9 +108,7 @@ def main():
 
     for name in application_node_names:
         if name not in known_nodes():
-            raise ValueError(
-                f"알 수 없는 노드 '{name}'. 등록: {known_nodes()}"
-            )
+            raise ValueError(f"알 수 없는 노드 '{name}'. 등록: {known_nodes()}")
         if not issubclass(get_class(name), ApplicationNode):
             raise ValueError(
                 f"'{name}' 은 ApplicationNode 아님. device_nodes 로 옮겨야 함."
@@ -126,20 +124,13 @@ def main():
     # ─── Zenoh 세션 초기화 ────────────────────────────────────
     ZenohSession.init(cfg.get("zenoh"))
 
-    # ─── Storage 초기화 (storage 노드 떠 있을 때만) ────────────
-    # PC 만 storage_node 띄움 — 분산 모드 모터/카메라 Pi 는 init() 호출 안 됨.
-    # 단, storage 가 application_nodes 에 있는데 host yaml 의 'storage:' block
-    # 누락이면 fail-fast.
+    # ─── Storage 초기화 ──────────────────────────────────────
     if "storage" in application_node_names:
         storage_cfg = cfg.get("storage") or {}
         rdb_uri = storage_cfg.get("rdb_uri")
         object_uri = storage_cfg.get("object_uri")
         if not rdb_uri or not object_uri:
-            raise ValueError(
-                "host config 의 application_nodes 에 'storage' 가 있는데 "
-                "'storage:' block 의 rdb_uri / object_uri 누락. "
-                "docs/storage_layer.md §8 참조."
-            )
+            raise ValueError("'storage:' block 의 rdb_uri / object_uri 누락. ")
         from modules.storage.registry import StorageRegistry
 
         StorageRegistry.init(rdb_uri, object_uri)
@@ -166,7 +157,9 @@ def main():
         if rid is None:
             logger.info("노드 시작됨: %s (application, %s)", nt, node.node_name)
         else:
-            logger.info("노드 시작됨: %s (device robot=%s, %s)", nt, rid, node.node_name)
+            logger.info(
+                "노드 시작됨: %s (device robot=%s, %s)", nt, rid, node.node_name
+            )
 
     # ─── 브릿지 (선택) ────────────────────────────────────────
     bridge_enabled = bool(bridge_cfg.get("enabled", False))

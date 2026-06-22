@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 
 
 class FrameCache:
+    """CAMERA_STREAM_RAW (JPEG) + CAMERA_STATE_STATUS 구독 + BGR ndarray 디코드 캐시.
+
+    Process-wide Memory State (외부 자원 X — Zenoh subscriber + 최신 JPEG 보관).
+    """
+
     _instance: "FrameCache | None" = None
     _new_lock = threading.Lock()
 
@@ -79,9 +84,7 @@ class FrameCache:
         with self._lock:
             self._latest_status_by_robot[robot_id] = status
 
-    def get_frame(
-        self, robot_id: str | None = None
-    ) -> tuple[bool, np.ndarray | None]:
+    def get_frame(self, robot_id: str | None = None) -> tuple[bool, np.ndarray | None]:
         rid = self._resolve(robot_id)
         with self._lock:
             jpeg = self._latest_jpeg_by_robot.get(rid)

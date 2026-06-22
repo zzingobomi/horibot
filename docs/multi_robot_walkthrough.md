@@ -268,10 +268,6 @@ classDiagram
         <<Singleton>>
         -_offsets_by_robot dict
     }
-    class ToolCoordinates {
-        <<Singleton>>
-        -_offset_by_robot dict
-    }
     class JointStateCache {
         <<Singleton>>
         -_raw_by_robot dict
@@ -380,7 +376,6 @@ sequenceDiagram
     Main->>Reg: RobotRegistry() (singleton init)
     Reg->>YAML: yaml.safe_load
     YAML-->>Reg: robots dict
-    Reg->>Reg: _validate_robot_id (reserved name check)
     Reg->>Reg: _build_config (path 자동 조립)
 
     Note over Main: 어느 노드든 첫 호출 시 lazy init
@@ -474,7 +469,7 @@ ROS 2 multi-robot namespace 표준 + Zenoh wildcard subscribe 와 자연.
 | 작업 | commit | 핵심 파일 | 읽어볼 것 |
 |---|---|---|---|
 | **폴더 type/instance split** | `592bf52` | `robot/` 전체 | `git show 592bf52 --stat` 으로 mv 목록 |
-| **RobotRegistry** | `592bf52` | `core/robot_registry.py` | `_validate_robot_id` / `_build_config` / `enabled_robots` |
+| **RobotRegistry** | `592bf52` | `core/robot_registry.py` | `_build_config` / `enabled_robots` (`_validate_robot_id` 는 2026-06-22 폐기) |
 | **Kinematics Protocol** | `5bfbe72` | `modules/kinematics/kinematics.py` | Protocol 메서드 6개 + exception 2종 |
 | **PybulletKinematics adapter** | `5bfbe72` | `modules/kinematics/adapters/pybullet_kinematics.py` | sag 코드가 *없음* 에 주목 |
 | **SagCorrectedKinematics Decorator** | `5bfbe72` | `modules/kinematics/adapters/sag_corrected.py` | `_commanded_to_actual` / `_actual_to_commanded` 양방향 |
@@ -717,8 +712,7 @@ A. `RobotRegistry().enabled_robots()` 에서 빠짐. Coordinates 가 부팅 시 
 
 **Q. `robot_id` 가 `system`, `task`, `coord` 같은 이름이면?**
 
-A. `RobotRegistry._validate_robot_id()` 가 load 시 즉시 `ValueError` raise.
-충돌 차단 메커니즘.
+A. *N=1 사용자 자리 그런 이름 박을 동기 없음* 으로 판단해 2026-06-22 에 가드 폐기 (`RESERVED_*` + `_validate_robot_id`). 미래 외부 협업자 yaml 입력 시점에 재도입 후보. 도메인 자체 (`horibot/system/...` 등) 는 토픽 라우팅에서 계속 사용.
 
 **Q. 같은 type 의 robot 2대 (omx_f 두 대) 되면?**
 

@@ -2,9 +2,8 @@
 
 multi_robot_architecture.md §3.4 / distributed_topology.md §6 참조.
 
-Protocol 정의 + 공통 데이터 타입만. 구현체 (RealSense / OpenCV / MuJoCo) 는
-[adapters/](adapters/) 하위에서 별도 파일로 분리 — kinematics / motor 모듈과 동일
-패턴.
+Protocol 정의 + 공통 데이터 타입만. 구현체 (RealSense / OpenCV) 는 [adapters/](adapters/)
+하위에서 별도 파일로 분리 — kinematics / motor 모듈과 동일 패턴.
 
 데이터 클래스 (`CameraIntrinsic` / `ColorFrame` / `DepthFrame`) 는 frozen dataclass
 — process-internal 사용. 토픽 페이로드로 publish 시는 별도 Pydantic model

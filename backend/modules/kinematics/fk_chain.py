@@ -1,19 +1,7 @@
-"""URDF chain 의 numpy FK — link_offset variable 박을 수 있는 자리.
+"""URDF chain 의 numpy FK — link_offset variable + gravity sag 보정 포함.
 
-PyBullet 은 `loadURDF` 후 link transform 정적 (`changeDynamics` 가 mass/inertia
-만 변경, joint origin xyz/rpy 못 건드림). Hand-Eye BA 는 link origin offset 을
-*변수* 로 풀어야 해서 매 LM iteration 마다 다른 link_offset 으로 FK 호출 필요
-— PyBullet 우회.
-
-URDF parse 는 `yourdfpy` 위임 (rpy 곱 / mimic / fixed joint 다 처리),
-chain build 는 자체 numpy (BA hot path 성능 + link_offset variable 통제).
-
-사용처:
-    (a) `bundle_adjust.py` 의 확장 BA — link offset 자유도와 함께 FK 평가
-    (b) `sag_corrected.py` 의 sag 보정 — apply_gravity_sag / actual_to_commanded
-
-OMX-F (5DOF) / SO-101 (6DOF) robot type 무관 — `RobotConfig.urdf_path` +
-`MotorLayout.arm()` 의 joint name list 받으면 chain 자동 build.
+PyBullet 은 `loadURDF` 후 link transform 정적
+(`changeDynamics` 가 mass/inertia 만 변경, joint origin xyz/rpy 못 건드림).
 """
 
 from __future__ import annotations
@@ -76,7 +64,14 @@ def gravity_torque_lumped(
 
 
 class FkChain:
-    """URDF parse → arm chain numpy FK. robot type 무관.
+    """URDF 기반 arm 기구학 계산기.
+
+    제공 기능:
+      - PyBullet 과 독립적인 numpy FK
+      - joint origin / axis 계산
+      - 중력 sag 보정 계산 (forward / inverse)
+
+    runtime sag 보정과 오프라인 calibration 도구에서 사용한다.
 
     chain = `base_link` → ... → `tcp_link_name` 까지의 joint sequence. arm joint
     (revolute) 는 angle 적용, 중간 fixed joint 는 origin transform 만 흡수.
@@ -90,10 +85,10 @@ class FkChain:
         tcp_link_name: str = "tcp",
     ):
         """Args:
-            urdf_path: URDF 파일 경로
-            arm_joint_names: actuated arm joint names, motor id 순서. gripper 제외.
-                `MotorLayout.arm()` 의 `.name` 으로 추출 (motors.yaml SSOT).
-            tcp_link_name: chain 끝 link 이름. CLAUDE.md 의 project convention 으로 `tcp`.
+        urdf_path: URDF 파일 경로
+        arm_joint_names: actuated arm joint names, motor id 순서. gripper 제외.
+            `MotorLayout.arm()` 의 `.name` 으로 추출 (motors.yaml SSOT).
+        tcp_link_name: chain 끝 link 이름. CLAUDE.md 의 project convention 으로 `tcp`.
         """
         urdf = URDF.load(str(urdf_path), load_meshes=False)
         self._build_chain(urdf, tcp_link_name, arm_joint_names)
@@ -260,9 +255,7 @@ class FkChain:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         ja = np.asarray(joint_angles, dtype=np.float64)
         if ja.shape[0] != self.n_arm:
-            raise ValueError(
-                f"joint_angles 길이 {ja.shape[0]} ≠ n_arm {self.n_arm}"
-            )
+            raise ValueError(f"joint_angles 길이 {ja.shape[0]} ≠ n_arm {self.n_arm}")
         lt = (
             np.zeros((self.n_arm, 3), dtype=np.float64)
             if link_trans is None
@@ -349,9 +342,7 @@ class FkChain:
         """
         a = np.asarray(actual_angles, dtype=np.float64)
         sag_at_actual = (
-            self.apply_gravity_sag(
-                a, k_stiff, sag_joint_indices, link_trans, link_rot
-            )
+            self.apply_gravity_sag(a, k_stiff, sag_joint_indices, link_trans, link_rot)
             - a
         )
         return a - sag_at_actual

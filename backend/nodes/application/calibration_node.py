@@ -35,15 +35,17 @@ from modules.calibration import capture_quality as cq
 from modules.calibration import thresholds as calib_thresholds
 from modules.calibration.calibration_cache import CalibrationCache
 from modules.calibration.intrinsic import IntrinsicCalibration, IntrinsicResult
-from modules.calibration.link_offsets import LinkOffsets
 from modules.calibration.loader import CalibrationData, HandEyeData, IntrinsicData
 from modules.calibration.persistence_models import (
     CalibrationCaptureRecord,
     CalibrationRunRecord,
     IntrinsicResultRecord,
 )
-from modules.calibration.result_models import IntrinsicResultData
-from modules.calibration.sag_offsets import SagOffsets
+from modules.calibration.result_models import (
+    IntrinsicResultData,
+    LinkOffsetResultData,
+    SagOffsetResultData,
+)
 from modules.calibration.storage_client import (
     CalibrationStorageClient,
     load_active_blocking,
@@ -134,22 +136,13 @@ class CalibrationNode(ApplicationNode):
             else {}
         )
         if link_rec is not None and link_rec.kind == "link_offset":
-            link_offsets = LinkOffsets(
-                trans={
-                    e.joint_id: np.array(e.trans_m, dtype=np.float64)
-                    for e in link_rec.result_data.offsets
-                },
-                rot={
-                    e.joint_id: np.array(e.rot_rad, dtype=np.float64)
-                    for e in link_rec.result_data.offsets
-                },
-            )
+            link_offsets = link_rec.result_data
         else:
-            link_offsets = LinkOffsets()
+            link_offsets = LinkOffsetResultData(offsets=[], method="empty")
         sag_offsets = (
-            SagOffsets(k_rad_per_m=dict(sag_rec.result_data.k_rad_per_m))
+            sag_rec.result_data
             if sag_rec is not None and sag_rec.kind == "sag"
-            else SagOffsets()
+            else SagOffsetResultData(k_rad_per_m={}, method="empty")
         )
         intrinsic = (
             IntrinsicData(

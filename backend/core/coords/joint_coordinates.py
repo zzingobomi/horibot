@@ -1,14 +1,3 @@
-"""모터 raw ↔ URDF rad 변환 단일 진입점. robot_id 차원 (multi_robot §4.5).
-
-싱글톤. **storage 모름** — calibration_node 가 owner, 부팅 시 `set_offsets` 로
-주입. docs/storage_layer.md §7 의 layer 분리:
-
-  Storage  ←  CalibrationService (calibration_node)  ─push→  JointCoordinates
-
-state: `dict[robot_id] -> dict[motor_id, offset_rad]`. 주입 전엔 empty
-(== offset 0, raw↔rad 변환 그대로).
-"""
-
 from __future__ import annotations
 
 import logging
@@ -22,6 +11,11 @@ logger = logging.getLogger(__name__)
 
 
 class JointCoordinates:
+    """모터 raw ↔ URDF rad 변환 단일 진입점 (joint_offset 자동 적용).
+
+    Process-wide Memory State (외부 자원 X — in-memory offset 상태).
+    """
+
     _instance: "JointCoordinates | None" = None
     _new_lock = threading.Lock()
 
@@ -38,19 +32,12 @@ class JointCoordinates:
             return
         self._initialized = True
         self._cache_lock = threading.Lock()
-        # 주입 전 empty — 부팅 시 storage 접근 X. calibration_node 가 set_offsets 호출.
         self._offsets_by_robot: dict[str, dict[int, float]] = {}
 
     def _resolve(self, robot_id: str | None) -> str:
         return robot_id if robot_id is not None else RobotRegistry().default_robot_id()
 
-    def set_offsets(
-        self, robot_id: str, offsets: dict[int, float]
-    ) -> None:
-        """calibration_node 가 storage 에서 load 후 호출. in-memory state 만 갱신.
-
-        commit/activate path (disk / storage write) 는 calibration_node 책임.
-        """
+    def set_offsets(self, robot_id: str, offsets: dict[int, float]) -> None:
         with self._cache_lock:
             self._offsets_by_robot[robot_id] = dict(offsets)
         if offsets:
@@ -91,7 +78,6 @@ class JointCoordinates:
         )
 
     def snapshot(self, robot_id: str | None = None) -> dict[int, float]:
-        """현재 메모리 상태 (HTTP 응답 / 진단용)."""
         rid = self._resolve(robot_id)
         with self._cache_lock:
             return dict(self._offsets_by_robot.get(rid, {}))

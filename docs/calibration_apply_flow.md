@@ -38,7 +38,7 @@ robot/calibration/<name>.npz  ─ 디스크 (git 추적)
 - [backend/core/coords/link_coordinates.py](../backend/core/coords/link_coordinates.py)
 - [backend/core/coords/sag_coordinates.py](../backend/core/coords/sag_coordinates.py)
 
-COMMIT 시 `commit_absolute()`가 디스크 *overwrite* + 메모리 reload를 한 트랜잭션으로 처리한다. 4종 (joint / link / sag / tool) 모두 같은 API + overwrite semantic — joint 만 cumulative 였던 시절은 [calibration_ux_rewrite.md §6.6](calibration_ux_rewrite.md) 의 Bug A fix 로 통일됨. 같은 PC에서는 즉시 반영되나 다른 머신은 `git pull` + 재시작 필요.
+COMMIT 시 `commit_absolute()`가 디스크 *overwrite* + 메모리 reload를 한 트랜잭션으로 처리한다. 3종 (joint / link / sag) 모두 같은 API + overwrite semantic — joint 만 cumulative 였던 시절은 [calibration_ux_rewrite.md §6.6](calibration_ux_rewrite.md) 의 Bug A fix 로 통일됨. 같은 PC에서는 즉시 반영되나 다른 머신은 `git pull` + 재시작 필요.
 
 자동 백업: 매 COMMIT 진입 시 [backup.py](../backend/modules/calibration/backup.py) 가 현재 live disk 를 `robot/instances/<id>/calibration/.history/<ts>_pre-commit/` 로 통째 snapshot. `CALIB_BACKUP_LIST` / `CALIB_BACKUP_RESTORE` 서비스 → frontend Rollback 탭에서 picker + 복원. `.history/` 는 git ignored (machine-local).
 

@@ -7,7 +7,6 @@ from pydantic import BaseModel
 
 from core.cache.joint_state_cache import JointStateCache
 from core.coords.joint_coordinates import JointCoordinates
-from core.coords.tool_coordinates import ToolCoordinates
 from core.robot.robot_registry import RobotRegistry
 from core.transport.device_node import DeviceNode
 from modules.calibration.applier import CalibrationApplier
@@ -47,14 +46,6 @@ from modules.kinematics.trajectory_runner import TrajectoryRunner
 from modules.motor.motor_config import load_motor_layout
 
 logger = logging.getLogger(__name__)
-
-# Tool offset — ToolCoordinates 싱글톤에서 로드 (별도 산출물 tool_offset.npz).
-# EE frame 기준 (link5 +x 방향) 의 (실제 그리퍼 끝점 - URDF EE) 벡터. 의미:
-#   실제 끝점 = URDF EE + R_be @ tool_offset_ee
-# 외부 (detect, task) 가 받는 좌표는 obj 의 진짜 base 좌표 (frame 무관), motion
-# service handler 가 cartesian 명령 진입 시점에만 단방향 변환 (target_urdf =
-# target_user - tool_base). kinematics / 캘 / BA 는 URDF frame 그대로 (캘 reference
-# frame 안정성 유지).
 
 
 class MotionNode(DeviceNode):
@@ -183,7 +174,6 @@ class MotionNode(DeviceNode):
             self._publish_cmd,
             _get_current_arm_joints,
             _fk,
-            self._tool_offset_base,
         )
         self.create_service(
             self.r(Service.MOTION_JOG_J),
@@ -245,32 +235,14 @@ class MotionNode(DeviceNode):
         CalibrationApplier.apply(self.robot_id, snapshot)
         super().start()
 
-    # ─── Tool offset 변환 유틸 ─────────────────────────────────
-    #
-    # _tool_offset_base(angles): 현재 자세에서 (실제 끝점 - URDF EE) 의 base frame 벡터.
-    # MoveJ 는 joint 명령이라 tool offset 무관. MoveL / MoveC / MoveP / ServoTcp /
-    # GetTCP 같이 *cartesian 좌표* 를 입출력하는 명령에만 적용.
-
-    def _tool_offset_base(self, angles: list[float]) -> np.ndarray:
-        """현재 자세의 R_be 로 tool_offset_ee 를 base frame 으로 변환.
-
-        반환: (3,) base frame 벡터. tool_offset.npz 비어있으면 [0,0,0].
-        """
-        tool_ee = ToolCoordinates().trans_m()
-        if not np.any(tool_ee):
-            return np.zeros(3, dtype=np.float64)
-        R_be, _ = self._kinematics.fk_to_matrix(angles)
-        return np.asarray(R_be) @ np.asarray(tool_ee)
-
     def _dispatch_cartesian(
         self, cmd: MotionCommand, data_dict: dict, *, verbose: bool
     ) -> str | None:
         """MoveL / MoveC / MoveP / ServoTcp 공통 chain.
 
-        - validate → angles fetch → FK + tool_offset → user frame → URDF frame
-          변환 → cmd.execute. 반환: 에러 메시지 (실패) 또는 None (성공).
-        - `verbose=True` (service caller — 단발) → tool_offset 변환 log + 시작 log.
-          `verbose=False` (topic stream — 50Hz) → log 생략 (스팸 방지).
+        validate → angles fetch → FK → cmd.execute. 반환: 에러 메시지 (실패)
+        또는 None (성공). `verbose=True` (service caller — 단발) 자리 시작 log,
+        `verbose=False` (topic stream — 50Hz) 자리 log 생략 (스팸 방지).
         """
         req_dict = {"data": data_dict}
         error = cmd.validate(req_dict)
@@ -285,31 +257,11 @@ class MotionNode(DeviceNode):
 
         try:
             tcp_pos_urdf = list(self._motion.get_tcp_pose(angles).position)
-            tool_base = self._tool_offset_base(angles)
         except Exception as e:
             return f"FK 오류: {e}"
 
-        user_pos_before = data_dict.get("position")
-        for key in ("position", "via", "end"):
-            if key in data_dict and data_dict[key] is not None:
-                data_dict[key] = (
-                    np.asarray(data_dict[key], dtype=float) - tool_base
-                ).tolist()
-        if "waypoints" in data_dict and data_dict["waypoints"] is not None:
-            data_dict["waypoints"] = [
-                (np.asarray(wp, dtype=float) - tool_base).tolist()
-                for wp in data_dict["waypoints"]
-            ]
-        req_urdf = {"data": data_dict}
-        if verbose:
-            logger.info(
-                "[tool_offset] %s tool_base=%s  user→urdf: %s → %s",
-                cmd.label, np.round(tool_base, 4).tolist(),
-                user_pos_before, data_dict.get("position"),
-            )
-
         try:
-            cmd.execute(req_urdf, angles, tcp_pos_urdf, self._runner)
+            cmd.execute(req_dict, angles, tcp_pos_urdf, self._runner)
             if verbose:
                 self.log("info", f"{cmd.label} 시작")
             return None
@@ -423,8 +375,7 @@ class MotionNode(DeviceNode):
         return callback
 
     def _make_jog_tcp_topic_subscriber(self, cmd: MotionCommand):
-        """JogTcp topic subscriber — 50Hz hot path. tool_offset 자리는 command 가
-        매 cycle 내부 처리 (실 끝점 적분 자리)."""
+        """JogTcp topic subscriber — 50Hz hot path."""
         last_err_ts = [0.0]
         last_err_msg = [""]
 

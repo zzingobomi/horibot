@@ -2,8 +2,8 @@
  * JogTcp — Cartesian human velocity jog (motion_taxonomy.md §Jog).
  *
  * Wire 자리 `MOTION_JOG_TCP_STREAM` topic publish (fire-and-forget, 50Hz). backend
- * JogTcpCommand 가 자기 process 의 joint_cache → fk + tool_offset 으로 *실 끝점
- * pose* fresh latch + 실 측정 dt 자리 SE(3) 적분 → IK → publish_cmd.
+ * JogTcpCommand 가 자기 process 의 joint_cache → fk 로 URDF EE pose fresh latch
+ * + 실 측정 dt 자리 SE(3) 적분 → IK → publish_cmd.
  *
  * SE(3) 적분 자리 backend SSOT (scipy.spatial.transform.Rotation) — frontend
  * Three.js / Python gamepad 자리 중복 회피. 동일 wire 자리 gamepad 자리도 사용.

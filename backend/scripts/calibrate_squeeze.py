@@ -111,9 +111,10 @@ def main():
     co.PRIOR_LINK_R_RAD = np.deg2rad(0.2)
 
     arm_cfgs = load_motor_layout(robot_id).arm
-    fk_chain = RobotRegistry().get_fk_chain(robot_id)
+    registry = RobotRegistry()
+    fk_chain = registry.get_fk_chain(robot_id)
     sag_arm_indices = [
-        m - 1 for m in RobotRegistry().get(robot_id).sag_joint_motor_ids
+        m - 1 for m in registry.get(robot_id).sag_joint_motor_ids
     ]
 
     # 전체 captures 로드 + drop 가능한 set 확인.

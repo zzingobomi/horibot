@@ -24,13 +24,15 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from modules.calibration.link_offsets import LinkOffsets
 from modules.calibration.loader import (
     CalibrationData,
     HandEyeData,
     IntrinsicData,
 )
-from modules.calibration.sag_offsets import SagOffsets
+from modules.calibration.result_models import (
+    LinkOffsetResultData,
+    SagOffsetResultData,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +45,28 @@ class CalibrationSnapshot:
     에 보관). joint/link/sag 는 caller 가 받아서 Coordinates 싱글톤에 push.
     """
     joint_offsets: dict[int, float] = field(default_factory=dict)
-    link_offsets: LinkOffsets = field(default_factory=LinkOffsets)
-    sag_offsets: SagOffsets = field(default_factory=SagOffsets)
+    link_offsets: LinkOffsetResultData = field(
+        default_factory=lambda: LinkOffsetResultData(offsets=[], method="empty")
+    )
+    sag_offsets: SagOffsetResultData = field(
+        default_factory=lambda: SagOffsetResultData(k_rad_per_m={}, method="empty")
+    )
     intrinsic: IntrinsicData | None = None
     hand_eye: HandEyeData | None = None
 
 
 class CalibrationCache:
+    """intrinsic + hand_eye snapshot in-memory 캐시.
+
+    Process-wide Memory State (외부 자원 X — in-memory snapshot 상태).
+    호출: `CalibrationCache()` 가 get-or-create singleton, 명시적 init/close X.
+    두 진입 path: (1) PC in-process push — calibration_node 가 부팅 시 + COMMIT
+    후 `set()` 호출. (2) 분산 consumer self-fill — `fetch_active(robot_id)` 가
+    storage 호출해 5종 snapshot 구성. intrinsic/hand_eye 만 self._by_robot 에
+    보관 (joint/link/sag offsets 는 Coordinates 싱글톤에 push).
+    Process Infrastructure (`.init()/.get()/.close()` 패턴) 와 대비됨.
+    """
+
     _instance: "CalibrationCache | None" = None
     _new_lock = threading.Lock()
 
@@ -137,22 +154,13 @@ class CalibrationCache:
             else {}
         )
         if link_rec is not None and link_rec.kind == "link_offset":
-            link_offsets = LinkOffsets(
-                trans={
-                    e.joint_id: np.array(e.trans_m, dtype=np.float64)
-                    for e in link_rec.result_data.offsets
-                },
-                rot={
-                    e.joint_id: np.array(e.rot_rad, dtype=np.float64)
-                    for e in link_rec.result_data.offsets
-                },
-            )
+            link_offsets = link_rec.result_data
         else:
-            link_offsets = LinkOffsets()
+            link_offsets = LinkOffsetResultData(offsets=[], method="empty")
         sag_offsets = (
-            SagOffsets(k_rad_per_m=dict(sag_rec.result_data.k_rad_per_m))
+            sag_rec.result_data
             if sag_rec is not None and sag_rec.kind == "sag"
-            else SagOffsets()
+            else SagOffsetResultData(k_rad_per_m={}, method="empty")
         )
         intrinsic = (
             IntrinsicData(
@@ -195,7 +203,7 @@ class CalibrationCache:
             "[%s] fetch_active 완료 — joint=%d link.trans=%d sag=%d intrinsic=%s hand_eye=%s",
             robot_id,
             len(joint_offsets),
-            len(link_offsets.trans),
+            len(link_offsets.offsets),
             len(sag_offsets.k_rad_per_m),
             "Y" if intrinsic is not None else "N",
             "Y" if hand_eye is not None else "N",

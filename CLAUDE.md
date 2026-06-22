@@ -11,6 +11,7 @@ Horibot — **OMX_F**(OpenMANIPULATOR-X 커스텀 변형) 6DOF 로봇팔 제어 
 D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로 (a) 라이브 포인트클라우드 발행 + (b) 다중 자세 캡처 → TSDF mesh 빌드까지 처리한다 (아키텍처 § D405 파이프라인).
 
 세부 주제별 문서는 [docs/](docs/) 디렉토리:
+- [architecture_review_protocol.md](docs/architecture_review_protocol.md) — **현재 진행 phase: 아키텍처 점검**. 기능 구현 phase 끝, 사용자가 코드 한 줄씩 읽으며 "이거 왜 이렇게 짰어?" 질문 + 의도 vs 임시 판별 framework + 분기 (의도→정당화 명문화+통일 / 임시→정석 수정+통일). **새 세션 자리 사용자가 검토 톤 던지면 본 protocol 진입**
 - [hardware.md](docs/hardware.md) — 모터/컨트롤러/전원 토폴로지
 - [operations.md](docs/operations.md) — Pi/IP/OS, pyrealsense2 빌드 노트는 [pyrealsense2-build-guide.md](docs/pyrealsense2-build-guide.md)
 - [calibration_workflow.md](docs/calibration_workflow.md) — 캡처 절차 + 결과 해석 가이드
@@ -205,13 +206,25 @@ PEP 735 `[dependency-groups]`로 역할별 분리:
 
 ### 노드 간 공유 싱글톤들
 
-- `ZenohSession` — 프로세스당 하나의 Zenoh 세션.
+두 종류의 process-wide singleton 패턴을 사용한다. 호출 방식이 다른 것은 의도적으로 유지되고 있는 패턴 — 외부 자원은 시작/종료 시점이 명시되어야 하고 (`init() + get() + close()`), 순수 메모리 상태는 lazy `__new__` trick 으로 충분 (`Foo()` 가 get-or-create).
+
+**Process Infrastructure** — 외부 자원 보유 + 명시적 lifecycle. `init() + get() + close()` 패턴:
+
+- `ZenohSession` ([backend/core/transport/zenoh_session.py](backend/core/transport/zenoh_session.py)) — 프로세스당 하나의 Zenoh 세션. main.py 가 host yaml 의 zenoh cfg 로 init.
+- `StorageRegistry` ([backend/modules/storage/registry.py](backend/modules/storage/registry.py)) — RDB connection + ObjectStore + Alembic migration (`upgrade head`). main.py 가 application_nodes 에 storage 있을 때 host yaml 의 storage URI 로 init.
+
+**Process-wide Memory State** — 외부 자원 없음. `Foo()` 호출이 get-or-create (`__new__` trick + lazy init), 명시적 init/close X. 프로세스 끝까지 살아있음:
+
+- `RobotRegistry` ([backend/core/robot/robot_registry.py](backend/core/robot/robot_registry.py)) — `robot/robots.yaml` 의 single source of truth. `get(robot_id)` 로 `RobotConfig` (모든 path / 설정), `get_kinematics(robot_id)` / `get_motor_backend(robot_id)` / `get_camera_capture(robot_id)` factory (per-robot 인스턴스 캐시). `default()` / `default_robot_id()` 가 N=1 편의.
 - `JointStateCache` ([backend/core/cache/joint_state_cache.py](backend/core/cache/joint_state_cache.py)) — `MOTOR_STATE_JOINT`를 한 번만 구독, `get_joint_angles_rad(arm_cfgs)`로 라디안 단위 최신 조인트각 노출 (raw→rad 시 joint_offset 자동 적용 — § 캘리브레이션 적용). motion/task/detector/calibration/scene3d/reconstruction가 공유.
 - `FrameCache` ([backend/core/cache/frame_cache.py](backend/core/cache/frame_cache.py)) — `CAMERA_STREAM_RAW`(JPEG) + `CAMERA_STATE_STATUS` 구독, `get_frame()`이 BGR ndarray 반환. detector/calibration이 토픽 기반으로 동작 → 카메라가 다른 머신에 있어도 동일 코드.
-- `RealsenseCapture` ([backend/modules/camera/adapters/realsense_capture.py](backend/modules/camera/adapters/realsense_capture.py)) — `CameraCapture` Protocol ([modules/camera/capture.py](backend/modules/camera/capture.py)) 만족하는 RealSense wrapper (내부 `RealsenseDriver` ([backend/modules/camera/adapters/realsense_driver.py](backend/modules/camera/adapters/realsense_driver.py)) 싱글톤이 raw SDK 담당 — motor 의 `DynamixelBackend`/`DynamixelDriver` 와 동형). pyrealsense2 파이프라인 1개 공유. **카메라 호스트에서만 살아 있음**. multi_robot_architecture.md §3.4.
-- `get_default_kinematics()` ([backend/modules/kinematics/registry.py](backend/modules/kinematics/registry.py)) — facade. 내부적으로 `RobotRegistry().get_kinematics(default)` 호출 → `SagCorrectedKinematics(PybulletKinematics(urdf), link, sag)` 체인 반환. `Kinematics` Protocol 만족 (`fk` / `ik` / `fk_to_matrix` / `joint_limits` / `dof` / `tcp_link_name`). **link_offset 패치된 URDF** 는 `PybulletKinematics` 가 로드, **sag** 보정은 `SagCorrectedKinematics` Decorator 가 양방향 적용 ([docs/calibration_apply_flow.md](docs/calibration_apply_flow.md), [docs/multi_robot_architecture.md](docs/multi_robot_architecture.md) §3.1-3.2).
-- `RobotRegistry` ([backend/core/robot/robot_registry.py](backend/core/robot/robot_registry.py)) — `robot/robots.yaml` 의 single source of truth. `get(robot_id)` 로 `RobotConfig` (모든 path / 설정), `get_kinematics(robot_id)` / `get_motor_backend(robot_id)` / `get_camera_capture(robot_id)` factory (per-robot 인스턴스 캐시). `default()` / `default_robot_id()` 가 N=1 편의.
-- `*Coordinates` 싱글톤 — `JointCoordinates` / `LinkCoordinates` / `SagCoordinates` ([backend/core/](backend/core/)). 각각 npz 1회 로드 후 메모리 캐시. raw↔rad / URDF patch / sag stiffness를 노출.
+- `*Coordinates` — `JointCoordinates` / `LinkCoordinates` / `SagCoordinates` ([backend/core/coords/](backend/core/coords/)). storage 모름 — calibration_node 가 fetch 후 `set_offsets` 로 in-memory 주입. raw↔rad / URDF patch / sag stiffness 노출.
+- `CalibrationCache` ([backend/modules/calibration/calibration_cache.py](backend/modules/calibration/calibration_cache.py)) — intrinsic + hand_eye snapshot in-memory. PC in-process push + 분산 consumer self-fill 두 경로.
+
+**Other** — 위 두 분류에 안 맞는 자리:
+
+- `RealsenseCapture` ([backend/modules/camera/adapters/realsense_capture.py](backend/modules/camera/adapters/realsense_capture.py)) — `CameraCapture` Protocol ([modules/camera/capture.py](backend/modules/camera/capture.py)) 만족하는 RealSense wrapper. 카메라 hardware 잡지만 **per-robot 인스턴스** (singleton X, RobotRegistry factory). 내부 `RealsenseDriver` ([backend/modules/camera/adapters/realsense_driver.py](backend/modules/camera/adapters/realsense_driver.py)) 가 pyrealsense2 파이프라인 1개를 process singleton 으로 공유 — motor 의 `DynamixelBackend`/`DynamixelDriver` 와 동형. **카메라 호스트에서만 살아 있음**. multi_robot_architecture.md §3.4.
+- `get_default_kinematics()` ([backend/modules/kinematics/registry.py](backend/modules/kinematics/registry.py)) — facade (싱글톤 자체 X). 내부적으로 `RobotRegistry().get_kinematics(default)` 호출 → `SagCorrectedKinematics(PybulletKinematics(urdf), link, sag)` 체인 반환. `Kinematics` Protocol 만족 (`fk` / `ik` / `fk_to_matrix` / `joint_limits` / `dof` / `tcp_link_name`). **link_offset 패치된 URDF** 는 `PybulletKinematics` 가 로드, **sag** 보정은 `SagCorrectedKinematics` Decorator 가 양방향 적용 ([docs/calibration_apply_flow.md](docs/calibration_apply_flow.md), [docs/multi_robot_architecture.md](docs/multi_robot_architecture.md) §3.1-3.2).
 
 ### Motion 파이프라인 — 4 계층 motion primitive
 

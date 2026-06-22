@@ -1,21 +1,20 @@
-"""자세 의존 중력 sag stiffness 의 런타임 진입점.
-
-[JointCoordinates](backend/core/coords/joint_coordinates.py) 와 같은 패턴 —
-storage 모름. calibration_node 가 `set_offsets` 로 주입. docs/storage_layer.md §7.
-"""
-
 from __future__ import annotations
 
 import logging
 import threading
 
 from core.robot.robot_registry import RobotRegistry
-from modules.calibration.sag_offsets import SagOffsets
+from modules.calibration.result_models import SagOffsetResultData
 
 logger = logging.getLogger(__name__)
 
 
 class SagCoordinates:
+    """자세 의존 중력 sag stiffness 의 런타임 진입점.
+
+    Process-wide Memory State (외부 자원 X — in-memory stiffness 상태).
+    """
+
     _instance: "SagCoordinates | None" = None
     _new_lock = threading.Lock()
 
@@ -32,32 +31,34 @@ class SagCoordinates:
             return
         self._initialized = True
         self._cache_lock = threading.Lock()
-        self._offsets_by_robot: dict[str, SagOffsets] = {}
+        self._offsets_by_robot: dict[str, SagOffsetResultData] = {}
 
     def _resolve(self, robot_id: str | None) -> str:
         return robot_id if robot_id is not None else RobotRegistry().default_robot_id()
 
-    def _empty(self) -> SagOffsets:
-        return SagOffsets(k_rad_per_m={})
+    def _empty(self) -> SagOffsetResultData:
+        return SagOffsetResultData(k_rad_per_m={}, method="empty")
 
-    def set_offsets(self, robot_id: str, offsets: SagOffsets) -> None:
-        """calibration_node 가 storage 에서 load 후 주입."""
+    def set_offsets(self, robot_id: str, offsets: SagOffsetResultData) -> None:
         with self._cache_lock:
-            self._offsets_by_robot[robot_id] = SagOffsets(
-                k_rad_per_m=dict(offsets.k_rad_per_m)
+            self._offsets_by_robot[robot_id] = SagOffsetResultData(
+                k_rad_per_m=dict(offsets.k_rad_per_m),
+                method=offsets.method,
             )
         if not offsets.is_empty():
             ks = ", ".join(
-                f"J{jid}={k:+.4f}"
-                for jid, k in sorted(offsets.k_rad_per_m.items())
+                f"J{jid}={k:+.4f}" for jid, k in sorted(offsets.k_rad_per_m.items())
             )
             logger.info(f"sag_offsets[{robot_id}] 적용: {ks}")
 
-    def snapshot(self, robot_id: str | None = None) -> SagOffsets:
+    def snapshot(self, robot_id: str | None = None) -> SagOffsetResultData:
         rid = self._resolve(robot_id)
         with self._cache_lock:
             offsets = self._offsets_by_robot.get(rid, self._empty())
-            return SagOffsets(k_rad_per_m=dict(offsets.k_rad_per_m))
+            return SagOffsetResultData(
+                k_rad_per_m=dict(offsets.k_rad_per_m),
+                method=offsets.method,
+            )
 
     def get_k(self, jid: int, robot_id: str | None = None) -> float:
         rid = self._resolve(robot_id)

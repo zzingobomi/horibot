@@ -1,68 +1,109 @@
-# Horibot robot instance registry.
-# multi_robot_architecture.md §4.3 의 single source of truth.
-# 각 entry 의 key 가 robot_id (instance identifier).
-# Paths (urdf/calibration/...) 는 RobotRegistry 가 robot_type / robot_id 로 자동 조립
-# — 매 entry 마다 적지 않음 (§4.3).
+# ─── 필드 spec ──────────────────────────────────────────────────────
+#
+# type
+#   Robot 타입 폴더명.
+#   robot/<type>/ 디렉터리가 존재해야 한다.
+#
+# enabled
+#   true | false.
+#   false 이면 런타임에서 해당 robot 을 무시한다.
+#
+# default
+#   true | false.
+#   기본적으로 정확히 1개의 robot 만 지정하는 것을 권장한다.
+#   생략 시 첫 번째 enabled robot 이 기본값으로 선택된다.
+#
+# capabilities
+#   Robot 이 지원하는 기능 집합 (부분집합 형태).
+#
+#     move
+#       UI 의 Move 모드 제공.
+#
+#     calibrate
+#       UI 의 Calibrate 모드 제공.
+#
+#     rgbd
+#       RGBD 카메라 보유.
+#       Point Cloud 생성 및 Scan 기능 사용 가능.
+#
+#     gamepad
+#       게임패드 기반 Cartesian Jog 지원.
+#       일반적으로 6DOF 제어가 자연스러운 robot 에만 사용.
+#
+# motor_backend
+#   모터 SDK / 통신 프로토콜 선택.
+#   값: dynamixel | feetech
+#
+# kinematics_backend
+#   Forward / Inverse Kinematics 계산 엔진.
+#   값: pybullet
+#
+# camera_backend
+#   카메라 캡처 구현체.
+#   값: realsense | opencv
+#
+# pose_recommend_strategy
+#   Hand-Eye 캘리브레이션용 추천 자세 생성 전략.
+#
+#     geometry
+#       6DOF robot 용.
+#       보드 주변 sphere-shell anchor 를 생성하고
+#       IK 를 사용해 추천 자세를 계산한다.
+#
+#     joint_perturbation
+#       5DOF robot 용.
+#       현재 자세 주변에서 joint perturbation 을 수행하고
+#       FK 기반으로 추천 자세를 생성한다.
+#
+# wrist_roll_motor_id
+#   Hand-Eye 캘리브레이션 시 wrist-roll 동작에 사용할 모터 ID.
+#   관측성(observability) 계산에도 사용된다.
+#   1-based ID 이며 실제 모터 라벨과 동일하다.
+#
+# sag_joint_motor_ids
+#   자세 의존 중력 sag 모델에 포함할 모터 ID 목록.
+#   일반적으로 shoulder / elbow 등 중력 부하가 큰 관절만 지정한다.
+#   1-based ID 이며 실제 모터 라벨과 동일하다.
+#
+# base_pose
+#   World frame 기준 robot base 위치와 방향.
+#   x, y, z 는 meter, yaw_deg 는 degree 단위를 사용한다.
+#   여러 robot 을 동시에 배치할 때 상대 위치를 정의한다.
 
 robots:
   omx_f_0:
     type: omx_f
-    # 사용자 (2026-06-14) — SO-101 통합 작업 중 OMX 일시 OFF.
-    # 기존 OMX 모터 Pi (host_pi_motor) 의 OpenRB-150 자리에 Waveshare 보드 +
-    # SO-101 결선. OMX 모터 디바이스 detach. 통합 검증 후 다시 enabled=true.
     enabled: false
-    capabilities: [move, calibrate]   # USB cam (UVC) — RGBD 아님. D405 는 so101_6dof_0 로 이전.
+    capabilities: [move, calibrate]
     motor_backend: dynamixel
     kinematics_backend: pybullet
-    camera_backend: opencv    # USB UVC 카메라 (distributed_topology.md §1)
-    # Hand-Eye 캘 추천 자세 전략. 5DOF (wrist yaw 없음) 라 임의 R IK 못 풀림 →
-    # joint space perturbation (FK only). geometry (6DOF anchor + IK) 는 SO-101 에서.
+    camera_backend: opencv
     pose_recommend_strategy: joint_perturbation
-    # Hand-Eye observability 의 wrist roll 모터 ID (1-based, motor 라벨과 일치).
-    # OMX-F: M5 (5DOF 의 마지막 = wrist roll).
     wrist_roll_motor_id: 5
-    # 자세 의존 중력 sag 를 모델링할 joint 모터 ID (1-based, 중력 부하 큰 관절).
-    # OMX-F: M2(shoulder) / M3(elbow). 이 값이 sag 모델 SSOT — bundle_adjust /
-    # hand_eye / sag_corrected 가 RobotConfig.sag_joint_motor_ids 로 읽음.
     sag_joint_motor_ids: [2, 3]
-    base_pose:                   # World frame 의 robot base 위치 (m, x/y/z).
+    base_pose:
       x: 0.0
       y: 0.0
       z: 0.0
       yaw_deg: 0.0
 
-  # SO-101 6DOF mod (ts_flake wrist yaw, MakerWorld 1913316 + d2lrobot 리포 CAD).
-  # 모터 7개 (M1~M7, ID 1~7). shoulder M2 = STS3250 (50kg·cm), 나머지 = STS3215.
-  # 1차 통합 (2026-06-14): motor/motion 만, camera 제외 (D405 patch 후속 session).
-  # so101_6dof_plan.md §3 (모터 배치) + §6 (백엔드 통합 작업 포인트) 참조.
   so101_6dof_0:
     type: so101_6dof
-    # default robot 결정 위해 enabled=true (RobotRegistry.default(),
-    # MotionNode 부팅 시 get_default_kinematics 호출 자리).
-    # OMX OFF 상태 (omx_f_0.enabled=false) → so101_6dof_0 가 유일한 enabled = default.
-    # 결선 안 된 단계 부팅 시: MotorNode connect 실패 log 만 (motor_node.py:91-99),
-    # 나머지 노드 정상. 결선 후 backend 재시작 → MOTOR_STATE_JOINT publish.
     enabled: true
-    capabilities: [move, calibrate, gamepad, rgbd]   # gamepad = SO-101 6DOF 전용 (mini pendant). rgbd = D405 보유.
-    motor_backend: feetech            # ⭐ FeetechBackend (STS3215/3250 + scservo_sdk)
+    capabilities: [move, calibrate, gamepad, rgbd]
+    motor_backend: feetech
     kinematics_backend: pybullet
-    camera_backend: realsense         # D405. 1차엔 camera_node 안 띄움 (host_pi_motor 에 camera device_node 없음)
-    # 6DOF — wrist yaw 있어 임의 R IK 풀림. SO-101 빌드 가이드의 next pose 추천 전략.
+    camera_backend: realsense
     pose_recommend_strategy: geometry
-    # Hand-Eye observability 의 wrist roll 모터 ID (1-based, motor 라벨과 일치).
-    # SO-101 6DOF: M6 (6DOF 의 마지막 = wrist roll).
     wrist_roll_motor_id: 6
-    # 자세 의존 중력 sag joint 모터 ID (1-based). SO-101: M2(STS3250 shoulder) /
-    # M3(elbow) — 중력 부하 큰 두 관절. 5축 OMX 와 같은 코드, 값만 robots.yaml 로 분기.
     sag_joint_motor_ids: [2, 3]
-    # OMX 우측에 배치 (World frame, m).
     base_pose:
       x: 0.4
       y: 0.0
       z: 0.0
       yaw_deg: 0.0
 
-# Phase 2+ — Cooperation 영역 (so101 도착 시 활성화).
+# Phase 2+ — Cooperation 영역.
 # cooperation:
 #   pairs:
 #     - [omx_f_0, so101_6dof_0]   # robot-to-robot extrinsic 적용 pair

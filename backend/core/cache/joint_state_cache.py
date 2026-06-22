@@ -1,11 +1,3 @@
-"""MOTOR_STATE_JOINT 토픽 구독 + raw → URDF rad 변환 캐시. robot_id 차원 도입.
-
-multi_robot_architecture.md §4.5 참조. state: `dict[robot_id] -> {raw, loads}`.
-
-offset 적용은 [JointCoordinates](joint_coordinates.py) 가 담당 — 본 클래스는 "최신
-raw 보관 + URDF rad 환산 dispatch" 책임만.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -21,7 +13,10 @@ if TYPE_CHECKING:
 
 
 class JointStateCache:
-    """싱글톤 — 내부 state 는 dict[robot_id]. subscribe() 가 robot 별 토픽 구독."""
+    """MOTOR_STATE_JOINT 토픽 구독 + raw → URDF rad 캐시 (joint_offset 자동 적용).
+
+    Process-wide Memory State (외부 자원 X — Zenoh subscriber + dict 상태).
+    """
 
     _instance: "JointStateCache | None" = None
     _lock = threading.Lock()

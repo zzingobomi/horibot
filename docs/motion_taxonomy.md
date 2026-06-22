@@ -98,13 +98,13 @@ ABB 의 EGM (Externally Guided Motion) / KUKA 의 RSI (Robot Sensor Interface) /
 | **`SpeedJ` / `SpeedTcp` 자리 폐기** | Ruckig velocity stream + `_velocity_loop` + `Synchronization.Phase` fix 자리 + cartesian Ruckig 자리 dead code 자리 전체 제거. `_tcp_twist_to_joint_vel` callback 자리도 제거. | ✅ |
 | **gamepad_node** | `MOTION_SPEED_TCP` / `MOTION_SPEED_J` service call → `MOTION_JOG_TCP_STREAM` / `MOTION_JOG_J_STREAM` topic publish. 50Hz service RTT 회피. | ✅ |
 | **Frontend** | `ServoJ.tsx` / `ServoTcp.tsx` (Three.js Quaternion 적분 자리) + `SpeedJ.tsx` / `SpeedTcp.tsx` 자리 4 자리 모두 폐기 → `JogJ.tsx` / `JogTcp.tsx` 2 자리. velocity / twist 만 publish — SE(3) 적분 자리 backend SSOT. | ✅ |
-| **`motion_node` refactor** | `_dispatch_cartesian` 공통 chain 추출 → MoveL/MoveC/MoveP/ServoTcp service 자리 같은 chain. JogTcp 자리 자체 SE(3) 적분 자리 + tool_offset 매 cycle 자리. | ✅ |
+| **`motion_node` refactor** | `_dispatch_cartesian` 공통 chain 추출 → MoveL/MoveC/MoveP/ServoTcp service 자리 같은 chain. JogTcp 자리 자체 SE(3) 적분. | ✅ |
 | **mock backend boot fix** | `main.py` 의 instance start 순서 reorder — application_nodes 먼저, device_nodes 다음. 기존엔 motion_node 가 storage retry deadlock 으로 mock backend 90s timeout. | ✅ |
 
 **왜 부드러운가** (jog_drift_tuning.md 참조):
 - 매 publish 가 *기하학적으로 정확한 절대 target* → ramp 중 옆으로 새는 자리 0.
 - 50Hz × ~2mm/cycle = effective 100 mm/s 인데 cycle 당 step 이 작아 모터 trapezoidal profile 이 *cycle 안에 도달 못 함* → continuous chase → 부드러움.
-- backend fresh latch (joint_cache → fk + tool_offset) — 인코더 - ref 누적 drift 차단.
+- backend fresh latch (joint_cache → fk) — 인코더 - ref 누적 drift 차단.
 
 **SSOT 자리**: SE(3) 적분 자리 backend 1자리 (scipy `Rotation`). frontend Three.js / Python gamepad 자리 중복 없음. cross-process safe — frontend 가 모르는 `joint_offset` 자리 backend SSOT.
 
@@ -144,7 +144,7 @@ Phase 1 의 6 primitives + gamepad pendant 로 SO-101 캘 / 일반 운용 진행
 | `MoveP` | Caller 제공 waypoint list 로 cartesian spline trajectory-planned 이동. |
 | `ServoTcp` | *외부 controller* (RL / Vision servo) 가 자기가 계산한 *절대 TCP target* 을 빠른 rate (50Hz+) 로 스트림 → server direct IK + publish (planner 우회). UR `servoc` / EGM / RSI Cartesian 자리 정석. caller=human jog 자리 X (그건 `JogTcp`). |
 | `ServoJ` | *외부 controller* (RL replay / motion capture remap) 가 자기가 계산한 *절대 joint target* 을 빠른 rate 로 스트림 → server direct publish (IK 불요). UR `servoj` / KUKA RSI joint 자리 정석. |
-| `JogTcp` | *Human / gamepad* 가 *velocity twist* (linear+angular+frame) 보냄 → backend 가 자기 process joint_cache → fk + tool_offset 으로 *실 끝점 pose* fresh latch + 실 dt SE(3) 적분 → IK → publish_cmd. LeRobot delta-pose 패턴, scipy `Rotation` SSOT. |
+| `JogTcp` | *Human / gamepad* 가 *velocity twist* (linear+angular+frame) 보냄 → backend 가 자기 process joint_cache → fk 로 URDF EE pose fresh latch + 실 dt SE(3) 적분 → IK → publish_cmd. LeRobot delta-pose 패턴, scipy `Rotation` SSOT. |
 | `JogJ` | *Human / gamepad* 가 *joint velocity* 만 보냄 → backend 가 joint_cache (joint_offset 적용 URDF rad) 에서 ref latch + 실 dt 적분 → publish_cmd. IK 불요. cross-process safe (joint_offset SSOT = backend). |
 
 ## gamepad mini 펜던트 — primitive 매핑

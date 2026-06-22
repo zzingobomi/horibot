@@ -1,4 +1,4 @@
-"""캘 5종의 domain Pydantic 모델 — *계산 결과* shape.
+"""캘 5종의 domain Pydantic 모델 — *계산 결과* shape + runtime in-memory 표현.
 
 본 파일은 BA / 캡처 알고리즘이 만들어내는 type. 같은 도메인의 *영속화 row shape*
 는 `persistence_models.py` 의 `CalibrationResultRecord` (discriminated union) 가
@@ -8,9 +8,16 @@
 docs/storage_layer.md §6 — 캘 5종의 3계층 (Result/Evidence/Artifact) 매핑.
 
 field name 은 기존 npz key 컨벤션을 따름 — 마이그레이션 스크립트가 1:1 매핑.
+
+Runtime 사용 — LinkCoordinates / SagCoordinates 가 본 모델을 in-memory state 로
+직접 보유 (storage_layer 도입 전 dataclass 가 옛 layer, storage 후 본 Pydantic
+모델이 SSOT — 2026-06-22 정리). helper 메서드 (`get_k` / `get_trans` / 등) 가
+runtime 호출 자리 자리 사용.
 """
 
 from __future__ import annotations
+
+import numpy as np
 
 from core.transport.messages.base import StrictModel
 
@@ -52,6 +59,12 @@ class JointOffsetResultData(StrictModel):
     offsets: dict[int, float]
     method: str
 
+    def get(self, motor_id: int) -> float:
+        return float(self.offsets.get(motor_id, 0.0))
+
+    def is_empty(self) -> bool:
+        return not self.offsets
+
 
 # ─── link_offset ──────────────────────────────────────────────
 
@@ -68,6 +81,41 @@ class LinkOffsetResultData(StrictModel):
     offsets: list[LinkOffsetEntry]
     method: str
 
+    def get_trans(self, jid: int) -> np.ndarray:
+        for e in self.offsets:
+            if e.joint_id == jid:
+                return np.array(e.trans_m, dtype=np.float64)
+        return np.zeros(3, dtype=np.float64)
+
+    def get_rot(self, jid: int) -> np.ndarray:
+        for e in self.offsets:
+            if e.joint_id == jid:
+                return np.array(e.rot_rad, dtype=np.float64)
+        return np.zeros(3, dtype=np.float64)
+
+    def is_empty(self) -> bool:
+        return not self.offsets
+
+    @classmethod
+    def from_dicts(
+        cls,
+        trans: dict[int, np.ndarray],
+        rot: dict[int, np.ndarray],
+        method: str,
+    ) -> "LinkOffsetResultData":
+        """{jid: (3,) ndarray} 두 dict → LinkOffsetResultData. trans / rot 의
+        joint_id union 으로 entry list 생성, 한쪽에만 있으면 다른 쪽은 zeros."""
+        ids = sorted(set(trans.keys()) | set(rot.keys()))
+        entries = [
+            LinkOffsetEntry(
+                joint_id=jid,
+                trans_m=list(trans.get(jid, np.zeros(3))),
+                rot_rad=list(rot.get(jid, np.zeros(3))),
+            )
+            for jid in ids
+        ]
+        return cls(offsets=entries, method=method)
+
 
 # ─── sag ──────────────────────────────────────────────────────
 
@@ -77,6 +125,16 @@ class SagOffsetResultData(StrictModel):
 
     k_rad_per_m: dict[int, float]
     method: str
+
+    def get_k(self, jid: int) -> float:
+        return float(self.k_rad_per_m.get(jid, 0.0))
+
+    def as_array_for_joints(self, joint_ids: list[int]) -> np.ndarray:
+        """주어진 joint id 순서로 k 값 배열 반환. 없으면 0."""
+        return np.array([self.get_k(j) for j in joint_ids], dtype=np.float64)
+
+    def is_empty(self) -> bool:
+        return not self.k_rad_per_m
 
 
 # ─── union alias ───────────────────────────────────────────────

@@ -69,7 +69,7 @@ class CalibrationApplier:
                     logger.info(
                         "[%s] PybulletKinematics 첫 init 완료 (link_offsets %d joints)",
                         robot_id,
-                        len(snapshot.link_offsets.trans),
+                        len(snapshot.link_offsets.offsets),
                     )
                 else:
                     logger.debug(

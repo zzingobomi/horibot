@@ -264,7 +264,7 @@ def test_jog_j_raises_when_cache_empty():
 
 
 def test_jog_tcp_first_publish_latches_from_fk():
-    """JogTcpCommand 첫 publish 자리 fk + tool_offset → fresh latch + IK + publish."""
+    """JogTcpCommand 첫 publish 자리 fk → fresh latch + IK + publish."""
     cmds: list[list[float]] = []
     solve_calls: list[tuple] = []
     fk_pos = np.array([0.3, 0.0, 0.4])
@@ -272,9 +272,6 @@ def test_jog_tcp_first_publish_latches_from_fk():
 
     def fk(angles):
         return fk_pos, fk_quat
-
-    def tool_offset_base(angles):
-        return np.zeros(3)
 
     def solve_servo(position, quaternion, angles):
         solve_calls.append((tuple(position), tuple(quaternion), tuple(angles)))
@@ -285,7 +282,6 @@ def test_jog_tcp_first_publish_latches_from_fk():
         lambda a: cmds.append(list(a)),
         lambda: [0.0] * 6,
         fk,
-        tool_offset_base,
     )
     runner, _, _ = _make_runner(n=6)
     try:
@@ -314,7 +310,6 @@ def test_jog_tcp_linear_base_frame_integrates():
         lambda a: cmds.append(list(a)),
         lambda: [0.0] * 6,
         lambda a: (np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 0.0, 1.0])),
-        lambda a: np.zeros(3),
     )
     runner, _, _ = _make_runner(n=6)
     try:
@@ -348,7 +343,6 @@ def test_jog_tcp_validates_input():
         lambda a: None,
         lambda: [0.0] * 6,
         lambda a: (np.zeros(3), np.array([0, 0, 0, 1])),
-        lambda a: np.zeros(3),
     )
     assert cmd.validate({"data": {}}) is not None
     assert cmd.validate({"data": {"linear": [0, 0, 0]}}) is not None
@@ -379,7 +373,6 @@ def test_jog_tcp_ik_failure_rolls_back_ref():
         lambda a: None,
         lambda: [0.0] * 6,
         lambda a: (fk_pos, fk_quat),
-        lambda a: np.zeros(3),
     )
     runner, _, _ = _make_runner(n=6)
     try:

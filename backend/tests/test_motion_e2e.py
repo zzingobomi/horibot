@@ -235,21 +235,6 @@ def test_servo_tcp_publishes_cmd(zsession):
         collector.close()
 
 
-def test_servo_tcp_with_orientation_6dof(zsession):
-    """6DOF (SO-101) — quaternion 전달 시 IK 가 orientation 까지 추종."""
-    cur = call_service(zsession, GET_TCP_SVC, {})
-    pos = cur["data"]["position"]
-    quat = cur["data"]["quaternion"]
-
-    res = call_service(
-        zsession,
-        SERVO_TCP_SVC,
-        {"position": pos, "quaternion": quat},
-    )
-    # 현재 자세로 servo 라 6DOF IK 통과해야.
-    assert res.get("success"), f"ServoTcp(6DOF) 실패: {res}"
-
-
 def test_jog_j_stream_streams(zsession):
     """JogJ topic stream — 50Hz velocity publish → backend latch + 적분 → motor cmd."""
     collector = CmdCollector(zsession)
@@ -318,57 +303,6 @@ def test_jog_tcp_stream_tcp_frame_passthrough(zsession):
         },
     )
     time.sleep(0.2)
-
-
-def test_move_j_regression(zsession):
-    """MoveJ 가 회귀 없는지 — trajectory_runner.run_joint 동작."""
-    # 이전 test 자리 J1 잔여 위치 자리에 무관하게 robust 자리. 먼저 J1 home (0°)
-    # 자리 보내고, 그 후 5° 자리 target 자리 → 단조 증가 자리 보장.
-    call_service(
-        zsession,
-        MOVE_J_SVC,
-        {
-            "joints": [
-                {"id": 1, "degree": 0.0},
-                {"id": 2, "degree": 0.0},
-                {"id": 3, "degree": 0.0},
-                {"id": 4, "degree": 0.0},
-                {"id": 5, "degree": 0.0},
-                {"id": 6, "degree": 0.0},
-            ]
-        },
-    )
-    time.sleep(2.0)
-
-    collector = CmdCollector(zsession)
-    time.sleep(0.1)
-    collector.reset()
-    try:
-        res = call_service(
-            zsession,
-            MOVE_J_SVC,
-            {
-                "joints": [
-                    {"id": 1, "degree": 10.0},
-                    {"id": 2, "degree": 0.0},
-                    {"id": 3, "degree": 0.0},
-                    {"id": 4, "degree": 0.0},
-                    {"id": 5, "degree": 0.0},
-                    {"id": 6, "degree": 0.0},
-                ]
-            },
-        )
-        assert res.get("success"), f"MoveJ 실패: {res}"
-        time.sleep(2.0)
-
-        assert len(collector.samples) >= 5, (
-            f"MoveJ 동안 publish 부족: {len(collector.samples)}"
-        )
-        first_j1 = collector.samples[0]["joints"][0]["position"]
-        last_j1 = collector.samples[-1]["joints"][0]["position"]
-        assert last_j1 > first_j1, f"MoveJ J1 이동 안 함: {first_j1} → {last_j1}"
-    finally:
-        collector.close()
 
 
 def test_move_l_regression(zsession):

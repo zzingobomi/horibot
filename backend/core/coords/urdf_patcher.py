@@ -25,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-from modules.calibration.link_offsets import LinkOffsets
+from modules.calibration.result_models import LinkOffsetResultData
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ def _fmt_xyz(v: np.ndarray) -> str:
 
 def patch_urdf_text(
     source_urdf_path: str | Path,
-    offsets: LinkOffsets,
+    offsets: LinkOffsetResultData,
     joint_id_map: dict[str, int] | None = None,
 ) -> str:
     """원본 URDF 파일을 읽어 link_offsets patch 적용한 URDF 텍스트 반환.
@@ -50,23 +50,23 @@ def patch_urdf_text(
     시점에 원본 mesh 경로 lazy resolve 위해, storage_layer.md §13.5).
 
     multi-robot 컨벤션 — URDF joint naming = `joint{N}` (1-indexed, arm DOF 만큼).
-    `joint_id_map` 미주입 시 LinkOffsets 의 id key 가 SSOT — omx_f (5DOF) /
-    so101_6dof (6DOF) 등 robot type 무관 자동 동작. tcp_joint / 그리퍼 joint 는
-    LinkOffsets 에 들어가지 않으므로 자동 제외 (tcp_joint 는 캘리브레이션 reference
+    `joint_id_map` 미주입 시 LinkOffsetResultData 의 entry id 가 SSOT — omx_f (5DOF)
+    / so101_6dof (6DOF) 등 robot type 무관 자동 동작. tcp_joint / 그리퍼 joint 는
+    offsets entry 에 들어가지 않으므로 자동 제외 (tcp_joint 는 캘리브레이션 reference
     frame 으로 고정 — 한때 patch 시도했으나 detect↔IK self-consistency 로 cancel
     out 됨, 2026-05-28 실측 확인).
 
     Args:
         source_urdf_path: 원본 .urdf 경로.
-        offsets: LinkOffsets — joint id별 (link_trans m, link_rot rad rotvec).
-        joint_id_map: URDF joint name → motor id 매핑. None 이면 offsets.ids 에서
+        offsets: LinkOffsetResultData — joint id별 (trans_m, rot_rad rotvec) entry list.
+        joint_id_map: URDF joint name → motor id 매핑. None 이면 offsets entry 에서
             `joint{N}` 컨벤션으로 자동 도출.
 
     Returns:
         patched URDF text (utf-8 encoding 가능).
     """
     if joint_id_map is None:
-        ids = sorted(set(offsets.trans.keys()) | set(offsets.rot.keys()))
+        ids = sorted(e.joint_id for e in offsets.offsets)
         joint_id_map = {f"joint{i}": i for i in ids}
 
     src = Path(source_urdf_path)

@@ -33,8 +33,6 @@ from core.transport.messages.storage import (
     DeleteCalibrationRunReq,
     DeleteLastCalibrationCaptureReq,
     DeleteLastCalibrationCaptureRes,
-    FinalizeCalibrationRunReq,
-    FinalizeCalibrationRunRes,
     GetActiveCalibrationReq,
     GetActiveCalibrationRes,
     GetInProgressCalibrationRunReq,
@@ -202,25 +200,6 @@ class CalibrationStorageClient:
             MarkCalibrationRunReadyRes,
         )
         return res.run
-
-    def finalize_run(
-        self,
-        run_id: int,
-        results: list[CalibrationResultRecord],
-        capture_residuals: dict[int, tuple[float | None, float | None, float | None]]
-        | None = None,
-    ) -> list[int]:
-        """[커밋] — in_progress → success, result rows INSERT, captures residual UPDATE."""
-        res = self._t.call(
-            Service.STORAGE_FINALIZE_CAL_RUN,
-            FinalizeCalibrationRunReq(
-                run_id=run_id,
-                results=results,
-                capture_residuals=capture_residuals,
-            ),
-            FinalizeCalibrationRunRes,
-        )
-        return res.result_ids
 
     # ─── invalidation subscribe ──────────────────────────────
 

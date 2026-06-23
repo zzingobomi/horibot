@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import cv2
@@ -486,13 +487,15 @@ class CalibrationNode(ApplicationNode):
                 data=None,
             )
 
-        now = time.time()
+        now = datetime.now(UTC)
         run = CalibrationRunRecord(
             robot_id=robot_id,
             started_at=now,
             ended_at=now,
             algorithm="intrinsic_chessboard",
             algorithm_params={"image_size": list(image_size)},
+            status="success",
+            kind="intrinsic",
         )
         record = IntrinsicResultRecord(  # type: ignore[arg-type]
             run_id=0,
@@ -563,7 +566,7 @@ class CalibrationNode(ApplicationNode):
             "rms_error": st.intrinsic.result.rms_error,
         }
         board_spec = calib_board.spec_as_dict()
-        now = time.time()
+        now = datetime.now(UTC)
         run = CalibrationRunRecord(
             robot_id=robot_id,
             started_at=now,

@@ -15,6 +15,8 @@ scan_io.allocate_scan_id 자리 호환 (RDB 자리에서 같은 monotonic).
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from core.transport.messages.base import StrictModel
 
 
@@ -24,7 +26,7 @@ class ScanSessionRecord(StrictModel):
     id: int | None = None  # auto-increment (RDB 가 발급)
     robot_id: str
     session_id: str  # human-readable (e.g., "session_20260617_120000")
-    created_at: float
+    created_at: datetime
     label: str | None = None
     note: str | None = None
 
@@ -40,7 +42,7 @@ class ScanRecord(StrictModel):
     session_row_id: int  # FK → scan_sessions.id
     robot_id: str
     scan_id: int  # monotonic within session_row_id
-    created_at: float
+    created_at: datetime
     blob_key: str  # ObjectStore key
     num_frames: int
     # snapshot metadata — reconstruction 자리 fresh 재계산 위해 (캘 변경 시)
@@ -64,7 +66,7 @@ class ReconstructionRecord(StrictModel):
     id: int | None = None
     session_row_id: int  # FK → scan_sessions.id
     robot_id: str
-    created_at: float
+    created_at: datetime
     blob_key: str  # ObjectStore key (.ply)
     # ICP / TSDF 파라미터 — 재현용
     voxel_size: float

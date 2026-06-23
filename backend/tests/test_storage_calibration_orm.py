@@ -10,6 +10,7 @@ semantics 보존하는지.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Iterator
 
 import pytest
@@ -42,13 +43,17 @@ def store() -> Iterator[RepoBundle]:
         s.close()
 
 
-def _make_run(robot_id: str = "test_robot", kind: CalibrationKind | None = "hand_eye") -> CalibrationRunRecord:
+_T0 = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _make_run(robot_id: str = "test_robot", kind: CalibrationKind = "hand_eye") -> CalibrationRunRecord:
     return CalibrationRunRecord(
         robot_id=robot_id,
-        started_at=100.0,
-        ended_at=110.0,
+        started_at=_T0,
+        ended_at=_T0,
         algorithm="extended_ba_irls",
         algorithm_params={"max_iter": 50, "huber_c": 1.345},
+        status="success",
         kind=kind,
     )
 
@@ -59,7 +64,7 @@ def _make_handeye_result(
     return HandEyeResultRecord(  # type: ignore[call-arg]
         run_id=0,  # caller 가 채움
         robot_id=robot_id,
-        created_at=100.0,
+        created_at=_T0,
         sigma_rot=sigma_rot,
         sigma_t=7.94,
         result_data=HandEyeResultData(
@@ -76,7 +81,7 @@ def _make_intrinsic_result(
     return IntrinsicResultRecord(  # type: ignore[call-arg]
         run_id=0,
         robot_id=robot_id,
-        created_at=100.0,
+        created_at=_T0,
         result_data=IntrinsicResultData(
             camera_matrix=[[600, 0, 320], [0, 600, 240], [0, 0, 1]],
             dist_coeffs=[[0.0, 0.0, 0.0, 0.0, 0.0]],
@@ -225,23 +230,17 @@ def test_draft_run_append_finalize(store: RepoBundle):
     caps = store.calibration.list_captures(run_id)
     assert [c.pose_index for c in caps] == [0, 1]
 
-    # finalize — IRLS BA output 가 capture_residuals 채움.
-    residuals: dict[int, tuple[float | None, float | None, float | None]] = {
-        0: (0.01, 0.005, 1.0),
-        1: (0.5, 0.20, 0.118),  # outlier
-    }
+    # 정상 path — mark_ready → finalize.
+    ready = store.calibration.mark_run_ready(run_id)
+    assert ready.status == "ready_for_analysis"
+
     result = _make_handeye_result()
-    result_ids = store.calibration.finalize_run(run_id, [result], residuals)
+    result_ids = store.calibration.finalize_run(run_id, [result])
     assert len(result_ids) == 1
 
-    # status flip 확인 + capture residuals UPDATE 확인
     fin_run = store.calibration.get_run(run_id)
     assert fin_run is not None
     assert fin_run.status == "success"
-
-    fin_caps = store.calibration.list_captures(run_id)
-    assert fin_caps[0].weight == pytest.approx(1.0)
-    assert fin_caps[1].weight == pytest.approx(0.118)
 
 
 def test_delete_run_cascades_to_captures_and_results(store: RepoBundle):
@@ -282,6 +281,14 @@ def test_activate_unknown_result_raises(store: RepoBundle):
 
 def test_finalize_already_finalized_raises(store: RepoBundle):
     run_id = store.calibration.new_run(_make_run())
-    store.calibration.finalize_run(run_id, [_make_handeye_result()], None)
+    store.calibration.mark_run_ready(run_id)
+    store.calibration.finalize_run(run_id, [_make_handeye_result()])
     with pytest.raises(KeyError):
-        store.calibration.finalize_run(run_id, [_make_handeye_result()], None)
+        store.calibration.finalize_run(run_id, [_make_handeye_result()])
+
+
+def test_finalize_without_mark_ready_raises(store: RepoBundle):
+    """mark_run_ready 안 거치고 finalize → KeyError. legacy path 차단 검증."""
+    run_id = store.calibration.new_run(_make_run())
+    with pytest.raises(KeyError):
+        store.calibration.finalize_run(run_id, [_make_handeye_result()])

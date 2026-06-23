@@ -7,7 +7,12 @@ host_name: pi_camera_sim
 
 zenoh:
   mode: peer
-  connect: []
+  # LAN 격리 — host_pc_sim 의 listen endpoint 로 connect. multicast OFF.
+  scouting:
+    multicast:
+      enabled: false
+  listen: []
+  connect: ["tcp/127.0.0.1:7447"]
 
 robots:
   - so101_6dof_0

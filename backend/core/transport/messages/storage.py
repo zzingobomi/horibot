@@ -225,24 +225,6 @@ class MarkCalibrationRunReadyRes(StrictModel):
     run: CalibrationRunRecord
 
 
-class FinalizeCalibrationRunReq(StrictModel):
-    """[커밋] — in_progress → success, result rows INSERT, captures 의 residual UPDATE.
-
-    capture_residuals: pose_index → (residual_rot, residual_trans, weight) 매핑.
-    BA 출력 자리 자체 (hand_eye 자리 BA 결과). None 이면 update skip (intrinsic 등 residual 없는 자리).
-    """
-
-    run_id: int
-    results: list[CalibrationResultRecord]
-    capture_residuals: dict[int, tuple[float | None, float | None, float | None]] | None = (
-        None
-    )
-
-
-class FinalizeCalibrationRunRes(StrictModel):
-    result_ids: list[int]
-
-
 # ─── Phase 2 — scan workflow ───────────────────────────────────
 # blob_key 자리는 server 결정 (race 차단). blob bytes wire = opaque — caller 가
 # scan_workflow.blob 의 encode/decode 자리 사용. GET_BLOB 자리 generic (scan /

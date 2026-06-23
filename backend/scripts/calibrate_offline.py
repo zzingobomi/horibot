@@ -32,10 +32,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sqlite3
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 
@@ -44,6 +44,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation as Rot
 from scipy.stats import median_abs_deviation
+from sqlalchemy import select
 
 # Repo imports (script standalone).
 BACKEND = Path(__file__).resolve().parents[1]
@@ -52,8 +53,27 @@ sys.path.insert(0, str(BACKEND))
 from core.robot.robot_registry import RobotRegistry  # noqa: E402
 from core.units import raw_to_rad  # noqa: E402
 from modules.calibration import board as calib_board  # noqa: E402
+from modules.calibration.orm import CalibrationRunOrm  # noqa: E402
+from modules.calibration.persistence_models import (  # noqa: E402
+    HandEyeResultRecord,
+    JointOffsetResultRecord,
+    LinkOffsetResultRecord,
+    SagOffsetResultRecord,
+)
+from modules.calibration.result_models import (  # noqa: E402
+    HandEyeResultData,
+    JointOffsetResultData,
+    LinkOffsetResultData,
+    SagOffsetResultData,
+)
 from modules.camera import depth_frame as dframe  # noqa: E402
 from modules.motor.motor_config import MotorConfig, load_motor_layout  # noqa: E402
+from modules.storage.factory import (  # noqa: E402
+    make_object_store,
+    make_rdb_store,
+)
+from modules.storage.object_store.store import ObjectStore  # noqa: E402
+from modules.storage.rdb.store import RdbStore  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -209,63 +229,60 @@ class BAConfig:
 
 
 def load_data(
-    db_path: Path,
-    blob_root: Path,
+    rdb_store: RdbStore,
+    object_store: ObjectStore,
     robot_id: str,
     run_id: int | None,
     *,
     load_depth: bool,
 ) -> tuple[dict, list[CapturePose], dict, list[MotorConfig]]:
-    """SQLite + filesystem 에서 run + captures + intrinsic + arm_cfgs 로드.
+    """RdbStore + ObjectStore 에서 run + captures + intrinsic + arm_cfgs 로드.
+
+    storage layer (RdbStore / ObjectStore) 거침 — SQLite/Postgres / fs/MinIO 분기
+    factory 가 처리. 본 script 는 dialect-portable.
 
     Returns:
         (run_dict, captures, intrinsic_dict, arm_cfgs)
     """
-    if not db_path.exists():
-        raise FileNotFoundError(f"DB 없음: {db_path}")
-    con = sqlite3.connect(str(db_path))
-    try:
+    with rdb_store.session() as repos:
         # 1. Run 선택.
-        cur = con.cursor()
         if run_id is None:
-            row = cur.execute(
-                "SELECT id FROM calibration_runs "
-                "WHERE robot_id=? AND kind='hand_eye' "
-                "AND status IN ('ready_for_analysis','in_progress') "
-                "ORDER BY started_at DESC LIMIT 1",
-                (robot_id,),
-            ).fetchone()
+            row = repos.calibration.session.scalars(
+                select(CalibrationRunOrm.id).where(
+                    CalibrationRunOrm.robot_id == robot_id,
+                    CalibrationRunOrm.kind == "hand_eye",
+                    CalibrationRunOrm.status.in_(
+                        ("ready_for_analysis", "in_progress")
+                    ),
+                ).order_by(CalibrationRunOrm.started_at.desc()).limit(1)
+            ).first()
             if row is None:
                 raise RuntimeError(
                     f"분석 대상 run 없음 (robot={robot_id}, "
                     "ready_for_analysis hand_eye run 부재)"
                 )
-            run_id = int(row[0])
+            run_id = int(row)
 
-        run_row = cur.execute(
-            "SELECT id, robot_id, started_at, ended_at, algorithm, "
-            "algorithm_params, status, kind FROM calibration_runs WHERE id=?",
-            (run_id,),
-        ).fetchone()
-        if run_row is None:
+        run_rec = repos.calibration.get_run(run_id)
+        if run_rec is None:
             raise RuntimeError(f"run id={run_id} 없음")
-        if run_row[1] != robot_id:
+        if run_rec.robot_id != robot_id:
             raise RuntimeError(
-                f"run id={run_id} 의 robot_id={run_row[1]!r} ≠ {robot_id!r}"
+                f"run id={run_id} 의 robot_id={run_rec.robot_id!r} ≠ {robot_id!r}"
             )
-        if run_row[7] != "hand_eye":
+        if run_rec.kind != "hand_eye":
             raise RuntimeError(
-                f"run id={run_id} 의 kind={run_row[7]!r} — hand_eye 만 지원"
+                f"run id={run_id} 의 kind={run_rec.kind!r} — hand_eye 만 지원"
             )
         run = {
-            "id": run_row[0],
-            "robot_id": run_row[1],
-            "started_at": run_row[2],
-            "ended_at": run_row[3],
-            "algorithm": run_row[4],
-            "algorithm_params": json.loads(run_row[5] or "{}"),
-            "status": run_row[6],
-            "kind": run_row[7],
+            "id": run_rec.id,
+            "robot_id": run_rec.robot_id,
+            "started_at": run_rec.started_at,
+            "ended_at": run_rec.ended_at,
+            "algorithm": run_rec.algorithm,
+            "algorithm_params": run_rec.algorithm_params,
+            "status": run_rec.status,
+            "kind": run_rec.kind,
         }
 
         # 2. Intrinsic — session snapshot 우선, 없으면 active result.
@@ -278,74 +295,58 @@ def load_data(
                 "source": "session_snapshot",
             }
         else:
-            intr_row = cur.execute(
-                "SELECT result_data FROM calibration_results "
-                "WHERE robot_id=? AND kind='intrinsic' AND is_active=1",
-                (robot_id,),
-            ).fetchone()
-            if intr_row is None:
+            intr_rec = repos.calibration.get_active_result(robot_id, "intrinsic")
+            if intr_rec is None:
                 raise RuntimeError("active intrinsic 없음 — 캘 불가")
-            d = json.loads(intr_row[0])
+            # discriminated union — kind='intrinsic' arm 의 result_data 는 IntrinsicResultData.
+            d = intr_rec.result_data
             intrinsic = {
-                "camera_matrix": np.array(d["camera_matrix"], dtype=np.float64),
-                "dist_coeffs": np.array(d["dist_coeffs"], dtype=np.float64),
-                "image_size": tuple(d.get("image_size", (1280, 720))),
+                "camera_matrix": np.array(d.camera_matrix, dtype=np.float64),  # type: ignore[union-attr]
+                "dist_coeffs": np.array(d.dist_coeffs, dtype=np.float64),  # type: ignore[union-attr]
+                "image_size": tuple(d.image_size or (1280, 720)),  # type: ignore[union-attr]
                 "source": "active_result",
             }
 
-        # 3. Captures (LEFT JOIN artifact[kind=primary] 자리 blob_key 자리).
-        cap_rows = cur.execute(
-            "SELECT c.pose_index, c.motor_positions, c.corners_2d, c.corner_ids, "
-            "c.board_in_cam, c.reproj_rms_px, c.tilt_deg, a.blob_key "
-            "FROM calibration_captures c "
-            "LEFT JOIN calibration_capture_artifacts a "
-            "  ON a.capture_id = c.id AND a.kind = 'primary' "
-            "WHERE c.run_id=? ORDER BY c.pose_index ASC",
-            (run_id,),
-        ).fetchall()
-    finally:
-        con.close()
+        # 3. Captures.
+        cap_recs = repos.calibration.list_captures(run_id)
 
-    if len(cap_rows) < 4:
-        raise RuntimeError(f"capture 부족: {len(cap_rows)} (최소 4)")
+    if len(cap_recs) < 4:
+        raise RuntimeError(f"capture 부족: {len(cap_recs)} (최소 4)")
 
     arm_cfgs = load_motor_layout(robot_id).arm
     K = intrinsic["camera_matrix"]
     dist = intrinsic["dist_coeffs"]
 
     captures: list[CapturePose] = []
-    for (
-        pose_index, motor_positions_json, corners_2d_json, corner_ids_json,
-        board_in_cam_json, reproj_rms_px, tilt_deg, blob_key,
-    ) in cap_rows:
-        if not motor_positions_json or not corners_2d_json or not corner_ids_json:
-            logger.warning("capture #%d 결손 — skip", pose_index)
+    for cap in cap_recs:
+        if (
+            cap.motor_positions is None
+            or cap.corners_2d is None
+            or cap.corner_ids is None
+        ):
+            logger.warning("capture #%d 결손 — skip", cap.pose_index)
             continue
-        motor_positions = {
-            int(k): int(v) for k, v in json.loads(motor_positions_json).items()
-        }
         # raw motor → rad. joint_offset 자리 BA 변수.
         joint_angles_raw = np.array(
             [
-                raw_to_rad(motor_positions[c.id], reverse=c.reverse)
+                raw_to_rad(cap.motor_positions[c.id], reverse=c.reverse)
                 for c in arm_cfgs
             ],
             dtype=np.float64,
         )
-        corners_2d = np.asarray(json.loads(corners_2d_json), dtype=np.float64)
-        corner_ids = np.asarray(json.loads(corner_ids_json), dtype=np.int32)
+        corners_2d = np.asarray(cap.corners_2d, dtype=np.float64)
+        corner_ids = np.asarray(cap.corner_ids, dtype=np.int32)
 
-        # 보드 frame 3D 코너 — board.matchImagePoints (캐시 corners_2d 는 sub-pixel
-        # observed; obj_pts 자리 corner_ids 자리 매핑).
+        # 보드 frame 3D 코너.
         obj_pts, _ = calib_board.match_object_points(
             corners_2d.reshape(-1, 1, 2).astype(np.float32),
             corner_ids.reshape(-1, 1).astype(np.int32),
         )
         board_obj_pts = obj_pts.reshape(-1, 3).astype(np.float64)
 
-        # PnP seed — cached board_in_cam 자리 있으면 그거 자리, 없으면 fresh PnP.
-        if board_in_cam_json:
-            T = np.asarray(json.loads(board_in_cam_json), dtype=np.float64)
+        # PnP seed — cached board_in_cam 있으면 그거, 없으면 fresh PnP.
+        if cap.board_in_cam:
+            T = np.asarray(cap.board_in_cam, dtype=np.float64)
             R_t2c = T[:3, :3]
             t_t2c = T[:3, 3]
         else:
@@ -355,7 +356,7 @@ def load_data(
                 K, dist,
             )
             if not ok:
-                logger.warning("capture #%d PnP 실패 — skip", pose_index)
+                logger.warning("capture #%d PnP 실패 — skip", cap.pose_index)
                 continue
             R_t2c, _ = cv2.Rodrigues(rvec)
             t_t2c = np.asarray(tvec).reshape(3)
@@ -364,36 +365,40 @@ def load_data(
         # 은 조용히 skip — Stage E 가 알아서 valid 한 capture 만 사용.
         depth_z16: np.ndarray | None = None
         depth_scale = 0.001
-        if load_depth and blob_key:
-            blob_path = blob_root / blob_key
-            if blob_path.exists():
-                try:
-                    raw = blob_path.read_bytes()
-                    if len(raw) < 10_000:
-                        # corruption 의심 — depth_frame 은 raw RGBD 라 보통 200KB 이상.
-                        logger.warning(
-                            "capture #%d blob %s 가 너무 작음 (%d bytes) — corruption 의심, skip depth",
-                            pose_index, blob_key, len(raw),
-                        )
-                    else:
-                        df = dframe.decode(raw)
-                        depth_z16 = df.depth_z16
-                        depth_scale = df.depth_scale
-                except Exception as e:
+        primary_key = cap.primary_blob_key
+        if load_depth and primary_key:
+            try:
+                raw = object_store.get(primary_key)
+                if len(raw) < 10_000:
+                    # corruption 의심 — depth_frame 은 raw RGBD 라 보통 200KB 이상.
                     logger.warning(
-                        "capture #%d blob decode 실패 (%s): %s — skip depth",
-                        pose_index, blob_key, e,
+                        "capture #%d blob %s 가 너무 작음 (%d bytes) — corruption 의심, skip depth",
+                        cap.pose_index, primary_key, len(raw),
                     )
+                else:
+                    df = dframe.decode(raw)
+                    depth_z16 = df.depth_z16
+                    depth_scale = df.depth_scale
+            except KeyError:
+                logger.warning(
+                    "capture #%d blob %s 없음 (ObjectStore) — skip depth",
+                    cap.pose_index, primary_key,
+                )
+            except Exception as e:
+                logger.warning(
+                    "capture #%d blob decode 실패 (%s): %s — skip depth",
+                    cap.pose_index, primary_key, e,
+                )
 
         captures.append(
             CapturePose(
-                pose_index=pose_index,
+                pose_index=cap.pose_index,
                 joint_angles_rad_raw=joint_angles_raw,
                 corners_2d=corners_2d,
                 corner_ids=corner_ids,
                 board_obj_pts=board_obj_pts,
-                pnp_reproj_rms_px=float(reproj_rms_px or 0.0),
-                tilt_deg=float(tilt_deg or 0.0),
+                pnp_reproj_rms_px=float(cap.reproj_rms_px or 0.0),
+                tilt_deg=float(cap.tilt_deg or 0.0),
                 R_target2cam_seed=R_t2c,
                 t_target2cam_seed=t_t2c,
                 depth_z16=depth_z16,
@@ -1384,152 +1389,104 @@ def format_report(
 
 
 def commit_results(
-    db_path: Path, result: StageResult, run_id: int, robot_id: str,
-    arm_cfgs: list[MotorConfig], sag_arm_indices: list[int],
+    rdb_store: RdbStore, result: StageResult, run_id: int, robot_id: str,
+    sag_arm_indices: list[int],
 ) -> dict:
-    """SQLite 직접 — finalize_run + Result rows INSERT + activate (UNIQUE partial index).
+    """repo.finalize_run + activate_result — invariant SSOT.
 
-    Returns dict: {finalized_run_id, inserted_result_ids, activated}
+    in_progress 자리 들어오면 mark_run_ready 자리 자동 promote.
+    한 transaction 으로 status 전이 + Result INSERT (4 kind) + atomic activate.
+
+    Returns dict: {finalized_run_id, activated, n_results}
     """
-    now = time.time()
-    con = sqlite3.connect(str(db_path))
-    con.execute("PRAGMA foreign_keys = ON")
-    cur = con.cursor()
-    try:
-        # Run status: in_progress/ready_for_analysis → success.
-        cur.execute(
-            "UPDATE calibration_runs SET status='success', ended_at=? WHERE id=?",
-            (now, run_id),
-        )
-        if cur.rowcount == 0:
-            raise RuntimeError(f"run id={run_id} update 실패 (없음?)")
+    now = datetime.now(UTC)
+    method = f"offline_BA_stage_{result.name}"
 
-        result_ids: list[tuple[str, int]] = []
-        method = f"offline_BA_stage_{result.name}"
-
-        # 1. Hand-eye 항상 commit. σ 두 종류 박음 — sigma_* = Jacobian (confidence),
-        # effective_sigma_* = board_in_base std (accuracy, commit 결정 metric).
-        he_data = {
-            "R_cam2gripper": result.handeye_R.tolist(),
-            "t_cam2gripper": result.handeye_t.reshape(3, 1).tolist(),
-            "method": method,
-        }
-        cur.execute(
-            "INSERT INTO calibration_results "
-            "(run_id, robot_id, kind, created_at, is_active, "
-            "sigma_rot, sigma_t, effective_sigma_rot, effective_sigma_t, result_data) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (
-                run_id, robot_id, "hand_eye", now, 0,
-                result.sigma_handeye_rot_deg, result.sigma_handeye_t_mm,
-                result.effective_sigma_handeye_rot_deg,
-                result.effective_sigma_handeye_t_mm,
-                json.dumps(he_data),
+    # Pydantic Records — kind 별 결과 모델.
+    records: list = [
+        HandEyeResultRecord(  # type: ignore[call-arg]
+            run_id=run_id, robot_id=robot_id, created_at=now,
+            sigma_rot=result.sigma_handeye_rot_deg,
+            sigma_t=result.sigma_handeye_t_mm,
+            effective_sigma_rot=result.effective_sigma_handeye_rot_deg,
+            effective_sigma_t=result.effective_sigma_handeye_t_mm,
+            result_data=HandEyeResultData(
+                R_cam2gripper=result.handeye_R.tolist(),
+                t_cam2gripper=result.handeye_t.reshape(3, 1).tolist(),
+                method=method,
             ),
+        ),
+    ]
+    if "joint" in result.estimated:
+        records.append(
+            JointOffsetResultRecord(  # type: ignore[call-arg]
+                run_id=run_id, robot_id=robot_id, created_at=now,
+                result_data=JointOffsetResultData(
+                    offsets=dict(result.joint_offsets),
+                    method=method,
+                ),
+            )
         )
-        rid = cur.lastrowid
-        assert rid is not None
-        result_ids.append(("hand_eye", rid))
-
-        # 2. Joint offsets.
-        if "joint" in result.estimated:
-            jdata = {
-                "offsets": {str(k): v for k, v in result.joint_offsets.items()},
-                "method": method,
-            }
-            cur.execute(
-                "INSERT INTO calibration_results "
-                "(run_id, robot_id, kind, created_at, is_active, sigma_rot, sigma_t, result_data) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (
-                    run_id, robot_id, "joint_offset", now, 0,
-                    None, None, json.dumps(jdata),
+    if "link" in result.estimated:
+        records.append(
+            LinkOffsetResultRecord(  # type: ignore[call-arg]
+                run_id=run_id, robot_id=robot_id, created_at=now,
+                result_data=LinkOffsetResultData.from_calibration_result(
+                    result.link_trans, result.link_rot, method=method,
                 ),
             )
-            rid = cur.lastrowid
-            assert rid is not None
-            result_ids.append(("joint_offset", rid))
-
-        # 3. Link offsets.
-        if "link" in result.estimated:
-            entries = []
-            for c in arm_cfgs:
-                t = result.link_trans.get(c.id, np.zeros(3))
-                r = result.link_rot.get(c.id, np.zeros(3))
-                entries.append({
-                    "joint_id": c.id,
-                    "trans_m": [float(t[0]), float(t[1]), float(t[2])],
-                    "rot_rad": [float(r[0]), float(r[1]), float(r[2])],
-                })
-            ldata = {"offsets": entries, "method": method}
-            cur.execute(
-                "INSERT INTO calibration_results "
-                "(run_id, robot_id, kind, created_at, is_active, sigma_rot, sigma_t, result_data) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (
-                    run_id, robot_id, "link_offset", now, 0,
-                    None, None, json.dumps(ldata),
+        )
+    if "sag" in result.estimated:
+        records.append(
+            SagOffsetResultRecord(  # type: ignore[call-arg]
+                run_id=run_id, robot_id=robot_id, created_at=now,
+                result_data=SagOffsetResultData(
+                    k_rad_per_m=dict(result.sag_k),
+                    method=method,
                 ),
             )
-            rid = cur.lastrowid
-            assert rid is not None
-            result_ids.append(("link_offset", rid))
+        )
 
-        # 4. Sag.
-        if "sag" in result.estimated:
-            sdata = {
-                "k_rad_per_m": {str(k): v for k, v in result.sag_k.items()},
-                "method": method,
-            }
-            cur.execute(
-                "INSERT INTO calibration_results "
-                "(run_id, robot_id, kind, created_at, is_active, sigma_rot, sigma_t, result_data) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (
-                    run_id, robot_id, "sag", now, 0,
-                    None, None, json.dumps(sdata),
-                ),
-            )
-            rid = cur.lastrowid
-            assert rid is not None
-            result_ids.append(("sag", rid))
+    with rdb_store.session() as repos:
+        # finalize_run 은 ready_for_analysis 만 허용 — in_progress 면 promote.
+        run = repos.calibration.get_run(run_id)
+        if run is None:
+            raise RuntimeError(f"run id={run_id} 없음")
+        if run.status == "in_progress":
+            repos.calibration.mark_run_ready(run_id)
 
-        # 5. Activate — 같은 (robot_id, kind) 의 기존 is_active=1 → 0, 새 row → 1.
-        # UNIQUE partial index 자리 보장.
+        # status 'ready_for_analysis' → 'success' + Result INSERT (atomic).
+        result_ids = repos.calibration.finalize_run(run_id, records)
+
+        # Activate — kind 별 UNIQUE partial index 가 직전 active 자동 해제.
         activated: list[tuple[str, int]] = []
-        for kind, rid in result_ids:
-            cur.execute(
-                "UPDATE calibration_results SET is_active=0 "
-                "WHERE robot_id=? AND kind=? AND is_active=1 AND id != ?",
-                (robot_id, kind, rid),
-            )
-            cur.execute(
-                "UPDATE calibration_results SET is_active=1 WHERE id=?",
-                (rid,),
-            )
-            activated.append((kind, rid))
+        for rec, rid in zip(records, result_ids, strict=True):
+            repos.calibration.activate_result(rid)
+            activated.append((rec.kind, rid))
 
-        con.commit()
-        logger.info(
-            "Commit 완료 — run=%d → success, %d kind activate",
-            run_id, len(activated),
-        )
-        return {
-            "finalized_run_id": run_id,
-            "activated": activated,
-            "n_results": len(result_ids),
-        }
-    except Exception:
-        con.rollback()
-        raise
-    finally:
-        con.close()
+    logger.info(
+        "Commit 완료 — run=%d → success, %d kind activate",
+        run_id, len(activated),
+    )
+    return {
+        "finalized_run_id": run_id,
+        "activated": activated,
+        "n_results": len(result_ids),
+    }
 
 
 # ─── 메인 ────────────────────────────────────────────────────────
 
 
 def main() -> int:
+    # Windows cp949 console 의 unicode (—, ✓ 등) 출력 가능하도록. argparse help
+    # 출력이 이 reconfigure 이전이면 fail — args.parse_args 전에 박음.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except (AttributeError, Exception):
+        pass
+
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1540,12 +1497,14 @@ def main() -> int:
         help="분석할 run_id (미지정 시 최신 ready_for_analysis hand_eye)",
     )
     parser.add_argument(
-        "--db", type=Path,
-        default=BACKEND / "storage" / "horibot.db",
+        "--rdb-uri", type=str,
+        default=f"sqlite:///{(BACKEND / 'storage' / 'horibot.db').as_posix()}",
+        help="SQLAlchemy connection URI (sqlite:///path or postgresql://...)",
     )
     parser.add_argument(
-        "--blobs", type=Path,
-        default=BACKEND / "storage" / "blobs",
+        "--object-uri", type=str,
+        default=f"file:///{(BACKEND / 'storage' / 'blobs').as_posix()}",
+        help="ObjectStore URI (file:///path or memory:// — 추후 s3://...)",
     )
     parser.add_argument(
         "--stage", choices=["A", "B", "C", "D", "E", "auto"], default="auto",
@@ -1555,7 +1514,7 @@ def main() -> int:
     parser.add_argument("--skip-loocv", action="store_true",
                         help="LOOCV skip (stage 자리 4-5종 × n_captures BA, 수분)")
     parser.add_argument("--commit", action="store_true",
-                        help="best stage 결과 storage SQLite 직접 commit + activate")
+                        help="best stage 결과 storage 자리 commit + activate (repo 거침)")
     parser.add_argument("--output-json", type=Path, default=None)
     parser.add_argument(
         "--drop-poses", type=int, nargs="+", default=[],
@@ -1570,17 +1529,15 @@ def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname).1s] %(message)s",
     )
-    # Windows cp949 console 자리 unicode (✓, ✗, ⚠, ─, etc.) 출력 가능하도록.
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-        sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-    except (AttributeError, Exception):
-        pass
+
+    # ─── Storage 진입 ─────────────────────────────────────────
+    rdb_store = make_rdb_store(args.rdb_uri)
+    object_store = make_object_store(args.object_uri)
 
     # ─── Load ─────────────────────────────────────────────────
     logger.info("=== Load ===")
     run, captures, intrinsic, arm_cfgs = load_data(
-        args.db, args.blobs, args.robot, args.run_id,
+        rdb_store, object_store, args.robot, args.run_id,
         load_depth=not args.skip_depth,
     )
     logger.info(
@@ -1742,21 +1699,22 @@ def main() -> int:
         worst = stages[best_name].worst_sanity
         if worst == SanityLevel.RED:
             logger.warning(
-                "RED FLAG 자리 있음 — commit 자리 보류 권장. "
-                "강제 진행 자리 자리 자리 --commit 자리 자리 자리 자리 자리. "
-                "지금 자리 자리 abort."
+                "RED FLAG 있음 — commit 보류 권장. 강제 진행 시 "
+                "--commit 인자 그대로 재실행. 지금은 abort."
             )
+            rdb_store.close()
             return 2
         result = commit_results(
-            args.db, stages[best_name], run["id"], args.robot,
-            arm_cfgs, sag_arm_indices,
+            rdb_store, stages[best_name], run["id"], args.robot,
+            sag_arm_indices,
         )
         logger.info("Commit OK: %s", result)
         logger.info(
             "다음 단계: backend 재시작 → calibration_node._setup_runtime_calibration "
-            "이 새 active result 자리 fetch → CalibrationCache + URDF patch 자리 적용."
+            "이 새 active result fetch → CalibrationCache + URDF patch 적용."
         )
 
+    rdb_store.close()
     return 0
 
 

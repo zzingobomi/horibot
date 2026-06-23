@@ -38,18 +38,17 @@ logger = logging.getLogger(__name__)
 
 
 # ─── Entity sub-repos (Advanced Alchemy CRUD baseline) ───
-# pyright 자리 ModelProtocol 호환성 자리 ignore — calibration.py 와 같은 이유.
 
 
-class _SessionRepo(SQLAlchemySyncRepository[ScanSessionOrm]):  # type: ignore[type-var]
+class _SessionRepo(SQLAlchemySyncRepository[ScanSessionOrm]):
     model_type = ScanSessionOrm
 
 
-class _ScanRepo(SQLAlchemySyncRepository[ScanOrm]):  # type: ignore[type-var]
+class _ScanRepo(SQLAlchemySyncRepository[ScanOrm]):
     model_type = ScanOrm
 
 
-class _ReconstructionRepo(SQLAlchemySyncRepository[ReconstructionOrm]):  # type: ignore[type-var]
+class _ReconstructionRepo(SQLAlchemySyncRepository[ReconstructionOrm]):
     model_type = ReconstructionOrm
 
 

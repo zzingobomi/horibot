@@ -173,7 +173,7 @@ sub.undeclare(); session.close()
 | WS message field `action` vs `type` | `received 0 msgs` (조용히) | bridge `_handle_message` 의 `msg_type` 자리 확인 — 컨벤션은 `"type"` |
 | pyrealsense2 import 자리 분산 Pi 에서 import fail | `--no-install-package pyrealsense2` 후 별도 .whl install | [pyrealsense2-build-guide.md](pyrealsense2-build-guide.md) |
 | zenoh peer discovery hang | 무한 대기 | localhost multicast loopback 안 되는 환경은 `connect: ["tcp/127.0.0.1:7447"]` 명시 |
-| **`uv run` subprocess + `p.terminate()` 자리 child python 안 죽음** | `wmic process where "name='python.exe'"` 자리 잔여 python — 같은 LAN 자리 frontend 자리 *중복 publish 자리 깜빡임* + 같은 topic conflict + 메모리 누수 (LLM 로딩한 3GB+ 자리 자체 자리 계속) | (A) `subprocess.Popen([str(BACKEND / ".venv/Scripts/python.exe"), "main.py", "--host", ...])` 자리 `uv run` 우회 — child 자리 단일 process 자리 `terminate()` 작동. (B) verify 스크립트 종료 후 `wmic process ... | grep main.py` 자리 잔여 자리 검사 |
+| **`uv run` subprocess + `p.terminate()` 시 child python 안 죽음** | `wmic process where "name='python.exe'"` 의 잔여 python — 같은 LAN 의 frontend 가 *중복 publish 깜빡임* + 같은 topic conflict + 메모리 누수 (LLM 로딩한 3GB+ 그대로) | **해결됨 (2026-06-23)** — `backend/tests/conftest.py::spawn_backend` 가 `.venv/Scripts/python.exe` 직접 호출 (uv 우회). `_SPAWNED_PROCS` global list 에 띄운 pid 추적 + `atexit` 가 KeyboardInterrupt / fixture finalize 누락 시 정리 (자기가 띄운 pid 만 — 사용자 production backend 안 건드림). 새 e2e/분산 test 는 모두 이 helper 사용. |
 
 ## 5.1 ⚠️ 분산 transport 의 부수효과 — **pytest / sim 도 실 robot 으로 broadcast 됨**
 
@@ -182,17 +182,32 @@ sub.undeclare(); session.close()
 - `pytest tests/test_motion_e2e.py` 의 `MOTION_MOVE_J` / `MOTOR_CMD_JOINT` publish → **같은 LAN 에 떠있는 실 robot pi backend 가 receive → 실 motor 움직임**
 - `host_mock` / `host_pc_sim` / `host_pi_motor_sim` 도 동일 — mock_motor 의 publish 와 실 motor_node 의 publish 가 같은 topic 자리 충돌
 
-**예방 (테스트 시작 전 mandatory)**:
+**해결책 (2026-06-23) — LAN 격리 default**:
 
-1. 사용자에게 사전 확인 — "실 robot backend 떠있나요?" 떠있으면:
-   - 테스트 전 robot pi backend stop (Ctrl-C)
-   - 또는 **robot torque-off** 자리 motor 명령이 와도 안 움직이게 (encoder 만 동작)
-2. 또는 zenoh `multicast_scouting: false` + 명시적 `connect: []` host config 자리 격리 (단 hosts 끼리 자동 발견 X — 별도 설정 부담)
-3. 가장 안전 자리: **테스트 머신 자리 robot pi 와 다른 subnet** 또는 **VLAN 격리**
+1. `host_mock.yaml` + `host_pc_sim.yaml` + `host_pi_motor_sim.yaml` + `host_pi_camera_sim.yaml` 의 zenoh block:
+   ```yaml
+   zenoh:
+     mode: peer
+     scouting:
+       multicast:
+         enabled: false
+     listen: ["tcp/127.0.0.1:7447"]   # pc_sim / mock 만
+     connect: ["tcp/127.0.0.1:7447"]  # pi_*_sim 만
+   ```
+   `core.transport.zenoh_session._build_config` 가 `scouting.multicast.enabled` 키를 받아 처리.
 
-**자동 검증 스크립트 / pytest 자리도 동일 위험.** 사용자가 robot 띄워있는 상태에선 *어떤 자동 motion publish 도 위험*. 사용자 측 확인 없이 motion-related test 자리 돌리면 안 됨.
+2. test process 의 zenoh peer 도 같은 격리:
+   ```python
+   from tests.conftest import isolated_zenoh_config
+   session = zenoh.open(isolated_zenoh_config())
+   ```
+   helper 가 multicast off + connect `tcp/127.0.0.1:7447` 박음. 같은 LAN 의 실 robot pi backend 와 절대 발견 안 됨.
 
-[[feedback-distributed-broadcast-affects-real-robot]] memory anchor.
+3. production yaml (`host_dev / host_pc / host_pi_motor / host_pi_camera`) 은 손 안 댐 — 실 hardware 운영은 LAN multicast 필요. 격리는 test/sim/mock 만.
+
+**검증된 결과**: `test_motion_e2e` (host_mock 부팅 + MOTOR_CMD publish), `test_calibration_e2e`, `test_calibration_distributed_sim` (3-process) 모두 격리 config 위 통과. 사용자가 실 robot backend 띄운 상태에서 pytest 돌려도 LAN broadcast 0 (localhost loopback 만).
+
+이전 권고 (robot torque-off / subnet 분리 / VLAN) 은 추가 안전망. 현재 시점에서 mandatory 아님.
 
 ## 6. 새 wire 추가 시 체크리스트
 

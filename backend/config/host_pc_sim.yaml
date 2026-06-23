@@ -12,9 +12,12 @@ host_name: pc_sim
 
 zenoh:
   mode: peer
-  # localhost multi-process — multicast scout default (udp/ipv4:224.0.0.224:7446)
-  # 으로 자동 발견. Windows 자체 multicast loopback 자리 의존 — 안 잡히면
-  # connect 명시.
+  # LAN 격리 — multicast OFF + localhost TCP 만. pi_motor_sim/pi_camera_sim 이
+  # 이 endpoint 로 connect. 같은 LAN 실 robot pi backend reach X.
+  scouting:
+    multicast:
+      enabled: false
+  listen: ["tcp/127.0.0.1:7447"]
   connect: []
 
 robots: []

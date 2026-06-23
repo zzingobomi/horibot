@@ -14,6 +14,13 @@ host_name: mock
 
 zenoh:
   mode: peer
+  # LAN 격리 — 같은 LAN 의 실 robot pi backend 가 떠있어도 mock 이 reach 안 함.
+  # multicast 자동 발견 OFF + localhost TCP listen 만. test process 도 같은
+  # endpoint 로 connect (backend/tests/conftest.py::isolated_zenoh_config).
+  scouting:
+    multicast:
+      enabled: false
+  listen: ["tcp/127.0.0.1:7447"]
   connect: []
 
 robots:

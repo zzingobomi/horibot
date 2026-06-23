@@ -51,6 +51,16 @@ class ZenohSession:
         if mode:
             z_cfg.insert_json5("mode", json.dumps(mode))
 
+        # test/sim/mock 은 multicast off + localhost TCP 로 LAN 격리.
+        # production (dev/pc/pi_*) 은 scouting 키 없음 → Zenoh default ON.
+        scouting = cfg_dict.get("scouting") or {}
+        multicast = scouting.get("multicast") or {}
+        if "enabled" in multicast:
+            z_cfg.insert_json5(
+                "scouting/multicast/enabled",
+                json.dumps(bool(multicast["enabled"])),
+            )
+
         connect = cfg_dict.get("connect") or []
         if connect:
             z_cfg.insert_json5("connect/endpoints", json.dumps(list(connect)))

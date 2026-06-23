@@ -8,6 +8,7 @@ docs/storage_layer.md §3 + §6.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from sqlalchemy import (
     Float,
@@ -25,7 +26,7 @@ from modules.scan_workflow.persistence_models import (
     ScanRecord,
     ScanSessionRecord,
 )
-from modules.storage.rdb.base import Base
+from modules.storage.rdb.base import Base, UtcDateTime
 
 
 class ScanSessionOrm(Base):
@@ -36,7 +37,7 @@ class ScanSessionOrm(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     robot_id: Mapped[str] = mapped_column(String, nullable=False)
     session_id: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -59,7 +60,7 @@ class ScanOrm(Base):
     )
     robot_id: Mapped[str] = mapped_column(String, nullable=False)
     scan_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
     blob_key: Mapped[str] = mapped_column(String, nullable=False)
     num_frames: Mapped[int] = mapped_column(Integer, nullable=False)
     width: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -91,7 +92,7 @@ class ReconstructionOrm(Base):
         nullable=False,
     )
     robot_id: Mapped[str] = mapped_column(String, nullable=False)
-    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
     blob_key: Mapped[str] = mapped_column(String, nullable=False)
     voxel_size: Mapped[float] = mapped_column(Float, nullable=False)
     sdf_trunc: Mapped[float] = mapped_column(Float, nullable=False)

@@ -1,26 +1,9 @@
-"""Calibration 도메인 Zenoh service handler group.
-
-storage_node 의 lifecycle + composition root 안 register(node) 자리 호출되어
-service handler 들을 node 에 등록. 본 group 의 책임 = 캘리브레이션 도메인
-(run / result / capture / activate / draft flow / finalize) 의 Zenoh 노출.
-
-13 service:
-- GET_ACTIVE / LIST / LIST_RUNS / COMMIT / ACTIVATE
-- NEW_CAL_RUN / APPEND_CAPTURE / DELETE_LAST_CAPTURE
-- GET_IN_PROGRESS_RUN / DELETE_CAL_RUN / MARK_CAL_RUN_READY / FINALIZE_CAL_RUN
-- LIST_RUN_CAPTURES
-+ STORAGE_CALIBRATION_INVALIDATED topic publish (ACTIVATE 후 1회)
-
-APPEND_CAPTURE + DELETE_* 자리는 ObjectStore blob 자리 (color JPEG + zstd depth)
-같이 다룸 — RDB row + ObjectStore put 한 transaction 의미. RDB rollback 시 orphan
-blob 자리 cleanup 자리도 본 handler 가 담당.
-"""
-
 from __future__ import annotations
 
 import logging
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import cv2
@@ -46,8 +29,6 @@ from core.transport.messages.storage import (
     DeleteCalibrationRunReq,
     DeleteLastCalibrationCaptureReq,
     DeleteLastCalibrationCaptureRes,
-    FinalizeCalibrationRunReq,
-    FinalizeCalibrationRunRes,
     GetActiveCalibrationReq,
     GetActiveCalibrationRes,
     GetInProgressCalibrationRunReq,
@@ -68,13 +49,14 @@ logger = logging.getLogger(__name__)
 
 
 class CalibrationHandlers:
-    """캘리브레이션 도메인 service handler 묶음."""
-
-    def __init__(self, reg: StorageRegistry, publish: Callable[[str, Any], None]) -> None:
+    def __init__(
+        self, reg: StorageRegistry, publish: Callable[[str, Any], None]
+    ) -> None:
         self._reg = reg
         self._publish = publish
 
     def register(self, node: ApplicationNode) -> None:
+        # ── Result / Active calibration ─────────────────────
         node.create_service(
             Service.STORAGE_GET_ACTIVE_CALIBRATION,
             GetActiveCalibrationReq,
@@ -88,10 +70,10 @@ class CalibrationHandlers:
             self._srv_list,
         )
         node.create_service(
-            Service.STORAGE_LIST_CALIBRATION_RUNS,
-            ListCalibrationRunsReq,
-            ListCalibrationRunsRes,
-            self._srv_list_runs,
+            Service.STORAGE_ACTIVATE_CALIBRATION,
+            ActivateCalibrationReq,
+            ActivateCalibrationRes,
+            self._srv_activate,
         )
         node.create_service(
             Service.STORAGE_COMMIT_CALIBRATION,
@@ -99,18 +81,40 @@ class CalibrationHandlers:
             CommitCalibrationRes,
             self._srv_commit,
         )
-        node.create_service(
-            Service.STORAGE_ACTIVATE_CALIBRATION,
-            ActivateCalibrationReq,
-            ActivateCalibrationRes,
-            self._srv_activate,
-        )
+
+        # ── Run lifecycle ───────────────────────────────────
         node.create_service(
             Service.STORAGE_NEW_CAL_RUN,
             CreateCalibrationRunReq,
             CreateCalibrationRunRes,
             self._srv_new_cal_run,
         )
+        node.create_service(
+            Service.STORAGE_GET_IN_PROGRESS_RUN,
+            GetInProgressCalibrationRunReq,
+            GetInProgressCalibrationRunRes,
+            self._srv_get_in_progress_run,
+        )
+        node.create_service(
+            Service.STORAGE_LIST_CALIBRATION_RUNS,
+            ListCalibrationRunsReq,
+            ListCalibrationRunsRes,
+            self._srv_list_runs,
+        )
+        node.create_service(
+            Service.STORAGE_MARK_CAL_RUN_READY,
+            MarkCalibrationRunReadyReq,
+            MarkCalibrationRunReadyRes,
+            self._srv_mark_cal_run_ready,
+        )
+        node.create_service(
+            Service.STORAGE_DELETE_CAL_RUN,
+            DeleteCalibrationRunReq,
+            EmptyData,
+            self._srv_delete_cal_run,
+        )
+
+        # ── Capture management ──────────────────────────────
         node.create_service(
             Service.STORAGE_APPEND_CAPTURE,
             AppendCalibrationCaptureReq,
@@ -124,37 +128,15 @@ class CalibrationHandlers:
             self._srv_delete_last_capture,
         )
         node.create_service(
-            Service.STORAGE_GET_IN_PROGRESS_RUN,
-            GetInProgressCalibrationRunReq,
-            GetInProgressCalibrationRunRes,
-            self._srv_get_in_progress_run,
-        )
-        node.create_service(
-            Service.STORAGE_DELETE_CAL_RUN,
-            DeleteCalibrationRunReq,
-            EmptyData,
-            self._srv_delete_cal_run,
-        )
-        node.create_service(
-            Service.STORAGE_MARK_CAL_RUN_READY,
-            MarkCalibrationRunReadyReq,
-            MarkCalibrationRunReadyRes,
-            self._srv_mark_cal_run_ready,
-        )
-        node.create_service(
-            Service.STORAGE_FINALIZE_CAL_RUN,
-            FinalizeCalibrationRunReq,
-            FinalizeCalibrationRunRes,
-            self._srv_finalize_cal_run,
-        )
-        node.create_service(
             Service.STORAGE_LIST_RUN_CAPTURES,
             ListRunCapturesReq,
             ListRunCapturesRes,
             self._srv_list_run_captures,
         )
 
-    # ─── service handlers ─────────────────────────────────────
+    # ====================================================
+    # 1. Result API
+    # ====================================================
 
     def _srv_get_active(
         self, req: ServiceRequest[GetActiveCalibrationReq]
@@ -165,9 +147,7 @@ class CalibrationHandlers:
             )
         return ServiceResponse(
             success=True,
-            data=GetActiveCalibrationRes(
-                found=record is not None, result=record
-            ),
+            data=GetActiveCalibrationRes(found=record is not None, result=record),
         )
 
     def _srv_list(
@@ -178,38 +158,6 @@ class CalibrationHandlers:
                 req.data.robot_id, req.data.kind, req.data.limit
             )
         return ServiceResponse(success=True, data=ListCalibrationsRes(results=records))
-
-    def _srv_list_runs(
-        self, req: ServiceRequest[ListCalibrationRunsReq]
-    ) -> ServiceResponse[ListCalibrationRunsRes]:
-        with self._reg.rdb.session() as repos:
-            rows = repos.calibration.list_runs(req.data.robot_id, req.data.limit)
-        summaries = [
-            CalibrationRunSummary(run=run, results=results) for run, results in rows
-        ]
-        return ServiceResponse(
-            success=True, data=ListCalibrationRunsRes(runs=summaries)
-        )
-
-    def _srv_commit(
-        self, req: ServiceRequest[CommitCalibrationReq]
-    ) -> ServiceResponse[CommitCalibrationRes]:
-        with self._reg.rdb.session() as repos:
-            run_id, result_ids = repos.calibration.commit(
-                req.data.run, req.data.results, req.data.captures
-            )
-        logger.info(
-            "COMMIT: run_id=%d, result_ids=%s (robot=%s, results=%d, captures=%d)",
-            run_id,
-            result_ids,
-            req.data.run.robot_id,
-            len(req.data.results),
-            len(req.data.captures),
-        )
-        return ServiceResponse(
-            success=True,
-            data=CommitCalibrationRes(run_id=run_id, result_ids=result_ids),
-        )
 
     def _srv_activate(
         self, req: ServiceRequest[ActivateCalibrationReq]
@@ -242,7 +190,29 @@ class CalibrationHandlers:
             success=True, data=ActivateCalibrationRes(result=activated)
         )
 
-    # ─── Draft run handlers (사용자 [캘 시작] flow) ───────────
+    def _srv_commit(
+        self, req: ServiceRequest[CommitCalibrationReq]
+    ) -> ServiceResponse[CommitCalibrationRes]:
+        with self._reg.rdb.session() as repos:
+            run_id, result_ids = repos.calibration.commit(
+                req.data.run, req.data.results, req.data.captures
+            )
+        logger.info(
+            "COMMIT: run_id=%d, result_ids=%s (robot=%s, results=%d, captures=%d)",
+            run_id,
+            result_ids,
+            req.data.run.robot_id,
+            len(req.data.results),
+            len(req.data.captures),
+        )
+        return ServiceResponse(
+            success=True,
+            data=CommitCalibrationRes(run_id=run_id, result_ids=result_ids),
+        )
+
+    # ====================================================
+    # 2. Run API (draft flow: 사용자 [캘 시작] flow)
+    # ====================================================
 
     def _srv_new_cal_run(
         self, req: ServiceRequest[CreateCalibrationRunReq]
@@ -268,9 +238,86 @@ class CalibrationHandlers:
             run_id = repos.calibration.new_run(run)
         logger.info(
             "NEW_CAL_RUN: run_id=%d (robot=%s, kind=%s, algorithm=%s)",
-            run_id, run.robot_id, run.kind, run.algorithm,
+            run_id,
+            run.robot_id,
+            run.kind,
+            run.algorithm,
         )
-        return ServiceResponse(success=True, data=CreateCalibrationRunRes(run_id=run_id))
+        return ServiceResponse(
+            success=True, data=CreateCalibrationRunRes(run_id=run_id)
+        )
+
+    def _srv_get_in_progress_run(
+        self, req: ServiceRequest[GetInProgressCalibrationRunReq]
+    ) -> ServiceResponse[GetInProgressCalibrationRunRes]:
+        with self._reg.rdb.session() as repos:
+            result = repos.calibration.get_in_progress_run(
+                req.data.robot_id, req.data.kind
+            )
+        if result is None:
+            return ServiceResponse(
+                success=True, data=GetInProgressCalibrationRunRes(found=False)
+            )
+        run, captures = result
+        return ServiceResponse(
+            success=True,
+            data=GetInProgressCalibrationRunRes(found=True, run=run, captures=captures),
+        )
+
+    def _srv_list_runs(
+        self, req: ServiceRequest[ListCalibrationRunsReq]
+    ) -> ServiceResponse[ListCalibrationRunsRes]:
+        with self._reg.rdb.session() as repos:
+            rows = repos.calibration.list_runs(req.data.robot_id, req.data.limit)
+        summaries = [
+            CalibrationRunSummary(run=run, results=results) for run, results in rows
+        ]
+        return ServiceResponse(
+            success=True, data=ListCalibrationRunsRes(runs=summaries)
+        )
+
+    def _srv_mark_cal_run_ready(
+        self, req: ServiceRequest[MarkCalibrationRunReadyReq]
+    ) -> ServiceResponse[MarkCalibrationRunReadyRes]:
+        try:
+            with self._reg.rdb.session() as repos:
+                run = repos.calibration.mark_run_ready(req.data.run_id)
+        except (KeyError, ValueError) as e:
+            return ServiceResponse(success=False, message=str(e))
+        logger.info(
+            "MARK_CAL_RUN_READY: run_id=%d (robot=%s, kind=%s)",
+            req.data.run_id,
+            run.robot_id,
+            run.kind,
+        )
+        return ServiceResponse(success=True, data=MarkCalibrationRunReadyRes(run=run))
+
+    def _srv_delete_cal_run(
+        self, req: ServiceRequest[DeleteCalibrationRunReq]
+    ) -> ServiceResponse[EmptyData]:
+        # ObjectStore blob 자리 RDB cascade 안 따라옴 → 별도 cleanup.
+        with self._reg.rdb.session() as repos:
+            artifacts = repos.calibration.list_run_artifacts(req.data.run_id)
+            repos.calibration.delete_run(req.data.run_id)
+        for a in artifacts:
+            try:
+                self._reg.objects.delete(a.blob_key)
+            except Exception:
+                logger.debug(
+                    "artifact %s delete skip (%s)",
+                    a.kind,
+                    a.blob_key,
+                )
+        logger.info(
+            "DELETE_CAL_RUN: run_id=%d (artifacts=%d)",
+            req.data.run_id,
+            len(artifacts),
+        )
+        return ServiceResponse(success=True, data=EmptyData())
+
+    # ====================================================
+    # 3. Capture API
+    # ====================================================
 
     def _srv_append_capture(
         self, req: ServiceRequest[AppendCalibrationCaptureReq]
@@ -292,10 +339,8 @@ class CalibrationHandlers:
                 self._reg.objects.put(primary_blob_key, blob_bytes)
             except Exception as e:
                 logger.exception("ObjectStore.put 실패 (key=%s)", primary_blob_key)
-                return ServiceResponse(
-                    success=False, message=f"blob put 실패: {e}"
-                )
-            now = time.time()
+                return ServiceResponse(success=False, message=f"blob put 실패: {e}")
+            now = datetime.now(UTC)
             artifacts.append(
                 CalibrationCaptureArtifactRecord(  # type: ignore[call-arg]
                     capture_id=0,  # repo 가 INSERT 시 채움
@@ -323,7 +368,8 @@ class CalibrationHandlers:
                     self._reg.objects.delete(a.blob_key)
                 except Exception:
                     logger.exception(
-                        "RDB rollback 후 orphan cleanup 실패: %s", a.blob_key,
+                        "RDB rollback 후 orphan cleanup 실패: %s",
+                        a.blob_key,
                     )
             return ServiceResponse(success=False, message=str(e))
 
@@ -356,92 +402,23 @@ class CalibrationHandlers:
             data=DeleteLastCalibrationCaptureRes(deleted_pose_index=pose_index),
         )
 
-    def _srv_get_in_progress_run(
-        self, req: ServiceRequest[GetInProgressCalibrationRunReq]
-    ) -> ServiceResponse[GetInProgressCalibrationRunRes]:
-        with self._reg.rdb.session() as repos:
-            result = repos.calibration.get_in_progress_run(
-                req.data.robot_id, req.data.kind
-            )
-        if result is None:
-            return ServiceResponse(
-                success=True, data=GetInProgressCalibrationRunRes(found=False)
-            )
-        run, captures = result
-        return ServiceResponse(
-            success=True,
-            data=GetInProgressCalibrationRunRes(found=True, run=run, captures=captures),
-        )
-
-    def _srv_delete_cal_run(
-        self, req: ServiceRequest[DeleteCalibrationRunReq]
-    ) -> ServiceResponse[EmptyData]:
-        # ObjectStore blob 자리 RDB cascade 안 따라옴 → 별도 cleanup.
-        with self._reg.rdb.session() as repos:
-            artifacts = repos.calibration.list_run_artifacts(req.data.run_id)
-            repos.calibration.delete_run(req.data.run_id)
-        for a in artifacts:
-            try:
-                self._reg.objects.delete(a.blob_key)
-            except Exception:
-                logger.debug(
-                    "artifact %s delete skip (%s)", a.kind, a.blob_key,
-                )
-        logger.info(
-            "DELETE_CAL_RUN: run_id=%d (artifacts=%d)",
-            req.data.run_id, len(artifacts),
-        )
-        return ServiceResponse(success=True, data=EmptyData())
-
-    def _srv_mark_cal_run_ready(
-        self, req: ServiceRequest[MarkCalibrationRunReadyReq]
-    ) -> ServiceResponse[MarkCalibrationRunReadyRes]:
-        try:
-            with self._reg.rdb.session() as repos:
-                run = repos.calibration.mark_run_ready(req.data.run_id)
-        except (KeyError, ValueError) as e:
-            return ServiceResponse(success=False, message=str(e))
-        logger.info(
-            "MARK_CAL_RUN_READY: run_id=%d (robot=%s, kind=%s)",
-            req.data.run_id, run.robot_id, run.kind,
-        )
-        return ServiceResponse(
-            success=True, data=MarkCalibrationRunReadyRes(run=run)
-        )
-
     def _srv_list_run_captures(
         self, req: ServiceRequest[ListRunCapturesReq]
     ) -> ServiceResponse[ListRunCapturesRes]:
         with self._reg.rdb.session() as repos:
             captures = repos.calibration.list_captures(req.data.run_id)
-        return ServiceResponse(
-            success=True, data=ListRunCapturesRes(captures=captures)
-        )
+        return ServiceResponse(success=True, data=ListRunCapturesRes(captures=captures))
 
-    def _srv_finalize_cal_run(
-        self, req: ServiceRequest[FinalizeCalibrationRunReq]
-    ) -> ServiceResponse[FinalizeCalibrationRunRes]:
-        try:
-            with self._reg.rdb.session() as repos:
-                result_ids = repos.calibration.finalize_run(
-                    req.data.run_id, req.data.results, req.data.capture_residuals
-                )
-        except KeyError as e:
-            return ServiceResponse(success=False, message=str(e))
-        logger.info(
-            "FINALIZE_CAL_RUN: run_id=%d, result_ids=%s",
-            req.data.run_id, result_ids,
-        )
-        return ServiceResponse(
-            success=True, data=FinalizeCalibrationRunRes(result_ids=result_ids),
-        )
-
-    # ─── Debug artifact helpers ──────────────────────────────────
-    # primary .bin (transport / offline script 용) 외에 같은 폴더에 color.jpg /
-    # depth.png / depth_vis.png / .ply 저장. 사람이 탐색기에서 capture 품질 바로 확인.
+    # ====================================================
+    # 4. Artifact utility (private)
+    # ====================================================
+    # primary .bin (transport / offline script 용) 외에 같은 폴더에
+    # color.jpg / depth.png / depth_vis.png / .ply 저장 — 사람이 탐색기에서
+    # capture 품질 바로 확인. encode/decode 실패는 그 artifact 만 누락
+    # (capture 자체는 성공 처리).
 
     def _save_debug_artifacts(
-        self, primary_blob_key: str, blob_bytes: bytes, now: float
+        self, primary_blob_key: str, blob_bytes: bytes, now: datetime
     ) -> list[CalibrationCaptureArtifactRecord]:
         """primary .bin 옆에 color.jpg + depth.png + depth_vis.png + .ply 저장.
 
@@ -455,7 +432,8 @@ class CalibrationHandlers:
             df = dframe.decode(blob_bytes)
         except Exception:
             logger.warning(
-                "debug artifacts decode 실패 (%s) — primary 만 저장", primary_blob_key,
+                "debug artifacts decode 실패 (%s) — primary 만 저장",
+                primary_blob_key,
             )
             return []
 
@@ -480,9 +458,7 @@ class CalibrationHandlers:
 
         # color.jpg.
         try:
-            ok, jpg = cv2.imencode(
-                ".jpg", df.color_bgr, [cv2.IMWRITE_JPEG_QUALITY, 90]
-            )
+            ok, jpg = cv2.imencode(".jpg", df.color_bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
             if ok:
                 _put("color", ".color.jpg", "image/jpeg", jpg.tobytes())
         except Exception:
@@ -503,9 +479,9 @@ class CalibrationHandlers:
                 z_min = max(int(np.percentile(valid, 2)), 1)
                 z_max = max(int(np.percentile(valid, 98)), z_min + 1)
                 norm = np.clip(
-                    (df.depth_z16.astype(np.float32) - z_min)
-                    / (z_max - z_min) * 255,
-                    0, 255,
+                    (df.depth_z16.astype(np.float32) - z_min) / (z_max - z_min) * 255,
+                    0,
+                    255,
                 ).astype(np.uint8)
                 norm[df.depth_z16 == 0] = 0
                 vis = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
@@ -552,10 +528,16 @@ def _make_ply_binary_rgb(df) -> bytes | None:
         "end_header\n"
     ).encode("ascii")
 
-    dtype = np.dtype([
-        ("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
-        ("r", "u1"), ("g", "u1"), ("b", "u1"),
-    ])
+    dtype = np.dtype(
+        [
+            ("x", "<f4"),
+            ("y", "<f4"),
+            ("z", "<f4"),
+            ("r", "u1"),
+            ("g", "u1"),
+            ("b", "u1"),
+        ]
+    )
     arr = np.empty(n, dtype=dtype)
     arr["x"] = x
     arr["y"] = y

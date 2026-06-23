@@ -23,11 +23,22 @@ from core.transport.zenoh_session import ZenohSession
 def _zenoh_session():
     """GamepadNode → ApplicationNode → BaseNode → ZenohSession.get() 의존.
     test process 의 임시 peer session 1회 init.
+
+    LAN 격리: multicast OFF + connect/listen 빈 list. publish 는 monkeypatch
+    로 fake call_service 가 받음 → 실 wire 안 나가지만 peer 자체도 LAN 의
+    실 robot pi backend 와 격리.
     """
     try:
         ZenohSession.get()
     except Exception:
-        ZenohSession.init({"mode": "peer", "connect": []})
+        ZenohSession.init(
+            {
+                "mode": "peer",
+                "scouting": {"multicast": {"enabled": False}},
+                "connect": [],
+                "listen": [],
+            }
+        )
     yield
 
 

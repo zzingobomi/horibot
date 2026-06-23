@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 import pyrealsense2  # type: ignore[import-not-found]
@@ -101,13 +102,15 @@ def seed_d405_intrinsic_to_storage(
         pipeline.stop()
 
     # storage commit + activate — chessboard 캘과 동일 path.
-    now = time.time()
+    now = datetime.now(UTC)
     run = CalibrationRunRecord(
         robot_id=robot_id,
         started_at=now,
         ended_at=now,
         algorithm="d405_factory",
         algorithm_params={"image_size": image_size},
+        status="success",
+        kind="intrinsic",
     )
     record = IntrinsicResultRecord(  # type: ignore[arg-type]
         run_id=0,

@@ -14,8 +14,8 @@ service handler 들을 node 에 등록. 본 group 의 책임 = scan workflow 도
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from core.transport.application_node import ApplicationNode
@@ -125,7 +125,7 @@ class ScanWorkflowHandlers:
         self, req: ServiceRequest[CreateScanSessionReq]
     ) -> ServiceResponse[CreateScanSessionRes]:
         data = req.data
-        sid = (data.session_id or "").strip() or time.strftime(
+        sid = (data.session_id or "").strip() or datetime.now(UTC).strftime(
             "session_%Y%m%d_%H%M%S"
         )
         with self._reg.rdb.session() as repos:
@@ -140,7 +140,7 @@ class ScanWorkflowHandlers:
             record = ScanSessionRecord(
                 robot_id=data.robot_id,
                 session_id=sid,
-                created_at=time.time(),
+                created_at=datetime.now(UTC),
                 label=data.label,
                 note=data.note,
             )
@@ -217,7 +217,7 @@ class ScanWorkflowHandlers:
                 session_row_id=data.session_row_id,
                 robot_id=session.robot_id,
                 scan_id=scan_id,
-                created_at=time.time(),
+                created_at=datetime.now(UTC),
                 blob_key=blob_key,
                 num_frames=data.num_frames,
                 width=data.width,
@@ -297,10 +297,10 @@ class ScanWorkflowHandlers:
                 )
             # blob_key 자리 RDB lastrowid 모름 — INSERT 후 UPDATE 패턴 X.
             # session_id + created_at 기반 자리 — uniqueness 자리 created_at 으로.
-            created_at = time.time()
+            created_at = datetime.now(UTC)
             blob_key = (
                 f"reconstructions/{session.robot_id}/{session.session_id}/"
-                f"recon_{int(created_at * 1000)}.ply"
+                f"recon_{int(created_at.timestamp() * 1000)}.ply"
             )
             self._reg.objects.put(blob_key, data.blob_bytes)
             record = ReconstructionRecord(

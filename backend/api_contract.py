@@ -154,26 +154,15 @@ PUBLIC_SERVICES: dict[str, ServicePair] = {
         _calibration.HandeyePreviewEnableReq,
         _calibration.HandeyePreviewEnableRes,
     ),
-    # ─ Storage (Phase 1 — 캘 5 service)
-    Service.STORAGE_GET_ACTIVE_CALIBRATION: (
-        _storage.GetActiveCalibrationReq,
-        _storage.GetActiveCalibrationRes,
-    ),
-    Service.STORAGE_LIST_CALIBRATIONS: (
-        _storage.ListCalibrationsReq,
-        _storage.ListCalibrationsRes,
-    ),
+    # ─ Storage Phase 1 — frontend 가 직접 호출하는 service 만 등재 (2개).
+    # 나머지 (GET_ACTIVE / LIST / COMMIT / NEW_CAL_RUN / APPEND_CAPTURE /
+    # DELETE_LAST_CAPTURE / GET_IN_PROGRESS_RUN / DELETE_CAL_RUN /
+    # MARK_CAL_RUN_READY / LIST_RUN_CAPTURES) 는 backend internal —
+    # calibration_node ↔ storage_node 만 호출. frontend 에 노출 X (보안 표면
+    # 축소 + layer 경계). frontend 는 CALIB_* (calibration_node) 통해 간접 접근.
     Service.STORAGE_LIST_CALIBRATION_RUNS: (
         _storage.ListCalibrationRunsReq,
         _storage.ListCalibrationRunsRes,
-    ),
-    Service.STORAGE_LIST_RUN_CAPTURES: (
-        _storage.ListRunCapturesReq,
-        _storage.ListRunCapturesRes,
-    ),
-    Service.STORAGE_COMMIT_CALIBRATION: (
-        _storage.CommitCalibrationReq,
-        _storage.CommitCalibrationRes,
     ),
     Service.STORAGE_ACTIVATE_CALIBRATION: (
         _storage.ActivateCalibrationReq,

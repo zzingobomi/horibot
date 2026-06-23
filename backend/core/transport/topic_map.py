@@ -130,18 +130,16 @@ class Service:
 
     # ─── Draft run / capture-as-you-go (사용자 [캘 시작] flow) ─────
     # [캘 시작] → NEW_CAL_RUN (in_progress run). [캡처] → APPEND_CAPTURE.
-    # [되돌리기] → DELETE_LAST_CAPTURE. [리셋] → DELETE_CAL_RUN. [커밋] →
-    # FINALIZE_CAL_RUN. 부팅 시 GET_IN_PROGRESS_RUN 로 복원.
+    # [되돌리기] → DELETE_LAST_CAPTURE. [리셋] → DELETE_CAL_RUN.
+    # 부팅 시 GET_IN_PROGRESS_RUN 로 복원.
+    # [세션 종료] → MARK_CAL_RUN_READY. 이후 BA finalize 는 calibrate_offline.py
+    # 가 raw sqlite3 로 직접 commit — wire path 없음.
     STORAGE_NEW_CAL_RUN = "horibot/storage/srv/calibration/new_run"
     STORAGE_APPEND_CAPTURE = "horibot/storage/srv/calibration/append_capture"
     STORAGE_DELETE_LAST_CAPTURE = "horibot/storage/srv/calibration/delete_last_capture"
     STORAGE_GET_IN_PROGRESS_RUN = "horibot/storage/srv/calibration/get_in_progress_run"
     STORAGE_DELETE_CAL_RUN = "horibot/storage/srv/calibration/delete_run"
-    # [세션 종료] — in_progress → ready_for_analysis 전이. offline 분석 대기 진입.
     STORAGE_MARK_CAL_RUN_READY = "horibot/storage/srv/calibration/mark_run_ready"
-    # [BA 끝] — ready_for_analysis (or in_progress legacy) → success + Result INSERT.
-    # offline 스크립트가 호출.
-    STORAGE_FINALIZE_CAL_RUN = "horibot/storage/srv/calibration/finalize_run"
     # 임의 run_id 의 captures fetch — offline 스크립트 / 진단 도구 자리.
     STORAGE_LIST_RUN_CAPTURES = "horibot/storage/srv/calibration/list_run_captures"
 

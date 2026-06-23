@@ -162,6 +162,26 @@ capture 자세 1~N → COMPUTE (BA 결과 계산, σ 표시) → COMMIT (Run + R
 
 casing — Python PEP 8 권장 (단어별 capitalize). `RdbStore`/`FilesystemObjectStore` 식. 우리 codebase 의 `ZenohSession`/`PybulletKinematics` 풀스펠 PascalCase 와 정합.
 
+### Timestamp convention
+
+지속(persist) 되는 모든 timestamp 컬럼은 **UTC-aware datetime**.
+
+| 계층 | 타입 |
+|---|---|
+| ORM (`Mapped[...]`) | `DateTime(timezone=True)` |
+| Pydantic Record | `datetime` |
+| API wire (Pydantic JSON) | ISO 8601 string (`"2026-06-22T15:14:23+00:00"`) |
+| 생성 자리 | `datetime.now(UTC)` |
+
+이유 — DBeaver 등 viewer 에서 사람이 *바로* 읽음 (float epoch 자리 변환 SQL 매번 짜야 함). 저장은 UTC 단일 SSOT, 표시만 viewer/locale 자리 KST. SQLite/Postgres 양쪽 dialect 자리 portable (SQLite: ISO 8601 TEXT / Postgres: TIMESTAMPTZ native).
+
+**Unix epoch (float seconds) 는 외부 boundary 자리에서만**:
+- Zenoh wire envelope `timestamp` (live telemetry — Pub/Sub 메시지 그 자체 시각)
+- 외부 protocol / hardware 인터페이스 (예: 카메라 frame timestamp)
+- 내부 elapsed 측정 (`time.time() - t0`)
+
+DB 컬럼 / Pydantic Record 자리 float epoch 박지 말 것. 신규 entity 추가 자리 본 컨벤션 따름.
+
 ## 6. 데이터 모델 — 3계층 + Run vs Result 분리
 
 ### 3계층 분류

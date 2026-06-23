@@ -2,14 +2,57 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Engine, create_engine, event
-from sqlalchemy.orm import DeclarativeBase, Session
+from sqlalchemy import DateTime, Dialect, Engine, create_engine, event
+from sqlalchemy.orm import DeclarativeBase, Mapper, Session
 from sqlalchemy.pool import StaticPool
+from sqlalchemy.types import TypeDecorator
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql import FromClause
+
+
+class UtcDateTime(TypeDecorator[datetime]):
+    """UTC 기준으로 저장·조회되는 datetime 컬럼.
+
+    SQLite 는 PostgreSQL 의 TIMESTAMPTZ 와 같은 timezone-aware datetime 타입을 제공하지 않는다.
+    이 타입은 DB별 datetime 처리 차이를 숨기고 항상 UTC-aware datetime 을 반환한다.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: datetime | None, dialect: Dialect
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    def process_result_value(self, value: Any, dialect: Dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
 
 
 class Base(DeclarativeBase):
-    """모든 ORM 모델의 공통 base."""
+    """모든 ORM 모델의 공통 base.
+
+    SQLAlchemy 는 `__table__`, `__mapper__` 를 런타임에 동적으로 생성한다.
+    pyright 는 이를 인식하지 못하므로 TYPE_CHECKING 용 선언을 추가한다.
+    """
+
+    if TYPE_CHECKING:
+        # SQLAlchemy 가 런타임에 제공하는 속성.
+        # 정적 타입 검사 시 ModelProtocol 만족을 위해 선언한다.
+        __table__: FromClause  # pyright: ignore[reportIncompatibleVariableOverride]
+        __mapper__: Mapper[Any]  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 def make_engine(uri: str) -> Engine:

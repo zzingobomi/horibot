@@ -7,7 +7,13 @@ host_name: pi_motor_sim
 
 zenoh:
   mode: peer
-  connect: []
+  # LAN 격리 — host_pc_sim 의 listen endpoint 로 connect. multicast OFF.
+  # 같은 LAN 의 실 robot pi backend 가 떠있어도 reach X.
+  scouting:
+    multicast:
+      enabled: false
+  listen: []
+  connect: ["tcp/127.0.0.1:7447"]
 
 robots:
   - so101_6dof_0

@@ -1,8 +1,9 @@
 # Node Framework Dogfood Plan
 
 > 본 문서는 [architecture_review_protocol.md](architecture_review_protocol.md) 의 검토 phase 첫 큰 산출물.
-> 새 세션에서 "framework 진행하자" / "system-docs 만들자" / "@service 어디까지 했지" 톤 던지면 본 문서 진입.
-> 결정된 것만 박음. 미정 항목은 §9.
+> **2026-06-25 update — §15 Runtime-centric reframe.** §14 까지의 plan 은 Node 가 최소 단위라는 잘못된 전제. 진짜 깨달음 = Runtime (Process) 이 최소 단위, Module = 기능 묶음. backend_v2/ 폴더 삭제, §15 위에 다시 짬.
+> 새 세션에서 "framework 진행하자" / "Runtime" / "Module" / "Transport adapter" 톤 던지면 본 문서 진입.
+> 결정된 것만 정리. 미정 항목은 §9.
 
 ## 1. 배경
 
@@ -255,15 +256,16 @@ Phase 0 = 위 표 정밀화 + 원칙 fix.
 
 새 세션 진입 시:
 
-1. 본 문서 + [architecture_review_protocol.md](architecture_review_protocol.md) 동시 anchor
-2. Phase 1 / 2 / A 완료 — `@service` / `@subscriber` + composite host (attach_handler) + framework 확장 + JointStateCache 변환 + 호출자 6곳 정리 ✅. test 회귀 0 (dogfood 6 / calibration_e2e 2 / 전체 pytest PASS).
-3. **§5 BaseComponent 다이어그램 폐기** (2026-06-24 두 번째 정정) — hypothetical 진단으로 박은 cargo cult. §13.8 참조.
-4. **Reframe — backend_v2 실험실** (§7.5 / §14) — backend/ 에서 Phase B/C/3/4/5 진행 보류. backend_v2/ 새 폴더 zero-base 박음. Contract First + Binder = 확정, Node 완전 삭제 + Handler/Cache/Worker/Adapter 4분류 = 가설, 코드로 검증.
-5. **다음 진입** = §14 의 backend_v2 단계 — 폴더 박음 / framework 코드 / 첫 component / 며칠 사용 / 4 질문 판정.
-6. 새 코드 작성 전 §6 메타 질문 7 가지 던질 것 (특히 5 — 데코가 계약인가 실행 흐름인가 / 6 — hypothetical 진단 박기 전 코드 grep / 7 — process-local 인가 시스템 layer 인가).
-7. test 짤 때 production code 에 dogfood 박지 말 것 — self-contained dummy class 로 framework 만 검증.
+1. 본 문서 + [architecture_review_protocol.md](architecture_review_protocol.md) 동시 anchor.
+2. **§15 Runtime-centric reframe (2026-06-25)** 가 현재 결정 — Node 가 잘못된 전제, Runtime (Process) 이 최소 단위, Module = 기능 묶음.
+3. **backend_v2/ 폴더 폐기 (2026-06-25)** — Phase 1 MVP 산출물 (framework + 7 test PASS) 이 Node 잘못된 전제 위 코드. §15 reframe 위에 다시 짬.
+4. §14 = history (잘못된 전제 위 plan).
+5. Phase 1 / 2 / A (§14 의 backend/ 변환) — docs 에 완료 기록 있으나 사용자가 이후 discard. main branch 코드에 framework/ 없음 (참고만).
+6. 다음 step = Transport abstraction (§15.7).
+7. 새 코드 작성 전 §6 메타 질문 7 가지 던질 것.
+8. test 짤 때 production code 에 dogfood 넣지 말 것 — self-contained dummy class 로 framework 만 검증.
 
-사용자가 "backend_v2" / "framework 검증" / "Component 분리" 톤 던지면 §14 진입. "framework 진행" / "@publishes" / "system-docs" 톤 던지면 §14 가 그것들을 흡수하므로 §14 로 진입. "BaseComponent" 톤은 §13.8 정정 안내.
+사용자가 "Runtime" / "Module" / "Transport adapter" / "Contract layer" / "distribution is runtime concern" 톤 던지면 §15 진입. "backend_v2" / "Component 4분류" / "Node 삭제" 톤은 §15 reframe 안내 (§14 history). "BaseComponent" 톤은 §13.8 정정 안내.
 
 ## 13. 결정 history (학습 anchor)
 
@@ -287,6 +289,14 @@ Phase 0 = 위 표 정밀화 + 원칙 fix.
 14. **노드 unique 책임 없음 — grouping convention** (2026-06-24) — "노드 왜 필요?" 질문에 처음 답 = deployment / identity / lifecycle / heartbeat / thread 호스트 — 현재 코드 정당화 답. 사용자 reframe: zero-base 면 process / robot / component (Handler/Cache/Worker/Adapter) 가 진짜 unit, 노드는 ROS mental model 유산 = grouping convention. framework 강제 X.
 15. **cost-based reflex 재발 — "이미 개발했음"** (2026-06-24) — Component 분리 박은 후 두 번째 답에서 "분산 + 이미 개발된 코드 + 노드 mental model 자연" 박음. 사용자 정정: "노드 패턴 많이 개발함 이런건 빼고 — 진짜 합리적이면 처음부터 다시 짤 거". cost-based 근거 (메모리 위반) 또 박힘. 정석 / 원칙으로 평가.
 16. **운영 X = 리라이트 cost 작음** (2026-06-24) — 사용자 명확화: 운영 단계 아님. 사용자 없음. 배포 안 함. 즉 "절대 갈아엎지 마라" 계열 조언 해당 X. framework cost << future maintenance cost 시점. 단 *바로 전체 삭제 X*, backend_v2 실험실 박은 후 판정.
+
+17. **Node = 잘못된 전제** (2026-06-25) — §14 까지의 plan 이 "Node 라는 실행 단위가 있다" 전제 위에 서 있음. 진짜 깨달음 = Runtime (Process) 이 최소 단위, Node 가 Runtime 책임을 자기 이름에 가졌던 abstraction. Module + Runtime 분리가 진짜 reframe. §15 참조.
+
+18. **"Local 호출처럼 보이게" 표현 잘못** (2026-06-25) — GPT 와 토론 중 framework 책임 표현이 "service 호출은 로컬 호출처럼 보이게" 였는데 사용자 정정: 핵심은 *통신 계약 (service / topic) 은 동일, transport (local memory / Zenoh) 만 바뀐다*. local memory path 도 transport 의 한 종류.
+
+19. **`.` vs `/` — key path 형태** (2026-06-25) — 표현이 `storage.commit` 같은 객체 메서드 호출이었는데 사용자 정정: 통신 계약 이름은 path (`/storage/commit`). 이미 v2 framework MVP 가 `/` 사용 — 변경 없음.
+
+20. **backend_v2/ 폴더 폐기** (2026-06-25) — 사용자가 폴더 삭제. 이유 = §14 의 Phase 1 산출물 (framework MVP + 7 test PASS) 이 Node 잘못된 전제 위에 서 있는 코드. §15 reframe 위에 다시 짬.
 
 **메타 학습** — *코드 보자마자 메타 질문 던질 것* + *짜기 전 hand-simulate + verification path 사전 검증* + *FastAPI / 다른 framework 차용 시 우리 use case 정당화 박을 것* (cargo cult 회피) + *진단 박기 전 실제 코드 grep* + *데코 박을 자리 — 계약(framework 호출) vs 실행 흐름(객체 호출) 판단 + 검증 가능성 판단* + *카탈로그 / 옵션만 던지지 말고 자체 입장 + 근거 박을 것* + *cost-based reflex 재발 주의 (메모리 박혀 있어도 두 번 박음)* + *Zenoh pub/sub 본질 = 여러 구독 OK, ROS-think (중앙 상태 model) reflex 차단*.
 
@@ -476,5 +486,157 @@ backend_v2 자체 자체 완성 박힌 후 폐기:
 **Case B — backend_v2 별로 (백업)**:
 - backend_v2 폐기
 - backend/ 그대로 + framework 부분 강화 (Phase B/C 자체 자체 backend/ 안 자체 자체)
+
+### 14.9 폐기 alert (2026-06-25)
+
+§14 전체 plan 이 **잘못된 전제** 위에 서 있음 — Node 가 최소 단위 가정. 진짜 깨달음 = **Runtime (Process) 이 최소 단위, Module = 기능 묶음** (§15 참조). backend_v2/ 폴더 (Phase 1 MVP 산출물 + 7 test PASS) 를 사용자가 삭제 (2026-06-25). §15 reframe 위에 다시 짬.
+
+§14.5 의 4분류 가설 (Handler / Cache / Worker / Adapter) 은 §15 에서 *Module 의 유형 힌트* 로 위치 변경 — framework 는 종류 모름 (duck typing).
+
+§14.6 의 Architecture detail (BaseNode 폐기 / Component 4분류 / Heartbeat 1개 등) 은 §15 의 Contract / Runtime / Transport 3 layer 안 흡수되거나 재배치.
+
+## 15. Runtime-centric Reframe (2026-06-25)
+
+### 15.1 잘못된 전제 발견
+
+§14 까지의 plan 의 전제 = "Node 라는 실행 단위가 있고, BaseNode 가 그 실행 단위의 공통 기능을 제공해야 한다". 이 전제 위에서 자연스럽게:
+
+- BaseNode 가 bind 관리
+- BaseNode 가 decorator 수집
+- BaseNode 가 lifecycle 관리
+- Node 가 서비스/토픽 제공자
+- Node 를 없애면 싱글톤은? 실행 단위는?
+
+모두 *Node 가 근본 개념* 가정 위에 서 있는 질문.
+
+진짜 물어야 할 질문 = **"이 시스템에서 배포/실행의 최소 단위가 무엇인가?"**
+
+답 = **Process / Runtime / Deployment Unit**. Node 가 *Runtime 의 책임을 자기 이름에 가졌던 잘못된 abstraction*. Module 과 Runtime 이 한 클래스에 묶여 있었음.
+
+### 15.2 새 사고
+
+```
+Runtime (Process)
+ |
+ +-- Module (Service Provider)
+ |
+ +-- Module (Service Provider)
+ |
+ +-- Module (Subscriber)
+```
+
+- **Module** = 기능 묶음. `@service` / `@subscriber` / `@publishes` 가진 함수 보유. plain class.
+- **Runtime** = 실행 컨테이너. lifecycle / transport 연결 / registry / DI / shutdown / thread 관리.
+
+"Node 삭제" 의 진짜 의미 = **기능 제공자 (Module) 와 실행 컨테이너 (Runtime) 분리**.
+
+### 15.3 Framework 핵심 책임
+
+**"같은 코드가 어디 배치되든 그대로 동작하게 만들기"**
+
+개발자가 절대 신경 쓰지 않아야 함:
+
+- 같은 process 냐?
+- 다른 process 냐?
+- 다른 장비냐?
+- Zenoh 쓰냐?
+
+모두 framework 내부 결정. 한 줄 요약: **"distribution is not a code concern, it is a runtime concern"**.
+
+### 15.4 Contract / Runtime / Transport 분리
+
+```
+Contract (계약 — @service / @subscriber / @publishes)
+    ↓
+Runtime (Module 등록 + lifecycle + Transport 선택)
+    ↓
+Transport (계약을 만족시키는 매체)
+    ├── Local memory (같은 process)
+    └── Zenoh (다른 process / 다른 장비)
+```
+
+핵심:
+
+- **Service / Topic = 통신 추상화 계약**, key 는 path 형태 (`/storage/commit`, `/camera/frame`)
+- **Zenoh = 그 계약을 만족시키는 외부 transport**
+- **Local memory path 도 transport 의 한 종류** — 같은 process 의 provider 는 direct dispatch (serialize 없음)
+- 어느 transport 쓸지 = **Runtime 의 결정** (provider 위치 resolver)
+
+### 15.5 4분류 (Handler / Cache / Worker / Adapter) 의 위치
+
+§14.5 의 4분류 가설은 **Module 의 유형 힌트** 로 위치 이동. framework 자체는 Module 종류 모름 (duck typing) — Lifecycle protocol (`start()` / `stop()`) 만 호출. 4분류는 *사용자 mental model* + *system-docs viewer 의 분류* 도구.
+
+### 15.6 v2 framework MVP 의 현재 상태
+
+| Layer | 상태 |
+|---|---|
+| Contract (`@service` / `@subscriber` / `@publishes`) | ✅ 구현됨 (backend_v2/ 박혔던 것, 폴더 삭제) |
+| Module direct wire 등록 (`bind_decorated`) | ✅ 구현됨 |
+| **Transport abstraction** (local vs Zenoh) | ❌ Zenoh hardcoded |
+| **Runtime resolver** (provider 위치) | ❌ |
+| **Lifecycle protocol** (start/stop) | ❌ |
+| **DI / config** | ❌ |
+
+진짜 reframe 핵심 — `bind_decorated` 가 지금 Zenoh 직접 호출. 같은 process call 도 Zenoh 통과 = wire serialize/deserialize. 이게 *distribution is runtime concern* 원칙 위반.
+
+backend_v2/ 폴더 (2026-06-25 사용자 삭제) — 위 ✅ 두 layer 가 §15 reframe 위에 다시 짜짐 (모양은 거의 동일, transport 만 추상화).
+
+### 15.7 다음 step
+
+step 후보:
+
+1. **Transport interface** — `class Transport(Protocol)`:
+   - `call(key, req) → res`
+   - `publish(key, msg)`
+   - `subscribe(key, cb)`
+   - `register_service(key, handler)`
+2. **ZenohTransport** — 기존 v2 binding 의 동작 wrapping
+3. **LocalTransport** — process-local registry (key → handler dict), direct dispatch, serialize 없음
+4. **bind_decorated** → Transport 호출 (Zenoh 직접 X)
+5. **Runtime** — config 받은 후 Module instantiate + transport 선택 (provider 위치 resolver)
+6. test — 같은 7 case 가 ZenohTransport + LocalTransport 둘 다 PASS
+
+진짜 첫 step = Transport abstraction. 그 위에 Runtime / Lifecycle / DI 쌓는다.
+
+### 15.8 motion 영역에서 검증된 마찰점
+
+§14 reframe 이후 backend/ motion_node 의 design decision 8 개를 problem statement 관점에서 추출 (2026-06-25). v2 의 Module + Runtime 분리 모델이 그 마찰을 어떻게 푸는지 검증:
+
+1. **같은 도메인 4 entrypoint (Move/Servo/Jog/Task) × N 비즈니스 함수 = N×4 wrapper boilerplate** — backend/ 의 `_make_jog_j_topic_subscriber` / `_make_jog_j_service_handler` 등 8+ wrapper factory.
+   → v2 풀이 = 한 method 에 데코 여러 개 (`@service + @subscriber`). signature 는 비즈니스 데이터만 (envelope X, error 는 raise). framework 가 entrypoint shape 변환. wrapper 8+ → 0 줄.
+
+2. **Callback 순서 보장 X** — MOTOR_STATE_JOINT 를 JointStateCache + `_on_motor_state_publish_tcp` 둘 다 subscribe, 순서 보장 안 됨 → motion_node 가 cache 무시하고 직접 raw parse.
+   → v2 풀이 = derived read model Module (`TcpStateRead` — JointState 받음 → FK → MotionTcpState publish). motion command handler 와 분리.
+
+3. **한 클래스에 두 책임** — MotionNode = motion command handler + derived state publisher.
+   → v2 풀이 = Module 분리.
+
+4. **Service envelope vs topic raw 두 unwrap** — `req: ServiceRequest[JogJReq]` 와 `req: JogJReq` 두 signature.
+   → v2 풀이 = framework 가 envelope 흡수. handler signature 는 둘 다 raw 비즈니스.
+
+5. **JointStateCache.subscribe(node, robot_id) 패턴** — singleton 인데 어느 robot 받을지 모름.
+   → v2 풀이 = 이미 해결 (wildcard subscribe + robot_id callback inject).
+
+6. **self.r(template) 매 호출 명시** — service 등록 8 줄 + topic 등록 2 줄 + publish 3 줄 전부 명시.
+   → v2 풀이 = framework 자동 (이미 부분 해결).
+
+7. **100Hz publish boilerplate** — `self.publish(self.r(Topic.X), MotorCmd(...))`.
+   → v2 풀이 = stateless `publish(Topic.X, msg, robot_id=...)` (이미 해결).
+
+8. **Cross-process calibration apply** — start() 안 storage fetch + 자기 process 객체 mutate.
+   → v2 풀이 = Module lifecycle hook `start()` 그대로 OR `CalibrationApplier` Module.
+
+가장 큰 검증 — **MotionNode 가 한 일 = framework + Module 사이에 끼어있던 wrapper layer**. framework 가 두꺼워지고 Module 이 직접 wire 등록하면 Node 자체가 할 일 없음. §14 의 "Node 삭제" 결론을 코드로 재확인 → §15 Runtime-centric reframe 도달.
+
+### 15.9 새 anchor
+
+새 세션 진입 시:
+
+1. 본 §15 anchor
+2. §14 = history (잘못된 전제 위 plan — 폐기)
+3. §13 결정 history 17~20 — Node 잘못된 전제 / "Local 호출처럼" 표현 잘못 / `.` vs `/` / backend_v2/ 폐기
+4. backend_v2/ 폴더 없음 — 새로 시작
+
+사용자가 "Runtime" / "Module" / "Transport adapter" / "Contract layer" / "distribution is runtime concern" 톤 던지면 §15 진입. "backend_v2" / "Component 4분류" / "Node 삭제" 톤은 §15 reframe 안내 (§14 history).
 
 default plan = Case A. Case B 는 만약 4 질문 결과 NO 가 많을 때 backup.

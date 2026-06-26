@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "eclipse-zenoh>=1.0.0",
     "pydantic>=2.9.0",
+    "msgspec>=0.18.0",
 ]
 
 [dependency-groups]

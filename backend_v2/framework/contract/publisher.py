@@ -1,47 +1,80 @@
-"""@publishes 데코 — class-level event publish self-declaration + topic 변환.
+"""publisher / event encoding 자세.
 
-사용 (spec §3.2):
-    @publishes(CalibrationActivated, CalibrationCommitted)
-    class CalibrationModule:
-        @service
-        def activate(self, req: ActivateRequest) -> ActivateResponse:
-            ...
-            self.publish(CalibrationActivated(...))
+두 원칙 (spec §3.0):
+- explicit at every use site — publisher (`runtime.publish(wire_key, event)`) /
+  subscriber (`@subscriber(wire_key)`) / Mirror (`change_event_topic=`) 모두 wire_key 직접 박음
+- typed — `StrEnum` value 박음 (raw str / class attribute lookup 자세 X)
 
-self-doc + future contract.ts auto-emit 용. self.publish 의 impl + binding 은
-Runtime (Step 3) 의 책임 — 본 모듈은 declaration spec 만.
+event class 자세 *pure Pydantic data* — `__wire_topic__` 자세 박지 X.
+wire_key 정의 자리 = Module 별 `wire_keys.py` 의 `StrEnum` (유일).
+
+wire encoding 자세 (spec §3.4) — Pydantic + msgpack layered:
+- Module 자세 Pydantic schema 만 알음 (`event.model_dump()` 자세 dict)
+- Transport boundary 자세 msgpack 박음 (`msgspec.msgpack` 자세 native bytes)
+- `bytes` field 자세 base64 overhead 0 (JPEG / depth zstd / pointcloud 자리 영향 큼)
+
+`@publishes((wire_key, event_cls), ...)` 자세 — Module 자세 publish 박는 pair 자세 self-declare:
+- self-doc — Module 자세 어떤 wire_key + event 자세 publish 박는지 명시
+- contract.ts 자동 generate 자세 활용 (frontend type emit)
+- 실 publish 강제 X (declare 안 된 자세도 publish 가능)
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Callable, TypeVar
 
+import msgspec
 from pydantic import BaseModel
 
 C = TypeVar("C", bound=type)
+T = TypeVar("T", bound=BaseModel)
 
 
 @dataclass(frozen=True)
 class PublishesSpec:
-    """Module class 박힌 declaration — 어떤 event 들을 publish 하나."""
-
-    event_classes: tuple[type[BaseModel], ...]
+    """Module 자세 publish 박는 (wire_key, event_cls) pair 자세 박힘."""
+    pairs: tuple[tuple[str, type[BaseModel]], ...]
 
 
 _PUBLISHES_ATTR = "_publishes_spec"
 
 
-def publishes(*event_classes: type[BaseModel]) -> Callable[[C], C]:
-    """class-level 데코 — Module 이 publish 할 event class 들 self-declare.
+def publishes(
+    *pairs: tuple[str, type[BaseModel]],
+) -> Callable[[C], C]:
+    """class-level 데코 — Module 이 publish 할 (wire_key, event_cls) pair 자세 self-declare.
 
-    실제 publish 강제 X — declare 안 된 event 도 self.publish 가능 (단 contract
-    surface 누락 = self-doc 약화). 운영 strict 모드는 Runtime 옵션 자리.
+    각 pair = `(WireKey.X, EventCls)` tuple. StrEnum value + Pydantic BaseModel subclass.
+
+    실제 publish 강제 X — declare 안 된 pair 자세 publish 박아도 동작.
+    self-doc / contract.ts 자세 활용.
+
+    사용:
+        @publishes(
+            (CalibrationEventTopic.ACTIVATED, CalibrationActivated),
+            (CalibrationEventTopic.COMMITTED, CalibrationCommitted),
+        )
+        class CalibrationModule: ...
     """
+    # validate
+    normalized: list[tuple[str, type[BaseModel]]] = []
+    for i, pair in enumerate(pairs):
+        if not isinstance(pair, tuple) or len(pair) != 2:
+            raise TypeError(
+                f"@publishes pair {i}: (wire_key, event_cls) tuple 박혀있어야 함 "
+                f"(got {pair!r})"
+            )
+        wire_key, event_cls = pair
+        if not isinstance(event_cls, type) or not issubclass(event_cls, BaseModel):
+            raise TypeError(
+                f"@publishes pair {i}: event_cls 자세 Pydantic BaseModel subclass "
+                f"여야 함 (got {event_cls})"
+            )
+        normalized.append((str(wire_key), event_cls))
 
     def decorator(cls: C) -> C:
-        spec = PublishesSpec(event_classes=tuple(event_classes))
+        spec = PublishesSpec(pairs=tuple(normalized))
         setattr(cls, _PUBLISHES_ATTR, spec)
         return cls
 
@@ -52,38 +85,19 @@ def get_publishes_spec(cls: type) -> PublishesSpec | None:
     return getattr(cls, _PUBLISHES_ATTR, None)
 
 
-# ─── event class → topic key 변환 ─────────────────────────
-
-# CamelCase / acronym → snake_case 변환 — 두 단계 regex 정석:
-#   1) `XYZw` 형태 (acronym + 새 단어) → `XYZ_w` (마지막 대문자 앞 분리)
-#   2) `xY` / `9Y` 형태 (소문자/숫자 + 대문자) → `x_Y`
-# 결과 lower → `httpresponse` X, `http_response` O.
-_ACRONYM_BOUNDARY = re.compile(r"([A-Z]+)([A-Z][a-z])")
-_WORD_BOUNDARY = re.compile(r"([a-z\d])([A-Z])")
-
-
-def event_to_topic(event_cls: type[BaseModel]) -> str:
-    """event class → topic string.
-
-    형식: `event/{snake_case_of_class_name}`
-    예:
-        `CalibrationActivated` → `event/calibration_activated`
-        `HTTPResponse`         → `event/http_response`
-
-    naming collision 회피는 class name unique 성에 의존. 같은 base name 박지 말 것
-    (예: `calibration.Activated` 와 `motion.Activated` 둘 다 `event/activated` 충돌).
-    """
-    name = event_cls.__name__
-    s1 = _ACRONYM_BOUNDARY.sub(r"\1_\2", name)
-    s2 = _WORD_BOUNDARY.sub(r"\1_\2", s1)
-    return f"event/{s2.lower()}"
+# ─── wire encoding (Pydantic + msgpack layered) ───────────────────────
 
 
 def encode_event(event: BaseModel) -> bytes:
-    """event 인스턴스 → wire bytes (Pydantic JSON)."""
-    return event.model_dump_json(by_alias=True).encode()
+    """event instance → wire bytes (msgpack).
+
+    Pydantic `model_dump()` 자세 dict 로 schema validation 자세 거친 후,
+    msgspec.msgpack 자세 native bytes pass-through 자세 wire 보냄.
+    `bytes` field 자세 base64 overhead 0.
+    """
+    return msgspec.msgpack.encode(event.model_dump())
 
 
-def decode_event(event_cls: type[BaseModel], payload: bytes) -> BaseModel:
-    """wire bytes → event 인스턴스 (Pydantic JSON parse + validation)."""
-    return event_cls.model_validate_json(payload)
+def decode_event(event_cls: type[T], payload: bytes) -> T:
+    """wire bytes → event instance (msgpack → Pydantic validate). 자세 generic."""
+    return event_cls.model_validate(msgspec.msgpack.decode(payload))

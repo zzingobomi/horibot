@@ -1,17 +1,23 @@
-"""tests/framework/test_contract.py — Step 2 검증 (§11).
+"""tests/framework/test_contract.py — Step 2 검증 (§11) + retroactive patch v2 (§3.0).
 
-검증 두 case:
-1. @service 박은 메소드 inspect → ServiceSpec 추출.
-2. ZenohTransport 위에 service register + same-session call round-trip.
+두 원칙 (§3.0):
+- explicit at every use site — service / subscriber / publish / Mirror 모두 wire_key 직접 박음
+- typed — StrEnum value (raw str / __wire_topic__ class attribute lookup 자세 X)
+- event class 자세 = pure Pydantic data (wire 자세 정보 박지 X)
 
-추가 surface — @subscriber / @publishes / event_to_topic / envelope wrap+unwrap +
-event publish/subscribe E2E.
+검증 자세:
+1. @service(wire_key) factory + ServiceSpec.wire_key field
+2. @subscriber(wire_key) factory + SubscriberSpec.wire_key + event_cls (type hint)
+3. @publishes((wire_key, event_cls), ...) pairs 자세 self-doc
+4. encode/decode = msgpack (native bytes pass-through)
+5. ZenohTransport 위 service + event E2E
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from enum import StrEnum
 
 import pytest
 from pydantic import BaseModel
@@ -20,7 +26,6 @@ from framework.contract.envelope import ServiceRequest, ServiceResponse
 from framework.contract.publisher import (
     decode_event,
     encode_event,
-    event_to_topic,
     get_publishes_spec,
     publishes,
 )
@@ -49,7 +54,20 @@ def transport():
     t.close()
 
 
-# ─── Test fixtures — domain class ────────────────────────
+# ─── Test fixtures — wire keys (StrEnum) + domain class ─────────
+
+
+class EchoServiceKey(StrEnum):
+    ECHO = "srv/test/echo"
+    FAIL = "srv/test/fail"
+
+
+class GreetEventTopic(StrEnum):
+    GREETED = "event/test/greeted"
+
+
+class BlobStreamTopic(StrEnum):
+    BLOB = "stream/test/blob"
 
 
 class EchoRequest(BaseModel):
@@ -61,31 +79,52 @@ class EchoResponse(BaseModel):
 
 
 class GreetEvent(BaseModel):
+    """pure Pydantic data — wire 자세 정보 박지 X (§3.0 Option A)."""
     name: str
 
 
-# ─── @service spec extraction ────────────────────────────
+class BlobFrame(BaseModel):
+    """msgpack native bytes pass-through 검증 자세 — bytes field 박음."""
+    timestamp: float
+    payload: bytes
 
 
-def test_service_decorator_extracts_spec():
+# ─── @service factory — wire_key + ServiceSpec ───────────────────
+
+
+def test_service_decorator_extracts_spec_with_wire_key():
     class Mod:
-        @service
+        @service(EchoServiceKey.ECHO)
         def echo(self, req: EchoRequest) -> EchoResponse:
             return EchoResponse(echoed=req.message)
 
     spec = get_service_spec(Mod.echo)
     assert spec is not None
     assert spec.method_name == "echo"
+    assert spec.wire_key == "srv/test/echo"
     assert spec.req_cls is EchoRequest
     assert spec.res_cls is EchoResponse
     assert is_service(Mod.echo)
+
+
+def test_service_decorator_accepts_raw_string_key():
+    """StrEnum 추천이지만 raw str 도 받음 — 단 사용자 코드 자세 StrEnum."""
+
+    class Mod:
+        @service("srv/test/raw_key")
+        def echo(self, req: EchoRequest) -> EchoResponse:
+            return EchoResponse(echoed=req.message)
+
+    spec = get_service_spec(Mod.echo)
+    assert spec is not None
+    assert spec.wire_key == "srv/test/raw_key"
 
 
 def test_service_decorator_invalid_req_type_raises():
     with pytest.raises(TypeError, match="req parameter"):
 
         class Mod:
-            @service
+            @service(EchoServiceKey.ECHO)
             def bad(self, req: int) -> EchoResponse:  # type: ignore[type-var]
                 return EchoResponse(echoed="x")
 
@@ -94,7 +133,7 @@ def test_service_decorator_missing_return_type_raises():
     with pytest.raises(TypeError, match="return type hint"):
 
         class Mod:
-            @service
+            @service(EchoServiceKey.ECHO)
             def bad(self, req: EchoRequest):  # no return annotation
                 return EchoResponse(echoed="x")
 
@@ -103,81 +142,115 @@ def test_service_decorator_wrong_arity_raises():
     with pytest.raises(TypeError, match="self \\+ req"):
 
         class Mod:
-            @service
+            @service(EchoServiceKey.ECHO)
             def bad(self, a: EchoRequest, b: EchoRequest) -> EchoResponse:  # type: ignore[type-arg]
                 return EchoResponse(echoed="x")
 
 
-# ─── @subscriber spec extraction ─────────────────────────
+# ─── @subscriber factory — wire_key + SubscriberSpec ─────────────
 
 
-def test_subscriber_decorator_extracts_spec():
+def test_subscriber_decorator_extracts_spec_with_wire_key():
     class Mod:
-        @subscriber
+        @subscriber(GreetEventTopic.GREETED)
         def on_greet(self, event: GreetEvent) -> None:
             _ = event
 
     spec = get_subscriber_spec(Mod.on_greet)
     assert spec is not None
     assert spec.method_name == "on_greet"
+    assert spec.wire_key == "event/test/greeted"
     assert spec.event_cls is GreetEvent
     assert is_subscriber(Mod.on_greet)
+
+
+def test_subscriber_decorator_accepts_raw_string_key():
+    class Mod:
+        @subscriber("event/test/raw_key")
+        def on_greet(self, event: GreetEvent) -> None:
+            _ = event
+
+    spec = get_subscriber_spec(Mod.on_greet)
+    assert spec is not None
+    assert spec.wire_key == "event/test/raw_key"
 
 
 def test_subscriber_decorator_invalid_event_type_raises():
     with pytest.raises(TypeError, match="event parameter"):
 
         class Mod:
-            @subscriber
+            @subscriber(GreetEventTopic.GREETED)
             def bad(self, event: str) -> None:  # type: ignore[type-var]
                 _ = event
 
 
-# ─── @publishes class-level spec ─────────────────────────
+def test_subscriber_decorator_wrong_arity_raises():
+    with pytest.raises(TypeError, match="self \\+ event"):
+
+        class Mod:
+            @subscriber(GreetEventTopic.GREETED)
+            def bad(self, a: GreetEvent, b: GreetEvent) -> None:
+                _ = a, b
 
 
-def test_publishes_decorator_records_event_classes():
-    @publishes(GreetEvent)
+# ─── @publishes class-level spec — pairs ──────────────────────
+
+
+def test_publishes_decorator_records_pairs():
+    @publishes((GreetEventTopic.GREETED, GreetEvent))
     class Mod:
         pass
 
     spec = get_publishes_spec(Mod)
     assert spec is not None
-    assert spec.event_classes == (GreetEvent,)
+    assert spec.pairs == (("event/test/greeted", GreetEvent),)
 
 
-def test_publishes_decorator_multi_events():
-    class EventA(BaseModel):
-        x: int
-
-    class EventB(BaseModel):
-        y: int
-
-    @publishes(EventA, EventB)
+def test_publishes_decorator_multi_pairs():
+    @publishes(
+        (GreetEventTopic.GREETED, GreetEvent),
+        (BlobStreamTopic.BLOB, BlobFrame),
+    )
     class Mod:
         pass
 
     spec = get_publishes_spec(Mod)
     assert spec is not None
-    assert set(spec.event_classes) == {EventA, EventB}
+    assert set(spec.pairs) == {
+        ("event/test/greeted", GreetEvent),
+        ("stream/test/blob", BlobFrame),
+    }
 
 
-# ─── event_to_topic ──────────────────────────────────────
+def test_publishes_decorator_invalid_pair_raises():
+    with pytest.raises(TypeError, match="event_cls"):
+
+        @publishes((GreetEventTopic.GREETED, int))  # type: ignore[arg-type]
+        class Mod:
+            pass
 
 
-def test_event_to_topic_camel_to_snake():
-    class CalibrationActivated(BaseModel):
-        pass
-
-    assert event_to_topic(CalibrationActivated) == "event/calibration_activated"
+# ─── encode / decode — msgpack native bytes pass-through ────────
 
 
-def test_event_to_topic_acronym_safe():
-    class HTTPResponse(BaseModel):
-        pass
+def test_encode_decode_round_trip():
+    evt = GreetEvent(name="alice")
+    wire = encode_event(evt)
+    restored = decode_event(GreetEvent, wire)
+    assert isinstance(restored, GreetEvent)
+    assert restored.name == "alice"
 
-    # 연속 대문자 (acronym) 는 한 단어로 묶음 — HTTPResponse → http_response
-    assert event_to_topic(HTTPResponse) == "event/http_response"
+
+def test_encode_native_bytes_no_base64_overhead():
+    """msgpack 자세 native bytes pass-through — JPEG/depth 자세 base64 overhead 0."""
+    payload = b"\x00\x01\x02\xff" * 1024  # 4KB binary
+    evt = BlobFrame(timestamp=1.0, payload=payload)
+    wire = encode_event(evt)
+    assert len(wire) < len(payload) + 200, (
+        f"wire size {len(wire)} 자세 base64 overhead 의심 (payload {len(payload)})"
+    )
+    restored = decode_event(BlobFrame, wire)
+    assert restored.payload == payload
 
 
 # ─── envelope wire round-trip ────────────────────────────
@@ -191,12 +264,11 @@ def test_envelope_wrap_unwrap():
 
 
 # ─── E2E — Step 2 검증 핵심 ─────────────────────────────
-# @service 메소드를 ZenohTransport 위에 wire + same-session call round-trip.
 
 
 async def test_service_end_to_end_with_transport(transport: ZenohTransport):
     class EchoModule:
-        @service
+        @service(EchoServiceKey.ECHO)
         def echo(self, req: EchoRequest) -> EchoResponse:
             return EchoResponse(echoed=f"got:{req.message}")
 
@@ -204,11 +276,8 @@ async def test_service_end_to_end_with_transport(transport: ZenohTransport):
     spec = get_service_spec(mod.echo)
     assert spec is not None
 
-    # Runtime (Step 3) 가 박을 wiring 의 manual 버전.
-    # ServiceRequest envelope unwrap → handler 호출 → ServiceResponse envelope wrap.
-    # Zenoh key expression — leading slash / empty chunk 금지.
-    # 실 시스템 key 는 `horibot/{robot_id}/{module}/{method}` 형식 (spec §4.1).
-    key = f"test/svc/{spec.method_name}"
+    # wire key = ServiceSpec.wire_key (explicit + typed).
+    key = spec.wire_key
 
     def handler_bytes(req_bytes: bytes) -> bytes:
         envelope = ServiceRequest[EchoRequest].model_validate_json(req_bytes)
@@ -236,26 +305,23 @@ async def test_service_end_to_end_with_transport(transport: ZenohTransport):
 async def test_service_handler_exception_propagates_via_transport(
     transport: ZenohTransport,
 ):
-    """@service 의 handler 가 raise → caller 측 RemoteError (transport layer 가 wire)."""
+    """@service handler raise → caller 측 RemoteError (transport layer wire)."""
 
     class NotFound(Exception):
         pass
 
     class Mod:
-        @service
+        @service(EchoServiceKey.FAIL)
         def fail(self, req: EchoRequest) -> EchoResponse:
             raise NotFound(f"no entry for {req.message}")
 
     mod = Mod()
     spec = get_service_spec(mod.fail)
     assert spec is not None
-    # Zenoh key expression — leading slash / empty chunk 금지.
-    # 실 시스템 key 는 `horibot/{robot_id}/{module}/{method}` 형식 (spec §4.1).
-    key = f"test/svc/{spec.method_name}"
+    key = spec.wire_key
 
     def handler_bytes(req_bytes: bytes) -> bytes:
         envelope = ServiceRequest[EchoRequest].model_validate_json(req_bytes)
-        # spec.handler raise → 그대로 propagate, transport 가 reply_err.
         result = spec.handler(mod, envelope.data)
         return result.model_dump_json().encode()
 
@@ -279,12 +345,12 @@ async def test_service_handler_exception_propagates_via_transport(
 
 
 def test_event_publish_subscribe_end_to_end(transport: ZenohTransport):
-    """@subscriber spec + event_to_topic + encode/decode 가 transport 위에서 동작."""
+    """@subscriber(wire_key) + msgpack encode/decode E2E."""
     received: list[GreetEvent] = []
     done = threading.Event()
 
     class Mod:
-        @subscriber
+        @subscriber(GreetEventTopic.GREETED)
         def on_greet(self, event: GreetEvent) -> None:
             received.append(event)
             done.set()
@@ -292,19 +358,52 @@ def test_event_publish_subscribe_end_to_end(transport: ZenohTransport):
     mod = Mod()
     spec = get_subscriber_spec(mod.on_greet)
     assert spec is not None
-
-    topic = event_to_topic(spec.event_cls)
+    assert spec.wire_key == "event/test/greeted"
 
     def callback_bytes(payload: bytes) -> None:
         evt = decode_event(spec.event_cls, payload)
         spec.handler(mod, evt)
 
-    handle = transport.subscribe(topic, callback_bytes)
+    handle = transport.subscribe(spec.wire_key, callback_bytes)
     try:
         time.sleep(0.1)
         evt = GreetEvent(name="alice")
-        transport.publish(topic, encode_event(evt))
+        # publisher 자세 wire_key 직접 박음 (Module 코드 자세 self.runtime.publish(wire_key, evt))
+        transport.publish(str(GreetEventTopic.GREETED), encode_event(evt))
         assert done.wait(timeout=2.0)
         assert received == [GreetEvent(name="alice")]
+    finally:
+        handle.undeclare()
+
+
+def test_event_publish_subscribe_with_bytes_payload(transport: ZenohTransport):
+    """stream/ 자세 bytes field 박힌 event 자세 round-trip — msgpack native pass-through."""
+    received: list[BlobFrame] = []
+    done = threading.Event()
+
+    class Mod:
+        @subscriber(BlobStreamTopic.BLOB)
+        def on_blob(self, event: BlobFrame) -> None:
+            received.append(event)
+            done.set()
+
+    mod = Mod()
+    spec = get_subscriber_spec(mod.on_blob)
+    assert spec is not None
+    assert spec.wire_key == "stream/test/blob"
+
+    def callback_bytes(payload: bytes) -> None:
+        evt = decode_event(spec.event_cls, payload)
+        spec.handler(mod, evt)
+
+    handle = transport.subscribe(spec.wire_key, callback_bytes)
+    try:
+        time.sleep(0.1)
+        binary = b"\x00\x01\x02\xff" * 256  # 1KB binary
+        evt = BlobFrame(timestamp=1.0, payload=binary)
+        transport.publish(str(BlobStreamTopic.BLOB), encode_event(evt))
+        assert done.wait(timeout=2.0)
+        assert len(received) == 1
+        assert received[0].payload == binary
     finally:
         handle.undeclare()

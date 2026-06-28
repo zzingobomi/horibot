@@ -8,6 +8,10 @@ dependencies = [
     "eclipse-zenoh>=1.0.0",
     "pydantic>=2.9.0",
     "msgspec>=0.18.0",
+    "sqlalchemy>=2.0.0",
+    "numpy>=1.26.0",
+    "opencv-python-headless>=4.10.0",
+    "zstandard>=0.22.0",
 ]
 
 [dependency-groups]
@@ -16,6 +20,12 @@ dev = [
     "pyright",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+]
+infra-postgres = [
+    "psycopg[binary]>=3.2.0",
+]
+infra-minio = [
+    "boto3>=1.34.0",
 ]
 
 [tool.uv]
@@ -31,5 +41,5 @@ pythonpath = ["."]
 asyncio_mode = "auto"
 
 [tool.pyright]
-include = ["framework", "infra", "tests"]
+include = ["framework", "infra", "modules", "tests"]
 pythonVersion = "3.11"

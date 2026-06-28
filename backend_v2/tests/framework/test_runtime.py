@@ -1,14 +1,3 @@
-"""tests/framework/test_runtime.py — Step 3 검증 (§11 Step 3).
-
-검증 자세 (§11 Step 3):
-1. 빈 Module + ZenohTransport runtime start → stop 정상
-2. 두 Module + service call 정상 (method reference round-trip)
-3. Module A publish → Module B @subscriber callback 도달
-4. Module A 의 start() 가 Module B 의 service 호출 — register 가 먼저 끝났는지 검증
-5. robot-scoped service register 시 self.robot_id 자세 substitute
-6. caller 의 robot_id= 자세 substitute round-trip
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -125,7 +114,7 @@ async def test_two_modules_service_call(runtime: Runtime):
 
         async def do_call(self):
             self.result = await self.runtime.call(
-                EchoModule.echo, EchoRequest(message="hi")
+                EchoServiceKey.ECHO, EchoRequest(message="hi"), EchoResponse
             )
 
     echo = runtime.add_module(EchoModule)
@@ -150,7 +139,8 @@ async def test_publish_subscriber_round_trip(runtime: Runtime):
             self.runtime = runtime
 
         def emit(self, name: str):
-            self.runtime.publish(GreetEventTopic.GREETED, GreetEvent(name=name))
+            self.runtime.publish(GreetEventTopic.GREETED,
+                                 GreetEvent(name=name))
 
     class SubscriberMod:
         def __init__(self, runtime: ModuleRuntime):
@@ -175,7 +165,7 @@ async def test_publish_subscriber_round_trip(runtime: Runtime):
 
 
 async def test_module_start_calls_other_service(runtime: Runtime):
-    """phase 2 (register) 자세 phase 3 (start) 이전 완료 박힘 검증."""
+    """phase 2 (register) 가 phase 3 (start) 이전 완료 박힘 검증."""
 
     class TargetModule:
         def __init__(self, runtime: ModuleRuntime):
@@ -193,9 +183,9 @@ async def test_module_start_calls_other_service(runtime: Runtime):
             self.result: DoubleResponse | None = None
 
         async def start(self):
-            # phase 3 시점 — TargetModule.double 자세 register 박혀있음
+            # phase 3 시점 — DOUBLE service 가 register 박혀있음
             self.result = await self.runtime.call(
-                TargetModule.double, DoubleRequest(value=21)
+                EchoServiceKey.DOUBLE, DoubleRequest(value=21), DoubleResponse
             )
 
     target = runtime.add_module(TargetModule)
@@ -228,21 +218,23 @@ async def test_robot_scoped_service_substitutes_self_robot_id(
     so101 = runtime.add_module(MotorModule, robot_id="so101_0")
     await runtime.start()
 
-    # caller — robot_id= 자세 substitute
+    # caller — robot_id= 로 substitute
     res_omx = await runtime.module_runtime.call(
-        MotorModule.move_l, MoveLRequest(x=1.0), robot_id="omx_f_0"
+        MotionServiceKey.MOVE_L, MoveLRequest(x=1.0), MoveLResponse,
+        robot_id="omx_f_0",
     )
     res_so = await runtime.module_runtime.call(
-        MotorModule.move_l, MoveLRequest(x=2.0), robot_id="so101_0"
+        MotionServiceKey.MOVE_L, MoveLRequest(x=2.0), MoveLResponse,
+        robot_id="so101_0",
     )
     assert isinstance(res_omx, MoveLResponse) and res_omx.ok
     assert isinstance(res_so, MoveLResponse) and res_so.ok
-    # 각 robot 인스턴스 자세 dispatch 박힘
+    # 각 robot 인스턴스 로 dispatch 박힘
     assert omx.moved_to == 1.0
     assert so101.moved_to == 2.0
 
 
-# ─── 6. caller 자세 robot_id 안 박으면 fail ──────────────────
+# ─── 6. caller 가 robot_id 안 박으면 fail ──────────────────
 
 
 async def test_robot_scoped_call_without_robot_id_raises(runtime: Runtime):
@@ -260,7 +252,7 @@ async def test_robot_scoped_call_without_robot_id_raises(runtime: Runtime):
 
     with pytest.raises(ValueError, match="robot_id"):
         await runtime.module_runtime.call(
-            MotorModule.move_l, MoveLRequest(x=1.0)
+            MotionServiceKey.MOVE_L, MoveLRequest(x=1.0), MoveLResponse,
         )
 
 
@@ -285,7 +277,8 @@ async def test_robot_scoped_event_publish_and_subscribe(runtime: Runtime):
         def __init__(self, runtime: ModuleRuntime):
             self.runtime = runtime
 
-        @subscriber(JoinedEventTopic.JOINED)            # wildcard substitute (transport detail)
+        # wildcard substitute (transport detail)
+        @subscriber(JoinedEventTopic.JOINED)
         def on_joined(self, event: JoinedEvent) -> None:
             received.append(event)
             done.set()
@@ -299,7 +292,7 @@ async def test_robot_scoped_event_publish_and_subscribe(runtime: Runtime):
     assert received == [JoinedEvent(robot_id="omx_f_0", name="alice")]
 
 
-# ─── 8. Module 자세 robot_id 없는데 robot-scoped @service 박으면 fail ──
+# ─── 8. Module 에 robot_id 없는데 robot-scoped @service 박으면 fail ──
 
 
 async def test_robot_scoped_service_without_robot_id_module_fails(
@@ -308,7 +301,7 @@ async def test_robot_scoped_service_without_robot_id_module_fails(
     class BadModule:
         def __init__(self, runtime: ModuleRuntime):
             self.runtime = runtime
-            # robot_id 자세 안 박힘
+            # robot_id parameter 안 박힘
 
         @service(MotionServiceKey.MOVE_L)
         def move_l(self, req: MoveLRequest) -> MoveLResponse:
@@ -321,7 +314,7 @@ async def test_robot_scoped_service_without_robot_id_module_fails(
     await rt.stop()
 
 
-# ─── 9. add_module 자세 missing dep — TypeError ────────────
+# ─── 9. add_module 시 missing dep → TypeError ────────────
 
 
 async def test_add_module_missing_dep_raises(transport: ZenohTransport):
@@ -336,7 +329,7 @@ async def test_add_module_missing_dep_raises(transport: ZenohTransport):
     await rt.stop()
 
 
-# ─── 10. add_module 자세 dep inject — repo 자세 ────────────
+# ─── 10. add_module 시 user dep (repo) inject ────────────
 
 
 async def test_add_module_injects_user_deps(transport: ZenohTransport):
@@ -356,7 +349,7 @@ async def test_add_module_injects_user_deps(transport: ZenohTransport):
     await rt.stop()
 
 
-# ─── 11. Module 자세 sync start/stop 자세 ─────────────────
+# ─── 11. Module 의 sync start/stop ─────────────────
 
 
 async def test_module_sync_start_stop(transport: ZenohTransport):
@@ -378,8 +371,7 @@ async def test_module_sync_start_stop(transport: ZenohTransport):
     await rt.stop()
     assert log == ["start", "stop"]
 
-
-# ─── 12. async start/stop 자세 ────────────────────────────
+# ─── 12. Module 의 async start/stop ────────────────────────────
 
 
 async def test_module_async_start_stop(transport: ZenohTransport):

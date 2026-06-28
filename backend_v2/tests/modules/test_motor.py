@@ -1,0 +1,312 @@
+"""MotorDriverModule (Step A) test.
+
+검증 자리:
+- service relay (capabilities / topology / set_torque / reboot / set_gripper)
+- TorqueChanged event broadcast (set_torque 시)
+- state stream 20Hz publish + seq monotonic + timestamp_unix invariant (§8.5)
+- robot-scoped — 두 robot 동시 인스턴스 + 독립 stream
+- driver self-declare — capabilities / topology cache (boot 1회 read, §7.3)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+import time
+
+import pytest
+
+from framework.contract.subscriber import subscriber
+from framework.runtime.api import ModuleRuntime
+from framework.runtime.app import Runtime
+from infra.transport.zenoh import ZenohTransport
+from modules.motor.contract import (
+    CapabilitiesRequest,
+    JointState,
+    Motor,
+    MotorCapabilities,
+    MotorCapability,
+    MotorTopology,
+    RebootRequest,
+    RebootResponse,
+    SetGripperRequest,
+    SetGripperResponse,
+    SetTorqueRequest,
+    SetTorqueResponse,
+    TopologyRequest,
+    TorqueChanged,
+)
+from modules.motor.drivers.mock import MockMotorBackend
+from modules.motor.module import MotorDriverModule
+
+_LOCAL_CFG = {"mode": "peer", "scouting": {"multicast": {"enabled": False}}}
+
+
+@pytest.fixture
+def transport():
+    t = ZenohTransport(_LOCAL_CFG)
+    time.sleep(0.05)
+    yield t
+    t.close()
+
+
+@pytest.fixture
+async def runtime(transport: ZenohTransport):
+    rt = Runtime(transport)
+    yield rt
+    await rt.stop()
+
+
+# ─── 1. capability snapshot — driver self-declare (§7.3) ────
+
+
+async def test_capabilities_service_relays_driver_self_declare(
+    runtime: Runtime,
+):
+    driver = MockMotorBackend(joint_count=6, has_gripper=True)
+    runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
+    await runtime.start()
+
+    res = await runtime.module_runtime.call(
+        Motor.Service.CAPABILITIES,
+        CapabilitiesRequest(),
+        MotorCapabilities,
+        robot_id="so101_0",
+    )
+    assert MotorCapability.TORQUE_TOGGLE in res.flags
+    assert MotorCapability.GRIPPER in res.flags
+
+
+async def test_capabilities_no_gripper_when_driver_says_no(runtime: Runtime):
+    driver = MockMotorBackend(joint_count=5, has_gripper=False)
+    runtime.add_module(MotorDriverModule, robot_id="omx_f_0", driver=driver)
+    await runtime.start()
+
+    res = await runtime.module_runtime.call(
+        Motor.Service.CAPABILITIES,
+        CapabilitiesRequest(),
+        MotorCapabilities,
+        robot_id="omx_f_0",
+    )
+    assert MotorCapability.GRIPPER not in res.flags
+
+
+# ─── 2. topology — capability 와 분리 별 service (§7.6) ─────
+
+
+async def test_topology_service_returns_motor_metadata(runtime: Runtime):
+    driver = MockMotorBackend(joint_count=6, has_gripper=True)
+    runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
+    await runtime.start()
+
+    res = await runtime.module_runtime.call(
+        Motor.Service.GET_TOPOLOGY,
+        TopologyRequest(),
+        MotorTopology,
+        robot_id="so101_0",
+    )
+    assert res.joint_count == 6
+    assert res.has_gripper is True
+    assert len(res.motor_ids) == 7  # 6 joint + 1 gripper
+
+
+# ─── 3. set_torque + TorqueChanged event broadcast ───────
+
+
+async def test_set_torque_broadcasts_torque_changed_event(runtime: Runtime):
+    received: list[TorqueChanged] = []
+    done = threading.Event()
+
+    class Listener:
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+
+        @subscriber(Motor.Event.TORQUE_CHANGED)
+        def on_changed(self, event: TorqueChanged) -> None:
+            received.append(event)
+            done.set()
+
+    driver = MockMotorBackend()
+    runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
+    runtime.add_module(Listener)
+    await runtime.start()
+
+    res = await runtime.module_runtime.call(
+        Motor.Service.SET_TORQUE,
+        SetTorqueRequest(enabled=True),
+        SetTorqueResponse,
+        robot_id="so101_0",
+    )
+    assert res.ok is True
+    assert done.wait(timeout=2.0)
+    assert received == [TorqueChanged(robot_id="so101_0", enabled=True)]
+
+
+# ─── 4. reboot + set_gripper service ─────────────────────
+
+
+async def test_reboot_service(runtime: Runtime):
+    driver = MockMotorBackend()
+    runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
+    await runtime.start()
+
+    res = await runtime.module_runtime.call(
+        Motor.Service.REBOOT,
+        RebootRequest(),
+        RebootResponse,
+        robot_id="so101_0",
+    )
+    assert res.ok is True
+
+
+async def test_set_gripper_writes_to_driver(runtime: Runtime):
+    driver = MockMotorBackend(joint_count=6, has_gripper=True)
+    runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
+    await runtime.start()
+
+    res = await runtime.module_runtime.call(
+        Motor.Service.SET_GRIPPER,
+        SetGripperRequest(position_raw=3000),
+        SetGripperResponse,
+        robot_id="so101_0",
+    )
+    assert res.ok is True
+    # mock driver — gripper position 갱신 검증
+    assert driver.read_positions()[-1] == 3000
+
+
+# ─── 5. state stream — 20Hz publish + seq monotonic + timestamp_unix ──
+
+
+async def test_state_stream_publishes_with_seq_and_timestamp(runtime: Runtime):
+    """§8.5 invariant — 모든 stream payload 에 seq + timestamp_unix 박힘."""
+    received: list[JointState] = []
+
+    class Listener:
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+
+        @subscriber(Motor.Stream.RAW_STATE)
+        def on_state(self, event: JointState) -> None:
+            received.append(event)
+
+    driver = MockMotorBackend(joint_count=6, has_gripper=True)
+    runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
+    runtime.add_module(Listener)
+    await runtime.start()
+
+    # 20Hz publish → 3 frame 박힘 = ~150ms. async wait 0.5s 안 자연.
+    for _ in range(50):
+        if len(received) >= 3:
+            break
+        await asyncio.sleep(0.05)
+
+    assert len(received) >= 3, f"3+ frame 박혀야 — received {len(received)}"
+
+    # seq monotonic (§8.5)
+    seqs = [e.seq for e in received[:3]]
+    assert seqs == sorted(seqs), f"seq must be monotonic, got {seqs}"
+    # timestamp_unix invariant — 양수 + 현재 시각 근처
+    now = time.time()
+    for e in received[:3]:
+        assert 0 < e.timestamp_unix < now + 1.0
+    # positions_raw — mock 의 초기 중심 raw
+    assert all(p == 2048 for p in received[0].positions_raw)
+
+
+# ─── 6. multi-robot — per-robot 독립 stream ─────────────
+
+
+async def test_multi_robot_independent_state_streams(runtime: Runtime):
+    """robot-scoped 두 인스턴스 — 각자 자기 robot_id 의 stream publish."""
+    so101_events: list[JointState] = []
+    omx_events: list[JointState] = []
+
+    class Listener:
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+
+        @subscriber(Motor.Stream.RAW_STATE)
+        def on_state(self, event: JointState) -> None:
+            if event.robot_id == "so101_0":
+                so101_events.append(event)
+            elif event.robot_id == "omx_f_0":
+                omx_events.append(event)
+
+    so101_driver = MockMotorBackend(joint_count=6, has_gripper=True)
+    omx_driver = MockMotorBackend(joint_count=5, has_gripper=True)
+    runtime.add_module(
+        MotorDriverModule, robot_id="so101_0", driver=so101_driver,
+    )
+    runtime.add_module(
+        MotorDriverModule, robot_id="omx_f_0", driver=omx_driver,
+    )
+    runtime.add_module(Listener)
+    await runtime.start()
+
+    for _ in range(50):
+        if so101_events and omx_events:
+            break
+        await asyncio.sleep(0.05)
+
+    assert so101_events, "so101 stream 안 받음"
+    assert omx_events, "omx stream 안 받음"
+    # 각 robot 의 joint count 가 자기 driver 의 topology 자연 반영
+    assert len(so101_events[0].positions_raw) == 7  # 6 + gripper
+    assert len(omx_events[0].positions_raw) == 6    # 5 + gripper
+
+
+# ─── 7. lifecycle — driver.open() / close() 호출 검증 ────
+
+
+async def test_driver_open_close_lifecycle(transport: ZenohTransport):
+    open_calls: list[None] = []
+    close_calls: list[None] = []
+
+    class SpyDriver(MockMotorBackend):
+        def open(self) -> None:
+            open_calls.append(None)
+            super().open()
+
+        def close(self) -> None:
+            close_calls.append(None)
+            super().close()
+
+    rt = Runtime(transport)
+    rt.add_module(MotorDriverModule, robot_id="so101_0", driver=SpyDriver())
+    await rt.start()
+    assert open_calls == [None]
+    await rt.stop()
+    assert close_calls == [None]
+
+
+# ─── 8. state loop cancel — stop() 박힌 후 publish 자리 X ──
+
+
+async def test_state_loop_stops_after_module_stop(transport: ZenohTransport):
+    received: list[JointState] = []
+
+    class Listener:
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+
+        @subscriber(Motor.Stream.RAW_STATE)
+        def on_state(self, event: JointState) -> None:
+            received.append(event)
+
+    rt = Runtime(transport)
+    rt.add_module(MotorDriverModule, robot_id="so101_0", driver=MockMotorBackend())
+    rt.add_module(Listener)
+    await rt.start()
+
+    await asyncio.sleep(0.15)  # 2-3 frame 박힐 자리
+    count_at_stop = len(received)
+    await rt.stop()
+
+    await asyncio.sleep(0.2)  # stop 후 더 안 박힘
+    count_after_stop = len(received)
+
+    # stop 후 잠시 더 박힐 수 있음 (in-flight) — 단 큰 차이 없어야
+    assert count_after_stop - count_at_stop < 3, (
+        f"stop() 후에도 publish 지속 — {count_at_stop} → {count_after_stop}"
+    )

@@ -1,12 +1,3 @@
-"""tests/framework/test_transport.py — Step 1 검증 (§11).
-
-검증 두 case:
-1. ZenohTransport.publish(...) → 같은 session 안 subscriber callback (same-session in-routing)
-2. ZenohTransport.publish(...) → 다른 process subscriber callback (cross-process subprocess)
-
-추가 surface — register_service / call / handler exception → RemoteError / timeout → TimeoutError.
-"""
-
 from __future__ import annotations
 
 import os
@@ -212,7 +203,8 @@ def test_publish_subscribe_cross_process(tmp_path: Path):
                 break
             time.sleep(0.1)
         rc = proc.wait(timeout=10.0)
-        stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+        stderr = proc.stderr.read().decode(
+            "utf-8", errors="replace") if proc.stderr else ""
         assert out_file.exists(), f"child 미수신 (rc={rc}, stderr={stderr})"
         assert out_file.read_bytes() == b"cross-process-hello"
     finally:

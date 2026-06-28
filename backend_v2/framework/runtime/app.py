@@ -1,21 +1,8 @@
-"""Runtime — Module lifecycle + DI + Transport wiring (§3.6 / §3.7 / §11 Step 3).
-
-부팅 순서 (§3.6):
-① instantiate — add_module 시 constructor 호출 + DI inject (runtime + 사용자 deps)
-② register — start() 의 phase 2: @service queryable + @subscriber callback transport 박음
-③ start — start() 의 phase 3: Module 의 start() 호출 (sync / async 둘 다)
-
-`{robot_id}` placeholder 자세 (§3.7):
-- service queryable register 자세 = Module instance 의 self.robot_id 자세 substitute
-- event publish 자세 = event payload 의 robot_id field 자세 substitute
-- service call (caller) 자세 = caller 의 `robot_id=` 인자 자세 substitute
-- event subscribe (robot-scoped event) 자세 = Zenoh wildcard `*` 자세 substitute
-"""
-
 from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import time
 from typing import Any, Callable, TypeVar, cast
 
@@ -23,18 +10,18 @@ import msgspec
 from pydantic import BaseModel
 
 from framework.contract.envelope import ServiceRequest, ServiceResponse
+from framework.contract.mirror import MirrorState, discover_mirrors
 from framework.contract.publisher import decode_event, encode_event
-from framework.contract.service import ServiceSpec, get_service_spec
+from framework.contract.service import ServiceSpec
 from framework.contract.subscriber import SubscriberSpec
 from framework.runtime.api import ModuleRuntime
 from framework.runtime.discovery import discover_services, discover_subscribers
 from framework.runtime.lifecycle import has_start, has_stop
-from framework.transport.protocol import Handle, Transport
+from framework.transport.protocol import Handle, RemoteError, Transport
+
+logger = logging.getLogger(__name__)
 
 TRes = TypeVar("TRes", bound=BaseModel)
-
-
-# ─── envelope encoding (msgpack, consistent with event encoding) ────
 
 
 def _encode_request(req: BaseModel) -> bytes:
@@ -57,12 +44,7 @@ def _decode_response(res_cls: type[BaseModel], payload: bytes) -> BaseModel:
     return res_cls.model_validate(data["data"])
 
 
-# ─── _TransportRuntime — ModuleRuntime Protocol impl ───────────
-
-
 class _TransportRuntime:
-    """Transport 자세 wrap 박은 ModuleRuntime adapter. Module 자세 import boundary 자세 X."""
-
     def __init__(self, transport: Transport):
         self._transport = transport
 
@@ -72,59 +54,49 @@ class _TransportRuntime:
             robot_id = getattr(event, "robot_id", None)
             if robot_id is None:
                 raise ValueError(
-                    f"wire_key {topic!r} 자세 {{robot_id}} placeholder 박혀있지만 "
-                    f"event {type(event).__name__} payload 자세 robot_id field 없음"
+                    f"wire_key {topic!r}  {{robot_id}} placeholder 있지만 "
+                    f"event {type(event).__name__} payload  robot_id field 없음"
                 )
             topic = topic.format(robot_id=robot_id)
         self._transport.publish(topic, encode_event(event))
 
     async def call(
         self,
-        target: Callable[..., TRes],
+        key: str,
         req: BaseModel,
+        res_cls: type[TRes],
         *,
         robot_id: str | None = None,
         timeout: float = 5.0,
     ) -> TRes:
-        spec = get_service_spec(target)
-        if spec is None:
-            raise TypeError(
-                f"target 자세 @service 박힌 method reference 박힘 (got {target!r})"
-            )
-        key = spec.wire_key
-        if "{robot_id}" in key:
+        key_str = str(key)
+        if "{robot_id}" in key_str:
             if robot_id is None:
                 raise ValueError(
-                    f"service {key} 자세 robot-scoped — call 시 robot_id= 인자 필요"
+                    f"service {key_str} robot-scoped — call 시 robot_id= 인자 필요"
                 )
-            key = key.format(robot_id=robot_id)
+            key_str = key_str.format(robot_id=robot_id)
 
         payload = _encode_request(req)
-        res_bytes = await self._transport.call(key, payload, timeout)
-        return cast(TRes, _decode_response(spec.res_cls, res_bytes))
-
-
-# ─── Runtime — Module instantiate + register + lifecycle ─────
+        res_bytes = await self._transport.call(key_str, payload, timeout)
+        return cast(TRes, _decode_response(res_cls, res_bytes))
 
 
 class Runtime:
-    """Module lifecycle 자세 orchestrate."""
-
     def __init__(self, transport: Transport):
         self._transport = transport
-        self._module_runtime: ModuleRuntime = cast(ModuleRuntime, _TransportRuntime(transport))
+        self._module_runtime: ModuleRuntime = cast(
+            ModuleRuntime, _TransportRuntime(transport))
         self._modules: list[Any] = []
         self._handles: list[Handle] = []
         self._started = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        # Mirror initial snapshot timeout — Owner 안 떠 있으면 짧게 포기, event 로 fallback
+        self.mirror_snapshot_timeout: float = 2.0
 
     def add_module(self, cls: type, **deps: Any) -> Any:
-        """Module instantiate + DI inject. constructor 자세 runtime 자세 자동 박힘.
-
-        deps 자세 사용자 deps (robot_id / repo / object_store 등). cls.__init__ 의
-        parameter 자세 매칭 inject.
-        """
         if self._started:
-            raise RuntimeError("Runtime 자세 이미 start — add_module 자세 stop 후 박음")
+            raise RuntimeError("Runtime 이미 start — add_module stop 후 박음")
 
         sig = inspect.signature(cls.__init__)
         kwargs: dict[str, Any] = {}
@@ -137,7 +109,7 @@ class Runtime:
                 kwargs[name] = deps[name]
             elif param.default is inspect.Parameter.empty:
                 raise TypeError(
-                    f"Module {cls.__name__} __init__ parameter {name!r} 자세 박혀있지 X"
+                    f"Module {cls.__name__} __init__ parameter {name!r}  박혀있지 X"
                 )
 
         instance = cls(**kwargs)
@@ -145,16 +117,20 @@ class Runtime:
         return instance
 
     async def start(self) -> None:
-        """Phase 2 (register) + Phase 3 (Module start). §3.6."""
         if self._started:
-            raise RuntimeError("Runtime 자세 이미 start 박힘")
+            raise RuntimeError("Runtime  이미 start 박힘")
         self._started = True
+        self._loop = asyncio.get_running_loop()
 
-        # Phase 2: register all services + subscribers
+        # Phase 2 — register all services + subscribers + Mirror subscribers
         for module in self._modules:
             self._register_module(module)
 
-        # Phase 3: call start() on each Module (sync or async)
+        # Phase 3a — Mirror initial snapshot fetch (non-blocking, fail OK)
+        for module in self._modules:
+            await self._initialize_mirrors(module)
+
+        # Phase 3b — Module.start() (sync or async)
         for module in self._modules:
             if has_start(module):
                 result = module.start()
@@ -162,29 +138,25 @@ class Runtime:
                     await result
 
     async def stop(self) -> None:
-        """Module stop + transport handle undeclare 자세 reverse order."""
         if not self._started:
             return
 
-        # Phase 3 reverse: stop() on each Module
         for module in reversed(self._modules):
             if has_stop(module):
                 result = module.stop()
                 if asyncio.iscoroutine(result):
                     await result
 
-        # Phase 2 reverse: undeclare transport handles
         for handle in self._handles:
             try:
                 handle.undeclare()
             except Exception:
-                pass  # swallow during shutdown
+                pass
         self._handles.clear()
         self._started = False
 
     @property
     def module_runtime(self) -> ModuleRuntime:
-        """test / external 자세 활용 자세."""
         return self._module_runtime
 
     # ── internal — register helpers ─────────────────────────
@@ -194,6 +166,8 @@ class Runtime:
             self._register_service(module, bound_method, spec)
         for bound_method, spec in discover_subscribers(module):
             self._register_subscriber(module, bound_method, spec)
+        for _name, state in discover_mirrors(module):
+            self._register_mirror_subscriber(module, state)
 
     def _register_service(
         self,
@@ -206,8 +180,8 @@ class Runtime:
             robot_id = getattr(module, "robot_id", None)
             if robot_id is None:
                 raise ValueError(
-                    f"@service {key} 자세 robot-scoped 박힘 — Module "
-                    f"{type(module).__name__} 자세 self.robot_id 필요"
+                    f"@service {key}  robot-scoped 박힘 — Module "
+                    f"{type(module).__name__}  self.robot_id 필요"
                 )
             key = key.format(robot_id=robot_id)
 
@@ -216,7 +190,7 @@ class Runtime:
             result = bound_method(req)
             if not isinstance(result, BaseModel):
                 raise TypeError(
-                    f"@service {spec.method_name} return 자세 BaseModel 박힘 "
+                    f"@service {spec.method_name} return  BaseModel 박힘 "
                     f"(got {type(result)})"
                 )
             return _encode_response(result)
@@ -241,3 +215,77 @@ class Runtime:
 
         handle = self._transport.subscribe(topic, callback_bytes)
         self._handles.append(handle)
+
+    # ── Mirror — phase 2 subscribe + phase 3 snapshot ─────────
+
+    def _register_mirror_subscriber(
+        self,
+        module: Any,
+        state: MirrorState[Any],
+    ) -> None:
+        """Phase 2 — change_topic subscribe. event 받으면 async refetch trigger."""
+        topic = state.spec.change_topic
+        if "{robot_id}" in topic:
+            topic = topic.replace("{robot_id}", "*")
+
+        own_robot_id = getattr(module, "robot_id", None)
+
+        def callback(payload: bytes) -> None:
+            try:
+                event = decode_event(state.spec.change_event_cls, payload)
+            except Exception:
+                logger.exception("Mirror callback decode failed: topic=%s", topic)
+                return
+            # robot_id filter — robot-scoped Reader 면 자기 robot 만
+            if own_robot_id is not None:
+                event_rid = getattr(event, "robot_id", None)
+                if event_rid != own_robot_id:
+                    return
+            loop = self._loop
+            if loop is None or loop.is_closed():
+                return
+            # refetch — callback thread → asyncio loop
+            asyncio.run_coroutine_threadsafe(
+                self._refetch_mirror(module, state), loop,
+            )
+
+        handle = self._transport.subscribe(topic, callback)
+        self._handles.append(handle)
+
+    async def _initialize_mirrors(self, module: Any) -> None:
+        """Phase 3a — initial snapshot fetch. fail OK (Owner 안 떠 있으면 event 로 fallback)."""
+        for _name, state in discover_mirrors(module):
+            try:
+                await self._refetch_mirror(
+                    module, state, timeout=self.mirror_snapshot_timeout,
+                )
+            except (TimeoutError, RemoteError):
+                logger.info(
+                    "Mirror initial snapshot 실패 (Owner 안 떠 있음) — event 받으면 refetch: "
+                    "service=%s module=%s",
+                    state.spec.snapshot_service, type(module).__name__,
+                )
+
+    async def _refetch_mirror(
+        self,
+        module: Any,
+        state: MirrorState[Any],
+        *,
+        timeout: float = 5.0,
+    ) -> None:
+        """snapshot_service 호출 → value_cls decode → MirrorState._set."""
+        req = state.spec.snapshot_req(module)
+        key = state.spec.snapshot_service
+        if "{robot_id}" in key:
+            rid = getattr(module, "robot_id", None)
+            if rid is None:
+                raise ValueError(
+                    f"Mirror snapshot_service {key} 가 robot-scoped — Module "
+                    f"{type(module).__name__} 에 self.robot_id 필요"
+                )
+            key = key.format(robot_id=rid)
+
+        payload = _encode_request(req)
+        res_bytes = await self._transport.call(key, payload, timeout)
+        value = _decode_response(state.spec.value_cls, res_bytes)
+        state._set(value)

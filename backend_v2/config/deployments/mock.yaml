@@ -15,3 +15,4 @@ modules:
     robots: [so101_6dof_0]
   - name: camera_decoded
     robots: [so101_6dof_0]
+  - name: bridge

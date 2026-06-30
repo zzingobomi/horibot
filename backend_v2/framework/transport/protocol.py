@@ -33,6 +33,26 @@ class RemoteError(Exception):
 
 
 @runtime_checkable
+class RawTransport(Protocol):
+    """Boundary Module (Bridge) 전용 — raw bytes relay 최소 권한.
+
+    Transport 의 부분집합. `close()` (공유 세션을 닫으면 프로세스 전체 transport
+    사망) 와 `register_service()` (Bridge 는 service 제공자 X, 호출자 only) 를
+    의도적으로 뺀다. Bridge 가 실제 쓰는 call / publish / subscribe 만 노출.
+    같은 Transport 구현이 구조적으로 이를 만족 — 주입은 동일 객체, 타입만 좁힘.
+    """
+
+    async def call(self, key: str, payload: bytes, timeout: float = 5.0) -> bytes:
+        ...
+
+    def publish(self, key: str, payload: bytes) -> None:
+        ...
+
+    def subscribe(self, key: str, callback: Callable[[bytes], None]) -> Handle:
+        ...
+
+
+@runtime_checkable
 class Transport(Protocol):
     """모든 Transport 구현이 제공해야 하는 인터페이스."""
 

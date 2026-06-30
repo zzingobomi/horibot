@@ -1,10 +1,3 @@
-"""Motor domain — public contract surface.
-
-backend_v2_modules.md §1.1 #1 (MotorDriver) + §7 (Capability) + §8.5 (Stream
-seq/timestamp invariant) 정합. 외부 Module / TS gen / contract viewer 의
-read 대상.
-"""
-
 from __future__ import annotations
 
 from enum import StrEnum
@@ -13,13 +6,8 @@ from pydantic import BaseModel
 
 
 class Motor:
-    """Motor 도메인 — Service / Stream / Event nested StrEnum."""
-
     class Service(StrEnum):
-        # what is possible (§7)
         CAPABILITIES = "srv/motor/{robot_id}/capabilities"
-
-        # robot topology (joint_count 등 — capability 와 분리, §7.6 invariant)
         GET_TOPOLOGY = "srv/motor/{robot_id}/topology"
 
         # control
@@ -28,7 +16,6 @@ class Motor:
         SET_GRIPPER = "srv/motor/{robot_id}/set_gripper"
 
     class Stream(StrEnum):
-        # 20Hz raw motor state (rad / fk 변환은 Motion Module 책임)
         RAW_STATE = "stream/motor/{robot_id}/raw_state"
 
     class Event(StrEnum):
@@ -39,29 +26,36 @@ class Motor:
 
 
 class MotorCapability(StrEnum):
-    """flags only (§7.1 invariant — what is possible, not how configured)."""
-
+    # GRIPPER 박지 X — Topology 위 `any(m.kind == GRIPPER)` derived.
+    # POSITION_PID 박지 X — MotorBackend Protocol baseline.
     TORQUE_TOGGLE = "torque_toggle"
     REBOOT = "reboot"
-    GRIPPER = "gripper"
-    POSITION_PID = "position_pid"
+    VELOCITY_CONTROL = "velocity_control"
+    CURRENT_CONTROL = "current_control"
+    HOMING = "homing"
 
 
 class MotorCapabilities(BaseModel):
-    """static fact — vendor / 모델 별 다름. driver self-declare (§7.3)."""
-
     flags: set[MotorCapability]
 
 
-# ─── topology (capability 와 분리 — int / list 같은 metadata 자리) ─
+# ─── topology — "무엇이 존재하는가" (Motion 이 wire-level 직접 소비) ──
+
+
+class MotorKind(StrEnum):
+    JOINT = "joint"
+    GRIPPER = "gripper"
+    RAIL = "rail"
+    TOOL = "tool"
+
+
+class MotorInfo(BaseModel):
+    id: int
+    kind: MotorKind
 
 
 class MotorTopology(BaseModel):
-    """robot 의 motor 구성. joint_count / motor_ids — capability 어휘 아님."""
-
-    joint_count: int
-    motor_ids: list[int]
-    has_gripper: bool
+    motors: list[MotorInfo]
 
 
 # ─── request / response ────────────────────────────────────────────

@@ -5,6 +5,8 @@ from __future__ import annotations
 from ..contract import (
     MotorCapabilities,
     MotorCapability,
+    MotorInfo,
+    MotorKind,
     MotorTopology,
 )
 
@@ -13,28 +15,27 @@ class MockMotorBackend:
     """In-process mock — 합성 motor state, hardware 없이 동작."""
 
     def __init__(self, joint_count: int = 6, has_gripper: bool = True) -> None:
-        self._joint_count = joint_count
-        self._has_gripper = has_gripper
-        # motor_ids = joint_count + (1 if gripper else 0)
-        self._motor_ids = list(range(joint_count + (1 if has_gripper else 0)))
+        # MotorInfo list 가 SSOT — joint_count / has_gripper 다 derived
+        motors: list[MotorInfo] = [
+            MotorInfo(id=i + 1, kind=MotorKind.JOINT) for i in range(joint_count)
+        ]
+        if has_gripper:
+            motors.append(MotorInfo(id=joint_count + 1, kind=MotorKind.GRIPPER))
+        self._motors = motors
         # 중심 raw int (0..4095). Dynamixel/Feetech 컨벤션
-        self._positions: list[int] = [2048] * len(self._motor_ids)
+        self._positions: list[int] = [2048] * len(self._motors)
         self._torque_enabled = False
 
     # ── self-declare ──
 
     def capabilities(self) -> MotorCapabilities:
-        flags = {MotorCapability.TORQUE_TOGGLE, MotorCapability.REBOOT}
-        if self._has_gripper:
-            flags.add(MotorCapability.GRIPPER)
-        return MotorCapabilities(flags=flags)
+        # mock = TORQUE_TOGGLE + REBOOT baseline (vendor 별 추가는 실 driver 자리)
+        return MotorCapabilities(
+            flags={MotorCapability.TORQUE_TOGGLE, MotorCapability.REBOOT},
+        )
 
     def topology(self) -> MotorTopology:
-        return MotorTopology(
-            joint_count=self._joint_count,
-            motor_ids=list(self._motor_ids),
-            has_gripper=self._has_gripper,
-        )
+        return MotorTopology(motors=list(self._motors))
 
     # ── lifecycle ──
 
@@ -65,7 +66,8 @@ class MockMotorBackend:
         pass
 
     def set_gripper(self, position_raw: int) -> None:
-        if self._has_gripper:
+        # 마지막 motor 가 gripper kind 일 때만 (Topology 위 derived)
+        if self._motors and self._motors[-1].kind == MotorKind.GRIPPER:
             self._positions[-1] = position_raw
 
     def write_positions(self, positions_raw: list[int]) -> None:

@@ -1,0 +1,11 @@
+driver_mode: real
+
+zenoh:
+  mode: peer
+  scouting:
+    multicast:
+      enabled: true
+
+modules:
+  - name: motor
+    robots: [so101_6dof_0]

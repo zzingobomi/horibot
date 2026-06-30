@@ -105,6 +105,10 @@ class Runtime:
                 continue
             if name == "runtime":
                 kwargs[name] = self._module_runtime
+            elif name == "transport":
+                # Boundary Module (Bridge) 전용 raw transport 주입.
+                # param 타입을 RawTransport 로 좁혀 close/register_service 권한 차단.
+                kwargs[name] = self._transport
             elif name in deps:
                 kwargs[name] = deps[name]
             elif param.default is inspect.Parameter.empty:

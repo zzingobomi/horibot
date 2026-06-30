@@ -1,0 +1,15 @@
+driver_mode: mock
+
+zenoh:
+  mode: peer
+  scouting:
+    multicast:
+      enabled: false
+
+modules:
+  - name: motor
+    robots: [so101_6dof_0]
+  - name: camera
+    robots: [so101_6dof_0]
+  - name: camera_decoded
+    robots: [so101_6dof_0]

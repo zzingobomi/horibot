@@ -348,70 +348,143 @@ UI / consumer 가 hardware 차이 (D405 = rgbd / USB = rgb only / 5축 vs 6축) 
 
 ### 7.1 invariant
 
-> **Capability describes "what is possible", not "how it is configured".**
+> **Topology = "무엇이 존재하는가" (구조 존재).**
+> **Capability = "무엇을 할 수 있는가 / 어떤 결과를 제공하는가" (외부 노출 기능 + 지원 max metadata).**
+> **Config = "현재 어떻게 설정되어 있는가" (현재 값).**
 
-| 종류 | 예시 | 변경 빈도 | 자리 |
-|---|---|---|---|
-| **Capability** (what is possible) | depth 가능 / 6축 / force sensor 박힘 | 부팅 시 1회, 변경 X | `@service capabilities`, flags set |
-| **Config** (how configured) | depth resolution 640×480 / fps 30 | 사용자 설정 | 별 service (`get_config` / `set_config`) |
-| **Runtime state** (current status) | streaming on / torque enabled | 자주 변경 | event + Mirror |
+세 어휘의 시간축 / 의미축 분리:
 
-세 어휘 섞이지 X — capability 깨끗 유지.
+| 종류 | 의미 | 예시 | 변경 빈도 | 자리 |
+|---|---|---|---|---|
+| **Topology** | 무엇이 존재하는가 (structure) | Motor: `[id=1 kind=joint, ..., id=7 kind=gripper]` | 부팅 시 1회, 변경 X | `@service topology` (consumer 가 구조 알아야 할 때만) |
+| **Capability** | 무엇을 할 수 있는가 / 어떤 결과 제공 (feature + supported max) | Camera: `RGB/DEPTH/POINTCLOUD` flag / `max_resolution=(1280,720)` / `supported_fps=[30,60]` | 부팅 시 1회, 변경 X | `@service capabilities`, flags set + metadata |
+| **Config** | 현재 설정 값 (지원 max 와 별) | Camera: 현재 `resolution=(640,480)` / `fps=30` | 사용자 설정 | 별 service (`get_config` / `set_config`) |
+| **Runtime state** | 현재 status | streaming on / torque enabled | 자주 변경 | event + Mirror |
 
-### 7.2 schema — Module contract.py 안, flags set 만
+**핵심 — Capability vs Config 의 시간축 분리**:
+- "지원 가능한 max resolution" = Capability ("가능한 것")
+- "현재 선택된 resolution" = Config ("현재 값")
+같은 어휘 (resolution) 라도 시간축이 다르면 별 자리.
+
+### 7.2 Topology 박는 기준 — consumer-driven, 도메인-driven X
+
+> **Topology 를 만드는 기준 = consumer 가 구조 자체를 알아야 하는가.**
+
+도메인 별 일률 적용 X. consumer 의 contract surface 가 기준:
+
+| 도메인 | Topology 필요? | 이유 |
+|---|---|---|
+| **Motor** | ✅ | Motion Module 이 `driver.send_positions(motor_ids, ...)` 처럼 wire-level 구조 직접 소비. for loop / IK 매핑 / dispatch 자리 다 motor 단위 |
+| **Camera** | ❌ | consumer 는 "RGB / DEPTH / pointcloud 얻을 수 있나" 만 봄. IR sensor 갯수 / depth ASIC / stereo baseline 자리 안 봄. RGB/DEPTH 자체가 capability 어휘 (외부 feature) 자연 |
+
+Motor 의 `motor_ids` 자리가 *wire-level 외부 노출 정보*. Camera 의 IR sensor 자리가 *내부 구조* (consumer 안 봄). 두 도메인의 어휘 비대칭은 자연 — 도메인 평행 적용 무리.
+
+### 7.3 schema — contract.py 안
+
+**Motor — Topology + Capability 분리**
+
+```python
+# modules/motor/contract.py
+class Motor:
+    class Service(StrEnum):
+        CAPABILITIES = "srv/motor/{robot_id}/capabilities"
+        GET_TOPOLOGY = "srv/motor/{robot_id}/topology"
+        SET_TORQUE   = "srv/motor/{robot_id}/set_torque"
+        # ...
+
+class MotorKind(StrEnum):
+    JOINT = "joint"
+    GRIPPER = "gripper"
+    RAIL = "rail"        # 미래 linear axis
+    TOOL = "tool"        # 미래 spindle / vacuum
+
+class MotorInfo(BaseModel):
+    id: int
+    kind: MotorKind
+
+class MotorTopology(BaseModel):
+    motors: list[MotorInfo]
+    # joint_count / has_gripper = derived (sum / any). 중복 박지 X
+
+class MotorCapability(StrEnum):
+    TORQUE_TOGGLE = "torque_toggle"
+    REBOOT = "reboot"
+    VELOCITY_CONTROL = "velocity_control"
+    CURRENT_CONTROL = "current_control"
+    HOMING = "homing"
+    # POSITION_PID 박지 X — 모든 servo 의 baseline (MotorBackend Protocol 기본 계약)
+    # GRIPPER 박지 X — Topology 위 `any(m.kind == GRIPPER)` 로 derived
+
+class MotorCapabilities(BaseModel):
+    flags: set[MotorCapability]
+```
+
+**Camera — Capability 만 (Topology X)**
 
 ```python
 # modules/camera/contract.py
 class Camera:
     class Service(StrEnum):
-        CAPABILITIES   = "srv/camera/{robot_id}/capabilities"
-        GET_CONFIG     = "srv/camera/{robot_id}/config"          # resolution / fps 등 — 별 service
+        CAPABILITIES = "srv/camera/{robot_id}/capabilities"
+        GET_CONFIG   = "srv/camera/{robot_id}/config"          # 현재 설정 값 — 별 service
         DECODED_SNAPSHOT = "srv/camera/{robot_id}/decoded_snapshot"
+        # GET_TOPOLOGY 박지 X — consumer 안 봄
         # GET_INTRINSICS 박지 X — intrinsic SSOT = Calibration Bundle (§7.6)
 
 class CameraCapability(StrEnum):
     RGB = "rgb"
     DEPTH = "depth"
     POINTCLOUD = "pointcloud"
+    HDR = "hdr"
+    AUTO_EXPOSURE = "auto_exposure"
 
 class CameraCapabilities(BaseModel):
-    flags: set[CameraCapability]                                 # ★ flags 만, metadata X
+    flags: set[CameraCapability]
+    # 미래 metadata — supported max 자리 (Capability 어휘 안 흡수)
+    max_resolution: tuple[int, int] | None = None
+    supported_fps: list[int] = Field(default_factory=list)
+    # 현재 resolution / fps 자리 = CameraConfig (별 service)
 ```
 
-```python
-# modules/motion/contract.py
-class MotionCapability(StrEnum):
-    JOINT_MOVE = "joint_move"
-    CARTESIAN_MOVE = "cartesian_move"
-    JOG_TCP = "jog_tcp"
-    JOG_JOINT = "jog_joint"
-    FORCE_CONTROL = "force_control"
-    GRIPPER = "gripper"
+contract.py 안 inline 첫 박을 때. 커지면 `capability.py` / `topology.py` 분리 + contract.py 재export.
 
-class MotionCapabilities(BaseModel):
-    flags: set[MotionCapability]
-```
+**핵심 차이**: Motor 의 `motors[id, kind]` 가 *consumer 가 wire 시 직접 사용* 하는 정보. Camera 의 RGB/DEPTH 가 *consumer 가 외부 feature 로 보는* 정보. 같은 "structure" 어휘여도 contract surface 위 자리가 달라서 별 schema.
 
-joint_count 등 robot topology metadata = `GET_TOPOLOGY` 별 service. resolution / fps 등 camera config = `GET_CONFIG` 별 service. intrinsic 은 Calibration Bundle SSOT (§7.6) — Camera Module 의 public service 박지 X.
-
-contract.py 안 inline 첫 박을 때. 커지면 `capability.py` 분리 + contract.py 재export — backend_v2.md §3.0 진화 path.
-
-### 7.3 값의 SSOT = driver self-declare
+### 7.4 값의 SSOT = driver self-declare
 
 ```python
 class RealSenseD405:
     def capabilities(self) -> CameraCapabilities:
         return CameraCapabilities(
             flags={CameraCapability.RGB, CameraCapability.DEPTH, CameraCapability.POINTCLOUD},
+            max_resolution=(1280, 720),
+            supported_fps=[15, 30, 60, 90],
         )
 
 class UsbUvc:
     def capabilities(self) -> CameraCapabilities:
-        return CameraCapabilities(flags={CameraCapability.RGB})
+        return CameraCapabilities(
+            flags={CameraCapability.RGB},
+            max_resolution=(1920, 1080),
+            supported_fps=[30, 60],
+        )
+
+class FeetechSO101:
+    def topology(self) -> MotorTopology:
+        return MotorTopology(motors=[
+            MotorInfo(id=1, kind=MotorKind.JOINT),
+            # ... id=2..6 joint
+            MotorInfo(id=7, kind=MotorKind.GRIPPER),
+        ])
+    def capabilities(self) -> MotorCapabilities:
+        return MotorCapabilities(flags={
+            MotorCapability.TORQUE_TOGGLE,
+            MotorCapability.REBOOT,
+        })
 ```
 
 ```python
-# modules/camera/module.py
+# modules/<domain>/module.py
 class CameraDriverModule:
     def __init__(self, runtime, robot_id, driver: CameraDriver):
         self._driver = driver
@@ -422,12 +495,14 @@ class CameraDriverModule:
         return self._capabilities                        # static, snapshot 1회로 충분 (Mirror X)
 ```
 
-**왜 driver self-declare 이지 robots.yaml X**:
-- yaml 박으면 duplication (driver impl + yaml 둘 다 capability 안다)
-- yaml 잘못 박으면 inconsistency (D405 박혔는데 depth flag 빠뜨림)
-- yaml 의 자리 = "어느 driver 박혀있나" 만. capability flag 는 driver SSOT
+Motor 자리 Module 도 동일 패턴 — `topology()` + `capabilities()` 둘 다 boot 1회 cache + 두 service relay.
 
-### 7.4 UI access pattern
+**왜 driver self-declare 이지 robots.yaml X**:
+- yaml 박으면 duplication (driver impl + yaml 둘 다 안다)
+- yaml 잘못 박으면 inconsistency (D405 박혔는데 depth flag 빠뜨림)
+- yaml 의 자리 = "어느 driver 박혀있나" 만. flag / topology 는 driver SSOT
+
+### 7.5 UI access pattern
 
 ```typescript
 // boot 시 1회 snapshot fetch + local cache
@@ -443,19 +518,20 @@ if (caps[id].motion.flags.has("cartesian_move")) showMoveLButton();
 
 UI 는 D405 / UR / Doosan / Basler 모름 — capability flag 만 봄. 새 hardware 추가 시 UI 변경 0.
 
-### 7.5 책임 분리 — owner Module 별
+### 7.6 책임 분리 — owner Module 별
 
 | capability 자리 | owner | example |
 |---|---|---|
-| Camera | `modules/camera` | rgb / depth / pointcloud |
-| Motion / Motor | `modules/motion` | joint_move / cartesian_move / jog / force_control / gripper |
+| Camera | `modules/camera` | rgb / depth / pointcloud / hdr / auto_exposure |
+| Motion / Motor | `modules/motion` | joint_move / cartesian_move / jog / force_control |
+| Motor (low-level) | `modules/motor` | torque_toggle / reboot / velocity_control / current_control / homing |
 | Force sensor (미래) | `modules/force` | calibrated / units / axes |
 | Gripper (미래) | `modules/gripper` | adaptive / suction / parallel |
-| High-level composition (pick_and_place) | UI 또는 별 Module | camera.depth ∧ motion.cartesian ∧ gripper.parallel |
+| High-level composition (pick_and_place) | UI 또는 별 Module | camera.depth ∧ motion.cartesian ∧ motor.gripper |
 
-high-level composition 첫 박을 때 명시 X — module-level capability 만 노출, UI 가 AND.
+high-level composition 첫 박을 때 명시 X — module-level capability 만 노출, UI 가 AND. Gripper 존재 자리는 Motor Module 의 Topology (motors 안 `kind=GRIPPER`) 자리 derived — 별 capability flag 박지 X.
 
-### 7.6 Intrinsic SSOT — Camera factory vs Calibration calibrated
+### 7.7 Intrinsic SSOT — Camera factory vs Calibration calibrated
 
 intrinsic 어휘의 **두 자리 분리**:
 
@@ -611,7 +687,7 @@ Bridge 의 `/robots` endpoint = application 의 RobotConfig list 의 read-only v
 | 5 | Mock = driver subdir swap (Mock Module X) | §2.4 |
 | 6 | Framework 어휘 ≠ application 어휘 (driver / 마운트 = robots.yaml SSOT) | §5 |
 | 7 | 공통 abstraction = Module SDK (`drivers/protocol.py`), framework X | §6 |
-| 8 | Capability schema = Module contract.py 안 (snapshot only, Mirror X). 값 SSOT = driver `capabilities()`. **invariant**: "what is possible" only | §7 |
+| 8 | **Topology / Capability / Config 의 어휘 분리**. Topology = "무엇이 존재하는가" (consumer 가 구조 알아야 할 때만 — Motor ✅ / Camera ❌). Capability = "무엇을 할 수 있는가 / 어떤 결과 제공" (flags + supported max metadata). Config = "현재 설정 값". snapshot only, Mirror X. 값 SSOT = driver `topology()` / `capabilities()`. **Motor 의 GRIPPER / POSITION_PID 박지 X** (Topology derived / baseline) | §7.1 / §7.2 / §7.3 |
 | 9 | **Mirror invariant — control correctness state synchronization only**. Runtime telemetry / continuously changing observation 자리 = snapshot service or stream subscribe | §3.2 |
 | 10 | TcpState access = `Motion.Service.TCP_SNAPSHOT` (point-in-time) + `Motion.Stream.TCP_STATE` (continuous). Mirror X (telemetry) | §3.3 / §4 |
 | 11 | **Offline computation 의 local kinematics OK**. Reconstruction 안 PyBullet 인스턴스 자연. control authority = Motion Module SSOT, Reconstruction = read-only compute. duplicate 위험 = Calibration Bundle SSOT 가 흡수 (URDF / joint / sag 한 자리) | §3.1 / §12 |
@@ -696,6 +772,7 @@ backend_v2.md §15.6 = "Step 6 = Calibration Module" 박힌 자리는 *framework
 - ORM table name convention (`calibration_*` / `scan_*` / `task_*` 접두) — Step E+
 - gamepad N>1 fail-fast framework 흡수 / Module 책임 — Step K+
 - **multi-camera per robot** — robots.yaml `cameras: [list]` + Module scope 확장 (`device-scoped` = `(robot_id, camera_id)`). framework anchor 변경 필요. wrist + workspace 다중 자리 박힐 때.
+- **pyproject deps role-split** — 현재 backend_v2 는 `[project].dependencies` 단일 리스트 (framework bring-up 편의). §2.3 host 배치 + 옛 backend 선례대로 real driver + heavy 모듈 port (Step 9) 시 PEP 735 group 으로 분리 (`pi-motor`: dynamixel/feetech/ruckig/pybullet/scipy, `pi-camera`: pyrealsense2/opencv/zstandard, `pc`: fastapi/uvicorn/open3d/ultralytics/...). pyrealsense2 소스빌드 / open3d 무게가 split 을 load-bearing 하게 만드는 시점.
 - **Effective capability = Hardware + Runtime** (미래) — driver self-declare 위에 runtime condition (pipeline disabled / CPU 부족 / driver crashed) AND. 첫 박을 때 hardware capability 만
 - High-level capability composition (pick_and_place = camera.depth ∧ motion.cartesian ∧ gripper.parallel) — UI 또는 별 Module 책임
 - **`pnpm gen:types` 구현 detail** — backend/ 의 [bridge/zenoh_bridge.py](../backend/bridge/zenoh_bridge.py) 의 `custom_openapi() / x-contract` 자리 reference. backend_v2 의 contract.py 위 별 generator 명령 — build-time, 런타임 0

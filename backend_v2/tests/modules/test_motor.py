@@ -26,6 +26,7 @@ from modules.motor.contract import (
     Motor,
     MotorCapabilities,
     MotorCapability,
+    MotorKind,
     MotorTopology,
     RebootRequest,
     RebootResponse,
@@ -74,27 +75,13 @@ async def test_capabilities_service_relays_driver_self_declare(
         robot_id="so101_0",
     )
     assert MotorCapability.TORQUE_TOGGLE in res.flags
-    assert MotorCapability.GRIPPER in res.flags
+    assert MotorCapability.REBOOT in res.flags
 
 
-async def test_capabilities_no_gripper_when_driver_says_no(runtime: Runtime):
-    driver = MockMotorBackend(joint_count=5, has_gripper=False)
-    runtime.add_module(MotorDriverModule, robot_id="omx_f_0", driver=driver)
-    await runtime.start()
-
-    res = await runtime.module_runtime.call(
-        Motor.Service.CAPABILITIES,
-        CapabilitiesRequest(),
-        MotorCapabilities,
-        robot_id="omx_f_0",
-    )
-    assert MotorCapability.GRIPPER not in res.flags
+# ─── 2. topology — "무엇이 존재하는가" (§7.2 — consumer-driven) ─────
 
 
-# ─── 2. topology — capability 와 분리 별 service (§7.6) ─────
-
-
-async def test_topology_service_returns_motor_metadata(runtime: Runtime):
+async def test_topology_service_returns_motor_list(runtime: Runtime):
     driver = MockMotorBackend(joint_count=6, has_gripper=True)
     runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
     await runtime.start()
@@ -105,9 +92,29 @@ async def test_topology_service_returns_motor_metadata(runtime: Runtime):
         MotorTopology,
         robot_id="so101_0",
     )
-    assert res.joint_count == 6
-    assert res.has_gripper is True
-    assert len(res.motor_ids) == 7  # 6 joint + 1 gripper
+    # 6 joint + 1 gripper
+    assert len(res.motors) == 7
+    assert all(m.kind == MotorKind.JOINT for m in res.motors[:6])
+    assert res.motors[-1].kind == MotorKind.GRIPPER
+    # has_gripper / joint_count = derived
+    assert any(m.kind == MotorKind.GRIPPER for m in res.motors)
+    assert sum(1 for m in res.motors if m.kind == MotorKind.JOINT) == 6
+
+
+async def test_topology_no_gripper_when_driver_says_no(runtime: Runtime):
+    driver = MockMotorBackend(joint_count=5, has_gripper=False)
+    runtime.add_module(MotorDriverModule, robot_id="omx_f_0", driver=driver)
+    await runtime.start()
+
+    res = await runtime.module_runtime.call(
+        Motor.Service.GET_TOPOLOGY,
+        TopologyRequest(),
+        MotorTopology,
+        robot_id="omx_f_0",
+    )
+    assert len(res.motors) == 5
+    assert all(m.kind == MotorKind.JOINT for m in res.motors)
+    assert not any(m.kind == MotorKind.GRIPPER for m in res.motors)
 
 
 # ─── 3. set_torque + TorqueChanged event broadcast ───────

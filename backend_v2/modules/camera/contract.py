@@ -1,11 +1,3 @@
-"""Camera domain — public contract surface.
-
-backend_v2_modules.md §1.1 #2 (CameraDriver) + #3 (CameraDecoded) +
-§4.1 (한 Module 두 stream — color + depth) + §7 (Capability) +
-§7.6 (Intrinsic SSOT — Camera 의 public service 박지 X) +
-§8.5 (Stream payload seq + timestamp_unix invariant).
-"""
-
 from __future__ import annotations
 
 from enum import StrEnum
@@ -14,10 +6,7 @@ from pydantic import BaseModel
 
 
 class Camera:
-    """Camera 도메인 — Service / Stream nested StrEnum."""
-
     class Service(StrEnum):
-        # what is possible (§7)
         CAPABILITIES = "srv/camera/{robot_id}/capabilities"
 
         # decoded frame point-in-time (CameraDecoded snapshot)

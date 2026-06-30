@@ -30,7 +30,7 @@ _TEST_PORT = 8077  # mock.yaml 의 8000 과 분리 — 포트 충돌/flakiness �
 
 
 def _robots() -> dict:
-    return load_robots(_CONFIG_DIR / "robots.yaml")
+    return load_robots()
 
 
 def _mock_bridge_deploy() -> DeploymentConfig:
@@ -51,9 +51,9 @@ def test_resolve_host_deps_bridge_returns_robot_info():
     deps = resolve_host_deps(BridgeModule, _robots(), _mock_bridge_deploy())
     infos = {r.id: r for r in deps["robots"]}
     assert set(infos) == {"so101_6dof_0", "omx_f_0"}
-    assert infos["so101_6dof_0"].type == "so101"
+    assert infos["so101_6dof_0"].type == "so101_6dof"
     assert "rgbd" in infos["so101_6dof_0"].capabilities
-    assert infos["omx_f_0"].base_pose.y == 0.5  # RobotConfig → RobotInfo 변환
+    assert infos["so101_6dof_0"].base_pose.x == 0.4  # RobotConfig → RobotInfo 변환
 
 
 def test_build_runtime_wires_host_level_bridge():

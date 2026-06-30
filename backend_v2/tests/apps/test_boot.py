@@ -31,7 +31,7 @@ from modules.camera.contract import CapabilitiesRequest as CameraCapsRequest
 from modules.camera.contract import DecodedSnapshotRequest
 from modules.camera.module import CameraDriverModule
 from modules.motor.contract import CapabilitiesRequest as MotorCapsRequest
-from modules.motor.contract import Motor, MotorCapabilities
+from modules.motor.contract import Motor, MotorCapabilities, MotorCapability
 from modules.motor.module import MotorDriverModule
 
 _CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
@@ -43,12 +43,14 @@ _SO101 = "so101_6dof_0"
 
 
 def test_load_robots_parses_entries():
-    robots = load_robots(_CONFIG_DIR / "robots.yaml")
+    robots = load_robots()
     assert set(robots) == {_SO101, "omx_f_0"}
     assert robots[_SO101].id == _SO101  # key → id 채워짐
-    assert robots[_SO101].type == "so101"
-    assert robots[_SO101].camera is not None
-    assert robots["omx_f_0"].camera is None  # 카메라 없음
+    assert robots[_SO101].type == "so101_6dof"
+    assert robots[_SO101].camera_backend == "realsense"
+    assert robots[_SO101].motor_backend == "feetech"
+    assert len(robots[_SO101].motors) == 7  # motors.yaml: 6 joint + gripper
+    assert robots["omx_f_0"].camera_backend == "opencv"
 
 
 def test_load_deployment_mock():
@@ -62,25 +64,44 @@ def test_load_deployment_mock():
 
 def test_resolve_deps_mock_motor_picks_mock_backend():
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "mock.yaml")
-    robots = load_robots(_CONFIG_DIR / "robots.yaml")
+    robots = load_robots()
     deps = resolve_deps(MotorDriverModule, robots[_SO101], deploy)
     # mock motor → topology 6 joint + gripper
     topo = deps["driver"].topology()
     assert len(topo.motors) == 7
 
 
-def test_resolve_deps_real_driver_not_yet_ported():
-    deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_motor.yaml")
-    robots = load_robots(_CONFIG_DIR / "robots.yaml")
-    with pytest.raises(NotImplementedError):
-        resolve_deps(MotorDriverModule, robots[_SO101], deploy)
+def test_resolve_deps_real_feetech_constructs():
+    # real + feetech → FeetechBackend 생성 (하드웨어 없이 self-declare 만 검증, open X)
+    from modules.motor.drivers.feetech import FeetechBackend
+
+    deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_motor.yaml")  # real
+    robots = load_robots()
+    driver = resolve_deps(MotorDriverModule, robots[_SO101], deploy)["driver"]
+    assert isinstance(driver, FeetechBackend)
+    assert len(driver.topology().motors) == 7  # motors.yaml SSOT
+    assert MotorCapability.TORQUE_TOGGLE in driver.capabilities().flags
 
 
-def test_resolve_deps_camera_module_for_robot_without_camera():
+def test_resolve_deps_real_realsense_constructs():
+    # real + realsense → RealSenseD405Driver 생성 (하드웨어 없이 self-declare 만, open X)
+    from modules.camera.drivers.realsense_d405 import RealSenseD405Driver
+
+    deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_camera.yaml")  # real
+    robots = load_robots()
+    driver = resolve_deps(CameraDriverModule, robots[_SO101], deploy)["driver"]
+    assert isinstance(driver, RealSenseD405Driver)
+    assert CameraCapability.DEPTH in driver.capabilities().flags
+
+
+def test_resolve_deps_camera_mock_depth_from_rgbd_capability():
+    # mock camera 의 depth 여부 = rgbd capability (so101 ✅ / omx ❌)
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "mock.yaml")
-    robots = load_robots(_CONFIG_DIR / "robots.yaml")
-    with pytest.raises(ValueError):
-        resolve_deps(CameraDriverModule, robots["omx_f_0"], deploy)
+    robots = load_robots()
+    so101_cam = resolve_deps(CameraDriverModule, robots[_SO101], deploy)["driver"]
+    assert CameraCapability.DEPTH in so101_cam.capabilities().flags
+    omx_cam = resolve_deps(CameraDriverModule, robots["omx_f_0"], deploy)["driver"]
+    assert CameraCapability.DEPTH not in omx_cam.capabilities().flags
 
 
 # ─── e2e boot — mock.yaml 한 process ────────────────────────────

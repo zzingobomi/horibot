@@ -91,14 +91,15 @@
 | **pi_camera** | CameraDriver | pyrealsense2 USB 강제 |
 | **pc** | CameraDecoded, Calibration, Detector, Scene3D, Scan, Reconstruction, Task, Gamepad, Bridge | decode CPU + 무거운 연산 + DB owner + browser + gamepad USB |
 
-### 2.4 deployment yaml — operational / mock / dev / sim
+### 2.4 deployment yaml — operational / mock / sim
 
 | yaml | 의미 | Module 배치 | driver |
 |---|---|---|---|
 | `pc.yaml` / `pi_motor.yaml` / `pi_camera.yaml` | 운영 분산 | 위 §2.3 | real (realsense / feetech) |
 | `mock.yaml` | hardware 없이 UX 검증 | 12 Module 모두 한 process | `mock` impl (driver subdir) |
-| `dev.yaml` | 단일 머신 풀스택 | 12 Module 모두 한 process | real |
 | `pc_sim.yaml` / `pi_motor_sim.yaml` / `pi_camera_sim.yaml` | localhost 3 process distributed 검증 | 운영과 동일 분배 | mock |
+
+> **`dev.yaml`(host_dev 단일 머신 풀스택 real) 은 안 둠** — 옛 backend 엔 있었으나 실사용 결과 불필요. 검증은 `mock.yaml`(단일 process), 실제는 pc/camera/motor 분산.
 
 mock 은 별도 Module 박지 않음 — `modules/<domain>/drivers/mock.py` 로 driver subdir swap.
 

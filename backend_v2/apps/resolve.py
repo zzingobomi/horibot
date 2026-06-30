@@ -11,12 +11,6 @@ from modules.motor.module import MotorDriverModule
 from .config import DeploymentConfig, DriverMode, RobotConfig
 
 
-_MOCK_MOTOR_SPEC: dict[str, dict[str, Any]] = {
-    "so101": {"joint_count": 6, "has_gripper": True},
-    "omx_f": {"joint_count": 5, "has_gripper": True},
-}
-
-
 def resolve_deps(
     mod_cls: type,
     robot: RobotConfig,
@@ -68,25 +62,41 @@ def _motor_driver(robot: RobotConfig, deploy: DeploymentConfig) -> Any:
     if deploy.driver_mode == DriverMode.MOCK:
         from modules.motor.drivers.mock import MockMotorBackend
 
-        spec = _MOCK_MOTOR_SPEC.get(robot.type, {"joint_count": 6, "has_gripper": True})
-        return MockMotorBackend(**spec)
+        # 레이아웃 SSOT = motors.yaml (robot.motors). mock·real 공통.
+        return MockMotorBackend(motors=robot.motors)
+    # real — vendor 별 분기
+    if robot.motor_backend == "feetech":
+        from modules.motor.drivers.feetech import FeetechBackend
+
+        if robot.motor_port is None:
+            raise ValueError(
+                f"robot {robot.id} 에 motor_port 없음 (instance.yaml 의 platform port 확인)"
+            )
+        return FeetechBackend(
+            motors=robot.motors,
+            port=robot.motor_port,
+            baudrate=robot.motor_baudrate or 1_000_000,
+        )
     raise NotImplementedError(
-        f"real motor driver {robot.motor_driver!r} 미구현 — Step 9 후 port. "
-        f"지금은 mock.yaml (driver_mode: mock) 로만 boot 가능."
+        f"real motor driver {robot.motor_backend!r} 미구현 (dynamixel 등 후속)."
     )
 
 
 def _camera_driver(robot: RobotConfig, deploy: DeploymentConfig) -> Any:
-    if robot.camera is None:
+    if robot.camera_backend is None:
         raise ValueError(
-            f"robot {robot.id} 는 camera 없음 (robots.yaml camera: null) — "
-            f"camera Module 배치 불가. deployment yaml 확인."
+            f"robot {robot.id} 에 camera_backend 없음 — camera Module 배치 불가."
         )
     if deploy.driver_mode == DriverMode.MOCK:
         from modules.camera.drivers.mock import MockCameraDriver
 
         has_depth = "rgbd" in robot.capabilities
         return MockCameraDriver(has_depth=has_depth)
+    # real — vendor 별 분기
+    if robot.camera_backend == "realsense":
+        from modules.camera.drivers.realsense_d405 import RealSenseD405Driver
+
+        return RealSenseD405Driver()
     raise NotImplementedError(
-        f"real camera driver {robot.camera.driver!r} 미구현 — Step 9 후 port."
+        f"real camera driver {robot.camera_backend!r} 미구현 (opencv 등 후속)."
     )

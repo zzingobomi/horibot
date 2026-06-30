@@ -1,0 +1,28 @@
+# v2 robot registry (lean) — identity / placement / vendor / capability 만.
+# 모터 레이아웃 = <type>/motors.yaml, instance(port/baud) = instances/<id>/instance.yaml.
+# calibration 파라미터(pose_recommend_strategy / wrist_roll_motor_id /
+# sag_joint_motor_ids)는 Calibration Module (Step E) 자리 — registry 에서 제외.
+#
+# capabilities       : move | calibrate | rgbd | gamepad
+# motor_backend      : feetech | dynamixel
+# camera_backend     : realsense | opencv
+# kinematics_backend : pybullet
+
+robots:
+  omx_f_0:
+    type: omx_f
+    enabled: false
+    capabilities: [move, calibrate]
+    motor_backend: dynamixel
+    camera_backend: opencv
+    kinematics_backend: pybullet
+    base_pose: { x: 0.0, y: 0.0, z: 0.0, yaw_deg: 0.0 }
+
+  so101_6dof_0:
+    type: so101_6dof
+    enabled: true
+    capabilities: [move, calibrate, gamepad, rgbd]
+    motor_backend: feetech
+    camera_backend: realsense
+    kinematics_backend: pybullet
+    base_pose: { x: 0.4, y: 0.0, z: 0.0, yaw_deg: 0.0 }

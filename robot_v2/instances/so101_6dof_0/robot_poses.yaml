@@ -1,0 +1,64 @@
+# Named robot poses (joint angles in degrees).
+# SO-101 6DOF mod 6-DOF arm (joint id 1..6). gripper(id 7)는 미포함.
+# 새 자세는 키 추가만 하면 됨 — backend/frontend 로더는 이름으로 lookup.
+#
+# Joint 매핑 (robot/so101_6dof/motors.yaml + so101_6dof_plan.md §3):
+#   M1 = base yaw          (limit ±90°)
+#   M2 = shoulder STS3250  (limit -10°..+150°)
+#   M3 = elbow             (limit -175°..-5°)
+#   M4 = wrist pitch       (limit ±87°)
+#   M5 = wrist yaw (NEW)   (limit ±87°)
+#   M6 = wrist roll        (limit 0°..+180°, work pose ≈ +90°)
+#
+# ⚠️ degree 값은 사용자가 채울 자리 (placeholder = 0.0). 책상/D405 마운트/간섭
+# 직접 확인 후 micro tune. 토크 off 로 자세 잡고 [캡처] 자리에서 raw → deg
+# 환산해서 박는 게 안전.
+
+# Ready / standby — task 시작 자세
+home:
+  - { id: 1, degree: 0.0 } # M1 base yaw
+  - { id: 2, degree: 15.0 } # M2 shoulder
+  - { id: 3, degree: -45.0 } # M3 elbow
+  - { id: 4, degree: 85.0 } # M4 wrist pitch
+  - { id: 5, degree: -5.0 } # M5 wrist yaw
+  - { id: 6, degree: 90.0 } # M6 wrist roll
+
+# Rest / park — 토크 풀어도 안전한 자세 (그리퍼 책상에 살짝 닿거나 팔 접힌 상태)
+rest:
+  - { id: 1, degree: 0.0 }
+  - { id: 2, degree: 0.0 }
+  - { id: 3, degree: -15.0 }
+  - { id: 4, degree: 80.0 }
+  - { id: 5, degree: -5.0 }
+  - { id: 6, degree: 90.0 }
+
+# ─── Search poses (lexical 정렬 순으로 순회) ────────────────────────────
+# detect 실패 시 list_pose_names("search_") 가 자동 수집 → 순회.
+# 좌/중/우 책상 시야 커버하는 초기안. M1 (base yaw) 만 다르게 두는 게 출발점.
+
+# 좌측 시야 — M1 +N°
+search_1:
+  - { id: 1, degree: 0.0 }
+  - { id: 2, degree: 0.0 }
+  - { id: 3, degree: 0.0 }
+  - { id: 4, degree: 0.0 }
+  - { id: 5, degree: 0.0 }
+  - { id: 6, degree: 0.0 }
+
+# 가운데 시야 — M1 0°
+search_2:
+  - { id: 1, degree: 0.0 }
+  - { id: 2, degree: 0.0 }
+  - { id: 3, degree: 0.0 }
+  - { id: 4, degree: 0.0 }
+  - { id: 5, degree: 0.0 }
+  - { id: 6, degree: 0.0 }
+
+# 우측 시야 — M1 -N°
+search_3:
+  - { id: 1, degree: 0.0 }
+  - { id: 2, degree: 0.0 }
+  - { id: 3, degree: 0.0 }
+  - { id: 4, degree: 0.0 }
+  - { id: 5, degree: 0.0 }
+  - { id: 6, degree: 0.0 }

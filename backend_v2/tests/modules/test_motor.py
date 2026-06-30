@@ -38,9 +38,43 @@ from modules.motor.contract import (
     TorqueChanged,
 )
 from modules.motor.drivers.mock import MockMotorBackend
+from modules.motor.layout import MotorSpec
 from modules.motor.module import MotorDriverModule
 
 _LOCAL_CFG = {"mode": "peer", "scouting": {"multicast": {"enabled": False}}}
+
+
+def _layout(n_joints: int, gripper: bool) -> list[MotorSpec]:
+    """test 용 합성 모터 레이아웃 (motors.yaml 한 줄 등가)."""
+    motors = [
+        MotorSpec(
+            id=i + 1,
+            name=f"j{i + 1}",
+            model="MOCK",
+            kind=MotorKind.JOINT,
+            home=2048,
+            limit_min=0,
+            limit_max=4095,
+            velocity_dps=0.0,
+            acceleration_dpss=0.0,
+        )
+        for i in range(n_joints)
+    ]
+    if gripper:
+        motors.append(
+            MotorSpec(
+                id=n_joints + 1,
+                name="gripper",
+                model="MOCK",
+                kind=MotorKind.GRIPPER,
+                home=2048,
+                limit_min=0,
+                limit_max=4095,
+                velocity_dps=0.0,
+                acceleration_dpss=0.0,
+            )
+        )
+    return motors
 
 
 @pytest.fixture
@@ -64,7 +98,7 @@ async def runtime(transport: ZenohTransport):
 async def test_capabilities_service_relays_driver_self_declare(
     runtime: Runtime,
 ):
-    driver = MockMotorBackend(joint_count=6, has_gripper=True)
+    driver = MockMotorBackend(_layout(6, True))
     runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
     await runtime.start()
 
@@ -82,7 +116,7 @@ async def test_capabilities_service_relays_driver_self_declare(
 
 
 async def test_topology_service_returns_motor_list(runtime: Runtime):
-    driver = MockMotorBackend(joint_count=6, has_gripper=True)
+    driver = MockMotorBackend(_layout(6, True))
     runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
     await runtime.start()
 
@@ -102,7 +136,7 @@ async def test_topology_service_returns_motor_list(runtime: Runtime):
 
 
 async def test_topology_no_gripper_when_driver_says_no(runtime: Runtime):
-    driver = MockMotorBackend(joint_count=5, has_gripper=False)
+    driver = MockMotorBackend(_layout(5, False))
     runtime.add_module(MotorDriverModule, robot_id="omx_f_0", driver=driver)
     await runtime.start()
 
@@ -133,7 +167,7 @@ async def test_set_torque_broadcasts_torque_changed_event(runtime: Runtime):
             received.append(event)
             done.set()
 
-    driver = MockMotorBackend()
+    driver = MockMotorBackend(_layout(6, True))
     runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
     runtime.add_module(Listener)
     await runtime.start()
@@ -153,7 +187,7 @@ async def test_set_torque_broadcasts_torque_changed_event(runtime: Runtime):
 
 
 async def test_reboot_service(runtime: Runtime):
-    driver = MockMotorBackend()
+    driver = MockMotorBackend(_layout(6, True))
     runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
     await runtime.start()
 
@@ -167,7 +201,7 @@ async def test_reboot_service(runtime: Runtime):
 
 
 async def test_set_gripper_writes_to_driver(runtime: Runtime):
-    driver = MockMotorBackend(joint_count=6, has_gripper=True)
+    driver = MockMotorBackend(_layout(6, True))
     runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
     await runtime.start()
 
@@ -197,7 +231,7 @@ async def test_state_stream_publishes_with_seq_and_timestamp(runtime: Runtime):
         def on_state(self, event: JointState) -> None:
             received.append(event)
 
-    driver = MockMotorBackend(joint_count=6, has_gripper=True)
+    driver = MockMotorBackend(_layout(6, True))
     runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
     runtime.add_module(Listener)
     await runtime.start()
@@ -240,8 +274,8 @@ async def test_multi_robot_independent_state_streams(runtime: Runtime):
             elif event.robot_id == "omx_f_0":
                 omx_events.append(event)
 
-    so101_driver = MockMotorBackend(joint_count=6, has_gripper=True)
-    omx_driver = MockMotorBackend(joint_count=5, has_gripper=True)
+    so101_driver = MockMotorBackend(_layout(6, True))
+    omx_driver = MockMotorBackend(_layout(5, True))
     runtime.add_module(
         MotorDriverModule, robot_id="so101_0", driver=so101_driver,
     )
@@ -280,7 +314,7 @@ async def test_driver_open_close_lifecycle(transport: ZenohTransport):
             super().close()
 
     rt = Runtime(transport)
-    rt.add_module(MotorDriverModule, robot_id="so101_0", driver=SpyDriver())
+    rt.add_module(MotorDriverModule, robot_id="so101_0", driver=SpyDriver(_layout(6, True)))
     await rt.start()
     assert open_calls == [None]
     await rt.stop()
@@ -302,7 +336,7 @@ async def test_state_loop_stops_after_module_stop(transport: ZenohTransport):
             received.append(event)
 
     rt = Runtime(transport)
-    rt.add_module(MotorDriverModule, robot_id="so101_0", driver=MockMotorBackend())
+    rt.add_module(MotorDriverModule, robot_id="so101_0", driver=MockMotorBackend(_layout(6, True)))
     rt.add_module(Listener)
     await rt.start()
 

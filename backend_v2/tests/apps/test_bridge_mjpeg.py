@@ -29,7 +29,7 @@ _SO101 = "so101_6dof_0"
 async def base_url():
     transport = ZenohTransport(_LOCAL_CFG)
     runtime = Runtime(transport)
-    robots = load_robots(_CONFIG_DIR / "robots.yaml")
+    robots = load_robots()
     deploy = DeploymentConfig(
         driver_mode=DriverMode.MOCK, modules=[ModuleEntry(name="bridge")]
     )

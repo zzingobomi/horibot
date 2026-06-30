@@ -46,7 +46,7 @@ async def bridge():
     transport = ZenohTransport(_LOCAL_CFG)
     time.sleep(0.05)
     runtime = Runtime(transport)
-    robots = load_robots(_CONFIG_DIR / "robots.yaml")
+    robots = load_robots()
     deploy = DeploymentConfig(
         driver_mode=DriverMode.MOCK, modules=[ModuleEntry(name="bridge")]
     )

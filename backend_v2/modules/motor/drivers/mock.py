@@ -1,4 +1,7 @@
-"""Mock MotorBackend — hardware-less 자리. host_mock.yaml + test 자리."""
+"""Mock MotorBackend — hardware-less 자리. mock.yaml + test 자리.
+
+레이아웃(MotorSpec list)을 받아 합성 — real 과 동일 layout SSOT (motors.yaml).
+"""
 
 from __future__ import annotations
 
@@ -9,21 +12,16 @@ from ..contract import (
     MotorKind,
     MotorTopology,
 )
+from ..layout import MotorSpec
 
 
 class MockMotorBackend:
-    """In-process mock — 합성 motor state, hardware 없이 동작."""
+    """In-process mock — motors 레이아웃대로 합성 state, hardware 없이 동작."""
 
-    def __init__(self, joint_count: int = 6, has_gripper: bool = True) -> None:
-        # MotorInfo list 가 SSOT — joint_count / has_gripper 다 derived
-        motors: list[MotorInfo] = [
-            MotorInfo(id=i + 1, kind=MotorKind.JOINT) for i in range(joint_count)
-        ]
-        if has_gripper:
-            motors.append(MotorInfo(id=joint_count + 1, kind=MotorKind.GRIPPER))
-        self._motors = motors
-        # 중심 raw int (0..4095). Dynamixel/Feetech 컨벤션
-        self._positions: list[int] = [2048] * len(self._motors)
+    def __init__(self, motors: list[MotorSpec]) -> None:
+        self._motors = list(motors)
+        # 초기 position = 각 모터 home (real 첫 read 와 동형)
+        self._positions: list[int] = [m.home for m in self._motors]
         self._torque_enabled = False
 
     # ── self-declare ──
@@ -35,7 +33,9 @@ class MockMotorBackend:
         )
 
     def topology(self) -> MotorTopology:
-        return MotorTopology(motors=list(self._motors))
+        return MotorTopology(
+            motors=[MotorInfo(id=m.id, kind=m.kind) for m in self._motors]
+        )
 
     # ── lifecycle ──
 

@@ -4,21 +4,18 @@ version = "0.1.0"
 description = "Horibot Backend v2 — framework (Runtime / Contract / Mirror / Transport)"
 requires-python = ">=3.11"
 
+# 공통 — 모든 process (wire framework + boot config). role 무관.
 dependencies = [
     "eclipse-zenoh>=1.0.0",
     "pydantic>=2.9.0",
     "msgspec>=0.18.0",
-    "sqlalchemy>=2.0.0",
     "numpy>=1.26.0",
-    "opencv-python-headless>=4.10.0",
-    "zstandard>=0.22.0",
     "pyyaml>=6.0",
-    "fastapi>=0.115.0",
-    "uvicorn>=0.30.0",
-    "websockets>=13.0",
-    "psutil>=6.0.0",
 ]
 
+# 역할별 dependency group — config/deployments/{role}.yaml 과 1:1.
+# Pi 는 자기 role 만: `uv sync --no-default-groups --group pi-camera`.
+# dev 머신은 default-groups=[dev, all] 로 전부.
 [dependency-groups]
 dev = [
     "ruff",
@@ -26,6 +23,35 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "httpx>=0.27.0",
+]
+# 모터 Pi — Dynamixel/Feetech SDK + kinematics. (pybullet / ruckig / scipy 는
+# Motion Step D 진입 시.)
+pi-motor = [
+    "feetech-servo-sdk>=1.0.0,<2.0.0",  # SO-101 STS3215/3250. import: scservo_sdk
+]
+# 카메라 Pi — pyrealsense2 는 Pi 소스빌드라 실 driver 때 추가
+# (`--no-install-package pyrealsense2` + prebuilt wheel).
+pi-camera = [
+    "opencv-python-headless>=4.10.0",
+    "zstandard>=0.22.0",
+    "pyrealsense2>=2.54",  # D405. Pi 는 소스빌드 → --no-install-package pyrealsense2
+]
+# PC — bridge(web) + decode + DB owner + heavy compute. open3d/ultralytics 는
+# Detector/Scene3D/Reconstruction 진입 시 추가.
+pc = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "websockets>=13.0",
+    "psutil>=6.0.0",
+    "opencv-python-headless>=4.10.0",
+    "zstandard>=0.22.0",
+    "sqlalchemy>=2.0.0",
+]
+# 단일 머신 풀스택 (dev) — 세 role 합집합.
+all = [
+    { include-group = "pi-motor" },
+    { include-group = "pi-camera" },
+    { include-group = "pc" },
 ]
 infra-postgres = [
     "psycopg[binary]>=3.2.0",
@@ -35,7 +61,7 @@ infra-minio = [
 ]
 
 [tool.uv]
-default-groups = ["dev"]
+default-groups = ["dev", "all"]
 
 [tool.ruff]
 line-length = 88

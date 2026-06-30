@@ -1,0 +1,123 @@
+# Type-level motor spec for so101_6dof (ts_flake wrist yaw mod, 6DOF + gripper = 7 motor).
+# 같은 type 의 모든 instance 가 공유. Instance (USB port, baud) 는
+# robot/instances/<robot_id>/instance.yaml.
+# multi_robot_architecture.md §5.1.2 split + so101_6dof_plan.md §3 모터 배치 참조.
+#
+# joint name = ts_flake URDF (robot/so101_6dof/urdf/so101_6dof.urdf) 의 revolute joint 이름 그대로.
+# limit raw 값 = URDF joint limit (rad) → raw 변환 (raw = 2048 + rad * 4095/(2π)).
+# PID 는 비워둠 — Feetech STS default 사용. shoulder sag/진동 본 후 튜닝
+# (so101_6dof_plan §6-6 (b): STS PID 는 EEPROM 영역이라 한 번 굽고 끝).
+# Operating Mode = 0 (Position Servo, STS register 33).
+#
+# `profile` (slam guard) = OMX 와 같은 dps SSOT. FeetechBackend adapter 가
+# vendor raw (1 step = 0.088°/s, accel = 100 step/s²) 로 변환. 같은 dps 숫자
+# 가 OMX 의 Dynamixel 과 같은 물리 동작 (multi_robot_architecture.md §3.3).
+# moveJ/L/C/P 진입 시 TrajectoryRunner 가 raw 0,0 (= cap 해제) 로 풀고 종료 시
+# restore_defaults 로 이 값 복원.
+# Ruckig planning 한계는 별도 — robot/so101_6dof/motion.yaml.
+
+motors:
+  - id: 1
+    name: "joint1"
+    model: "STS3215"
+    mode: "position"
+    home: 2048
+    limit:
+      min: 1024   # URDF -1.5708 rad (-90°)
+      max: 3072   # URDF +1.5708 rad (+90°)
+    reverse: false
+    profile:
+      velocity_dps: 80.0      # base yaw — 부드러운 baseline
+      acceleration_dpss: 400.0
+    # pid: Feetech default
+
+  - id: 2
+    name: "joint2"
+    model: "STS3250"   # ⭐ shoulder upgrade (50kg·cm, so101_6dof_plan §6-5)
+    mode: "position"
+    home: 2048
+    limit:
+      # 사용자 실측 mechanical 한계 + 보수 마진 (2026-06-21 update).
+      # URDF lower=-0.174533 rad / upper=+2.61799 rad = -10°..+150°.
+      min: 1935   # URDF -0.174533 rad (-10°), conservative ceil
+      max: 3754   # URDF +2.61799 rad (+150°), conservative floor
+    reverse: false
+    profile:
+      velocity_dps: 60.0      # shoulder — 무거운 STS3250, 보수적
+      acceleration_dpss: 300.0
+    # pid: Feetech default. shoulder 가 sag 가장 큰 자리 — 동작 본 후 튜닝 우선
+
+  - id: 3
+    name: "joint3"
+    model: "STS3215"
+    mode: "position"
+    home: 2048
+    limit:
+      # 사용자 실측 mechanical 한계 + 보수 마진 (2026-06-21 update).
+      # URDF lower=-3.05433 rad / upper=-0.0872665 rad = -175°..-5°.
+      min: 58     # URDF -3.05433 rad (-175°), conservative ceil
+      max: 1991   # URDF -0.0872665 rad (-5°), conservative floor
+    reverse: false
+    profile:
+      velocity_dps: 70.0      # elbow
+      acceleration_dpss: 350.0
+
+  - id: 4
+    name: "joint4"
+    model: "STS3215"
+    mode: "position"
+    home: 2048
+    limit:
+      # 사용자 실측 mechanical 한계 + 보수 마진 (2026-06-21 update).
+      # URDF ±1.51844 rad = ±87° — J5 와 동일 한계 (대칭).
+      min: 1059   # URDF -1.51844 rad (-87°), conservative ceil
+      max: 3037   # URDF +1.51844 rad (+87°), conservative floor
+    reverse: false
+    profile:
+      velocity_dps: 100.0     # wrist pitch — 작은 부하, 빠르게 OK
+      acceleration_dpss: 500.0
+
+  - id: 5
+    name: "joint5"   # NEW wrist yaw (ts_flake mod, 6DOF 만드는 핵심 축)
+    model: "STS3215"
+    mode: "position"
+    home: 2048
+    limit:
+      # ts_flake CAD 간섭 한계 (-88.51°/+87.49°, 비대칭) 를 작은 쪽에 맞춰 ±87° 대칭화.
+      # 양수 방향에 0.49° 안전 마진 확보 + IK/추천 자세가 양방향 동일 manifold.
+      min: 1059   # URDF -1.51844 rad (-87°)
+      max: 3037   # URDF +1.51844 rad (+87°)
+    reverse: false
+    profile:
+      velocity_dps: 100.0     # wrist yaw
+      acceleration_dpss: 500.0
+
+  - id: 6
+    name: "joint6"   # wrist roll
+    model: "STS3215"
+    mode: "position"
+    home: 2048
+    limit:
+      # URDF zero = 카메라 오른쪽 누움, +90° = work pose (책상 내려봄), +180° = 왼쪽 누움.
+      # work pose +90° 중심 ±90° 대칭 → 카메라 image up 유지 (거꾸로 자세 차단)
+      # + motor 한 바퀴의 정확히 절반만 사용 → cable wrap 일방향 누적 없음.
+      min: 2048   # URDF 0 rad (0°, 오른쪽 누움)
+      max: 4095   # URDF +3.14159 rad (+180°, 왼쪽 누움)
+    reverse: false
+    profile:
+      velocity_dps: 100.0     # wrist roll — D405 cantilever, 너무 빠르면 진동
+      acceleration_dpss: 500.0
+
+  - id: 7
+    name: "joint7"
+    model: "STS3215"
+    mode: "position"
+    kind: gripper   # MotorLayout 검증 (motor_config.py) — 정확히 1개 강제
+    home: 2048
+    limit:
+      min: 1935   # URDF -0.17412 rad (-10°)
+      max: 3186   # URDF +1.74574 rad (+100°, 그리퍼 full open)
+    reverse: false
+    profile:
+      velocity_dps: 90.0      # gripper — finger slam 방지, OMX 와 같은 숫자
+      acceleration_dpss: 400.0

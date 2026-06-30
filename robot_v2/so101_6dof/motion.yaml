@@ -1,0 +1,43 @@
+# so101_6dof (Feetech STS3215/STS3250, 6DOF + gripper) — Ruckig 한계 SSOT.
+# TrajectoryRunner 가 moveJ / moveL / moveC / moveP 보간 시 입력으로 사용.
+# 단위: SI (rad/s, rad/s², rad/s³, m/s, m/s², m/s³). dict-by-joint-name —
+# motors.yaml `motors[].name` 과 일치 (gripper = joint7 은 moveJ 비대상 → 등재 X).
+#
+# 1차 baseline — OMX 의 운영 검증 값 (~1.5 rad/s = ~86°/s) 을 STS3215/3250 사양
+# 에 맞춰 같은 비율 (sts 최대 약 45 rpm ≈ 4.7 rad/s 의 ~35%) 로 시작. 실 hardware
+# 부팅 후 진동/sag 보고 튜닝.
+
+joint_limits:
+  # SpeedTcp 자리는 motors.yaml default profile 유지 (release_profile 안 호출).
+  # 모터 trapezoidal profile 이 Ruckig output 부드럽게 추종 → joint jerk 적당히.
+  # MoveJ/L/C/P 는 release_profile 그대로라 joint Ruckig 만 제약.
+  joint1:
+    max_velocity: 1.5
+    max_acceleration: 3.0
+    max_jerk: 15.0
+  joint2:
+    max_velocity: 1.5
+    max_acceleration: 3.0
+    max_jerk: 15.0
+  joint3:
+    max_velocity: 1.5
+    max_acceleration: 3.0
+    max_jerk: 15.0
+  joint4:
+    max_velocity: 1.5
+    max_acceleration: 3.0
+    max_jerk: 15.0
+  joint5:
+    max_velocity: 1.5
+    max_acceleration: 3.0
+    max_jerk: 15.0
+  joint6:
+    max_velocity: 1.5
+    max_acceleration: 3.0
+    max_jerk: 15.0
+
+cartesian_limits:
+  max_trans_vel: 0.10
+  max_trans_acc: 0.3
+  max_trans_jerk: 3.0
+  # 6DOF 의 회전 한계 — full orientation IK 활성화 시 적용 (현재 미사용).

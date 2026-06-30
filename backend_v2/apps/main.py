@@ -55,7 +55,7 @@ def load_configs(
     host: str, config_dir: Path = _CONFIG_DIR
 ) -> tuple[DeploymentConfig, dict[str, RobotConfig]]:
     deploy = load_deployment(config_dir / "deployments" / f"{host}.yaml")
-    robots = load_robots(config_dir / "robots.yaml")
+    robots = load_robots()  # top-level robot_v2/ (config.py _ROBOT_DIR)
     return deploy, robots
 
 

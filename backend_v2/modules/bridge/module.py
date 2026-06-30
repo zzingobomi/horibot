@@ -15,11 +15,14 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from pathlib import Path
+
 import psutil
 import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from framework.transport.protocol import RawTransport
 
@@ -39,11 +42,13 @@ class BridgeModule:
         robots: list[RobotInfo],
         host: str = "0.0.0.0",
         port: int = 8000,
+        robot_dir: Path | None = None,
     ) -> None:
         self._transport = transport
         self._robots = robots
         self._host = host
         self._port = port
+        self._robot_dir = robot_dir  # robot_v2/ — /robot 에 static mount (URDF/mesh)
 
         self._app = self._build_app()
         self._server: uvicorn.Server | None = None
@@ -92,6 +97,15 @@ class BridgeModule:
             return StreamingResponse(
                 mjpeg_stream(self._transport, robot_id),
                 media_type=f"multipart/x-mixed-replace; boundary={BOUNDARY}",
+            )
+
+        # robot_v2/ → /robot static mount (frontend urdf-loader 가 URDF/mesh fetch).
+        # mount 는 명시 route 뒤 — "/robots" 등과 prefix 안 겹침.
+        if self._robot_dir is not None:
+            app.mount(
+                "/robot",
+                StaticFiles(directory=str(self._robot_dir)),
+                name="robot",
             )
 
         return app

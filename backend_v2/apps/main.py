@@ -10,7 +10,7 @@ from framework.runtime.app import Runtime
 from framework.transport.protocol import Transport
 
 from .config import DeploymentConfig, RobotConfig, load_deployment, load_robots
-from .registry import MODULE_REGISTRY
+from .registry import load_module_class
 from .resolve import resolve_deps, resolve_host_deps
 
 logger = logging.getLogger(__name__)
@@ -27,12 +27,8 @@ def build_runtime(
     runtime = Runtime(transport)
 
     for entry in deploy.modules:
-        mod_cls = MODULE_REGISTRY.get(entry.name)
-        if mod_cls is None:
-            raise KeyError(
-                f"deployment 의 module {entry.name!r} 가 MODULE_REGISTRY 에 없음 "
-                f"— apps/registry.py 확인"
-            )
+        # lazy — 이 host 의 deployment 에 있는 모듈만 import (role 격리)
+        mod_cls = load_module_class(entry.name)
         if entry.robots:
             for rid in entry.robots:
                 robot = robots.get(rid)
@@ -40,11 +36,11 @@ def build_runtime(
                     raise KeyError(
                         f"module {entry.name} 의 robot {rid!r} 가 robots.yaml 에 없음"
                     )
-                deps = resolve_deps(mod_cls, robot, deploy)
+                deps = resolve_deps(entry.name, robot, deploy)
                 runtime.add_module(mod_cls, robot_id=rid, **deps)
                 logger.info("add_module %s robot_id=%s", entry.name, rid)
         else:
-            deps = resolve_host_deps(mod_cls, robots, deploy)
+            deps = resolve_host_deps(entry.name, robots, deploy)
             runtime.add_module(mod_cls, **deps)
             logger.info("add_module %s (host-level)", entry.name)
 

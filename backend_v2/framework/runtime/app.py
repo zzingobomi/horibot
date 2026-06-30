@@ -145,11 +145,19 @@ class Runtime:
         if not self._started:
             return
 
+        # 한 모듈의 stop() 실패가 나머지 stop + handle undeclare 를 막지 않게 격리.
+        # 실 하드웨어 (driver.close() 가 USB 에서 throw 가능) shutdown 누수 차단.
         for module in reversed(self._modules):
             if has_stop(module):
-                result = module.stop()
-                if asyncio.iscoroutine(result):
-                    await result
+                try:
+                    result = module.stop()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    logger.exception(
+                        "module %s stop() 실패 — 나머지 shutdown 계속",
+                        type(module).__name__,
+                    )
 
         for handle in self._handles:
             try:

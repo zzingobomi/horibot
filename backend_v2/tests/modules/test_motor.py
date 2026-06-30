@@ -22,6 +22,7 @@ from framework.runtime.app import Runtime
 from infra.transport.zenoh import ZenohTransport
 from modules.motor.contract import (
     CapabilitiesRequest,
+    JointCommand,
     JointState,
     Motor,
     MotorCapabilities,
@@ -214,6 +215,29 @@ async def test_set_gripper_writes_to_driver(runtime: Runtime):
     assert res.ok is True
     # mock driver — gripper position 갱신 검증
     assert driver.read_positions()[-1] == 3000
+
+
+# ─── 4b. command stream (Motion → Motor, raw 위치) ───────
+
+
+async def test_command_stream_writes_to_driver(runtime: Runtime):
+    driver = MockMotorBackend(_layout(6, True))
+    runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
+    await runtime.start()
+
+    target = [1000, 1100, 1200, 1300, 1400, 1500]
+    runtime.module_runtime.publish(
+        Motor.Stream.COMMAND,
+        JointCommand(
+            robot_id="so101_0", seq=0, timestamp_unix=time.time(), positions_raw=target
+        ),
+    )
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if driver.read_positions()[:6] == target:
+            break
+    assert driver.read_positions()[:6] == target  # arm 갱신
+    assert driver.read_positions()[6] == 2048  # gripper 미변 (home)
 
 
 # ─── 5. state stream — 20Hz publish + seq monotonic + timestamp_unix ──

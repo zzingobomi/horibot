@@ -50,7 +50,7 @@ async def bridge():
     deploy = DeploymentConfig(
         driver_mode=DriverMode.MOCK, modules=[ModuleEntry(name="bridge")]
     )
-    deps = resolve_host_deps(BridgeModule, robots, deploy)
+    deps = resolve_host_deps("bridge", robots, deploy)
     runtime.add_module(BridgeModule, port=_PORT, host="127.0.0.1", **deps)
     await runtime.start()
     yield transport, f"ws://127.0.0.1:{_PORT}/ws"

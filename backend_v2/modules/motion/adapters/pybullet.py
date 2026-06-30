@@ -1,0 +1,222 @@
+"""PybulletKinematics — PyBullet 기반 Kinematics (ideal URDF, sag 없음).
+
+옛 backend/modules/kinematics/adapters/pybullet_kinematics.py port.
+D1 = plain URDF load (link_offset patch 는 D4 Mirror[Bundle] 자리).
+
+dof = tcp link 의 **ancestor revolute joint** 만 (gripper 등 sibling 가지 제외).
+PyBullet 의 jointIndex == childLinkIndex 를 이용해 tcp 에서 base 로 거슬러 올라가며
+chain 식별 → so101_6dof=6 (옛 코드의 "전체 revolute=7" 오포함 정정).
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from pathlib import Path
+from typing import Sequence
+
+import numpy as np
+import pybullet as p
+
+from ..kinematics import Position3, Quaternion, RotMatrix3x3
+
+logger = logging.getLogger(__name__)
+
+IK_MAX_ITER = 100
+IK_TOLERANCE = 1e-4
+IK_POS_ERROR_LIMIT = 0.01
+
+# 모든 robot type URDF 는 `tcp` 라는 link 를 가져야 함 (UR tool0 패턴, fail-fast).
+TCP_LINK_NAME = "tcp"
+
+
+class PybulletKinematics:
+    """PyBullet DIRECT 모드 기구학. Kinematics Protocol 만족."""
+
+    def __init__(self, urdf_path: str | Path) -> None:
+        self._urdf_path = Path(urdf_path)
+        self._lock = threading.Lock()
+        self._initialized = False
+        self._client = -1
+        self._robot = -1
+        self._ee_index = -1
+        # chain = tcp ancestor revolute joints (base→tcp 순), = fk/ik 인터페이스 joints
+        self._chain_indices: list[int] = []
+        self._chain_lower: list[float] = []
+        self._chain_upper: list[float] = []
+        # 전체 movable revolute (gripper 포함) — IK solver 가 다 받으므로 필요
+        self._movable_indices: list[int] = []
+        self._movable_lower: list[float] = []
+        self._movable_upper: list[float] = []
+        self._movable_ranges: list[float] = []
+        # chain joint 의 movable result vector 내 위치
+        self._chain_in_movable: list[int] = []
+
+    def initialize(self) -> None:
+        with self._lock:
+            if self._initialized:
+                return
+            self._client = p.connect(p.DIRECT)
+            p.setGravity(0, 0, -9.81, physicsClientId=self._client)
+            self._robot = p.loadURDF(
+                str(self._urdf_path),
+                useFixedBase=True,
+                flags=(
+                    p.URDF_USE_SELF_COLLISION
+                    | p.URDF_USE_SELF_COLLISION_EXCLUDE_PARENT
+                ),
+                physicsClientId=self._client,
+            )
+
+            num = p.getNumJoints(self._robot, physicsClientId=self._client)
+            movable: list[tuple[int, float, float]] = []
+            for i in range(num):
+                info = p.getJointInfo(self._robot, i, physicsClientId=self._client)
+                if info[2] == p.JOINT_REVOLUTE:
+                    lower, upper = float(info[8]), float(info[9])
+                    if lower >= upper:
+                        lower, upper = -6.2832, 6.2832
+                    movable.append((i, lower, upper))
+                if info[12].decode() == TCP_LINK_NAME:
+                    self._ee_index = i
+            if self._ee_index == -1:
+                raise RuntimeError(f"{TCP_LINK_NAME} link not found in URDF")
+
+            self._movable_indices = [m[0] for m in movable]
+            self._movable_lower = [m[1] for m in movable]
+            self._movable_upper = [m[2] for m in movable]
+            self._movable_ranges = [u - lo for _, lo, u in movable]
+            limit_by_idx = {m[0]: (m[1], m[2]) for m in movable}
+
+            # tcp → base ancestor walk (jointIndex == childLinkIndex)
+            chain: list[int] = []
+            link = self._ee_index
+            while link != -1:
+                info = p.getJointInfo(self._robot, link, physicsClientId=self._client)
+                if info[2] == p.JOINT_REVOLUTE:
+                    chain.append(link)
+                link = info[16]  # parentIndex
+            chain.reverse()  # base→tcp
+            self._chain_indices = chain
+            self._chain_lower = [limit_by_idx[j][0] for j in chain]
+            self._chain_upper = [limit_by_idx[j][1] for j in chain]
+            self._chain_in_movable = [self._movable_indices.index(j) for j in chain]
+
+            self._initialized = True
+            logger.info(
+                "PybulletKinematics: dof=%d (chain) / %d movable, tcp=%s",
+                len(chain), len(movable), TCP_LINK_NAME,
+            )
+
+    # ── Protocol ──
+
+    @property
+    def dof(self) -> int:
+        self._require_init()
+        return len(self._chain_indices)
+
+    @property
+    def tcp_link_name(self) -> str:
+        return TCP_LINK_NAME
+
+    def fk(self, joint_angles: Sequence[float]) -> tuple[Position3, Quaternion]:
+        self._require_init()
+        with self._lock:
+            self._set_chain(list(joint_angles))
+            return self._ee_state()
+
+    def ik(
+        self,
+        target_position: Position3,
+        target_quaternion: Quaternion | None,
+        current_joint_angles: Sequence[float] | None = None,
+    ) -> list[float] | None:
+        self._require_init()
+        with self._lock:
+            rest = [0.0] * len(self._movable_indices)
+            if current_joint_angles is not None:
+                for k, angle in enumerate(current_joint_angles):
+                    rest[self._chain_in_movable[k]] = angle
+                self._set_chain(list(current_joint_angles))
+
+            kwargs: dict = dict(
+                bodyUniqueId=self._robot,
+                endEffectorLinkIndex=self._ee_index,
+                targetPosition=target_position,
+                lowerLimits=self._movable_lower,
+                upperLimits=self._movable_upper,
+                jointRanges=self._movable_ranges,
+                restPoses=rest,
+                maxNumIterations=IK_MAX_ITER,
+                residualThreshold=IK_TOLERANCE,
+                physicsClientId=self._client,
+            )
+            if target_quaternion is not None:
+                kwargs["targetOrientation"] = target_quaternion
+
+            result = p.calculateInverseKinematics(**kwargs)
+            angles = [result[i] for i in self._chain_in_movable]
+
+            # 수렴 검증
+            self._set_chain(angles)
+            actual_pos, _ = self._ee_state()
+            error = float(
+                np.linalg.norm(np.array(actual_pos) - np.array(target_position))
+            )
+            if error > IK_POS_ERROR_LIMIT:
+                return None
+            if self._self_collision_unlocked():
+                return None
+            return angles
+
+    def fk_to_matrix(
+        self, joint_angles: Sequence[float]
+    ) -> tuple[RotMatrix3x3, Position3]:
+        position, quat = self.fk(joint_angles)
+        m = p.getMatrixFromQuaternion(quat, physicsClientId=self._client)
+        rot: RotMatrix3x3 = [
+            [m[0], m[1], m[2]],
+            [m[3], m[4], m[5]],
+            [m[6], m[7], m[8]],
+        ]
+        return rot, position
+
+    def joint_limits(self, n: int | None = None) -> list[tuple[float, float]]:
+        pairs = list(zip(self._chain_lower, self._chain_upper))
+        return pairs[:n] if n is not None else pairs
+
+    def self_collision(self, joint_angles: Sequence[float]) -> bool:
+        self._require_init()
+        with self._lock:
+            self._set_chain(list(joint_angles))
+            return self._self_collision_unlocked()
+
+    def close(self) -> None:
+        if p.isConnected(self._client):
+            p.disconnect(self._client)
+
+    # ── 내부 ──
+
+    def _require_init(self) -> None:
+        if not self._initialized:
+            raise RuntimeError("PybulletKinematics 미초기화 — initialize() 먼저")
+
+    def _set_chain(self, angles: list[float]) -> None:
+        for idx, angle in zip(self._chain_indices, angles):
+            p.resetJointState(self._robot, idx, angle, physicsClientId=self._client)
+
+    def _ee_state(self) -> tuple[Position3, Quaternion]:
+        state = p.getLinkState(
+            self._robot,
+            self._ee_index,
+            computeForwardKinematics=True,
+            physicsClientId=self._client,
+        )
+        return tuple(state[4]), tuple(state[5])
+
+    def _self_collision_unlocked(self) -> bool:
+        p.performCollisionDetection(physicsClientId=self._client)
+        contacts = p.getContactPoints(
+            bodyA=self._robot, bodyB=self._robot, physicsClientId=self._client
+        )
+        return any(c[8] < 0.0 for c in contacts)

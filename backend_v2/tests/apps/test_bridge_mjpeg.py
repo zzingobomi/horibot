@@ -33,7 +33,7 @@ async def base_url():
     deploy = DeploymentConfig(
         driver_mode=DriverMode.MOCK, modules=[ModuleEntry(name="bridge")]
     )
-    deps = resolve_host_deps(BridgeModule, robots, deploy)
+    deps = resolve_host_deps("bridge", robots, deploy)
     runtime.add_module(BridgeModule, port=_PORT, host="127.0.0.1", **deps)
     runtime.add_module(
         CameraDriverModule, robot_id=_SO101, driver=MockCameraDriver(has_depth=True)

@@ -28,6 +28,9 @@ dev = [
 # Motion Step D 진입 시.)
 pi-motor = [
     "feetech-servo-sdk>=1.0.0,<2.0.0",  # SO-101 STS3215/3250. import: scservo_sdk
+    "pybullet>=3.2",  # FK/IK (Motion). DIRECT mode, URDF load
+    "ruckig>=0.9",  # jerk-limited trajectory (MoveJ/L/C/P)
+    "scipy>=1.11",  # CubicSpline (MoveP) + 미래 SE(3)/sag
 ]
 # 카메라 Pi — pyrealsense2 는 Pi 소스빌드라 실 driver 때 추가
 # (`--no-install-package pyrealsense2` + prebuilt wheel).

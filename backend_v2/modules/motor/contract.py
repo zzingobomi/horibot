@@ -17,6 +17,9 @@ class Motor:
 
     class Stream(StrEnum):
         RAW_STATE = "stream/motor/{robot_id}/raw_state"
+        # Motion → Motor 위치 명령 (raw). 100Hz fire-and-forget. Motion 이
+        # rad→raw 변환 후 publish, MotorDriver 가 write_positions (§4 — raw↔rad = Motion).
+        COMMAND = "stream/motor/{robot_id}/command"
 
     class Event(StrEnum):
         TORQUE_CHANGED = "event/motor/{robot_id}/torque_changed"
@@ -109,6 +112,15 @@ class JointState(BaseModel):
     positions_raw: list[int]  # 0..4095, motor_ids 순
     velocities_raw: list[int] | None = None  # 모델 / 모터 별
     loads_raw: list[int] | None = None  # torque sensor 있는 모델만
+
+
+class JointCommand(BaseModel):
+    """Motion → Motor 위치 명령 (raw). arm joint 만 (gripper = SET_GRIPPER)."""
+
+    robot_id: str
+    seq: int
+    timestamp_unix: float
+    positions_raw: list[int]  # arm joint raw, motors.yaml arm 순
 
 
 # ─── event payload ─────────────────────────────────────────────────

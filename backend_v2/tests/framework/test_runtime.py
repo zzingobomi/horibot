@@ -33,6 +33,36 @@ async def runtime(transport: ZenohTransport):
     await rt.stop()
 
 
+# ─── stop() 격리 — 한 모듈 실패가 나머지 shutdown 막지 않음 ──
+
+
+async def test_stop_isolates_module_failures(transport: ZenohTransport):
+    flag = {"stopped": False}
+
+    class _FlagStop:
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+
+        def stop(self) -> None:
+            flag["stopped"] = True
+
+    class _BoomStop:
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+
+        def stop(self) -> None:
+            raise RuntimeError("의도된 stop 실패")
+
+    rt = Runtime(transport)
+    # add 순서 [Flag, Boom] → stop 은 reversed → Boom 먼저 throw, Flag 가 그 뒤에도 실행돼야
+    rt.add_module(_FlagStop)
+    rt.add_module(_BoomStop)
+    await rt.start()
+    # Boom.stop 이 throw 해도 stop() 자체는 raise 안 하고 Flag.stop 까지 도달
+    await rt.stop()
+    assert flag["stopped"], "앞 모듈 stop 실패가 뒤 모듈 stop 을 막음 (격리 실패)"
+
+
 # ─── Test fixtures — wire keys + domain class ────────────────
 
 

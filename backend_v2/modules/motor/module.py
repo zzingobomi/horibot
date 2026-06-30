@@ -18,10 +18,12 @@ import time
 
 from framework.contract.publisher import publishes
 from framework.contract.service import service
+from framework.contract.subscriber import subscriber
 from framework.runtime.api import ModuleRuntime
 
 from .contract import (
     CapabilitiesRequest,
+    JointCommand,
     JointState,
     Motor,
     MotorCapabilities,
@@ -122,6 +124,18 @@ class MotorDriverModule:
     def set_gripper(self, req: SetGripperRequest) -> SetGripperResponse:
         self._driver.set_gripper(req.position_raw)
         return SetGripperResponse(ok=True)
+
+    # ── command subscriber (Motion → Motor, raw 위치) ─────────
+
+    @subscriber(Motor.Stream.COMMAND)
+    def on_command(self, cmd: JointCommand) -> None:
+        # robot-scoped — wildcard subscribe 후 self-filter (CameraDecoded 동형)
+        if cmd.robot_id != self.robot_id:
+            return
+        try:
+            self._driver.write_positions(cmd.positions_raw)
+        except Exception:
+            logger.exception("MotorDriver write_positions 실패 robot_id=%s", self.robot_id)
 
     # ── state stream loop (20Hz) ──────────────────────────────
 

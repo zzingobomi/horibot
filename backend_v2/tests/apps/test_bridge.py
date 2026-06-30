@@ -18,7 +18,7 @@ import pytest
 
 from apps.config import DeploymentConfig, DriverMode, ModuleEntry, load_robots
 from apps.main import build_runtime
-from apps.registry import MODULE_REGISTRY
+from apps.registry import load_module_class
 from apps.resolve import resolve_host_deps
 from framework.runtime.app import Runtime
 from infra.transport.zenoh import ZenohTransport
@@ -44,11 +44,11 @@ def _mock_bridge_deploy() -> DeploymentConfig:
 
 
 def test_registry_has_bridge():
-    assert MODULE_REGISTRY["bridge"] is BridgeModule
+    assert load_module_class("bridge") is BridgeModule
 
 
 def test_resolve_host_deps_bridge_returns_robot_info():
-    deps = resolve_host_deps(BridgeModule, _robots(), _mock_bridge_deploy())
+    deps = resolve_host_deps("bridge", _robots(), _mock_bridge_deploy())
     infos = {r.id: r for r in deps["robots"]}
     assert set(infos) == {"so101_6dof_0", "omx_f_0"}
     assert infos["so101_6dof_0"].type == "so101_6dof"
@@ -73,7 +73,7 @@ def test_build_runtime_wires_host_level_bridge():
 async def bridge_url():
     transport = ZenohTransport(_LOCAL_CFG)
     runtime = Runtime(transport)
-    deps = resolve_host_deps(BridgeModule, _robots(), _mock_bridge_deploy())
+    deps = resolve_host_deps("bridge", _robots(), _mock_bridge_deploy())
     runtime.add_module(BridgeModule, port=_TEST_PORT, host="127.0.0.1", **deps)
     await runtime.start()  # uvicorn 기동 + started 까지 대기
     yield f"http://127.0.0.1:{_TEST_PORT}"
@@ -89,6 +89,16 @@ async def test_get_robots(bridge_url: str):
     ids = {r["id"] for r in body["robots"]}
     assert ids == {"so101_6dof_0", "omx_f_0"}
     assert body["default"] in ids
+
+
+async def test_static_robot_mount_serves_urdf(bridge_url: str):
+    # frontend urdf-loader 가 받을 robot_v2 URDF 를 /robot 으로 서빙
+    async with httpx.AsyncClient() as client:
+        res = await client.get(
+            f"{bridge_url}/robot/so101_6dof/urdf/so101_6dof.urdf"
+        )
+    assert res.status_code == 200
+    assert "<robot" in res.text
 
 
 async def test_get_system(bridge_url: str):

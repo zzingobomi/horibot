@@ -1,76 +1,78 @@
+"""resolve_deps — application logic: robot config → Module constructor deps (§5.2).
+
+**모듈 클래스를 top-level import 안 함** — module NAME(string) 으로 dispatch + 필요한
+것만 branch 안에서 lazy import. registry.py 와 같은 role 격리 이유 (pi_camera 가
+resolve import 만으로 pybullet/fastapi 끌어오면 안 됨).
+
+`runtime`/`robot_id` 은 Runtime/main 이 주입 — 여기선 그 외 dep (driver / kinematics 등).
+"""
+
 from __future__ import annotations
 
 from typing import Any
 
-from modules.bridge.contract import BasePoseInfo, RobotInfo
-from modules.bridge.module import BridgeModule
-from modules.camera.decoded import CameraDecodedModule
-from modules.camera.module import CameraDriverModule
-from modules.motor.module import MotorDriverModule
-
-from .config import DeploymentConfig, DriverMode, RobotConfig
+from .config import _ROBOT_DIR, DeploymentConfig, DriverMode, RobotConfig
 
 
 def resolve_deps(
-    mod_cls: type,
-    robot: RobotConfig,
-    deploy: DeploymentConfig,
+    name: str, robot: RobotConfig, deploy: DeploymentConfig
 ) -> dict[str, Any]:
-    if mod_cls is MotorDriverModule:
+    """robot-scoped Module 의 constructor deps (runtime / robot_id 제외)."""
+    if name == "motor":
         return {"driver": _motor_driver(robot, deploy)}
-    if mod_cls is CameraDriverModule:
+    if name == "camera":
         return {"driver": _camera_driver(robot, deploy)}
-    if mod_cls is CameraDecodedModule:
+    if name == "camera_decoded":
         return {}
+    if name == "motion":
+        return _motion_deps(robot)
     raise NotImplementedError(
-        f"resolve_deps 미지원 Module: {mod_cls.__name__} "
-        f"(robot={robot.id}). registry 추가 시 여기도 분기 박을 것."
+        f"robot-scoped resolve 미지원 module: {name!r} (robot={robot.id})"
     )
 
 
 def resolve_host_deps(
-    mod_cls: type,
-    robots: dict[str, RobotConfig],
-    deploy: DeploymentConfig,
+    name: str, robots: dict[str, RobotConfig], deploy: DeploymentConfig
 ) -> dict[str, Any]:
     """host-level (robot-agnostic) Module 의 constructor deps."""
-    if mod_cls is BridgeModule:
-        # 내부 config 모델 (RobotConfig) → frontend wire 모델 (RobotInfo) 변환.
-        # 레이어링 — modules/bridge 는 apps 모름, 변환은 apps 책임 (§8.6 / §9.1).
-        return {"robots": [_to_robot_info(r) for r in robots.values()]}
-    raise NotImplementedError(f"host-level Module 미구현: {mod_cls.__name__} (Step C+)")
+    if name == "bridge":
+        from modules.bridge.contract import BasePoseInfo, RobotInfo
+
+        # 내부 config(RobotConfig) → frontend wire(RobotInfo). 변환은 apps 책임 (§9.1).
+        infos = [
+            RobotInfo(
+                id=r.id,
+                type=r.type,
+                base_pose=BasePoseInfo(
+                    x=r.base_pose.x,
+                    y=r.base_pose.y,
+                    z=r.base_pose.z,
+                    yaw_deg=r.base_pose.yaw_deg,
+                ),
+                capabilities=list(r.capabilities),
+            )
+            for r in robots.values()
+        ]
+        # robot_v2/ 경로 주입 — /robot static mount (URDF/mesh). 레이어링: 경로는
+        # apps 가 앎, modules/bridge 는 받기만.
+        return {"robots": infos, "robot_dir": _ROBOT_DIR}
+    raise NotImplementedError(f"host-level resolve 미지원 module: {name!r}")
 
 
-def _to_robot_info(robot: RobotConfig) -> RobotInfo:
-    return RobotInfo(
-        id=robot.id,
-        type=robot.type,
-        base_pose=BasePoseInfo(
-            x=robot.base_pose.x,
-            y=robot.base_pose.y,
-            z=robot.base_pose.z,
-            yaw_deg=robot.base_pose.yaw_deg,
-        ),
-        capabilities=list(robot.capabilities),
-    )
-
-
-# ─── driver 선택 ────────────────────────────────────────────────
+# ─── driver / kinematics 선택 (lazy import) ─────────────────────
 
 
 def _motor_driver(robot: RobotConfig, deploy: DeploymentConfig) -> Any:
     if deploy.driver_mode == DriverMode.MOCK:
         from modules.motor.drivers.mock import MockMotorBackend
 
-        # 레이아웃 SSOT = motors.yaml (robot.motors). mock·real 공통.
-        return MockMotorBackend(motors=robot.motors)
-    # real — vendor 별 분기
+        return MockMotorBackend(motors=robot.motors)  # layout SSOT = motors.yaml
     if robot.motor_backend == "feetech":
         from modules.motor.drivers.feetech import FeetechBackend
 
         if robot.motor_port is None:
             raise ValueError(
-                f"robot {robot.id} 에 motor_port 없음 (instance.yaml 의 platform port 확인)"
+                f"robot {robot.id} 에 motor_port 없음 (instance.yaml platform port)"
             )
         return FeetechBackend(
             motors=robot.motors,
@@ -84,15 +86,11 @@ def _motor_driver(robot: RobotConfig, deploy: DeploymentConfig) -> Any:
 
 def _camera_driver(robot: RobotConfig, deploy: DeploymentConfig) -> Any:
     if robot.camera_backend is None:
-        raise ValueError(
-            f"robot {robot.id} 에 camera_backend 없음 — camera Module 배치 불가."
-        )
+        raise ValueError(f"robot {robot.id} 에 camera_backend 없음 — camera 배치 불가.")
     if deploy.driver_mode == DriverMode.MOCK:
         from modules.camera.drivers.mock import MockCameraDriver
 
-        has_depth = "rgbd" in robot.capabilities
-        return MockCameraDriver(has_depth=has_depth)
-    # real — vendor 별 분기
+        return MockCameraDriver(has_depth="rgbd" in robot.capabilities)
     if robot.camera_backend == "realsense":
         from modules.camera.drivers.realsense_d405 import RealSenseD405Driver
 
@@ -100,3 +98,38 @@ def _camera_driver(robot: RobotConfig, deploy: DeploymentConfig) -> Any:
     raise NotImplementedError(
         f"real camera driver {robot.camera_backend!r} 미구현 (opencv 등 후속)."
     )
+
+
+def _motion_deps(robot: RobotConfig) -> dict[str, Any]:
+    from modules.motion.adapters.pybullet import PybulletKinematics
+    from modules.motor.contract import MotorKind
+
+    arm = [s for s in robot.motors if s.kind != MotorKind.GRIPPER]
+    # 순서 계약: arm 은 motors.yaml 의 prefix (gripper 등은 뒤). Motion 이
+    # positions_raw[:dof] 로 arm 추출 + write_positions(arm raw) 하므로, gripper 가
+    # 중간에 끼면 엉뚱한 모터 구동. boot 시 fail-fast 로 silent 오구동 차단.
+    if robot.motors[: len(arm)] != arm:
+        raise ValueError(
+            f"robot {robot.id}: arm 모터가 motors.yaml 의 prefix 가 아님 "
+            f"(gripper/rail 이 arm joint 앞/사이에 있음). Motion 의 positional "
+            f"raw 매핑이 깨짐 — motors.yaml 순서 (arm joints 먼저, gripper 뒤) 확인."
+        )
+    limits = []
+    for s in arm:
+        lim = robot.motion_joint_limits.get(s.name)
+        if lim is None:
+            raise ValueError(
+                f"robot {robot.id} motion.yaml 에 joint '{s.name}' limit 없음"
+            )
+        limits.append(lim)
+    urdf = _ROBOT_DIR / robot.type / "urdf" / f"{robot.type}.urdf"
+    return {
+        "kinematics": PybulletKinematics(urdf),
+        "arm_specs": arm,
+        "joint_max_velocity": [x.max_velocity for x in limits],
+        "joint_max_acceleration": [x.max_acceleration for x in limits],
+        "joint_max_jerk": [x.max_jerk for x in limits],
+        "cartesian_max_velocity": robot.cartesian_limits.max_trans_vel,
+        "cartesian_max_acceleration": robot.cartesian_limits.max_trans_acc,
+        "cartesian_max_jerk": robot.cartesian_limits.max_trans_jerk,
+    }

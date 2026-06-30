@@ -29,10 +29,8 @@ from modules.camera.contract import (
 )
 from modules.camera.contract import CapabilitiesRequest as CameraCapsRequest
 from modules.camera.contract import DecodedSnapshotRequest
-from modules.camera.module import CameraDriverModule
 from modules.motor.contract import CapabilitiesRequest as MotorCapsRequest
 from modules.motor.contract import Motor, MotorCapabilities, MotorCapability
-from modules.motor.module import MotorDriverModule
 
 _CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 _LOCAL_CFG = {"mode": "peer", "scouting": {"multicast": {"enabled": False}}}
@@ -56,7 +54,12 @@ def test_load_robots_parses_entries():
 def test_load_deployment_mock():
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "mock.yaml")
     assert deploy.driver_mode == "mock"
-    assert {m.name for m in deploy.modules} == {"motor", "camera", "camera_decoded"}
+    assert {m.name for m in deploy.modules} == {
+        "motor",
+        "motion",
+        "camera",
+        "camera_decoded",
+    }
 
 
 # ─── resolve_deps ───────────────────────────────────────────────
@@ -65,10 +68,33 @@ def test_load_deployment_mock():
 def test_resolve_deps_mock_motor_picks_mock_backend():
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "mock.yaml")
     robots = load_robots()
-    deps = resolve_deps(MotorDriverModule, robots[_SO101], deploy)
+    deps = resolve_deps("motor", robots[_SO101], deploy)
     # mock motor → topology 6 joint + gripper
     topo = deps["driver"].topology()
     assert len(topo.motors) == 7
+
+
+def test_registry_role_isolated_no_heavy_imports():
+    # lazy registry invariant — motor/motion load 가 fastapi(bridge)/pyrealsense2·cv2
+    # (camera) 를 끌어오면 안 됨 (pi_motor 가 그 deps 없이 boot 가능해야).
+    # clean subprocess 로 검증 (같은 프로세스는 다른 test 가 이미 import 했을 수 있음).
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "from apps.registry import load_module_class\n"
+        "load_module_class('motor'); load_module_class('motion')\n"
+        "heavy = [m for m in ('fastapi', 'pyrealsense2', 'cv2') if m in sys.modules]\n"
+        "assert not heavy, f'pi_motor import 에 끌려온 무거운 모듈: {heavy}'\n"
+        "print('isolated-ok')\n"
+    )
+    root = Path(__file__).resolve().parents[2]  # backend_v2
+    r = subprocess.run(
+        [sys.executable, "-c", code], cwd=root, capture_output=True, text=True
+    )
+    assert r.returncode == 0, f"stdout={r.stdout} stderr={r.stderr}"
+    assert "isolated-ok" in r.stdout
 
 
 def test_resolve_deps_real_feetech_constructs():
@@ -77,7 +103,7 @@ def test_resolve_deps_real_feetech_constructs():
 
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_motor.yaml")  # real
     robots = load_robots()
-    driver = resolve_deps(MotorDriverModule, robots[_SO101], deploy)["driver"]
+    driver = resolve_deps("motor", robots[_SO101], deploy)["driver"]
     assert isinstance(driver, FeetechBackend)
     assert len(driver.topology().motors) == 7  # motors.yaml SSOT
     assert MotorCapability.TORQUE_TOGGLE in driver.capabilities().flags
@@ -89,7 +115,7 @@ def test_resolve_deps_real_realsense_constructs():
 
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_camera.yaml")  # real
     robots = load_robots()
-    driver = resolve_deps(CameraDriverModule, robots[_SO101], deploy)["driver"]
+    driver = resolve_deps("camera", robots[_SO101], deploy)["driver"]
     assert isinstance(driver, RealSenseD405Driver)
     assert CameraCapability.DEPTH in driver.capabilities().flags
 
@@ -98,9 +124,9 @@ def test_resolve_deps_camera_mock_depth_from_rgbd_capability():
     # mock camera 의 depth 여부 = rgbd capability (so101 ✅ / omx ❌)
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "mock.yaml")
     robots = load_robots()
-    so101_cam = resolve_deps(CameraDriverModule, robots[_SO101], deploy)["driver"]
+    so101_cam = resolve_deps("camera", robots[_SO101], deploy)["driver"]
     assert CameraCapability.DEPTH in so101_cam.capabilities().flags
-    omx_cam = resolve_deps(CameraDriverModule, robots["omx_f_0"], deploy)["driver"]
+    omx_cam = resolve_deps("camera", robots["omx_f_0"], deploy)["driver"]
     assert CameraCapability.DEPTH not in omx_cam.capabilities().flags
 
 

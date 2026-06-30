@@ -41,6 +41,20 @@ class BasePose(BaseModel):
     yaw_deg: float = 0.0
 
 
+class JointMotionLimit(BaseModel):
+    """Ruckig 한계 (rad/s, rad/s², rad/s³) — <type>/motion.yaml."""
+
+    max_velocity: float
+    max_acceleration: float
+    max_jerk: float
+
+
+class CartesianLimit(BaseModel):
+    max_trans_vel: float = 0.1
+    max_trans_acc: float = 0.3
+    max_trans_jerk: float = 3.0
+
+
 class RobotConfig(BaseModel):
     """robot 1개 — registry(robots.yaml) + 모터 레이아웃(motors.yaml) +
     instance(port/baud) 합본. v2 의 lean view (calib 파라미터 제외)."""
@@ -58,6 +72,9 @@ class RobotConfig(BaseModel):
     motor_baudrate: int | None = None
     # type-level (<type>/motors.yaml)
     motors: list[MotorSpec] = Field(default_factory=list)
+    # type-level (<type>/motion.yaml) — joint name 별 Ruckig 한계 + cartesian
+    motion_joint_limits: dict[str, JointMotionLimit] = Field(default_factory=dict)
+    cartesian_limits: CartesianLimit = Field(default_factory=CartesianLimit)
 
 
 def _resolve_port(instance_raw: dict) -> tuple[str | None, int | None]:
@@ -93,6 +110,21 @@ def _load_motors(robot_type: str, robot_dir: Path) -> list[MotorSpec]:
     return specs
 
 
+def _load_motion(
+    robot_type: str, robot_dir: Path
+) -> tuple[dict[str, JointMotionLimit], CartesianLimit]:
+    path = robot_dir / robot_type / "motion.yaml"
+    if not path.exists():
+        return {}, CartesianLimit()
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    joints = {
+        name: JointMotionLimit(**lim)
+        for name, lim in (raw.get("joint_limits") or {}).items()
+    }
+    cart = CartesianLimit(**(raw.get("cartesian_limits") or {}))
+    return joints, cart
+
+
 def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
     raw = yaml.safe_load((robot_dir / "robots.yaml").read_text(encoding="utf-8"))
     robots: dict[str, RobotConfig] = {}
@@ -103,6 +135,7 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
         if inst_path.exists():
             inst_raw = yaml.safe_load(inst_path.read_text(encoding="utf-8"))
             port, baud = _resolve_port(inst_raw)
+        motion_joints, cartesian = _load_motion(rtype, robot_dir)
         bp = body.get("base_pose") or {}
         robots[rid] = RobotConfig(
             id=rid,
@@ -116,6 +149,8 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
             motor_port=port,
             motor_baudrate=baud,
             motors=_load_motors(rtype, robot_dir),
+            motion_joint_limits=motion_joints,
+            cartesian_limits=cartesian,
         )
     return robots
 

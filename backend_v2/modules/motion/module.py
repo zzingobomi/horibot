@@ -237,22 +237,37 @@ class MotionModule:
             new_r = (delta * cur_r) if inp.frame == "base" else (cur_r * delta)
             new_quat = new_r.as_quat()
 
-        sol = self._kin.ik(
-            (float(new_pos[0]), float(new_pos[1]), float(new_pos[2])),
-            (float(new_quat[0]), float(new_quat[1]), float(new_quat[2]), float(new_quat[3])),
-            cur,
+        target_pos_tuple = (float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
+        target_quat_tuple = (
+            float(new_quat[0]),
+            float(new_quat[1]),
+            float(new_quat[2]),
+            float(new_quat[3]),
         )
+        sol = self._kin.ik(target_pos_tuple, target_quat_tuple, cur)
         if sol is None:
             # IK 실패 → ref 적분 전 값 유지 (마지막 valid hold, 누적 X)
-            # rate-limited log — Z+ 만 안 되는 등 방향성 reject 원인 진단 자리
+            # 원인 분리 진단: position-only IK 도 시도해서 orientation vs reachability 판별.
+            #   - pos-only 도 실패 = 진짜 unreachable (target 자체 workspace 밖)
+            #   - pos-only 만 성공 = orientation constraint 가 blocker (arm 최대 reach 근처
+            #     자리 특정 orientation 유지 불가능 — SO-101 6DOF exact solve 편차)
             self._jog_tcp_reject_count += 1
             if now - self._jog_tcp_reject_last_log > 0.5:
+                sol_pos_only = self._kin.ik(target_pos_tuple, None, cur)
+                reason = (
+                    "orientation-only-fail (pos-only OK)"
+                    if sol_pos_only is not None
+                    else "unreachable (both fail)"
+                )
+                cur_deg = [round(a * 180.0 / 3.14159265, 1) for a in cur]
                 logger.warning(
                     "JogTcp IK reject robot=%s frame=%s target_pos=%s linear=%s "
-                    "(count=%d in %.1fs)",
+                    "reason=%s current_joints_deg=%s (count=%d in %.1fs)",
                     self.robot_id, inp.frame,
-                    (float(new_pos[0]), float(new_pos[1]), float(new_pos[2])),
+                    target_pos_tuple,
                     inp.linear,
+                    reason,
+                    cur_deg,
                     self._jog_tcp_reject_count,
                     now - self._jog_tcp_reject_last_log if self._jog_tcp_reject_last_log else 0.0,
                 )

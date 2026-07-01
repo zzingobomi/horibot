@@ -99,6 +99,9 @@ class MotionModule:
         self._jog_tcp_pos: np.ndarray | None = None
         self._jog_tcp_quat: np.ndarray | None = None
         self._jog_tcp_t = 0.0
+        # IK reject rate-limit — 매 프레임 warning 은 noise, 500ms 마다 1회 요약
+        self._jog_tcp_reject_last_log = 0.0
+        self._jog_tcp_reject_count = 0
 
     # ── lifecycle ─────────────────────────────────────────────
 
@@ -240,7 +243,22 @@ class MotionModule:
             cur,
         )
         if sol is None:
-            return  # IK 실패 → ref 적분 전 값 유지 (마지막 valid hold, 누적 X)
+            # IK 실패 → ref 적분 전 값 유지 (마지막 valid hold, 누적 X)
+            # rate-limited log — Z+ 만 안 되는 등 방향성 reject 원인 진단 자리
+            self._jog_tcp_reject_count += 1
+            if now - self._jog_tcp_reject_last_log > 0.5:
+                logger.warning(
+                    "JogTcp IK reject robot=%s frame=%s target_pos=%s linear=%s "
+                    "(count=%d in %.1fs)",
+                    self.robot_id, inp.frame,
+                    (float(new_pos[0]), float(new_pos[1]), float(new_pos[2])),
+                    inp.linear,
+                    self._jog_tcp_reject_count,
+                    now - self._jog_tcp_reject_last_log if self._jog_tcp_reject_last_log else 0.0,
+                )
+                self._jog_tcp_reject_last_log = now
+                self._jog_tcp_reject_count = 0
+            return
         self._jog_tcp_pos = new_pos
         self._jog_tcp_quat = new_quat
         self._jog_tcp_t = now

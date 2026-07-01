@@ -157,15 +157,23 @@ class PybulletKinematics:
             result = p.calculateInverseKinematics(**kwargs)
             angles = [result[i] for i in self._chain_in_movable]
 
-            # 수렴 검증
+            # 수렴 검증 — reject 자리 원인 분리 (reachability vs collision) 로 debug 가능
             self._set_chain(angles)
             actual_pos, _ = self._ee_state()
             error = float(
                 np.linalg.norm(np.array(actual_pos) - np.array(target_position))
             )
             if error > IK_POS_ERROR_LIMIT:
+                logger.debug(
+                    "IK reject (reachability) target=%s error=%.4fm limit=%.4fm",
+                    target_position, error, IK_POS_ERROR_LIMIT,
+                )
                 return None
             if self._self_collision_unlocked():
+                logger.debug(
+                    "IK reject (self-collision) target=%s solution=%s",
+                    target_position, angles,
+                )
                 return None
             return angles
 

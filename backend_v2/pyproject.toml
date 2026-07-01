@@ -74,6 +74,13 @@ target-version = "py311"
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+# test 계층 분리 — 집(hardware O) 자리 fast feedback loop 확보.
+#   pytest -m "not sim"  → fast (수 초, 관련 파일 수정 후 default)
+#   pytest               → 전체 (회사 자리 / 큰 단위 완료 시)
+#   pytest -m sim        → sim 만 pinpoint
+markers = [
+    "sim: Runtime/PyBullet/URDF boot 필요 — 수 초/test, 집 fast loop 에서 skip",
+]
 
 [tool.pyright]
 include = ["framework", "infra", "modules", "apps", "tests"]

@@ -141,3 +141,67 @@ def build_module_contracts(modules: list[Any]) -> list[ModuleContract]:
         )
     out.sort(key=lambda mc: mc.module_id)
     return out
+
+
+# ─── class-only variant — 분산 배치 자리 contract graph viewer 를 위한 자리 ─
+#
+# build_module_contracts(instances) 는 이 프로세스에 로드된 Module 인스턴스만 봄.
+# 분산 배치 (예: PC 는 camera_decoded + bridge, pi_motor 는 motor + motion) 자리
+# bridge 의 `/contract/graph` 는 fleet 전체 아키텍처를 보여야 개발자 뷰어로서
+# 의미 있음. class 자체는 decorator spec (_service_spec / _subscriber_spec /
+# _publishes_spec) 을 attribute 로 들고 있어 instantiate 없이 introspect 가능.
+
+
+def build_module_contracts_from_classes(classes: list[type]) -> list[ModuleContract]:
+    """Module class 리스트 → ModuleContract. 인스턴스 생성 없이 decorator spec 만
+    introspect. `discover_services(cls)` / `discover_subscribers(cls)` 는 dir/getattr
+    라 class 도 동작 (attribute 는 unbound function 에 붙어있음)."""
+    seen: set[str] = set()
+    out: list[ModuleContract] = []
+    for cls in classes:
+        module_id = cls.__name__
+        if module_id in seen:
+            continue
+        seen.add(module_id)
+
+        services = sorted(spec.wire_key for _bound, spec in discover_services(cls))
+        subscribes = sorted(
+            spec.wire_key for _bound, spec in discover_subscribers(cls)
+        )
+        pub = get_publishes_spec(cls)
+        publishes = sorted(wire_key for wire_key, _cls in pub.pairs) if pub else []
+
+        robot_scoped = any(
+            "{robot_id}" in k for k in (*services, *publishes, *subscribes)
+        )
+        out.append(
+            ModuleContract(
+                module_id=module_id,
+                robot_scoped=robot_scoped,
+                services=tuple(services),
+                publishes=tuple(publishes),
+                subscribes=tuple(subscribes),
+            )
+        )
+    out.sort(key=lambda mc: mc.module_id)
+    return out
+
+
+def build_snapshot_from_classes(classes: list[type]) -> ContractSnapshot:
+    """Module class 리스트 → ContractSnapshot (payload 매핑). class introspection —
+    build_snapshot(instances) 의 class-only 변형. 같은 wire_key 를 여러 class 가
+    출현하면 (없어야 정상) `_put_service` / `_put_topic` 이 충돌 fail-fast."""
+    services: dict[str, tuple[type[BaseModel], type[BaseModel]]] = {}
+    topics: dict[str, type[BaseModel]] = {}
+
+    for cls in classes:
+        for _bound, spec in discover_services(cls):
+            _put_service(services, spec.wire_key, spec.req_cls, spec.res_cls)
+        for _bound, spec in discover_subscribers(cls):
+            _put_topic(topics, spec.wire_key, spec.event_cls)
+        pub = get_publishes_spec(cls)
+        if pub is not None:
+            for wire_key, event_cls in pub.pairs:
+                _put_topic(topics, wire_key, event_cls)
+
+    return ContractSnapshot(services=services, topics=topics)

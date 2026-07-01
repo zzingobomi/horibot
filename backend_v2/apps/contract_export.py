@@ -33,7 +33,12 @@ from typing import Any, Literal, Union, get_args, get_origin
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 
-from framework.runtime.snapshot import ContractSnapshot, ModuleContract
+from framework.runtime.snapshot import (
+    ContractSnapshot,
+    ModuleContract,
+    build_module_contracts_from_classes,
+    build_snapshot_from_classes,
+)
 from modules.bridge.contract import RobotsResponse, SystemMetrics
 from modules.motion.contract import Motion
 from modules.motor.contract import Motor
@@ -678,3 +683,26 @@ def build_contract_graph(
         "models": models_out,
         "edges": edges_out,
     }
+
+
+# ─── static graph — 분산 배치 자리 declared universe 그림 (개발자 뷰어) ─
+#
+# 문제: bridge 프로세스는 자기 runtime 의 module_contracts() 만 봄. 분산 배치
+# (PC = camera_decoded + bridge, pi_motor = motor + motion) 자리 PC bridge 의
+# `/contract/graph` 는 자기 프로세스에 로드된 module 만 그린다 → 개발자 뷰어
+# 목적 (전 fleet 아키텍처 한눈에) 위반.
+#
+# 해결: bridge 는 자기 runtime 대신 `MODULE_REGISTRY` (선언된 전 module) 를
+# lazy import 해서 introspect. class 자체는 @service / @subscriber / @publishes
+# spec 을 attribute 로 들고 있어 instantiate 없이 decorator spec 추출 가능.
+# contract_graph_viewer.md §1: "개발 도구", §4: "unfiltered 전 module 의 전 계약".
+
+
+def build_static_contract_graph() -> dict:
+    """MODULE_REGISTRY 전체 → contract graph. running fleet 무관, declared universe."""
+    from apps.registry import MODULE_REGISTRY, load_module_class
+
+    classes = [load_module_class(name) for name in MODULE_REGISTRY]
+    module_contracts = build_module_contracts_from_classes(classes)
+    snapshot = build_snapshot_from_classes(classes)
+    return build_contract_graph(module_contracts, snapshot)

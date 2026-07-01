@@ -263,6 +263,50 @@ def test_graph_provider_closure_wired_on_bridge():
         transport.close()
 
 
+def test_graph_shows_declared_universe_not_running_fleet():
+    """회귀 잡음 — 2026-07-01 사건: PC 배치 (camera_decoded + bridge 만) 자리
+    `/contract/graph` 가 CameraDecodedModule 1개만 보였음. 원인: graph provider 가
+    `runtime.module_contracts()` (자기 프로세스 module 만) 를 봤음.
+
+    contract_graph_viewer.md §1 = 개발자 뷰어, §4 = unfiltered 전 module 의 전 계약.
+    즉 declared universe (MODULE_REGISTRY) 를 그려야 함. 이 assert 는 PC 배치 시뮬
+    (camera_decoded + bridge 만 add) 에서도 motor/motion/camera 다 나오는지 검증.
+    뒤집으면 그 회귀 즉시 잡힘."""
+    from apps.config import DeploymentConfig, DriverMode, ModuleEntry
+    from apps.contract_export import build_static_contract_graph
+
+    # PC 배치 시뮬 — camera_decoded + bridge 만 있는 minimal runtime
+    pc_deploy = DeploymentConfig(
+        driver_mode=DriverMode.MOCK,
+        zenoh=_LOCAL_CFG,
+        modules=[
+            ModuleEntry(name="camera_decoded", robots=["so101_6dof_0"]),
+            ModuleEntry(name="bridge", robots=[]),
+        ],
+    )
+    _, robots = load_configs("mock", _CONFIG_DIR)
+    transport = ZenohTransport(_LOCAL_CFG)
+    try:
+        runtime = build_runtime(pc_deploy, robots, transport)
+        # runtime 은 module 2개만 — 하지만 static graph 는 registry 전체 봄
+        assert len(runtime._modules) == 2
+
+        # static graph — MODULE_REGISTRY 전체 introspect
+        graph = build_static_contract_graph()
+        ids = {m["id"] for m in graph["modules"]}
+        # PC 프로세스에 실제 로드 안 된 Motor/Motion/CameraDriver 도 나와야 함
+        assert "MotorDriverModule" in ids, (
+            "graph 가 running fleet 만 봄 — declared universe 시각화 실패"
+        )
+        assert "MotionModule" in ids
+        assert "CameraDriverModule" in ids
+        assert "CameraDecodedModule" in ids
+        # Bridge (contract 0 relay) 는 여전히 filter
+        assert "BridgeModule" not in ids
+    finally:
+        transport.close()
+
+
 @pytest.fixture
 async def graph_endpoint():
     transport = ZenohTransport(_LOCAL_CFG)

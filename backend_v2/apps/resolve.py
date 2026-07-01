@@ -73,13 +73,15 @@ def resolve_host_deps(
                 return build_contract_json(runtime.contract_snapshot())
 
             def _graph_provider() -> dict:
-                # contract graph viewer (contract_graph_viewer.md §5.3) — unfiltered
-                # module attribution + wiring. contract_provider 와 같은 closure 패턴.
-                from apps.contract_export import build_contract_graph
+                # contract graph viewer (contract_graph_viewer.md §1 — 개발자 도구,
+                # §4 — unfiltered 전 module 의 전 계약). runtime.module_contracts()
+                # 는 자기 프로세스에 로드된 module 만 봄 → 분산 배치 (PC 는
+                # camera_decoded + bridge 만) 자리 다른 host 의 module (motor,
+                # motion, camera) 이 그래프에 안 나옴. MODULE_REGISTRY 전체를
+                # lazy introspect 해서 declared universe 를 그림.
+                from apps.contract_export import build_static_contract_graph
 
-                return build_contract_graph(
-                    runtime.module_contracts(), runtime.contract_snapshot()
-                )
+                return build_static_contract_graph()
 
             deps["contract_provider"] = _contract_provider
             deps["graph_provider"] = _graph_provider

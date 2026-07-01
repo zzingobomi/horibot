@@ -18,14 +18,16 @@ export default defineConfig({
     baseURL: "http://localhost:5174",
     trace: "on-first-retry",
     screenshot: "only-on-failure",
+    // headless 기본 SwiftShader(소프트웨어 렌더)는 R3F 3D 씬 렌더로 메인스레드를
+    // 굶겨 setInterval(50Hz jog) 이 ~10Hz 로 밀림 → jog publish rate < backend
+    // IDLE_RESET(0.2s) → 모터 안 움직임. headed(실 GPU)면 메인스레드 자유 →
+    // 50Hz 회복 (2026-07-01 측정 — frontend_v2.md §12.1).
+    headless: false,
   },
   projects: [
     {
       name: "chromium",
-      // hasTouch: true — button hold 시 mouse cascade (100ms pointerup auto fire)
-      // 회피 + CDP Input.dispatchTouchEvent 사용. 사용자가 실 hardware 박을 때
-      // 빠른 손가락 / touch device 동일 path.
-      use: { ...devices["Desktop Chrome"], hasTouch: true },
+      use: { ...devices["Desktop Chrome"] },
     },
   ],
 });

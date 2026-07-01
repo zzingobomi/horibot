@@ -30,24 +30,30 @@ export function useStream<K extends keyof TopicPayloadMap>(
   const value = useTopic(topic, options?.robotId);
   // ref — effect 안 stale closure 차단 (comparison 위 prev seq)
   const lastSeqRef = useRef(-1);
-  const [seq, setSeq] = useState(-1);
   const [outOfOrderCount, setOutOfOrderCount] = useState(0);
 
+  // seq 는 최신 value 에서 derive — 별도 state 두고 effect 에서 setSeq 하면
+  // cascading render (react-hooks/set-state-in-effect). out-of-order 누적만
+  // effect 가 ref 비교로 검출 (accumulator → functional update).
+  const rawSeq = (value as { seq?: number } | null)?.seq;
+  const seq = typeof rawSeq === "number" ? rawSeq : -1;
+
   useEffect(() => {
-    if (!value) return;
-    const next = (value as { seq?: number }).seq;
-    if (typeof next !== "number") return;
-    if (next < lastSeqRef.current) {
+    if (typeof rawSeq !== "number") return;
+    if (rawSeq < lastSeqRef.current) {
       setOutOfOrderCount((c) => c + 1);
       console.warn(
-        `[useStream] ${String(topic)} seq 역행: ${lastSeqRef.current} -> ${next}`,
+        `[useStream] ${String(topic)} seq 역행: ${lastSeqRef.current} -> ${rawSeq}`,
       );
     }
-    lastSeqRef.current = next;
-    setSeq(next);
-  }, [value, topic]);
+    lastSeqRef.current = rawSeq;
+  }, [rawSeq, topic]);
 
   const ts = (value as { timestamp_unix?: number } | null)?.timestamp_unix;
+  // lag = render 시점 wall-clock 의존이 의도 (시간 경과 자체가 staleness). spec §6 가
+  // Date.now() in render 를 명시 — purity rule 의 "unstable result" 경고가 여기선
+  // 정확히 목적이므로 의도적으로 허용.
+  // eslint-disable-next-line react-hooks/purity
   const lagMs = typeof ts === "number" ? Date.now() - ts * 1000 : 0;
   const stale = lagMs > (options?.staleMs ?? 500);
 

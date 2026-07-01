@@ -1,9 +1,10 @@
 /**
- * Robot 상태 표시 — connection / torque state / joint table / TCP position.
+ * RobotStatePanel — dockview 등록 패널 (robotState). connection / torque /
+ * joint table / TCP position.
  *
- * frontend_v2 first cut — 옛 RobotStatePanel.tsx 의 simplified carry over.
- * 박지 X: dockview / radix / lucide / useArmJoints / useJointOffsetsRad /
- * loadPose / Home button (Step E+ 박힐 때).
+ * 패널이라 router 의존(useParams)을 자체 흡수 (registry 는 순수 유지). 아직 내부
+ * 분할(Control/Status) 필요 없어 단일 파일 — 쪼개질 때 폴더로 승격
+ * (frontend_v2.md §2.3, "필요할 때" 원칙).
  *
  * Wire:
  *   - Motion.Stream.TCP_STATE — joints rad + position + quaternion
@@ -12,19 +13,27 @@
  *   - Motor.Service.SET_TORQUE — torque toggle
  *   - Motor.Service.GET_TOPOLOGY — arm joint count
  */
-import { useService, useStream, useCapability, useTopic, useBridgeConnected } from "@/framework";
+import { useParams } from "react-router-dom";
+import {
+  useService,
+  useStream,
+  useCapability,
+  useTopic,
+  useBridgeConnected,
+} from "@/framework";
+import { Button } from "@/components/ui/button";
 import {
   MotorKind,
   ServiceKey,
   Topic,
   type TorqueChanged,
 } from "@/api/generated/contract";
+import { DEFAULT_ROBOT_ID } from "@/constants";
 
-interface RobotStatePanelProps {
-  robotId: string;
-}
+export function RobotStatePanel() {
+  const { id } = useParams<{ id: string }>();
+  const robotId = id ?? DEFAULT_ROBOT_ID;
 
-export function RobotStatePanel({ robotId }: RobotStatePanelProps) {
   const connected = useBridgeConnected();
   const cap = useCapability(ServiceKey.MOTOR_GET_TOPOLOGY, { robotId });
   const armMotors = (cap.value?.motors ?? [])
@@ -52,7 +61,7 @@ export function RobotStatePanel({ robotId }: RobotStatePanelProps) {
   const tcpPos = tcp.value?.position ?? null;
 
   return (
-    <div className="flex flex-col gap-3 font-mono text-zinc-300">
+    <div className="h-full overflow-y-auto p-3 flex flex-col gap-3 font-mono text-foreground">
       {/* Connection + Torque badge */}
       <div className="flex items-center gap-2">
         <span
@@ -69,8 +78,8 @@ export function RobotStatePanel({ robotId }: RobotStatePanelProps) {
             torqueEnabled === true
               ? "bg-emerald-500/20 text-emerald-300"
               : torqueEnabled === false
-                ? "bg-zinc-700 text-zinc-400"
-                : "bg-zinc-800 text-zinc-600"
+                ? "bg-muted text-muted-foreground"
+                : "bg-muted/50 text-muted-foreground/60"
           }`}
         >
           torque {torqueEnabled === null ? "?" : torqueEnabled ? "on" : "off"}
@@ -83,21 +92,23 @@ export function RobotStatePanel({ robotId }: RobotStatePanelProps) {
       </div>
 
       {/* Torque toggle */}
-      <button
+      <Button
+        variant="outline"
+        size="sm"
         onClick={handleToggle}
         disabled={torqueEnabled === null || setTorque.pending}
-        className="h-7 rounded border border-zinc-700 bg-zinc-900 text-[11px] uppercase tracking-wide hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"
+        className="font-mono uppercase tracking-wide"
       >
         {torqueEnabled ? "torque off" : "torque on"}
-      </button>
+      </Button>
 
       {/* Joint table */}
       <div>
-        <div className="text-[9px] uppercase tracking-wide text-zinc-500 mb-1">
+        <div className="text-[9px] uppercase tracking-wide text-muted-foreground mb-1">
           joints (arm)
         </div>
         <div className="flex flex-col gap-0.5">
-          <div className="grid grid-cols-3 gap-2 text-[9px] text-zinc-600 uppercase tracking-wide">
+          <div className="grid grid-cols-3 gap-2 text-[9px] text-muted-foreground uppercase tracking-wide">
             <div>name</div>
             <div className="text-right">deg</div>
             <div className="text-right">raw</div>
@@ -107,13 +118,13 @@ export function RobotStatePanel({ robotId }: RobotStatePanelProps) {
               key={m.id}
               className="grid grid-cols-3 gap-2 text-[11px] tabular-nums"
             >
-              <div className="text-zinc-300">J{i + 1}</div>
+              <div className="text-foreground">J{i + 1}</div>
               <div className="text-right text-emerald-300">
                 {jointRads[i] !== undefined
                   ? ((jointRads[i] * 180) / Math.PI).toFixed(1)
                   : "—"}
               </div>
-              <div className="text-right text-zinc-500">
+              <div className="text-right text-muted-foreground">
                 {rawPositions[i] !== undefined ? rawPositions[i] : "—"}
               </div>
             </div>
@@ -123,26 +134,26 @@ export function RobotStatePanel({ robotId }: RobotStatePanelProps) {
 
       {/* TCP position */}
       <div>
-        <div className="text-[9px] uppercase tracking-wide text-zinc-500 mb-1">
+        <div className="text-[9px] uppercase tracking-wide text-muted-foreground mb-1">
           tcp (m)
         </div>
         {tcpPos ? (
           <div className="grid grid-cols-3 gap-2 text-[11px] tabular-nums">
             <div>
-              <span className="text-zinc-500">x </span>
+              <span className="text-muted-foreground">x </span>
               <span className="text-emerald-300">{tcpPos[0].toFixed(3)}</span>
             </div>
             <div>
-              <span className="text-zinc-500">y </span>
+              <span className="text-muted-foreground">y </span>
               <span className="text-emerald-300">{tcpPos[1].toFixed(3)}</span>
             </div>
             <div>
-              <span className="text-zinc-500">z </span>
+              <span className="text-muted-foreground">z </span>
               <span className="text-emerald-300">{tcpPos[2].toFixed(3)}</span>
             </div>
           </div>
         ) : (
-          <div className="text-[10px] text-zinc-600">no tcp data</div>
+          <div className="text-[10px] text-muted-foreground">no tcp data</div>
         )}
       </div>
     </div>

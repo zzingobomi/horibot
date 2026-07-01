@@ -12,21 +12,8 @@ import { OrbitControls, Grid, Environment } from "@react-three/drei";
 import * as THREE from "three";
 import { RobotLayer } from "./RobotLayer";
 import { AxisFrame } from "./AxisFrame";
+import { DEFAULT_SCENE_OPTIONS, type SceneOptions } from "./sceneOptions";
 import type { RobotInfo } from "@/api/generated/contract";
-
-export interface SceneOptions {
-  showRobot: boolean;
-  showBaseFrame: boolean;
-  showTCPFrame: boolean;
-  showGrid: boolean;
-}
-
-export const DEFAULT_SCENE_OPTIONS: SceneOptions = {
-  showRobot: true,
-  showBaseFrame: true,
-  showTCPFrame: true,
-  showGrid: true,
-};
 
 interface RobotSceneProps {
   jointAngles: number[];

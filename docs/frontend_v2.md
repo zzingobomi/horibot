@@ -1,587 +1,441 @@
-# frontend_v2 — Frontend 구현 spec
+# frontend_v2 — Frontend 구현 + 진행 status
 
-> backend_v2 ([backend_v2.md](backend_v2.md)) 와 1:1 정합되는 React frontend. 옛 `frontend/` 는 옛 backend 와 호환되도록 두고, `frontend_v2/` 신규 디렉토리에 backend_v2 어휘 (Mirror / Stream / Event / Capability / Stream invariant) 정합 박는다.
+> backend_v2 ([backend_v2.md](backend_v2.md)) 와 1:1 정합되는 React frontend. **frontend_v2 의 일 = 옛 `frontend/` 의 검증된 아키텍처를 backend_v2 wire 에 맞게 포팅하는 것** — "뭘 지을지 새로 설계" 가 아니다.
 >
-> 다음 세션 진입 시 frontend 작업 시작점 = 본 문서.
+> ⚠️ **옛 `frontend/` 는 지우지 않고 의도적으로 남겨둔 carry-over reference 다** (단순 "옛 backend 호환" 보존이 아님). dockview 패널 조립 / RobotsLayout / sidebar / 패널 레지스트리 / 라우팅 / 각종 race fix — "페이지가 어떻게 구성·확장되는가" 의 답이 거기 이미 다 풀려 있다. **default = 그 구조를 가져온다. defer 는 backend module 이 아직 없어서 *지을 수 없는* feature 페이지만.** "최소로 짓고 shell/dockview 는 나중에" 로 판단하면 안 된다 (2026-07-01 그 실수 발생 — §2.3, anchor 1).
+>
+> **현재 status**: Step F1-F6 완료 — jog vertical slice + **dockview shell foundation** (RobotsLayout + ModeDockview + PANEL_COMPONENTS registry + Sidebar + RobotMoveMode 로 jog 을 fold). `pnpm lint` 0 + build clean + 31 vitest PASS. F6 의 L4 headed e2e 는 집 검증 (§15.6). 이후 feature = mode 파일 PANELS + registry 등록 snap-in. 구현 상세 = §1-§12, status + 다음 = §15. (옛 frontend_v2_status.md 통합.)
 
 ## 1. 개요
 
-frontend_v2 의 목표 = **"backend_v2 의 4 primitive (Service / Stream / Event / Mirror) 를 React hook 으로 그대로 노출 + 옛 frontend 자산 carry over"**.
+frontend_v2 = **backend_v2 의 4 primitive (Service / Stream / Event / Mirror) + Capability + HTTP resource 를 React hook 으로 노출**.
 
-새로 짜는 것이 아니라 **carry over + 새 hook 추가** — 옛 frontend 의 framework layer (`useTopic`, `useService`, `useResource`, `bootstrap`) 는 검증된 패턴, 그대로 가져온다. backend_v2 가 도입한 어휘 (Mirror invalidate+refetch, Stream seq invariant, Capability boot-1회 snapshot) 만 새 hook 으로 추가.
+새로 짠 게 아니라 **carry over + 새 hook 추가** — 옛 frontend 의 framework layer (`useTopic` / `useService` / `useResource` / `bootstrap`) 는 검증된 패턴이라 그대로 가져왔고, backend_v2 가 도입한 어휘 (Mirror invalidate+refetch / Stream seq invariant / Capability boot-1회 snapshot) 만 새 hook 3개로 추가했다.
 
 ## 2. 핵심 원칙
 
 ### 2.1 backend_v2 = frontend_v2 SSOT
 
-backend_v2 의 `modules/*/contract.py` 가 진실 source. `pnpm gen:types` 가 [`backend_v2/scripts/gen_contract.py`](../backend_v2/scripts/gen_contract.py) 호출 → `frontend_v2/src/api/generated/contract.ts` 자동 emit. 손작업 동기화 0.
+backend_v2 의 `modules/*/contract.py` 가 진실 source. `pnpm gen:types` 가 [`backend_v2/scripts/gen_contract.py`](../backend_v2/scripts/gen_contract.py) 호출 → `frontend_v2/src/api/generated/contract.ts` 자동 emit (36 model + 4 enum + 12 topic + 11 service). 손작업 동기화 0.
 
-### 2.2 Carry over > Rewrite
+### 2.2 Carry over > Rewrite (지배 원칙)
 
-옛 frontend 의 잘 박힌 코드 (framework/*, bridge.ts 변형, RobotModel ref-stash, urdf-loader 통합, JogJ/JogTcp, useResource cache pattern) 는 **그대로 가져온다**. 재구현 = 시간 낭비 + 자산 손실 ([[feedback-developer-focus-business-logic]]).
+옛 frontend 는 **검증된 아키텍처의 살아있는 reference**. frontend_v2 의 default 동작 = "이 구조를 backend_v2 어휘로 포팅". 새로 최소 설계하지 않는다.
 
-### 2.3 First cut = Move 페이지 1개
+carry-over 대상은 hook 뿐 아니라 **UI 구조 전체**:
+- **framework layer** — framework/*, bridge.ts, useResource cache
+- **app shell** — RobotsLayout (R3F once + Outlet), ModeDockview (generic dockview wrapper + 패널 레지스트리 + 레이아웃 영속화), Sidebar, 라우팅 (`/robots/:id/<mode>`), lib/workspaceLayout
+- **panel / scene** — RobotModel ref-stash, Scene/Container, JogJ/JogTcp, RobotStatePanel
 
-dockview workspace / focus mode / capability-based mode UI / Calibration / Task / Scene3D UI 다 **first cut 에서 박지 않는다**. Step E+ (Calibration / Scan / Task / Scene3D backend 박힐 때) carry over.
+**defer 는 "지을 수 없는 것" 만** — backend module 이 아직 없는 feature 페이지/패널 (calibrate/scan/tasks 페이지, scene3d/detection/task 패널). 구조(shell)는 backend 무관이라 지금 가져온다. 재구현/최소설계 = 시간 낭비 + 자산 손실 + 나중에 jog 페이지 rework ([[feedback-developer-focus-business-logic]], [[feedback-port-keep-v2-arch]]).
 
-### 2.4 Module-based store
+### 2.3 dockview = 조립 메커니즘(foundation), per-page 사치 아님
 
-옛 frontend 의 domain/stores/* 는 도메인 별 (calibration / detector / scene3D / system / taskResult) — 옛 backend 의 ApplicationNode 정합. frontend_v2 는 **backend_v2 module 1:1** 정합 — `stores/motor.ts`, `stores/motion.ts`, `stores/camera.ts`, `stores/robot.ts`. cross-module read 는 `useMirror`.
+⚠️ **2026-07-01 실수 박제 — 다른 세션 주의.** 처음 jog 를 dockview 없이 CSS-grid 단발 MovePage 로 짜고 "dockview = floating/resize UX = 1페이지엔 over-engineering, defer" 로 판단했다. **틀렸다.** 옛 frontend 코드를 읽으면 dockview 는 UX 기능이 아니라 **페이지/패널을 조립하는 메커니즘 그 자체**다:
+
+- [RobotsLayout](../frontend/src/pages/RobotsLayout.tsx) — R3F Canvas 를 한 번만 마운트 + `<Outlet>`.
+- 각 mode = [RobotMoveMode](../frontend/src/pages/robotModes/RobotMoveMode.tsx) 처럼 **`PANELS: PanelSpec[]` 배열 하나** (`{id, component, title, w, h}`).
+- [ModeDockview](../frontend/src/pages/robotModes/ModeDockview.tsx) — generic wrapper: `PANEL_COMPONENTS` 레지스트리 + floating 배치 + per-mode 레이아웃 영속화 + reset.
+
+즉 **기능 추가 = 패널 컴포넌트 등록 + mode 파일에 PANELS 한 줄.** jog 는 그 메커니즘의 첫 패널(`motion`)이었다. dockview 를 빼면 jog 만 구조적 one-off 가 되고, 나중에 calibration 붙일 때 jog 페이지를 패널로 다시 뜯어야 한다. **dockview shell 은 backend 무관 + 이미 carry-over 가능 (race fix f15a20b 포함) → 지금 가져온다.**
+
+**defer 는 backend module 부재로 지을 수 없는 feature 만** — RobotCalibrateMode/scan/tasks 페이지, Scene3D/Detection/Task 패널, focus-dim/multi-robot 풍부함은 해당 backend 가 박히는 Step E+ 에서 (§10, §11, §15).
+
+### 2.4 Module-based store (방향 — 현재는 미구현)
+
+옛 frontend 의 `domain/stores/*` 는 도메인 별 (calibration / detector / scene3D / system / taskResult) — 옛 backend ApplicationNode 정합. frontend_v2 의 방향은 **backend_v2 module 1:1** (`stores/motor.ts` 등) + cross-module read 는 `useMirror`. **단 first cut 은 store 분리가 불필요** — Move 1 페이지는 `framework/store.ts` 단일 store (topic/service cache) + hook 직접 read 로 충분. 별도 `stores/<module>.ts` 는 Step E+ 에서 cross-module read 가 실제로 생길 때 박는다 (§8).
 
 ### 2.5 wire 어휘 1:1
 
-backend_v2 의 `srv/` / `event/` / `stream/` 3 prefix 와 `Module.Service` / `Module.Event` / `Module.Stream` nested StrEnum 이 frontend 의 `Topic` (stream + event 합침) + `ServiceKey` 두 카테고리에 매핑. 옛 frontend 와 동일 형태.
+backend_v2 의 `srv/` / `event/` / `stream/` 3 prefix + `Module.Service` / `Module.Event` / `Module.Stream` nested StrEnum 이 frontend 의 `Topic` (stream + event 합침) + `ServiceKey` 두 카테고리에 매핑. 옛 frontend 와 동일 형태.
 
-## 3. 4 primitive (Hook layer)
+## 3. 6 hook (Hook layer)
 
-backend_v2 의 4 primitive (Service / Stream / Event / Mirror) + Capability + HTTP resource = **6 hook**.
+backend_v2 4 primitive (Service / Stream / Event / Mirror) + Capability + HTTP resource = **6 hook**. 진입점 [`framework/index.ts`](../frontend_v2/src/framework/index.ts).
 
 ### 3.1 `useService` — RPC call + auto cache
 
-옛 [`framework/service.ts`](../frontend/src/framework/service.ts) 그대로 carry over.
+옛 `framework/service.ts` carry over. backend_v2 의 exception model 은 bridge.ts 가 `{success, message, data}` shape 로 shim.
 
 ```tsx
 const moveJ = useService(ServiceKey.MOTION_MOVE_J);
 await moveJ.call({ target_joints: [0, 0, 0, 0, 0, 0] });
-
-const cap = useService(ServiceKey.MOTOR_CAPABILITIES);
-const torqueToggle = cap.data?.flags.includes("torque_toggle");
 ```
 
-backend_v2 의 exception model 은 bridge.ts 가 `{success, message, data}` shape 로 shim (C2b-1).
+### 3.2 `useTopic` + `onTopic` — generic latest cache
 
-### 3.2 `useTopic` + `onTopic` — generic topic latest cache
-
-옛 [`framework/topic.ts`](../frontend/src/framework/topic.ts) carry over. backend_v2 의 stream / event 둘 다 처리. payload `<T>` 자동 typed (`TopicPayloadMap[K]`).
+옛 `framework/topic.ts` carry over. backend_v2 의 stream / event 둘 다 처리, payload `<T>` 자동 typed (`TopicPayloadMap[K]`).
 
 ```tsx
 const tcp = useTopic(Topic.MOTION_TCP_STATE);
 ```
 
-단 `useTopic` 은 *generic latest read* — backend_v2 의 Stream invariant (seq monotonic / timestamp_unix lag) 검사 X. 그건 `useStream` 자리.
+단 *generic latest read* — Stream invariant (seq / lag) 검사 X. 그건 `useStream`.
 
-### 3.3 `useStream` — Stream with seq + timestamp invariant ✨ 신규
+### 3.3 `useStream` — Stream + seq + timestamp invariant ✨ 신규
 
-backend_v2 §8.5 의 Stream payload invariant (`seq: int`, `timestamp_unix: float`) 활용. reconnect / lag / out-of-order detection.
+backend_v2 §8.5 의 Stream payload invariant (`seq: int`, `timestamp_unix: float`) 활용. 구현 = [`framework/stream.ts`](../frontend_v2/src/framework/stream.ts), 상세 §6.
 
 ```tsx
-const stream = useStream(Topic.MOTOR_RAW_STATE);
-// stream.value: JointState | null
-// stream.seq: number — monotonic 검증된 seq
-// stream.lagMs: number — Date.now() - timestamp_unix*1000
-// stream.outOfOrderCount: number — seq 역행 누적
-// stream.stale: boolean — lag > threshold (default 500ms)
+const s = useStream(Topic.MOTION_TCP_STATE, { robotId });
+// s.value / s.seq / s.lagMs / s.stale / s.outOfOrderCount
 ```
-
-invariant 위반 시 (seq 역행 / lag 임계 초과) `console.warn` + state 노출. UI 가 "🟡 lag 1.2s" badge 자연 표시.
 
 ### 3.4 `useMirror` — Snapshot + change event auto-refetch ✨ 신규
 
-backend_v2 §3.3 의 Mirror[T] frontend 등가. snapshot service 호출 + change event 받으면 refetch.
+backend_v2 §3.3 Mirror[T] 의 frontend 등가. snapshot service 호출 + change event 도착 시 *payload 안 보고* refetch. 구현 = [`framework/mirror.ts`](../frontend_v2/src/framework/mirror.ts), 상세 §7. **Step E (Calibration backend) 박힐 때 활성** — first cut 에선 hook 만 박고 검증 (§11.1).
 
 ```tsx
 const cal = useMirror({
-  snapshotService: ServiceKey.CALIBRATION_SNAPSHOT_BUNDLE,
+  snapshotService: ServiceKey.CALIBRATION_SNAPSHOT_BUNDLE, // Step E+
   changeTopic: Topic.CALIBRATION_ACTIVATED,
-  robotId: "so101_6dof_0",
+  robotId,
 });
-// cal.value: CalibrationBundle | null
-// cal.isReady: boolean
 ```
-
-backend_v2 invariant (§3.3.5 invalidate+refetch only) 정합 — change event 도착 시 *payload 사용 X*, snapshot 재호출. Step E (Calibration backend) 박힐 때 활성.
 
 ### 3.5 `useCapability` — Boot-1회 snapshot (Mirror 박지 X)
 
-backend_v2 §7 의 Capability snapshot. boot 1회 read, 변경 X.
+backend_v2 §7 Capability = static fact. boot 1회 read + module-scoped cache (영구). 구현 = [`framework/capability.ts`](../frontend_v2/src/framework/capability.ts).
 
 ```tsx
-const motorCap = useCapability(ServiceKey.MOTOR_CAPABILITIES);
-const cameraCap = useCapability(ServiceKey.CAMERA_CAPABILITIES);
-if (cameraCap.value?.flags.includes("depth")) showPointCloudPanel();
+const cap = useCapability(ServiceKey.MOTOR_GET_TOPOLOGY, { robotId });
+const armMotors = cap.value?.motors.filter((m) => m.kind === MotorKind.JOINT);
 ```
 
-내부 = useService 호출 1회 + module-scoped cache (영구). re-mount 시 cache 활용.
+### 3.6 `useResource` — HTTP fetch + cache + poll
 
-### 3.6 `useResource` — HTTP fetch + cache + poll (carry over)
-
-옛 [`framework/resource.ts`](../frontend/src/framework/resource.ts) 그대로. backend_v2 의 `/robots`, `/system` HTTP endpoint 처리.
+옛 `framework/resource.ts` carry over. backend_v2 의 `/robots`, `/system` HTTP endpoint 처리.
 
 ```tsx
-const { robots } = useResource<RobotsResponse>("/robots").data ?? {};
-const { data: metrics } = useResource<SystemMetrics>("/system", { poll: 5000 });
+const { data: robots } = useResource<RobotsResponse>("/robots");
 ```
 
-## 4. 폴더 구조
+## 4. 폴더 구조 (F6 후 실제)
+
+**조직 기준 = "새 기능 추가하는 사람의 사고 흐름"** (§4.1). `✓` = 구현됨. `(Step E+)` = backend 부재로 defer.
 
 ```
-frontend_v2/
-├── package.json              # deps: react 19 + vite + zustand + R3F + urdf-loader + msgpack + dockview (step E+)
-├── tsconfig.{json,app,node}.json
-├── vite.config.ts            # @/ alias, tailwind plugin
-├── index.html
-├── src/
-│   ├── main.tsx              # React root
-│   ├── App.tsx               # BrowserRouter + useFrameworkBootstrap
-│   ├── index.css             # tailwind 4
-│   ├── api/
-│   │   ├── bridge.ts         # backend_v2 wire (C2b-1 결과 그대로)
-│   │   └── generated/
-│   │       └── contract.ts   # gen_contract.py emit
-│   ├── types/
-│   │   └── bridge.ts         # WsOp / FrameType / FRAME_VERSION
-│   ├── framework/            # 6 hook 자리
-│   │   ├── store.ts          # carry over
-│   │   ├── bootstrap.ts      # carry over (binary topic re-attach generic 박음)
-│   │   ├── service.ts        # carry over (useService)
-│   │   ├── topic.ts          # carry over (useTopic / onTopic)
-│   │   ├── resource.ts       # carry over (useResource)
-│   │   ├── stream.ts         # 신규 (useStream — seq + lag invariant)
-│   │   ├── mirror.ts         # 신규 (useMirror — invalidate+refetch)
-│   │   ├── capability.ts     # 신규 (useCapability — boot-1회)
-│   │   └── index.ts
-│   ├── stores/               # backend_v2 module 1:1
-│   │   ├── motor.ts          # 신규
-│   │   ├── motion.ts         # 신규
-│   │   └── robot.ts          # 신규 (defaultRobotId)
-│   ├── components/
-│   │   ├── jog/
-│   │   │   ├── JogJPanel.tsx     # carry over (옛 JogJ.tsx) + 새 stream key + payload.robot_id
-│   │   │   └── JogTcpPanel.tsx   # carry over (옛 JogTcp.tsx) + 새 stream key
-│   │   ├── motor/
-│   │   │   └── RobotStatePanel.tsx   # carry over + 새 Topic.MOTOR_RAW_STATE
-│   │   └── scene/
-│   │       ├── RobotModel.tsx    # carry over (ref-stash 그대로)
-│   │       ├── Scene.tsx         # carry over (R3F + Canvas)
-│   │       └── Container.tsx     # carry over (TCP frame conversion)
-│   ├── pages/
-│   │   └── MovePage.tsx      # CSS grid (dockview skip first cut)
-│   ├── constants/
-│   │   └── index.ts          # WS_URL / BASE_URL / DEFAULT_ROBOT_ID = "so101_6dof_0"
-│   └── lib/                  # utils carry over
-└── pnpm-lock.yaml
+frontend_v2/src/
+├── main.tsx, App.tsx              # ✓ App: Sidebar + main + nested route (/robots/:id → RobotsLayout + mode Outlet)
+├── api/{bridge.ts ✓, generated/contract.ts ✓}   # backend_v2 wire (gen emit, lint 제외)
+├── types/bridge.ts ✓
+├── framework/                     # ✓ 6 hook + 인프라
+│   ├── store.ts bootstrap.ts service.ts topic.ts resource.ts
+│   └── stream.ts mirror.ts capability.ts index.ts
+├── hooks/useRobots.ts ✓
+├── pages/
+│   ├── RobotsLayout.tsx ✓          # R3F once + 우상단 meta + <Outlet>
+│   └── robotModes/
+│       ├── ModeDockview.tsx ✓      # generic dockview wrapper (registry + 레이아웃 persist + reset)
+│       ├── RobotMoveMode.tsx ✓     # PANELS=[robotState, motion]
+│       ├── RobotCalibrateMode.tsx  # (Step E+)
+│       └── RobotModeRedirect.tsx ✓ # /robots/:id → 첫 mode redirect
+├── components/
+│   ├── ui/{button,tabs,slider}.tsx ✓   # shadcn primitive (radix, CLI 생성·regenerate — lint override §12.6)
+│   ├── panels/                     # ★ 확장 단위. 새 기능 = 여기 패널 추가 (§4.1)
+│   │   ├── registry.ts ✓           # 패널만 import 하는 순수 key→component map
+│   │   ├── RobotStatePanel.tsx ✓   # 단순 패널 (단일 파일). useParams self-read + shadcn Button
+│   │   └── MotionPanel/            # 복잡 패널 = 폴더 (index = 등록 패널, 내부 control 캡슐화)
+│   │       ├── index.tsx ✓         # useParams → Tabs → control 에 robotId props
+│   │       ├── JogJControl.tsx ✓   # 순수 (robotId props) — 단위테스트 대상
+│   │       └── JogTcpControl.tsx ✓
+│   ├── scene/{Scene,Container,RobotLayer,RobotModel,AxisFrame,sceneOptions}.tsx ✓  # R3F 레이어
+│   └── shared/Sidebar.tsx ✓        # 앱 nav (재사용 위젯은 실제 재사용 생길 때만 — §2.4)
+├── constants/index.ts ✓           # WS_URL / BASE_URL / DEFAULT_ROBOT_ID
+├── lib/{utils.ts ✓, workspaceLayout.ts ✓}   # cn() + dockview 레이아웃 persist (collapse 는 PanelShell 도입 시)
+└── e2e/jog.spec.ts ✓              # L4 Playwright headed (2 PASS)
 ```
 
-**왜 옛 frontend 와 폴더 형태가 다른가**:
-- `domain/stores/` → `stores/` — Module 1:1. *domain* 어휘는 옛 layered architecture 잔재
-- `components/panels/*` → `components/<module>/` — Module 별 분리 (Step E+ 박힐 때 `components/calibration/` 등 추가)
-- `pages/robotModes/` → 첫 cut 박지 X (Move 1 페이지)
+### 4.1 조직 원칙 — panel = 확장 단위 (extension unit)
+
+폴더 기준을 **"새 기능 추가하는 사람이 가장 먼저 찾는 위치"** 로 잡는다. 답이 `panels/` 이므로 패널 단위로 캡슐화:
+- **`panels/` = 확장 단위.** 새 기능 = ① 패널 컴포넌트 만들고 ② registry 등록 ③ mode 파일 PANELS 배치. 끝. (`motor/`·`jog/` 같은 도메인 폴더를 최상위로 두면 "패널인가/재사용인가/어디 넣지" 인지 비용이 먼저 발생 → 안 함.)
+- **단순 패널 = 단일 파일**, **복잡 패널 = 폴더** (`index.tsx` = 등록 패널, 내부 Control/Status 는 그 패널만 쓰는 구현 세부라 폴더 안에 캡슐화). 폴더를 미리 강제 X — 쪼개질 때 승격.
+- **registry 는 패널만 import 하는 순수 map** — 패널이 useParams(router 의존)를 자체 흡수하므로 wrapper 불필요.
+- **router 의존은 패널에서 끝. Control 은 순수 props** — 옛 frontend 는 control 이 useParams 직접 읽어 테스트가 어려웠음. v2 는 패널만 useParams, control 은 robotId props → 단위테스트 쉬움 (옛 구조 복사 X, 문제만 이해해 재해석).
+- **`shared/` 는 실제 재사용 생길 때만.** **PanelShell / shadcn 확대는 공통 chrome·디자인 요구가 충분히 쌓일 때** (지금 패널 2개엔 추상화가 구현보다 큼).
+
+설정: `package.json` (+ `dockview` 6.6.1, `lucide-react`, `radix-ui`, shadcn 스택), `components.json` (shadcn, tailwind v4/vite), `<html class="dark">` (shadcn 다크 토큰), `playwright.config.ts` (`headless:false` — §8), `eslint.config.js` (`src/api/generated` + `src/components/ui` 규칙 override).
 
 ## 5. 데이터 흐름
 
 ### 5.1 Stream subscribe (motor raw state)
 
 ```
-backend_v2 MotorModule
-   publish(Motor.Stream.RAW_STATE, JointState(robot_id, seq, ts, positions_raw))
-      ↓ Zenoh
-   ZenohTransport (Pi → PC)
-      ↓ msgpack bytes
-   BridgeModule (WS frame, type=1, key=stream/motor/so101_6dof_0/raw_state, payload=msgpack)
-      ↓ WS binary
-frontend_v2 bridge.ts._handleBinary
-   → frame parse + msgpack decode
-   → topicListeners[wire].forEach(cb)
-      ↓
-bootstrap.ts loop (자동 박힌 subscribe)
-   → useFrameworkStore.setTopicData(wire, jointState)
-      ↓ reactive
-useStream(Topic.MOTOR_RAW_STATE)
-   → seq monotonic 검사 (역행 시 warn)
-   → lag = Date.now() - timestamp_unix*1000
-   → { value, seq, lagMs, stale, outOfOrderCount }
-      ↓
-RobotStatePanel — joint angle 시각화
-RobotModel — URDF joint apply
+backend MotorModule.publish(Motor.Stream.RAW_STATE, JointState{robot_id, seq, ts, positions_raw})
+  → Zenoh → BridgeModule (WS binary frame type=1, key=stream/motor/<id>/raw_state, msgpack payload)
+  → bridge.ts._handleBinary (frame parse + msgpack decode) → topicListeners[wire]
+  → bootstrap.ts subscribe loop → useFrameworkStore.setTopicData(wire, jointState)
+  → useStream(Topic.MOTOR_RAW_STATE) { value, seq, lagMs, stale, outOfOrderCount }
+  → RobotStatePanel (joint table) / RobotModel (URDF joint apply)
 ```
 
 ### 5.2 Service call (MoveJ)
 
 ```
-JogJPanel "Home" 클릭
-   ↓
-useService(ServiceKey.MOTION_MOVE_J).call({ target_joints: home })
-   ↓
-bridge.callService — WS JSON {op:"service", key, request_id, data, robot_id}
-   ↓
-BridgeModule._service — msgpack encode envelope {timestamp, data} → transport.call
-   ↓ Zenoh queryable
-MotionModule.move_j(req: MoveJRequest) → MoveJResponse
-   ↓
-bridge → WS binary frame type=2 (response) or type=3 (error)
-   ↓
-bridge.ts._handleBinary
-   → pendingServices[request_id] resolve
-   → useFrameworkStore.setServiceData(wire, entry)
-      ↓ reactive
-useService(...).data 갱신
+useService(ServiceKey.MOTION_MOVE_J).call({ target_joints })
+  → bridge.callService (WS JSON {op:"service", key, request_id, data, robot_id})
+  → BridgeModule._service (msgpack envelope → transport.call) → Zenoh queryable
+  → MotionModule.move_j(req) → resp
+  → WS binary frame type=2 (response) / type=3 (error)
+  → bridge.ts._handleBinary → pendingServices[request_id] resolve → useService().data 갱신
 ```
 
 ### 5.3 Jog stream publish (50Hz)
 
 ```
-JogJPanel hold "↑" 버튼
-   ↓ 50Hz interval
-bridge.publish(Topic.MOTION_JOG_J, { robot_id, velocities }, robotId)
-   ↓
-WS JSON {op:"publish", topic, data}
-   ↓
-BridgeModule._publish — msgpack encode → transport.publish
-   ↓ Zenoh
-MotionModule._on_jog_j(event: JogJInput)
-   → SE(3) 적분 + IK + Motor.Stream.COMMAND publish
+JogJ hold "+" 버튼 → 50Hz interval → bridge.publish(Topic.MOTION_JOG_J, {robot_id, velocities}, robotId)
+  → WS JSON {op:"publish", topic, data} → BridgeModule._publish (msgpack → transport.publish) → Zenoh
+  → MotionModule.on_jog_j(JogJInput) → ref latch + dt 적분 + IK → Motor.Stream.COMMAND publish
 ```
 
-## 6. Stream invariant 검사 (`useStream`)
+## 6. `useStream` 구현 (seq + lag invariant)
 
-backend_v2 §8.5 의 `seq: int` + `timestamp_unix: float` 활용:
+[`framework/stream.ts`](../frontend_v2/src/framework/stream.ts) — backend_v2 §8.5 의 `seq` / `timestamp_unix` 활용:
+
+- **`seq`** — 최신 `value` 에서 *derive* (별도 state X). state 두고 effect 에서 setState 하면 cascading render (react-hooks/set-state-in-effect).
+- **`outOfOrderCount`** — effect 가 `lastSeqRef` 와 비교, 역행 시 functional update 로 누적 + `console.warn`. accumulator 라 effect 가 정당.
+- **`lagMs` / `stale`** — `Date.now() - timestamp_unix*1000` 을 render 에서 계산. wall-clock 의존이 *의도* (시간 경과 자체가 staleness) 라 `react-hooks/purity` 는 의도적 disable.
+
+invariant 위반 시 fail-fast X — 경고 + state 노출. UI 가 "🟡 lag 1.2s" badge 자연 표시.
+
+## 7. `useMirror` 구현 (invalidate+refetch)
+
+[`framework/mirror.ts`](../frontend_v2/src/framework/mirror.ts) — backend_v2 §3.3.1 (Startup ordering) + §3.3.5 (invalidate+refetch only) 정합:
+
+- **`useBridgeConnected` dep 필수** — WS 미연결 시 callService 가 drop → timeout. `connected=true` 박힌 후 fetch.
+- **① mount effect** — connected 면 snapshot fetch. Owner 안 떠 있으면 graceful (cache=null 유지, fail-fast X).
+- **② change event effect** — event 도착 시 *payload 안 보고* snapshot 재호출 (invalidate+refetch only).
+- `snapshotReq` 는 deps 에서 의도적 제외 — caller 가 inline object 넘기면 매 render identity 바뀌어 refetch loop. snapshot 은 mount/event 시점만.
+
+**Step E (Calibration backend) 박힐 때 실 동작 검증** — first cut 에선 hook + L2 test 만 (§11.1).
+
+## 8. Module store — Step E+ 계획
+
+방향 (§2.4) 은 backend_v2 module 1:1 store + cross-module read = `useMirror`. **first cut 미구현** — Move 페이지는 `framework/store.ts` 단일 cache + `useStream`/`useTopic` 직접 read 로 충분 (motor state 외 cross-module 의존 없음). Step E+ 에서 calibration/scene3d 등 cross-module read 가 생기면 아래 패턴으로 박는다:
 
 ```ts
-// framework/stream.ts (sketch)
-export function useStream<K extends keyof TopicPayloadMap>(
-  topic: K,
-  options?: { staleMs?: number },
-): {
-  value: TopicPayloadMap[K] | null;
-  seq: number;
-  lagMs: number;
-  stale: boolean;
-  outOfOrderCount: number;
-} {
-  const payload = useTopic(topic);
-  const stateRef = useRef({ lastSeq: -1, outOfOrder: 0 });
-
-  useEffect(() => {
-    if (!payload) return;
-    const next = (payload as { seq?: number }).seq;
-    if (typeof next !== "number") return;
-    if (next < stateRef.current.lastSeq) {
-      stateRef.current.outOfOrder++;
-      console.warn(`[useStream] ${topic} seq 역행: ${stateRef.current.lastSeq} → ${next}`);
-    }
-    stateRef.current.lastSeq = next;
-  }, [payload, topic]);
-
-  const ts = (payload as { timestamp_unix?: number })?.timestamp_unix;
-  const lagMs = ts ? Date.now() - ts * 1000 : 0;
-  const stale = lagMs > (options?.staleMs ?? 500);
-
-  return {
-    value: payload,
-    seq: stateRef.current.lastSeq,
-    lagMs,
-    stale,
-    outOfOrderCount: stateRef.current.outOfOrder,
-  };
-}
+// stores/motor.ts (Step E+ 예시)
+export const useMotorStore = create<{ jointStates: Record<string, JointState>; ... }>(...);
+onTopic(Topic.MOTOR_RAW_STATE, (s) => useMotorStore.getState().setJointState(s));
 ```
 
-invariant 위반 시 *fail-fast 박지 X* — 첫 박을 때 *경고만*. UI 가 stale badge 자연 표시.
+다른 module store 직접 접근 X — cross-module 은 `useMirror` (backend_v2 §2.4 Database-per-Module 의 frontend 등가).
 
-## 7. Mirror lifecycle (`useMirror`)
+## 9. 구현 경로
 
-backend_v2 §3.3.1 (Startup ordering) + §3.3.5 (invalidate+refetch only) 정합:
+**Step F1-F5 (jog vertical slice) — 완료.** 목적 = hook→wire→mock motor 데이터 경로를 끝까지 한 줄로 검증 (shell 보다 데이터 경로 de-risk 우선). 산출물/검증 §15.1, step 별 test §12.5.
 
-```ts
-// framework/mirror.ts (sketch)
-export function useMirror<TSnap, TEvent>({
-  snapshotService,
-  snapshotReq,
-  changeTopic,
-  robotId,
-}: {
-  snapshotService: keyof ServiceMap;
-  snapshotReq?: object;
-  changeTopic: keyof TopicPayloadMap;
-  robotId?: string;
-}): { value: TSnap | null; isReady: boolean } {
-  const [value, setValue] = useState<TSnap | null>(null);
-  const event = useTopic(changeTopic, robotId);
+- **F1 Scaffold** — vite + tsconfig + tailwind + main/App + 빈 페이지.
+- **F2 framework carry over** — bridge / store / topic / service / resource / bootstrap + contract.ts.
+- **F3 새 hook** — stream / mirror / capability.
+- **F4 UI** — scene (Scene/Container/RobotLayer/RobotModel/AxisFrame) + jog (JogJ/JogTcp) + RobotStatePanel.
+- **F5 MovePage + L4 e2e** — 3-column grid + `/robots/:id/move` route + Playwright headed.
 
-  // ① mount 시 snapshot fetch (event 와 무관)
-  useEffect(() => {
-    fetchSnapshot();
-  }, [snapshotService, robotId]);
+**다음 — Step F6 (dockview shell carry-over) = foundation.** 옛 RobotsLayout + ModeDockview + PANEL_COMPONENTS registry + Sidebar + RobotMoveMode + 라우팅 + lib/workspaceLayout 을 backend_v2 hook/contract 에 맞게 포팅. MovePage 의 패널들을 RobotMoveMode PANELS 로 fold (MovePage 제거). 이후 feature 페이지 = mode 파일 + 패널 등록 = snap-in (§2.3).
 
-  // ② event 도착 시 fresh refetch (payload 안 봄)
-  useEffect(() => {
-    if (event === null) return;
-    fetchSnapshot();
-  }, [event]);
-
-  async function fetchSnapshot() {
-    const res = await bridge.callService(snapshotService, snapshotReq ?? {}, { robotId });
-    if (res.success) setValue(res.data as TSnap);
-  }
-
-  return { value, isReady: value !== null };
-}
-```
-
-Step E (Calibration backend) 박힐 때 활성. first cut 박지 X (motion module 자체 Mirror 사용 X — Step F1 시점 calibration 미박).
-
-## 8. Module-based store
-
-backend_v2 module 1:1 정합:
-
-```ts
-// stores/motor.ts
-export const useMotorStore = create<{
-  jointStates: Record<string, JointState>;  // robot_id → state
-  setJointState: (state: JointState) => void;
-}>((set) => ({
-  jointStates: {},
-  setJointState: (s) => set((p) => ({
-    jointStates: { ...p.jointStates, [s.robot_id]: s },
-  })),
-}));
-
-// handlers.ts (carry over pattern)
-onTopic(Topic.MOTOR_RAW_STATE, (state) => {
-  useMotorStore.getState().setJointState(state);
-});
-```
-
-**다른 module store 접근 X** — cross-module 은 `useMirror`. backend_v2 §2.4 Database-per-Module 의 frontend 등가.
-
-## 9. 도입 단계
-
-각 step 끝 = 검증 가능한 산출물.
-
-### Step F1 — Scaffold (반나절)
-
-`frontend_v2/` 디렉토리 + package.json + tsconfig + vite + tailwind + index.html + main/App.
-
-검증:
-- `cd frontend_v2; pnpm install && pnpm build` PASS
-- 빈 페이지 띄움 ("Horibot v2")
-
-### Step F2 — Carry over framework + bridge + contract (반나절)
-
-옛 frontend 에서 그대로 가져오기:
-- `api/bridge.ts` (C2b-1 결과 그대로)
-- `api/generated/contract.ts` (gen_contract.py 호출 path 자리 update)
-- `types/bridge.ts`
-- `framework/{store,bootstrap,service,topic,resource,index}.ts`
-- `constants/index.ts` (DEFAULT_ROBOT_ID = "so101_6dof_0")
-
-backend_v2 mock 띄운 후 — `useResource("/robots")` 호출 → robot list 표시 검증.
-
-### Step F3 — 새 hook (useStream + useMirror + useCapability) (반나절)
-
-`framework/stream.ts` + `framework/mirror.ts` + `framework/capability.ts` 박음. unit-style 검증 (`stores/motor` 의 useStream 으로 seq 검사 박는지).
-
-### Step F4 — Carry over UI (1 day)
-
-옛 frontend 에서:
-- `components/scene/RobotModel.tsx` (ref-stash pattern 그대로)
-- `components/scene/Scene.tsx` + `Container.tsx`
-- `components/panels/motion/JogJ.tsx` → `components/jog/JogJPanel.tsx` (새 Topic.MOTION_JOG_J + payload.robot_id)
-- `components/panels/motion/JogTcp.tsx` → `components/jog/JogTcpPanel.tsx`
-- `components/panels/RobotStatePanel.tsx` → `components/motor/RobotStatePanel.tsx`
-- 옛 `lib/robot/*` carry over (URDF path / FK helper)
-
-### Step F5 — MovePage + 검증 (반나절)
-
-`pages/MovePage.tsx` — CSS grid 3 column (RobotStatePanel | RobotScene3D | JogJ/JogTcp tab). 라우트 `/move` 또는 `/robots/:id/move`.
-
-검증:
-- `cd backend_v2; uv run python -m apps.main --host mock`
-- `cd frontend_v2; pnpm dev`
-- 브라우저 `:5173/move` — mock motor 의 joint state stream 보이고 jog 누르면 mock motor 움직임
-- jog 명령 정합 (`MOTION_JOG_J` stream 50Hz publish → mock motion subscribe → mock motor command publish)
-
-**Total ≈ 2-3 day** (옛 frontend 의 한 주 vs framework rewrite from scratch 의 한 주 사이).
-
-## 10. 옛 frontend 에서 carry over 자산 인벤토리
+## 10. 옛 frontend carry over 자산 인벤토리
 
 | file | 가치 | 변경 |
 |---|---|---|
-| `api/bridge.ts` | backend_v2 wire 정합 박힌 결과 | 그대로 |
+| `api/bridge.ts` | backend_v2 wire (msgpack + binary frame + service shim) | wire 정합 |
 | `types/bridge.ts` | WsOp / FrameType / FRAME_VERSION | 그대로 |
-| `framework/store.ts` | Zustand wrap 최소 surface | 그대로 |
-| `framework/bootstrap.ts` | robot-scoped subscribe loop + binary re-attach race fix | 그대로 (binary re-attach generic 박는 자리 small fix) |
-| `framework/service.ts` | useService + auto cache | 그대로 |
-| `framework/topic.ts` | useTopic + onTopic | 그대로 |
-| `framework/resource.ts` | HTTP fetch + module cache + poll + select | 그대로 |
-| `components/scene/RobotModel.tsx` | ref-stash pattern + urdf-loader integration + loadMeshCb override (cross-robot opacity bleed fix) | 그대로 (commit f15a20b 의 race fix 보존) |
-| `components/scene/Scene.tsx` + `Container.tsx` | R3F Canvas + TCP frame conversion | 그대로 |
-| `components/panels/motion/JogJ.tsx` + `JogTcp.tsx` | 50Hz interval publish + deadman pattern | stream key 자리 새 contract.ts 키로 rewire + payload 에 `robot_id` 박음 |
-| `components/panels/RobotStatePanel.tsx` | joint state subscribe + table | `Topic.MOTOR_RAW_STATE` 로 rewire |
-| `lib/robot/utils.ts` | raw↔rad helper | 그대로 |
+| `framework/{store,bootstrap,service,topic,resource}.ts` | Zustand wrap + subscribe loop + useService/useTopic/useResource | 그대로 (bootstrap binary re-attach small fix) |
+| `components/scene/RobotModel.tsx` | ref-stash pattern + urdf-loader + loadMeshCb override (cross-robot opacity bleed fix) | 그대로 (commit f15a20b race fix 보존) |
+| `components/scene/{Scene,Container}.tsx` | R3F Canvas + TCP frame conversion | carry over |
+| `components/panels/motion/JogJ,JogTcp` → `components/jog/{JogJ,JogTcp}.tsx` | 50Hz publish + deadman | stream key 새 contract 키로 rewire + payload `robot_id` + `setPointerCapture` |
+| `components/panels/RobotStatePanel` → `components/motor/RobotStatePanel.tsx` | joint state 구독 + table | `Topic.MOTOR_RAW_STATE` rewire |
 | `lib/utils.ts` | cn() classname merge | 그대로 |
 
-**Skip first cut (Step E+ 박힐 때 carry over)**:
-- `components/panels/calibration/*` (CaptureGuideOverlay / PoseList / CalibrationPanel / IntrinsicPanel / CameraPanel)
-- `components/panels/TaskProgressPanel.tsx`
-- `components/scene/TaskResultLayer.tsx` (Detection / Position3 auto-dispatch)
-- `components/scene/DetectionLayer.tsx`
-- `components/scene/Scene3DLayer.tsx`
-- `domain/stores/*` 의 도메인 별 store 자리 — 새 backend_v2 module 1:1 store 로 재배치
-- `dockview` workspace + focus mode + mode-based sidebar — Step E+ 박힐 때
+**shell carry-over (Step F6 — foundation, backend 무관)**: RobotsLayout / ModeDockview / `components/panels/registry` (PANEL_COMPONENTS) / Sidebar / robotModes/{RobotMoveMode, RobotModeRedirect} / 라우팅 / lib/workspaceLayout. dockview workspace + 패널 레지스트리 + mode-based sidebar 가 여기 포함 — 이건 foundation 이지 skip 대상이 아니다 (§2.3).
+
+**Step E+ carry over (backend module 부재로 지금 지을 수 없음)**: `components/panels/calibration/*`, `TaskProgressPanel`, `scene/{TaskResultLayer,DetectionLayer,Scene3DLayer}`, RobotCalibrateMode/scan/tasks 페이지, 도메인 store, focus-dim/multi-robot 풍부함.
 
 ## 11. 알려진 risk
 
-### 11.1 backend_v2 의 Mirror 활성화는 Step E+ 부터
+### 11.1 Mirror 활성화는 Step E+ 부터
 
-frontend_v2 첫 cut (Step F1-F5) 박을 때 backend_v2 에는 *Calibration / Scan / Task module 미박*. Mirror 의 진짜 use case (CalibrationBundle 의 cross-module read) 자체 없음. `useMirror` 박은 후 *Step E backend* 시점 검증 — 박은 hook 의 실 동작 그때 확인.
+first cut 시점 backend 에 Calibration / Scan / Task module 미박 → Mirror 의 진짜 use case (CalibrationBundle cross-module read) 없음. `useMirror` 는 hook + L2 test 만 박힌 상태 — 실 동작은 Step E backend 시점 검증.
 
-### 11.2 JogJ.tsx 의 idle-reset race
+### 11.2 jog publish rate ↔ backend IDLE_RESET 의존 (→ §15.5 robustness)
 
-옛 [`JogJ.tsx:53-61`](../frontend/src/components/panels/motion/JogJ.tsx) 의 stopJog 가 50Hz interval clear 박지만 backend `IDLE_RESET_S=0.2s` 의 fresh latch 메커니즘 frontend 가 모름. 재연결 mid-jog 시 옛 velocity 계속 publish 가능. 검증 시 reconnect 시나리오 확인 — issue 박혔으면 `useStream` 의 stale flag 활용 가능.
+jog 정확성이 frontend publish rate < 200ms (`_JOG_IDLE_RESET_S`) 에 의존. 메인스레드 stall (느린 머신 / GC / 순간 부하 / headless 렌더) 시 50Hz 가 밀려 backend 가 latch 를 reset → jog 가 조용히 멈춤. L4 e2e 가 headless 에서 이 현상을 노출 (§8). robustness 검토 = §15.5.
 
-### 11.3 dockview 폐기 X — Step E+ carry over
+### 11.3 dockview shell = Step F6 foundation (완료)
 
-옛 dockview workspace 동작 잘 박음 (사용자 자유 drag/resize). first cut 박지 않는 이유 = *over-engineering 회피*. Step E+ 박힐 때 carry over.
+~~옛 dockview 는 over-engineering 이라 defer~~ → **틀린 판단이었음 (§2.3).** dockview = 패널 조립 메커니즘 = foundation. **Step F6 에서 carry-over 완료** — MovePage(CSS-grid 단발) 의 RobotStatePanel/JogJ/JogTcp 를 RobotMoveMode PANELS(robotState, motion) 로 fold, MovePage 제거. 패널 본체는 그대로, 배선만 dockview 로 (fold 로 생긴 rework 는 예상대로 작았음).
 
-### 11.4 옛 frontend domain store 의 lifecycle race
+### 11.4 옛 domain store lifecycle race
 
-옛 [`scene3D.ts`](../frontend/src/domain/stores/scene3D.ts) + [`calibration.ts`](../frontend/src/domain/stores/calibration.ts) 의 bootstrap/dispose pattern 이 fragile. carry over 시 *Mirror 정합으로 simplify* — `useMirror` 가 mount/unmount 자동 처리 → manual lifecycle X.
+옛 `scene3D.ts` / `calibration.ts` 의 bootstrap/dispose 가 fragile. carry over 시 `useMirror` 로 simplify — mount/unmount 자동 처리 → manual lifecycle X.
 
 ## 12. Test 정책 — meaningful tests only
 
-backend_v2 의 [[feedback-meaningful-tests]] 정합. **모든 test = "spec 의 어느 invariant 검증" 명시** — docstring 에 `// spec frontend_v2.md §X — invariant Y` 박음. 단순 PASS 박는 test 박지 X.
+backend_v2 [[feedback-meaningful-tests]] 정합. **모든 test = "spec 의 어느 invariant 검증" 을 docstring 에 `spec frontend_v2.md §X — invariant Y` 로 명시.** 단순 PASS / snapshot / happy-path-only / mock-only-expect 박지 X.
 
 ### 12.1 4 계층 검증
-
-[testing_strategy.md](testing_strategy.md) (backend) 와 정합:
 
 | 계층 | tool | 대상 | 진입점 |
 |---|---|---|---|
 | **L1 lint + type** | `pnpm lint` + `tsc -b` | 모든 file | 매 commit |
-| **L2 unit + 합성 회귀 차단** | Vitest + happy-dom + RTL + mock WebSocket | bridge / hook / panel | 매 PR |
-| **L3 single-process e2e** | Vitest + mock bridge | full data flow (publish → store → component reactive) | feature 박을 때 |
-| **L4 cross-process e2e** | **WebdriverIO** + mock backend (host=mock) — W3C Actions API 가 진짜 button hold 지원. Playwright 는 CDP Mouse cascade 때문에 ~100ms 시점 pointerup auto fire → button hold 시나리오 안 됨 (2026-07-01 confirmed). Playwright 는 단순 wait 시나리오 (WS+URDF+state 도착) 만. | 실 frontend vite dev + 실 backend_v2 mock | Step F5 + release |
+| **L2 unit** | Vitest + happy-dom + RTL + mock WebSocket | bridge / hook / panel | 매 PR |
+| **L3 single-process e2e** | Vitest + mock bridge | full data flow (publish → store → component) | feature 박을 때 |
+| **L4 cross-process e2e** | **Playwright (headed)** + mock backend — `page.mouse` 가 button hold 정상 (pointercancel 없이 800ms hold + full wire raw 변화). `headless:false` 필수 (이유 = §8) | 실 vite dev + 실 backend mock | Step F5 + release |
 
-L1-L3 는 매 PR. L4 는 무거움 — Step F5 (jog mock backend 검증) 박을 때 + 새 page 추가 시.
+L1-L3 는 매 PR. L4 는 무거움 — Step F5 + 새 page 추가 시.
 
-### 12.2 진짜 invariant — 박을 test 항목
+### 12.2 진짜 invariant — 박은 test 항목
 
-각 항목 = 단일 PASS 박는 자리 X. *spec 의 어느 invariant* 박는지 docstring 명시.
+**bridge.ts**: binary frame parse (type 1/2/3) / msgpack round-trip / service shim type=2 → success / type=3 → error / 5s timeout safety net / reconnect `_resubscribeAll` 재구독.
 
-**bridge.ts** (transport layer):
+**useStream**: seq monotonic → outOfOrderCount=0 / seq 역행 → count 증가 + console.warn / timestamp_unix lag detect / stale = lag > staleMs / seq field 없음 → graceful (warn X).
 
-| invariant | 검증 |
-|---|---|
-| binary frame parse (type 1/2/3) | mock `[u8 v=1][u8 t][u16 BE key_len][key][payload]` 박은 후 `_handleBinary` 의 dispatch 확인 |
-| msgpack encode-decode round-trip | publish 박은 `data` 가 server-side decode 결과 동일 (`{ robot_id, seq, timestamp_unix }`) |
-| service shim — type=2 → `{success:true, data:env.data}` | mock service response 도착 시 callService Promise resolve |
-| service shim — type=3 → `{success:false, message:type:msg}` | mock service error 도착 시 callService Promise resolve with error |
-| timeout safety net — backend default 박혀있어도 frontend 5s timeout | timeout exceed 시 callService Promise resolve fail |
-| reconnect — `_resubscribeAll` 박는 자리 모든 topicListeners + binaryTopicListeners 재구독 | close → open 박은 mock 자리 subscribe send 두 번 박힘 |
+**useMirror**: mount 시 snapshot 1회 / change event → 재호출 (payload 안 봄) / isReady snapshot 후 true / Owner 안 떠 있음 (fail) → cache=null 유지 / unmount cleanup.
 
-**useStream** (seq + lag invariant):
+**useService**: call 후 cache reactive 갱신 / pending flag timeline.
 
-| invariant | 검증 |
-|---|---|
-| seq monotonic 정상 | seq 1, 2, 3 도착 후 outOfOrderCount=0 |
-| seq 역행 → outOfOrderCount 증가 + console.warn | seq 1, 2, 1 도착 후 outOfOrderCount=1 |
-| timestamp_unix lag detect | timestamp_unix = now - 1.0 도착 시 lagMs ≈ 1000 |
-| stale flag — lagMs > staleMs (default 500) | timestamp_unix = now - 0.7 도착 시 stale=true |
-| seq field 박지 X — graceful (warn X, skip) | payload `{a, b}` 도착해도 outOfOrderCount=0, lagMs=0 |
+**useCapability**: boot 1회 fetch / module-cache (re-mount 시 fetch 안 함).
 
-**useMirror** (invalidate+refetch invariant — backend_v2 §3.3.5):
-
-| invariant | 검증 |
-|---|---|
-| mount 시 snapshot fetch | mock service spy 가 mount 후 1회 호출 |
-| change event 도착 → snapshot 재호출 (payload 박지 X) | mock event publish 후 service spy 2회 호출, event payload 사용 안 함 |
-| isReady — snapshot 받은 후 true | mount 직후 isReady=false → service resolve 후 isReady=true |
-| Owner 안 떠 있음 (snapshot fail) → cache=null + isReady=false 유지 | mock service reject 후 isReady=false 유지 |
-| unmount — subscription cleanup | unmount 후 mock listener count=0 |
-
-**useService**:
-
-| invariant | 검증 |
-|---|---|
-| call 후 cache reactive 갱신 | call 후 reactive view (data / success / pending) 갱신 |
-| pending flag — call 호출 직후 true, response 후 false | RTL spy 로 timeline 확인 |
-
-**useCapability**:
-
-| invariant | 검증 |
-|---|---|
-| boot 1회 fetch | mount 시 service spy 1회 |
-| module-cache — re-mount 시 fetch 안 함 | unmount + 다시 mount 후 service spy 1회 유지 |
-
-**JogJPanel / JogTcpPanel**:
-
-| invariant | 검증 |
-|---|---|
-| 50Hz interval publish (button hold) | fake timer + RTL pointerDown 후 100ms 안 5회 publish |
-| release (pointerUp) — interval clear + stop 명령 | fake timer 로 pointerUp 후 publish 안 함 검증 |
-| deadman — focus lost (blur) → stop 자동 | window blur 후 jog publish 안 함 |
-| payload `robot_id` 박힘 | publish spy 의 args[1].robot_id === DEFAULT_ROBOT_ID |
+**JogJ / JogTcp**: 50Hz interval publish (hold) / release → interval clear + stop / deadman (blur → stop) / payload `robot_id` 박힘.
 
 ### 12.3 박지 말 패턴
 
-- **snapshot test 만 박는 자리** — UI 의 markup 자리 lock — invariant 박지 X
-- **mock 자체만 검증** — mock 의 expect 만 박은 test — 실 코드 동작 안 잡음
-- **happy path 만 박는 test** — error / race / out-of-order 박는 게 진짜 가치
-- **단순 PASS 박는 test** — docstring 없이 PASS 만 박혀있으면 spec 의 어느 invariant 검증인지 모름
+snapshot test 만 / mock 자체만 expect / happy path 만 / docstring 없는 단순 PASS.
 
-### 12.4 박을 deps + 첫 setup
+### 12.4 deps + setup
 
 ```
 pnpm add -D vitest @testing-library/react @testing-library/dom \
-  @testing-library/jest-dom happy-dom mock-socket \
-  @playwright/test \
-  @wdio/cli @wdio/local-runner @wdio/mocha-framework @wdio/spec-reporter \
-  @wdio/types webdriverio @types/mocha ts-node
+  @testing-library/jest-dom happy-dom mock-socket @playwright/test
 ```
 
-- `vitest.config.ts` — happy-dom env + setup file
-- `vitest.setup.ts` — `@testing-library/jest-dom` import
-- `src/__tests__/` — test file (L2 vitest)
-- `e2e/` — Playwright spec (L4, 단순 wait 시나리오 만)
-- `e2e_wdio/` — WebdriverIO test (L4, button hold 진짜 검증)
-- `playwright.config.ts` — hasTouch:true, port 5174
-- `wdio.conf.ts` — chromedriver + W3C Actions
-- `tsconfig.wdio.json` — wdio + mocha types
-- `package.json` script:
-  - `"test": "vitest run"`, `"test:watch": "vitest"`
-  - `"test:e2e": "playwright test"` (simple flows)
-  - `"test:e2e:wdio": "wdio run wdio.conf.ts"` (real button hold)
+- `vitest.setup.ts` — `@testing-library/jest-dom`
+- `src/**/*.test.{ts,tsx}` — L2 vitest (11 file)
+- `e2e/jog.spec.ts` — L4 Playwright
+- `playwright.config.ts` — `headless: false` (실 GPU, §8), port 5174
+- script: `"test": "vitest run"`, `"test:e2e": "playwright test"`
 
-### 12.5 각 Step 박을 test (Step F2-F5)
+### 12.5 각 Step 박은 test (F2-F5)
 
-| Step | 박을 test |
+| Step | test |
 |---|---|
-| F2 (carry over framework + bridge) | bridge.ts (6 invariant), useService (2), useTopic + bootstrap (subscribe-on-mount 자리), useResource (cache + poll) |
-| F3 (새 hook) | useStream (5), useMirror (5), useCapability (2) |
-| F4 (carry over UI) | RobotModel ref-stash (race fix invariant), JogJPanel (4), JogTcpPanel (4), RobotStatePanel (joint state 표시) |
-| F5 (MovePage + e2e) | L4 — Playwright (단순 wait — WS+URDF+state stream 도착) + WebdriverIO (W3C Actions 가 진짜 button 800ms hold → 50Hz publish → backend Motion → mock motor cmd → raw 변화) |
+| F2 | bridge.ts (6), useService (2), useTopic + bootstrap, useResource (cache + poll) |
+| F3 | useStream (5), useMirror (5), useCapability (2) |
+| F4 | RobotModel ref-stash, JogJ (3), RobotStatePanel (2) |
+| F5 | L4 Playwright headed 2 test: ① wait (WS+URDF+RAW_STATE 도착) ② plain `page.mouse` 800ms hold → 50Hz publish (WS send > 20) → backend Motion → mock motor cmd → raw Δ > 20 |
 
 ## 13. 인접 문서
 
-- [backend_v2.md](backend_v2.md) — backend SSOT. frontend_v2 의 모든 어휘 (Mirror / Stream / Capability / seq invariant) 의 origin
-- [backend_v2_modules.md](backend_v2_modules.md) — Module catalog. frontend_v2 의 store / component 1:1 매핑
-- [backend_v2_status.md](backend_v2_status.md) — backend 진행 status. frontend 의 Step E+ 시점 결정에 활용
-- [frontend_v2_status.md](frontend_v2_status.md) — frontend_v2 현재 진행 status + 다음 세션 handoff
-- [testing_strategy.md](testing_strategy.md) — backend 4 계층 검증 정책. frontend §12 정합
+- [backend_v2.md](backend_v2.md) — backend SSOT. frontend 어휘 (Mirror / Stream / Capability / seq invariant) origin
+- [backend_v2_modules.md](backend_v2_modules.md) — Module catalog. store / component 1:1 매핑
+- [backend_v2_status.md](backend_v2_status.md) — backend 진행 status. Step E+ 시점 결정
+- [testing_strategy.md](testing_strategy.md) — backend 4 계층 검증. §12 정합
 
 ## 14. 핵심 결정 anchor
 
 | # | 결정 | 위치 | 근거 |
 |---|---|---|---|
-| 1 | frontend_v2/ 신규 (frontend/ 그대로 — backend/ + backend_v2/ 와 같은 pattern) | §1 | 옛 frontend = 옛 backend 호환 보존, 진화 명확 |
-| 2 | gen_contract.py = SSOT (Python contract.py introspect → TS emit) | §2.1 | [[feedback-ssot-first]] + [[feedback-developer-focus-business-logic]] |
-| 3 | Carry over framework/* (useTopic/useService/useResource) — full rewrite 박지 X | §2.2 | 옛 코드 검증된 자산 — 재구현 = 시간 낭비 + 자산 손실 |
-| 4 | first cut = Move 페이지 1개 (dockview / focus mode / Calibration UI 박지 X) | §2.3 | over-engineering 회피, Step E+ 박힐 때 carry over |
-| 5 | Module-based store (`stores/motor.ts` / `stores/motion.ts` 등) — backend_v2 module 1:1 | §2.4 + §8 | backend_v2 §2.4 Database-per-Module 정합 |
-| 6 | `useStream` 신규 — seq monotonic + timestamp_unix lag invariant 검사 | §3.3 + §6 | backend_v2 §8.5 stream payload invariant 활용. reconnect/lag/out-of-order detection unbuilt 부분 fix |
-| 7 | `useMirror` 신규 — snapshot service + change event invalidate+refetch | §3.4 + §7 | backend_v2 §3.3 Mirror[T] frontend 등가. Step E (Calibration) 박힐 때 활성 |
-| 8 | `useCapability` 신규 — boot 1회 snapshot cache (Mirror 박지 X) | §3.5 | backend_v2 §7 capability = static fact. invalidation cycle 박지 X |
-| 9 | `useService` 그대로 — backend_v2 의 exception model 은 bridge.ts shim | §3.1 | 옛 framework/service.ts 잘 박힌 자리. C2b-1 의 shim 으로 호환 |
-| 10 | dockview = Step E+ (first cut CSS grid) | §2.3 + §11.3 | jog 1 페이지 박는 자리 over-engineering. Step E+ 박힐 때 carry over |
-| 11 | DEFAULT_ROBOT_ID = `so101_6dof_0` (옛 omx_f_0 X) | §4 | [[project-active-robot-so101-d405]] 정합 |
-| 12 | RobotModel 의 ref-stash pattern + loadMeshCb override 보존 | §10 | commit f15a20b 의 race fix + cross-robot opacity bleed fix. 재구현 = 2일 손실 |
-| 13 | meaningful tests only — 모든 test = spec invariant 검증, docstring 명시 | §12 | [[feedback-meaningful-tests]] 정합. backend_v2 의 67 PASS 가 모두 spec ref + invariant 명시 — 단순 PASS 박는 test 박지 않음. snapshot test / happy path 만 / mock 만 expect 박지 않음 |
+| 1 | **옛 frontend/ = 의도적 carry-over reference. default = 검증된 구조(shell 포함) 포팅, 새 최소설계 X. defer 는 backend 부재 feature 만** | §2.2 | 지우지 않고 남긴 이유. "최소로 짓고 shell 나중에" 판단 금지 |
+| 2 | gen_contract.py = SSOT (Python → TS emit) | §2.1 | [[feedback-ssot-first]] |
+| 3 | Carry over = framework + **app shell (RobotsLayout/ModeDockview/registry/Sidebar/라우팅)** + panel/scene — full rewrite X | §2.2 | 검증된 자산 재구현 = 손실 |
+| 4 | **dockview = 패널 조립 메커니즘(foundation), per-page 사치 X — Step F6 carry-over** | §2.3 + §11.3 | 2026-07-01 "dockview=사치 defer" 오진 정정 (코드 안 읽고 단정) |
+| 5 | Module store 는 Step E+ — first cut framework/store.ts 단일 | §2.4 + §8 | cross-module read 없으면 불필요 |
+| 6 | `useStream` 신규 — seq derive + lag invariant | §3.3 + §6 | backend_v2 §8.5 활용 |
+| 7 | `useMirror` 신규 — snapshot + invalidate+refetch | §3.4 + §7 | backend_v2 §3.3 등가. Step E 활성 |
+| 8 | `useCapability` 신규 — boot 1회 cache | §3.5 | backend_v2 §7 static fact |
+| 9 | `useService` 그대로 — exception model 은 bridge.ts shim | §3.1 | 검증된 자산 |
+| 10 | DEFAULT_ROBOT_ID = `so101_6dof_0` | §4 | [[project-active-robot-so101-d405]] |
+| 11 | RobotModel ref-stash + loadMeshCb override 보존 | §10 | commit f15a20b race fix |
+| 12 | meaningful tests only — docstring 에 spec §X 명시 | §12 | [[feedback-meaningful-tests]] |
+| 13 | **L4 e2e = Playwright headed 단일** (WebdriverIO 제거) | §8 | "Playwright hold 못 함" 오진 정정 — 측정으로 뒤집힘 |
 
 ### 작업 원칙
 
-- 본 문서 = frontend_v2 spec SSOT. 박힌 결정 (위 12개) 의심하지 말고 따를 것.
-- backend_v2 의 어휘 (Mirror / Stream / Event / Capability / seq invariant) frontend hook 으로 1:1 노출 — 새 어휘 박지 X.
-- 옛 frontend 에서 carry over 박을 때 *원본 비교* 자리 박을 것 — 옛 file path + line 추적.
-- Step F1-F5 순차. 점프 X. 각 step 끝 = build clean + 검증 가능 산출물.
-- 박지 말 패턴: full rewrite from scratch ("framework 250 줄 자산 폐기"), generator hand-write ([[feedback-ssot-first]] 위반), legacy 이동 hybrid (한 src 안 옛+새 혼재).
+- 본 문서 = frontend_v2 SSOT. 박힌 결정 의심하지 말고 따를 것.
+- backend_v2 어휘 (Mirror / Stream / Event / Capability / seq invariant) hook 1:1 — 새 어휘 X.
+- carry over 시 옛 file path + line 추적 (원본 비교).
+- 박지 말 패턴: full rewrite from scratch, generator hand-write ([[feedback-ssot-first]] 위반), 한 src 에 옛+새 혼재.
+
+## 15. 현재 status + 다음 세션 handoff
+
+### 15.1 현재 상태 (2026-07-01)
+
+**Step F1-F6 완료 — jog vertical slice + dockview shell + panels 확장단위 구조(§4.1) + shadcn ui/.** `pnpm lint` 0 + `pnpm build` clean + **31 vitest PASS** + **L4 e2e 2 PASS (headed, mock backend + dev server 로 실측)**. F6 에서 **collapse dead-code 버그 발견·수정** (§15.7).
+
+| Step | 산출물 | 검증 |
+|---|---|---|
+| F1 scaffold | build PASS, 233KB JS (옛 frontend 1.9MB 의 12%) | ✅ |
+| F2 framework carry over | bridge/store/topic/service/resource/bootstrap | L2 13 PASS |
+| F3 새 hook | stream/capability/mirror | L2 12 PASS |
+| F4 UI | scene 5 + jog 2 + RobotStatePanel | L2 5 PASS |
+| F5 MovePage + route + L4 e2e | 3-column grid + Playwright headed | 2 PASS |
+| F6 dockview shell + 구조 정리 | RobotsLayout + ModeDockview + Sidebar + RobotMoveMode + RobotModeRedirect + workspaceLayout. **panels/ = 확장 단위 재구조화** (§4.1): MotionPanel/ 폴더(index+JogJControl+JogTcpControl) + RobotStatePanel.tsx + 순수 registry.ts. **shadcn 도입** (ui/ = button/tabs/slider, 패널 UI 재작성). MovePage 제거 | **L1 0 + build + L2 31 + L4 2 PASS (headed, 실측)** |
+
+**검증** (cwd `frontend_v2/`):
+```powershell
+pnpm install
+pnpm lint        # 0 problems
+pnpm build       # tsc -b && vite build
+pnpm test        # 31 PASS
+```
+
+**L4 e2e** (mock backend + dev server 사전 띄움):
+```powershell
+# T1: cd backend_v2; uv run --no-sync python -m apps.main --host mock
+# T2: cd frontend_v2; pnpm dev
+# T3: cd frontend_v2; pnpm test:e2e   # Playwright headed — 2 PASS
+```
+
+### 15.2 L4 e2e 도구 결정 (2026-07-01 — "Playwright hold 못 함" 오진 정정)
+
+이전 세션이 WebdriverIO 로 갈아탄 근거 ("W3C Actions 만 button hold 가능, Playwright CDP Mouse 는 100ms 시점 pointerup auto fire") 는 **측정으로 뒤집힌 오진**.
+
+| | headless (옛 가정) | headed (`headless:false`) |
+|---|---|---|
+| bare `setInterval(20ms)` (800ms 중) | ~8 (10Hz) | ~54 (50Hz) |
+| jog publish 실측 | 7Hz | 47Hz |
+| pointercancel | **0** | **0** |
+| 모터 raw Δ | 0 (안 움직임) | 88 (움직임) |
+
+- plain `page.mouse.down/up` 은 headless/headed **둘 다 pointercancel 0 + 깨끗한 800ms hold** — 입력 도구 문제 아님.
+- 진짜 원인 = headless SwiftShader (소프트웨어 렌더) 가 R3F 3D 씬으로 메인스레드를 굶겨 50Hz jog 가 ~10Hz 로 밀림 → backend IDLE_RESET(0.2s) 아래로 떨어져 적분 안 됨 → 모터 안 움직임.
+- WebdriverIO 가 통과한 건 chromedriver default **headed (실 GPU)** 라 메인스레드가 안 굶었기 때문 (W3C Actions 덕 아님).
+- **결정: WebdriverIO 제거 (config/test/deps), Playwright 단일 + `playwright.config.ts::headless:false`.**
+
+### 15.3 운영 불변식 (어기지 말 것)
+
+- **L4 e2e = Playwright headed** (`headless:false` 필수 — §15.2).
+- **useCapability / useMirror 의 `useBridgeConnected` dep 필수** — WS 미연결 시 callService drop → timeout.
+- **JogJ button `setPointerCapture`** — 실 hardware 빠른 손가락 / 누른 채 드래그 시 hit-target 변동 → pointercancel 방어 (오진과 무관한 정당 safeguard).
+- **useStream** — seq derive (state X), lag 은 render-시점 wall-clock 의도 (§6).
+- eslint 는 `src/api/generated` 제외 (generator = SSOT).
+
+### 15.4 다음 진입점
+
+1. **backend bridge ws panic (latent, mid)** — frontend reload/close 시 `backend_v2/modules/bridge/ws.py` 의 `_drain_helper` `AssertionError` (websockets legacy). browser refresh 시 backend restart 필요. fix = ws.py connection cleanup 또는 새 websockets API migrate. (L4 e2e 는 test 당 fresh context 라 이번엔 안 걸렸음 — 실 사용 reload 시 재현.)
+2. **집: 실 SO-101 jog** (§15.6).
+3. **Step E+ feature 페이지** — backend Calibration / Detector / Scene3D / Scan / Reconstruction / Task / Gamepad 박힌 후 RobotCalibrateMode + `useMirror(CalibrationBundle)` + `useCapability(camera)` + Scene3D/Detection/Task 패널 carry over. 새 패널 = `panels/` 에 추가 + registry 한 줄 + mode PANELS 한 줄 snap-in (§4.1, §10).
+
+### 15.5 jog robustness — IDLE_RESET 검토 거리
+
+jog 정확성이 publish rate < 200ms (`_JOG_IDLE_RESET_S`) 에 의존 (§11.2). 메인스레드 stall 시 jog 가 조용히 멈춤 — 실 GPU 머신은 50Hz 라 정상이지만 robustness 결정 거리: backend IDLE_RESET tolerance 완화 vs frontend rate 보장. (지금 fix X — 별도 검토.)
+
+### 15.6 hardware 검증 (집에서)
+
+목표 = 집에서 frontend_v2 로 실 SO-101 jog:
+1. `cd backend_v2; uv run python -m apps.main --host pc` (또는 pi_motor + pi_camera 분산)
+2. `cd frontend_v2; pnpm dev`
+3. 브라우저 `http://localhost:5174/robots/so101_6dof_0/move`
+4. J1+ button hold → 실 SO-101 motor 회전 확인
+
+잠재 issue: Feetech driver 실 통신 미검증 (register map / sync / signed / clamp), motors.yaml pid/profile 미적용 (EEPROM default), backend bridge ws panic (reload 시 restart).
+
+### 15.7 F6 에서 L4 e2e 로 잡은 버그 (collapse dead-code)
+
+**증상**: dockview 패널이 헤더바(36px)만 남고 접힌 채 렌더 → 콘텐츠 clip → jog "+" 버튼 좌표가 클립 영역이라 hold 가 안 먹음 (L4 test 2: jogSent=2, 기대 >20). L2/build/lint 는 다 통과 → **실제 e2e 를 돌려야 잡히는 버그** (테스트 통과 ≠ 동작).
+
+**root cause**: `workspaceLayout.loadCollapsed` 의 fallback 이 `true` (옛 frontend 는 PanelShell 이 펼치기 토글 제공). F6 에서 collapse helper 만 carry 하고 PanelShell 은 안 가져와 → 패널이 collapsed(header-only)로 생성되는데 펼칠 UI 가 없음 = 반쯤 배선된 dead code.
+
+**fix**: PanelShell 을 지금 안 넣기로 했으니(§4.1) collapse 기계를 제거 — `workspaceLayout` 에서 `loadCollapsed`/`saveCollapsed`/`PANEL_HEADER_HEIGHT`/`COLLAPSED_KEY` 삭제, `ModeDockview` 는 패널을 `p.height` full 로 생성. collapse 는 PanelShell 도입 시 함께. → L4 2 PASS.
+
+**교훈**: carry-over 시 "그 helper 를 구동하는 컴포넌트" 까지 세트로 안 가져오면 dead code 가 남고, 그게 런타임 UI 를 깨뜨린다. 부분 carry 는 그 자체로 검증 대상.

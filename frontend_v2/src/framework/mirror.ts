@@ -62,6 +62,9 @@ export function useMirror<
     return () => {
       cancelled = true;
     };
+    // snapshotReq 의도적 제외 — caller 가 inline object 넘기면 매 render identity
+    // 바뀌어 refetch loop. snapshot 은 mount/event 시점만 (spec §7).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.snapshotService, config.robotId, connected]);
 
   // ② change event 도착 → fresh refetch (payload 박지 X)
@@ -85,6 +88,8 @@ export function useMirror<
     return () => {
       cancelled = true;
     };
+    // snapshotReq 의도적 제외 (위 mount effect 와 동일 — refetch loop 차단).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [event, config.snapshotService, config.robotId]);
 
   return { value, isReady: value !== null };

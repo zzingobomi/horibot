@@ -1,0 +1,76 @@
+/* dockview 6.6.1 에 맞춘 workspace 테마.
+ *
+ * pointer-events 정책: RobotsLayout 의 wrapper div 가 `pointer-events: none`
+ * 으로 빈 영역 mouse event 를 z-0 R3F Canvas 의 OrbitControls 로 통과시킴.
+ * dockview 6.6.1 의 default CSS 가 floating panel 의 hit-test 를 알아서 처리
+ * (`.dv-floating-overlay-host { none }` + `.dv-floating-overlay-host >
+ * .dv-resize-container { auto }`) 하므로 panel 영역은 dockview 가 받음.
+ *
+ * 이전 버전에선 `.dv-dockview` / `.dv-groupview` / `.dv-watermark` 에
+ * `pointer-events: none` 을 직접 박았는데, pointer-events 가 inherited
+ * property 라 tab bar (drag handle) 까지 inherit 으로 none 이 되어 panel
+ * drag 가 안 됐음. dockview lib default 만 의존하면 됨.
+ */
+
+/* dockview root 투명화 — 3D 씬이 비춰보이게 */
+.workspace-dockview .dv-dockview {
+  background: transparent !important;
+}
+
+/* 빈 영역 워터마크 숨김 */
+.workspace-dockview .dv-watermark {
+  display: none !important;
+}
+
+/* 도킹 영역 투명 */
+.workspace-dockview .dv-groupview {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* 탭바 */
+.workspace-dockview .dv-tabs-and-actions-container {
+  background: #0d1117e6 !important;
+  border-bottom: 1px solid rgba(63, 63, 70, 0.5) !important;
+  backdrop-filter: blur(8px);
+  height: 28px !important;
+  min-height: 28px !important;
+  cursor: move;
+}
+
+/* 탭 텍스트 */
+.workspace-dockview .dv-default-tab {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #a1a1aa !important;
+  padding: 0 10px !important;
+}
+.workspace-dockview .dv-default-tab.dv-active-tab {
+  color: #e4e4e7 !important;
+}
+.workspace-dockview .dv-default-tab.dv-active-tab::after {
+  background: #3b82f6 !important;
+  height: 1.5px !important;
+}
+
+/* 패널 콘텐츠 영역 */
+.workspace-dockview .dv-content-container {
+  background: transparent !important;
+  overflow: hidden;
+}
+
+/* 도킹 드롭 오버레이 */
+.workspace-dockview .dv-drop-target-anchor {
+  background: rgba(59, 130, 246, 0.1) !important;
+  border: 1px solid rgba(59, 130, 246, 0.35) !important;
+}
+
+/* 닫기 버튼 */
+.workspace-dockview .dv-default-tab-action {
+  opacity: 0.4;
+}
+.workspace-dockview .dv-default-tab-action:hover {
+  opacity: 1;
+}

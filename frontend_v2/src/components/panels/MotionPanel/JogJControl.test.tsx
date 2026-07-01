@@ -1,13 +1,13 @@
-// frontend_v2.md §12.2 JogJ — 3 invariant.
-// JogTcp 의 동일 invariant 는 Step F5 의 L4 Playwright 가 검증 (mock backend e2e).
+// frontend_v2.md §12.2 JogJControl — 3 invariant.
+// JogTcpControl 의 동일 invariant 는 L4 Playwright 가 검증 (mock backend e2e).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { bridge } from "@/api/bridge";
 import { _resetCapabilityCache } from "@/framework/capability";
 import { useFrameworkStore } from "@/framework/store";
 import { Topic } from "@/api/generated/contract";
-import { JogJ } from "./JogJ";
+import { JogJControl } from "./JogJControl";
 
 const ROBOT_ID = "so101_6dof_0";
 const MOTOR_TOPOLOGY = {
@@ -43,22 +43,19 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("JogJ", () => {
+describe("JogJControl", () => {
   // spec frontend_v2.md §12.2 — invariant: button hold 시 50Hz publish + payload.robot_id
   it("50Hz interval publish + payload.robot_id + velocities 박힘", async () => {
     const publishSpy = vi.spyOn(bridge, "publish").mockImplementation(() => {});
 
-    const { findByText } = render(<JogJ robotId={ROBOT_ID} />);
+    const { findByText } = render(<JogJControl robotId={ROBOT_ID} />);
     // useCapability 가 motors 박을 때까지 — J1 버튼이 뜨면 ready
     await findByText("J1");
 
     vi.useFakeTimers();
-    // J1 의 + 버튼 = 두 번째 button (− 다음 +). 단 J1 row 안 "+" text 박혀있음.
     const plusButtons = document.querySelectorAll("button");
     // J1 row 의 "+" button (J1 의 두 번째 button)
-    const j1Plus = Array.from(plusButtons).find(
-      (b) => b.textContent === "+",
-    );
+    const j1Plus = Array.from(plusButtons).find((b) => b.textContent === "+");
     expect(j1Plus).toBeTruthy();
 
     await act(async () => {
@@ -87,7 +84,7 @@ describe("JogJ", () => {
   it("pointerUp → publish 중단", async () => {
     const publishSpy = vi.spyOn(bridge, "publish").mockImplementation(() => {});
 
-    const { findByText } = render(<JogJ robotId={ROBOT_ID} />);
+    const { findByText } = render(<JogJControl robotId={ROBOT_ID} />);
     await findByText("J1");
 
     vi.useFakeTimers();
@@ -120,7 +117,7 @@ describe("JogJ", () => {
   it("window blur — deadman 박힘 (publish 중단)", async () => {
     const publishSpy = vi.spyOn(bridge, "publish").mockImplementation(() => {});
 
-    const { findByText } = render(<JogJ robotId={ROBOT_ID} />);
+    const { findByText } = render(<JogJControl robotId={ROBOT_ID} />);
     await findByText("J1");
 
     vi.useFakeTimers();

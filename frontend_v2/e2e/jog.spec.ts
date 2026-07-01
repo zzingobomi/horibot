@@ -1,15 +1,21 @@
-// frontend_v2.md §12 L4 — MovePage e2e (mock backend + vite dev + chromium).
+// frontend_v2.md §12 L4 — MovePage e2e (mock backend + vite dev + chromium headed).
 //
-// 검증 invariant (사용자 push: "진짜 동작 검증"):
+// 검증 invariant:
 //   1. WS 연결 — connected badge green
 //   2. URDF static fetch — /robot/so101_6dof/urdf/so101_6dof.urdf 200
 //   3. Capability snapshot — J1 row 표시 (motor topology 응답 도착)
 //   4. Motor.Stream.RAW_STATE — raw position 표시 (mock motor 20Hz publish)
-//   5. JogJ button hold → mock motor 가 받아 raw position 변화
+//   5. JogJ button hold → 50Hz publish → backend Motion 적분 → mock motor raw 변화
+//
+// 실행 환경 (2026-07-01 진단): headless 기본 SwiftShader(소프트웨어 렌더)는 R3F
+// 3D 씬 렌더로 메인스레드를 굶겨 50Hz setInterval 이 ~10Hz 로 밀림 → jog publish
+// rate 가 backend IDLE_RESET(0.2s) 아래로 떨어져 모터가 안 움직인다. playwright.
+// config.ts `headless: false` (실 GPU) 로 메인스레드 자유 → 50Hz 회복. plain mouse
+// hold 는 headless/headed 모두 pointercancel 없이 정상 — 입력 도구 문제가 아님.
 //
 // 외부 의존 (실행 전 띄움):
-//   - mock backend (port 8000)
-//   - frontend vite (port 5174)
+//   - mock backend (port 8000): cd backend_v2 && uv run --no-sync python -m apps.main --host mock
+//   - frontend vite (port 5174): cd frontend_v2 && pnpm dev
 
 import { expect, test } from "@playwright/test";
 
@@ -17,9 +23,7 @@ const MOVE_PATH = "/robots/so101_6dof_0/move";
 
 function readJ1Raw(): string {
   // RobotStatePanel 의 joint table — J1 row 의 3번째 셀 (raw)
-  const rows = Array.from(
-    document.querySelectorAll("div.grid.grid-cols-3"),
-  );
+  const rows = Array.from(document.querySelectorAll("div.grid.grid-cols-3"));
   for (const row of rows) {
     const cells = row.children;
     if (cells.length === 3 && cells[0].textContent?.trim() === "J1") {
@@ -29,9 +33,21 @@ function readJ1Raw(): string {
   return "";
 }
 
+function j1RawArrived(): boolean {
+  return Array.from(document.querySelectorAll("div.grid.grid-cols-3")).some(
+    (row) => {
+      const c = row.children;
+      return (
+        c.length === 3 &&
+        c[0].textContent?.trim() === "J1" &&
+        c[2].textContent?.trim() !== "—"
+      );
+    },
+  );
+}
+
 test.describe("MovePage e2e (mock backend)", () => {
   test("WS 연결 + URDF fetch + Motor.Stream.RAW_STATE 도착", async ({ page }) => {
-    // URDF GET 캡처
     const urdfReq = page.waitForResponse(
       (res) =>
         res.url().includes("/robot/so101_6dof/urdf/so101_6dof.urdf") &&
@@ -41,111 +57,68 @@ test.describe("MovePage e2e (mock backend)", () => {
 
     await page.goto(MOVE_PATH);
 
-    // connected badge
     await expect(page.getByText("connected", { exact: true })).toBeVisible({
       timeout: 5_000,
     });
-
-    // URDF 200
     await urdfReq;
-
-    // J1 row 표시 (Motor.Service.GET_TOPOLOGY capability 도착)
     await expect(page.getByText("J1").first()).toBeVisible({ timeout: 5_000 });
-
-    // Motor.Stream.RAW_STATE 의 positions_raw 도착 — raw cell !== "—"
-    await page.waitForFunction(
-      () => {
-        const rows = Array.from(
-          document.querySelectorAll("div.grid.grid-cols-3"),
-        );
-        for (const row of rows) {
-          const cells = row.children;
-          if (
-            cells.length === 3 &&
-            cells[0].textContent?.trim() === "J1" &&
-            cells[2].textContent?.trim() !== "—"
-          ) {
-            return true;
-          }
-        }
-        return false;
-      },
-      { timeout: 5_000 },
-    );
+    await page.waitForFunction(j1RawArrived, { timeout: 5_000 });
   });
 
-  // 진짜 사용자 jog cycle e2e — 사용자가 J1 + button 800ms hold 했을 때:
-  //   1. JogJ panel 이 50Hz 로 jog_j publish
-  //   2. backend Motion 이 받음 → SE(3) 적분 → Motor.Stream.COMMAND publish
-  //   3. mock motor 가 받음 → state 변화 → Motor.Stream.RAW_STATE publish
+  // 진짜 사용자 jog cycle — J1+ button 800ms hold 시:
+  //   1. JogJ 가 50Hz 로 Motion.Stream.JOG_J publish
+  //   2. backend Motion 이 SE(3) 적분 → Motor.Stream.COMMAND publish
+  //   3. mock motor 가 받음 → write_positions → Motor.Stream.RAW_STATE 변화
   //   4. frontend RobotStatePanel 의 raw 가 변화 표시
   //
-  // 핵심 fix: JogJ button 의 `setPointerCapture` — Chromium 이 button class 변경
-  // 시 자동 pointercancel → pointerup promote 박는 자체 차단 (실 hardware 박은
-  // 자리도 빠른 손가락 / 누른 채 드래그 시나리오 동일 fix).
+  // plain page.mouse — 실 사용자(마우스) 와 동일 입력. CDP touch / hasTouch 불필요.
   test("J1+ button 800ms hold → 50Hz publish + raw position 변화 (full wire e2e)", async ({
     page,
   }) => {
-    page.on("console", (msg) => {
-      const t = msg.text();
-      if (t.includes("[JogJ]") || t.includes("[Bridge]")) {
-        console.log("[browser]", t);
-      }
+    // 진짜 upstream jog publish 수 카운트 (console 은 coalesce 되어 부정확) —
+    // 50Hz 가 실제로 나가는지 검증.
+    await page.addInitScript(() => {
+      const w = window as unknown as { __jogSent: number };
+      w.__jogSent = 0;
+      const orig = WebSocket.prototype.send;
+      WebSocket.prototype.send = function (
+        data: string | ArrayBufferLike | Blob | ArrayBufferView,
+      ) {
+        if (typeof data === "string" && data.includes("jog_j")) w.__jogSent++;
+        return orig.call(this, data as never);
+      };
     });
 
     await page.goto(MOVE_PATH);
     await expect(page.getByText("J1").first()).toBeVisible({ timeout: 5_000 });
-
-    // 첫 RAW_STATE 도착
-    await page.waitForFunction(
-      () =>
-        Array.from(document.querySelectorAll("div.grid.grid-cols-3")).some(
-          (row) => {
-            const cells = row.children;
-            return (
-              cells.length === 3 &&
-              cells[0].textContent?.trim() === "J1" &&
-              cells[2].textContent?.trim() !== "—"
-            );
-          },
-        ),
-      { timeout: 5_000 },
-    );
+    await page.waitForFunction(j1RawArrived, { timeout: 5_000 });
 
     const initialRaw = await page.evaluate(readJ1Raw);
 
-    // JogJ 의 J1+ button. RobotStatePanel 에는 "+" button 없음, tab button 은
-    // "joint"/"tcp" — 첫 "+" = JogJ J1+.
+    // JogJ 의 J1+ button (RobotStatePanel 에는 "+" 없음, 첫 "+" = JogJ J1+).
     const jogPlus = page.locator('button:has-text("+")').first();
     await expect(jogPlus).toBeVisible();
-
-    // CDP Input.dispatchTouchEvent 박은 자리 진짜 touch hold. Playwright Mouse.down
-    // 박은 자리 chromium mouse cascade 100ms 시점 pointerup auto promote — 실제로
-    // hold 박지 X. CDP touch event 박은 자리 사용자가 touchEnd 호출 박을 때까지 hold.
     const box = (await jogPlus.boundingBox())!;
     const x = box.x + box.width / 2;
     const y = box.y + box.height / 2;
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send("Input.dispatchTouchEvent", {
-      type: "touchStart",
-      touchPoints: [{ x, y, id: 1 }],
-    });
-    await new Promise<void>((r) => setTimeout(r, 800));
-    await cdp.send("Input.dispatchTouchEvent", {
-      type: "touchEnd",
-      touchPoints: [],
-    });
 
-    // 800ms hold + backend cycle 시간 (Motion → motor cmd → state publish)
-    await new Promise<void>((r) => setTimeout(r, 300));
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.waitForTimeout(800);
+    await page.mouse.up();
+    await page.waitForTimeout(300); // backend cycle (Motion → motor cmd → raw publish)
 
-    // raw 변화 검증 — 0.18 rad/s × 0.8s = 0.144 rad ≈ 8.25°, raw 변화 ~94 unit.
-    // 25% allowance = 20 이상.
+    // 50Hz × 0.8s ≈ 40 publish. headed 실측 ~38-42. starve 회귀 차단 = 20 이상.
+    const jogSent = await page.evaluate(
+      () => (window as unknown as { __jogSent: number }).__jogSent,
+    );
+    expect(jogSent).toBeGreaterThan(20);
+
+    // raw 변화 — 0.18 rad/s × 0.8s ≈ 0.144 rad ≈ raw 94 unit. allowance 25% = 20.
     const afterRaw = await page.evaluate(readJ1Raw);
-    expect(afterRaw).not.toBe(initialRaw);
     expect(afterRaw).not.toBe("—");
-    const initialNum = parseInt(initialRaw, 10);
-    const afterNum = parseInt(afterRaw, 10);
-    expect(Math.abs(afterNum - initialNum)).toBeGreaterThan(20);
+    expect(afterRaw).not.toBe(initialRaw);
+    const delta = Math.abs(parseInt(afterRaw, 10) - parseInt(initialRaw, 10));
+    expect(delta).toBeGreaterThan(20);
   });
 });

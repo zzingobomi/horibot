@@ -73,6 +73,7 @@ export interface TcpState {
   timestamp_unix: number;
   position: [number, number, number];
   quaternion: [number, number, number, number];
+  joint_names: string[];
   joints: number[];
 }
 

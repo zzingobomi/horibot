@@ -1,3 +1,9 @@
+# 실행:
+#   # pyrealsense2 는 aarch64 PyPI wheel 없음 → 사전 소스 빌드 필요 (docs/pyrealsense2-build-guide.md)
+#   uv sync --no-default-groups --group pi-camera --no-install-package pyrealsense2
+#   uv pip install ~/pyrealsense2-2.55.1-cp311-cp311-linux_aarch64.whl
+#   uv run --no-sync python -m apps.main --host pi_camera
+
 driver_mode: real
 
 zenoh:

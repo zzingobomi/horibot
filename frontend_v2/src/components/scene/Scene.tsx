@@ -16,6 +16,8 @@ import { DEFAULT_SCENE_OPTIONS, type SceneOptions } from "./sceneOptions";
 import type { RobotInfo } from "@/api/generated/contract";
 
 interface RobotSceneProps {
+  /** focus robot 의 arm joint name list (backend TcpState.joint_names SSOT). */
+  jointNames: string[];
   jointAngles: number[];
   options?: SceneOptions;
   linkVisibility?: Record<string, boolean>;
@@ -29,6 +31,7 @@ interface RobotSceneProps {
 }
 
 function SceneContent({
+  jointNames,
   jointAngles,
   options = DEFAULT_SCENE_OPTIONS,
   onLinksLoaded,
@@ -80,6 +83,7 @@ function SceneContent({
       <RobotLayer
         robots={robots}
         focusId={focusId ?? null}
+        jointNames={jointNames}
         jointAngles={jointAngles}
         onLinksLoaded={onLinksLoaded}
         showRobot={options.showRobot}

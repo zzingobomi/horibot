@@ -1,3 +1,7 @@
+# 실행:
+#   uv sync --no-default-groups --group pi-motor
+#   uv run --no-sync python -m apps.main --host pi_motor
+
 driver_mode: real
 
 zenoh:

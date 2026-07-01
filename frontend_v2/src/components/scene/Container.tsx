@@ -16,6 +16,7 @@ import { Topic } from "@/api/generated/contract";
 import { useRobots } from "@/hooks/useRobots";
 
 const EMPTY_JOINTS: number[] = [];
+const EMPTY_NAMES: string[] = [];
 
 interface RobotSceneContainerProps {
   /** focus robot id. null = 모두 동등. undefined = default robot. */
@@ -29,6 +30,9 @@ export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) 
   const calibRobotId = effectiveFocus ?? defaultId ?? "";
 
   const tcp = useStream(Topic.MOTION_TCP_STATE, { robotId: calibRobotId });
+  // parallel arrays — backend Motion 이 joint_names + joints 를 same order 로 발행.
+  // URDF 파일 순서 안 믿고 이 name list 로 setJointValue (ROS JointState 패턴).
+  const jointNames = tcp.value?.joint_names ?? EMPTY_NAMES;
   const jointAngles = tcp.value?.joints ?? EMPTY_JOINTS;
 
   // focus robot 의 base_pose 로 OrbitControls target.
@@ -84,6 +88,7 @@ export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) 
 
   return (
     <RobotScene
+      jointNames={jointNames}
       jointAngles={jointAngles}
       tcpMatrix={tcpMatrix}
       robots={robots}

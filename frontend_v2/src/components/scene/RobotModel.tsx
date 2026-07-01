@@ -11,14 +11,17 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import URDFLoader from "urdf-loader";
-import type { URDFRobot, URDFJoint } from "urdf-loader";
+import type { URDFRobot } from "urdf-loader";
 import { BASE_URL } from "@/constants";
 import type { BasePoseInfo } from "@/api/generated/contract";
 
 interface URDFRobotProps {
   /** URDF type — `/robot/<type>/urdf/<type>.urdf` 경로 추론. */
   robotType: string;
-  /** arm joint angle list (rad). URDF 의 non-fixed joint file order 대응. */
+  /** arm joint name list (backend TcpState.joint_names SSOT). jointAngles 와 same index.
+   *  URDF 파일의 joint 선언 순서는 믿지 X — motors.yaml 순서가 진짜 SSOT. */
+  jointNames: string[];
+  /** arm joint angle list (rad). jointNames 와 parallel array. */
   jointAngles: number[];
   /** World frame robot base 위치 (m). multi-robot 동시 마운트 시 분리. */
   basePose?: BasePoseInfo;
@@ -67,18 +70,12 @@ function disposeMaterials(robot: URDFRobot) {
   });
 }
 
-/** URDF 의 non-fixed joint name list (URDF file order). arm + gripper 자연 포함. */
-function getNonFixedJointNames(robot: URDFRobot): string[] {
-  return Object.entries(robot.joints ?? {})
-    .filter(([, j]) => (j as URDFJoint).jointType !== "fixed")
-    .map(([name]) => name);
-}
-
-function applyJoints(robot: URDFRobot, angles: number[]) {
-  const names = getNonFixedJointNames(robot);
-  angles.forEach((angle, i) => {
-    const name = names[i];
-    if (name && robot.joints?.[name]) {
+/** backend 계약 (TcpState.joint_names) 기반 매핑. URDF 파일 순서 안 믿음 —
+ *  motors.yaml → backend → 이 prop 이 SSOT. name 으로 URDF joint 를 찾아 setJointValue. */
+function applyJoints(robot: URDFRobot, names: string[], angles: number[]) {
+  names.forEach((name, i) => {
+    const angle = angles[i];
+    if (angle !== undefined && robot.joints?.[name]) {
       robot.setJointValue(name, angle);
     }
   });
@@ -86,6 +83,7 @@ function applyJoints(robot: URDFRobot, angles: number[]) {
 
 export function RobotModel({
   robotType,
+  jointNames,
   jointAngles,
   basePose,
   opacity = 1.0,
@@ -114,6 +112,10 @@ export function RobotModel({
   useEffect(() => {
     jointAnglesRef.current = jointAngles;
   }, [jointAngles]);
+  const jointNamesRef = useRef(jointNames);
+  useEffect(() => {
+    jointNamesRef.current = jointNames;
+  }, [jointNames]);
 
   // URDF 로드 + loadMeshCb override (cross-robot material clone — commit f15a20b race fix).
   useEffect(() => {
@@ -155,7 +157,7 @@ export function RobotModel({
         if (cancelled) return;
         robotRef.current = robot;
         // scene 에 add 하기 *전에* 최신 joint 적용 — default pose flash 차단.
-        applyJoints(robot, jointAnglesRef.current);
+        applyJoints(robot, jointNamesRef.current, jointAnglesRef.current);
         currentGroup?.add(robot);
         if (robot.links) {
           const names = Object.keys(robot.links).sort();
@@ -182,8 +184,8 @@ export function RobotModel({
   useEffect(() => {
     const robot = robotRef.current;
     if (!robot) return;
-    applyJoints(robot, jointAngles);
-  }, [jointAngles, robotReady]);
+    applyJoints(robot, jointNames, jointAngles);
+  }, [jointNames, jointAngles, robotReady]);
 
   useEffect(() => {
     if (robotRef.current) robotRef.current.visible = visible;

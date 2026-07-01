@@ -97,6 +97,7 @@ describe("RobotStatePanel", () => {
           timestamp_unix: oldTs,
           position: [0, 0, 0.3],
           quaternion: [0, 0, 0, 1],
+          joint_names: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],
           joints: [0, 0, 0, 0, 0, 0],
         });
     });

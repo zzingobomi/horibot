@@ -1,3 +1,7 @@
+# 실행:
+#   uv sync
+#   uv run --no-sync python -m apps.main --host mock
+
 driver_mode: mock
 
 zenoh:

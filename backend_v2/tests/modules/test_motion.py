@@ -135,6 +135,10 @@ async def test_tcp_snapshot_returns_fk_pose(stack):
     assert len(snap.position) == 3
     assert len(snap.quaternion) == 4
     assert len(snap.joints) == 6  # arm only
+    # joint_names 계약 = motors.yaml arm prefix 순서 SSOT (URDF 파일 순서와 무관).
+    # frontend 는 이 name list 로 URDF joint 를 찾아 매핑 — 순서 회귀 원천 차단.
+    assert snap.joint_names == ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
+    assert len(snap.joint_names) == len(snap.joints)
 
 
 async def _wait_motion_ready(runtime) -> bool:

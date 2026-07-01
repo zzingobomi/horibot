@@ -85,14 +85,19 @@ class StopResponse(BaseModel):
 
 
 class TcpState(BaseModel):
-    """20Hz — fk(current joints). position(m) + quaternion[x,y,z,w] + joints(rad)."""
+    """20Hz — fk(current joints). position(m) + quaternion[x,y,z,w] + joints(rad).
+
+    joint_names + joints 는 parallel array (ROS `sensor_msgs/JointState` 패턴).
+    joint 순서 SSOT = motors.yaml arm prefix — URDF 파일 순서와 무관하게 consumer 가
+    이름 기반으로 URDF joint 를 찾아 매핑하도록 self-describing 계약."""
 
     robot_id: str
     seq: int
     timestamp_unix: float
     position: tuple[float, float, float]
     quaternion: tuple[float, float, float, float]
-    joints: list[float]  # arm rad
+    joint_names: list[str]  # arm joint names, motors.yaml 순서
+    joints: list[float]  # arm rad, joint_names 와 same index
 
 
 class TrajState(BaseModel):

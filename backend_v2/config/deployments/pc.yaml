@@ -1,3 +1,7 @@
+# 실행:
+#   uv sync
+#   uv run --no-sync python -m apps.main --host pc
+
 driver_mode: real
 
 zenoh:
@@ -9,3 +13,4 @@ zenoh:
 modules:
   - name: camera_decoded
     robots: [so101_6dof_0]
+  - name: bridge # HTTP/WS gateway (frontend_v2 진입점, :8000)

@@ -11,7 +11,9 @@ export interface RobotLayerProps {
   robots: RobotInfo[];
   /** focus robot id — null = 모두 동등. */
   focusId?: string | null;
-  /** focus robot 의 joint angles (rad). non-focus = home pose. */
+  /** focus robot 의 arm joint name list (backend TcpState.joint_names SSOT). */
+  jointNames: string[];
+  /** focus robot 의 joint angles (rad). jointNames 와 same index. non-focus = home pose. */
   jointAngles: number[];
   onLinksLoaded?: (linkNames: string[]) => void;
   dimOpacity?: number;
@@ -19,10 +21,12 @@ export interface RobotLayerProps {
 }
 
 const HOME_JOINTS: number[] = [];
+const HOME_NAMES: string[] = [];
 
 export function RobotLayer({
   robots,
   focusId = null,
+  jointNames,
   jointAngles,
   onLinksLoaded,
   dimOpacity = 0.25,
@@ -42,6 +46,7 @@ export function RobotLayer({
             robotType={r.type}
             basePose={r.base_pose}
             opacity={opacity}
+            jointNames={isFocus ? jointNames : HOME_NAMES}
             jointAngles={isFocus ? jointAngles : HOME_JOINTS}
             visible={showRobot}
             onLinksLoaded={isCallbackTarget ? onLinksLoaded : undefined}

@@ -339,6 +339,7 @@ class MotionModule:
             timestamp_unix=time.time(),
             position=pos,
             quaternion=quat,
+            joint_names=[s.name for s in self._arm],
             joints=list(joints),
         )
         self._tcp_seq += 1

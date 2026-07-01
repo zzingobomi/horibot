@@ -11,7 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "gen:types": "cd ../backend_v2 && uv run --no-sync python scripts/gen_contract.py --out ../frontend_v2/src/api/generated/contract.ts"
+    "gen:types": "node scripts/gen-contract.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",

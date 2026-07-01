@@ -14,9 +14,50 @@ frontend_v2 = **backend_v2 의 4 primitive (Service / Stream / Event / Mirror) +
 
 ## 2. 핵심 원칙
 
-### 2.1 backend_v2 = frontend_v2 SSOT
+### 2.1 backend_v2 = frontend_v2 SSOT + 계약 타입 생성 (contract.ts)
 
-backend_v2 의 `modules/*/contract.py` 가 진실 source. `pnpm gen:types` 가 [`backend_v2/scripts/gen_contract.py`](../backend_v2/scripts/gen_contract.py) 호출 → `frontend_v2/src/api/generated/contract.ts` 자동 emit (36 model + 4 enum + 12 topic + 11 service). 손작업 동기화 0.
+backend_v2 의 `modules/*/contract.py` (StrEnum 키 + Pydantic 모델) 가 진실 source. frontend 의 [`src/api/generated/contract.ts`](../frontend_v2/src/api/generated/contract.ts) (Topic / ServiceKey / payload interface) 는 여기서 자동 생성 — 손작업 동기화 0.
+
+**경계 (2026-07-01 구현·검증 완료): backend = 계약 EXPORT, frontend = 계약 CONSUME.** `openapi-typescript http://.../openapi.json` 이 떠 있는 서버의 OpenAPI 를 HTTP 로 소비하던 것과 동형 — frontend 빌드 도구는 backend 코드/폴더/python 환경을 **일절 안 건드리고** 떠 있는 서버의 계약을 HTTP fetch 만 한다.
+
+```
+backend runtime (전 module 로드 → import/dep 이미 다 해결된 상태)
+  │ framework: Runtime.contract_snapshot()  = 로드된 module 의 @service/@subscriber/
+  │            @publishes spec 열거 → wire_key→payload (module.py 재import 0)
+  │ apps/contract_export.py: build_contract_json(snapshot)
+  │            = FRONTEND_EXPOSED 필터 + reachability + name-conflict + ts_type 해소
+  │ bridge: GET /contract.json  = 위 JSON serve (relay only, 도메인 로직 0)
+  ▼
+contract.json  { enums, interfaces, topics, services }   (type 은 이미 TS 문자열로 해소)
+  │ HTTP fetch  (frontend Node, backend 접근 0)
+  ▼
+frontend_v2/scripts/gen-contract.mjs  →  src/api/generated/contract.ts
+    (node, 의존성 0. render = 순수 문자열 조립 — JSON schema→TS 재해석 X)
+```
+
+`package.json::gen:types = "node scripts/gen-contract.mjs"`. **전제조건: gen 전에 backend 를 전 module 로드하는 host 로 먼저 띄워야 함** (`cd backend_v2 && uv run python -m apps.main --host mock` → bridge :8000). gen 은 그 서버의 `/contract.json` 을 fetch — 안 떠 있으면 스크립트가 명확한 에러 + mock 부팅 안내 후 exit. (이 "backend 를 띄워야 함" 은 running-server 방식의 정직한 대가 — 옛 source-introspection 은 backend 없이 돌았지만 heavy dep 를 gen 머신이 요구했다.)
+
+**백엔드 개발자가 프론트 노출 계약을 적는 유일한 곳 = [`apps/contract_export.py::FRONTEND_EXPOSED`](../backend_v2/apps/contract_export.py)** (opt-in allowlist):
+- 노출할 key(enum 멤버)만 나열. **req/res 타입은 안 적음** — module.py `@service` 시그니처에 이미 있고 snapshot 이 제공.
+- **contract.py / module.py 는 안 건드림** — 순수 유지 (노출 개념 모름).
+- 워크플로우: 서비스는 `@service(key)` 만 짜고, 나중에 "프론트가 명령/구독한다" 결정하는 순간 `FRONTEND_EXPOSED` 에 그 enum 멤버 한 줄 추가.
+- 가드: `check_exposed` (EXPOSED ⊆ discovered → 오타/삭제 fail-fast) + incomplete-host (노출 키인데 running runtime 에 payload 없음 → "전 module 로드하는 mock/dev 로 gen 하라" fail-fast).
+
+현재 노출 = **9 key (topic 5 + service 4), interface 18 (도달 14 + HTTP resource 4), enum 2** (참조된 것만). 내부 wire (`Motor.Stream.COMMAND` = Motion→Motor 100Hz 위치명령 등) 는 안 적혀 자동 미노출.
+
+**왜 이 구조인가 (기각된 대안 — 재제안 금지):**
+- ❌ **gen 이 module.py import** → torch/open3d/pybullet 등 heavy dep 를 gen 머신이 요구 (분산/스케일 취약). ✅ 떠 있는 서버가 이미 import 끝냈으니 그 결과만 HTTP 로 fetch.
+- ❌ **frontend gen 이 `cd ../backend_v2 && uv run python`** → 프론트가 backend 코드/환경에 직접 커플링. ✅ frontend Node 가 HTTP 만.
+- ❌ **노출 플래그를 contract.py/module.py 에** (`@service(..., frontend=True)`) → 계약/구현이 프론트 관심사에 오염. ✅ 서버측 allowlist 한 곳.
+- ❌ **OpenAPI 그대로** → v2 서비스는 Zenoh RPC 라 HTTP route 없음 + Stream/Event 도 있어 OpenAPI schema 에 안 맞음. ✅ `/contract.json` 커스텀 (services + streams + events).
+
+**구현 파일 + 테스트**:
+| 쪽 | 파일 | 검증 |
+|---|---|---|
+| backend EXPORT | [framework/runtime/snapshot.py](../backend_v2/framework/runtime/snapshot.py) (`ContractSnapshot` + `Runtime.contract_snapshot()`), [apps/contract_export.py](../backend_v2/apps/contract_export.py) (`FRONTEND_EXPOSED` + `build_contract_json`), bridge `GET /contract.json` (+ apps 가 runtime capture 하는 provider closure) | [tests/apps/test_contract_export.py](../backend_v2/tests/apps/test_contract_export.py) — snapshot 열거 / build 필터·reachability·name-conflict / provider wiring / guards / HTTP serve |
+| frontend CONSUME | [frontend_v2/scripts/gen-contract.mjs](../frontend_v2/scripts/gen-contract.mjs) (node, 의존성 0) | [src/api/gen-contract.test.ts](../frontend_v2/src/api/gen-contract.test.ts) — render golden (fixture → contract.ts byte-identical) + 구조 조립 |
+
+두 쪽 테스트는 self-contained (서로 참조 0). backend↔frontend end-to-end 정합(backend JSON → contract.ts)은 "mock 띄우고 `pnpm gen:types` → `contract.ts` 안 바뀜" verify 단계가 담당 — 런타임/테스트 커플링 아님.
 
 ### 2.2 Carry over > Rewrite (지배 원칙)
 
@@ -336,7 +377,7 @@ pnpm add -D vitest @testing-library/react @testing-library/dom \
 | # | 결정 | 위치 | 근거 |
 |---|---|---|---|
 | 1 | **옛 frontend/ = 의도적 carry-over reference. default = 검증된 구조(shell 포함) 포팅, 새 최소설계 X. defer 는 backend 부재 feature 만** | §2.2 | 지우지 않고 남긴 이유. "최소로 짓고 shell 나중에" 판단 금지 |
-| 2 | gen_contract.py = SSOT (Python → TS emit) | §2.1 | [[feedback-ssot-first]] |
+| 2 | **contract.py = SSOT. backend `/contract.json` EXPORT + frontend Node gen fetch (backend 접근 0). 노출 = `apps/contract_export.py::FRONTEND_EXPOSED` 한 곳** | §2.1 | [[feedback-ssot-first]] + 프론트↔백 커플링 차단 (2026-07-01 구현) |
 | 3 | Carry over = framework + **app shell (RobotsLayout/ModeDockview/registry/Sidebar/라우팅)** + panel/scene — full rewrite X | §2.2 | 검증된 자산 재구현 = 손실 |
 | 4 | **dockview = 패널 조립 메커니즘(foundation), per-page 사치 X — Step F6 carry-over** | §2.3 + §11.3 | 2026-07-01 "dockview=사치 defer" 오진 정정 (코드 안 읽고 단정) |
 | 5 | Module store 는 Step E+ — first cut framework/store.ts 단일 | §2.4 + §8 | cross-module read 없으면 불필요 |
@@ -412,6 +453,7 @@ pnpm test        # 31 PASS
 
 ### 15.4 다음 진입점
 
+0. **✅ 계약 타입 생성 재설계 — 구현·검증 완료 (2026-07-01, §2.1).** backend `/contract.json` EXPORT + frontend Node gen (`gen-contract.mjs`) fetch. 옛 source-introspection `gen_contract.py` 삭제, 노출 = `apps/contract_export.py::FRONTEND_EXPOSED`. 상세·기각대안·가드 = **§2.1** (옛 `frontend_contract_gen.md` 는 여기로 통합·삭제). backend 130 test + frontend render golden PASS.
 1. **backend bridge ws panic (latent, mid)** — frontend reload/close 시 `backend_v2/modules/bridge/ws.py` 의 `_drain_helper` `AssertionError` (websockets legacy). browser refresh 시 backend restart 필요. fix = ws.py connection cleanup 또는 새 websockets API migrate. (L4 e2e 는 test 당 fresh context 라 이번엔 안 걸렸음 — 실 사용 reload 시 재현.)
 2. **집: 실 SO-101 jog** (§15.6).
 3. **Step E+ feature 페이지** — backend Calibration / Detector / Scene3D / Scan / Reconstruction / Task / Gamepad 박힌 후 RobotCalibrateMode + `useMirror(CalibrationBundle)` + `useCapability(camera)` + Scene3D/Detection/Task 패널 carry over. 새 패널 = `panels/` 에 추가 + registry 한 줄 + mode PANELS 한 줄 snap-in (§4.1, §10).

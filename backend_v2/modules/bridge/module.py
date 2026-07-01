@@ -16,6 +16,7 @@ import asyncio
 import logging
 
 from pathlib import Path
+from typing import Callable
 
 import psutil
 import uvicorn
@@ -43,12 +44,17 @@ class BridgeModule:
         host: str = "0.0.0.0",
         port: int = 8000,
         robot_dir: Path | None = None,
+        contract_provider: Callable[[], dict] | None = None,
     ) -> None:
         self._transport = transport
         self._robots = robots
         self._host = host
         self._port = port
         self._robot_dir = robot_dir  # robot_v2/ — /robot 에 static mount (URDF/mesh)
+        # frontend TS gen 용 계약 JSON provider (apps 가 runtime 위에 closure 로 주입).
+        # bridge 는 apps/serializer 를 모르는 relay — opaque 콜러블만 호출 (§6.3).
+        self._contract_provider = contract_provider
+        self._contract_cache: dict | None = None
 
         self._app = self._build_app()
         self._server: uvicorn.Server | None = None
@@ -80,6 +86,19 @@ class BridgeModule:
                 cpu_percent=psutil.cpu_percent(interval=None),
                 mem_percent=psutil.virtual_memory().percent,
             )
+
+        @app.get("/contract.json")
+        def get_contract() -> dict:
+            # frontend `pnpm gen:types` 가 fetch → contract.ts 조립 (§6.3).
+            # 계약은 boot 후 불변 → 최초 1회 계산 후 캐시.
+            if self._contract_provider is None:
+                raise HTTPException(503, "contract provider 미주입 (gen 전용 endpoint)")
+            if self._contract_cache is None:
+                try:
+                    self._contract_cache = self._contract_provider()
+                except Exception as e:  # incomplete-host 등 — 명확한 메시지로 500
+                    raise HTTPException(500, f"contract 직렬화 실패: {e}") from e
+            return self._contract_cache
 
         @app.websocket("/ws")
         async def ws_endpoint(ws: WebSocket) -> None:

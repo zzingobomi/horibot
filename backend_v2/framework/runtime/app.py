@@ -17,6 +17,7 @@ from framework.contract.subscriber import SubscriberSpec
 from framework.runtime.api import ModuleRuntime
 from framework.runtime.discovery import discover_services, discover_subscribers
 from framework.runtime.lifecycle import has_start, has_stop
+from framework.runtime.snapshot import ContractSnapshot, build_snapshot
 from framework.transport.protocol import Handle, RemoteError, Transport
 
 logger = logging.getLogger(__name__)
@@ -170,6 +171,15 @@ class Runtime:
     @property
     def module_runtime(self) -> ModuleRuntime:
         return self._module_runtime
+
+    def contract_snapshot(self) -> ContractSnapshot:
+        """로드된 Module 들의 계약(wire_key → payload) 스냅샷.
+
+        gen_contract (frontend TS) 가 module.py import 없이 payload 매핑을 얻는
+        source — bridge 의 GET /contract.json 이 serializer 통해 노출
+        (frontend_contract_gen.md §6.1). start 여부 무관 (add_module 만 되면 유효).
+        """
+        return build_snapshot(self._modules)
 
     # ── internal — register helpers ─────────────────────────
 

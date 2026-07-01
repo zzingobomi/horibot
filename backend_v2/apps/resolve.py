@@ -32,9 +32,16 @@ def resolve_deps(
 
 
 def resolve_host_deps(
-    name: str, robots: dict[str, RobotConfig], deploy: DeploymentConfig
+    name: str,
+    robots: dict[str, RobotConfig],
+    deploy: DeploymentConfig,
+    runtime: Any | None = None,
 ) -> dict[str, Any]:
-    """host-level (robot-agnostic) Module 의 constructor deps."""
+    """host-level (robot-agnostic) Module 의 constructor deps.
+
+    runtime = build_runtime 이 넘기는 Runtime (bridge 의 contract provider closure 용).
+    None 이면 provider 미주입 (GET /contract.json → 503) — contract gen 안 쓰는
+    배선/test 경로."""
     if name == "bridge":
         from modules.bridge.contract import BasePoseInfo, RobotInfo
 
@@ -55,7 +62,18 @@ def resolve_host_deps(
         ]
         # robot_v2/ 경로 주입 — /robot static mount (URDF/mesh). 레이어링: 경로는
         # apps 가 앎, modules/bridge 는 받기만.
-        return {"robots": infos, "robot_dir": _ROBOT_DIR}
+        deps: dict[str, Any] = {"robots": infos, "robot_dir": _ROBOT_DIR}
+        if runtime is not None:
+            # contract provider — closure 가 runtime 을 capture. request 시점엔
+            # 이미 전 module add 됨 (add 순서상 bridge 가 먼저여도 안전). import 는
+            # request 시점에 (bridge host 만 apps.contract_export 끌어옴, role 격리).
+            def _contract_provider() -> dict:
+                from apps.contract_export import build_contract_json
+
+                return build_contract_json(runtime.contract_snapshot())
+
+            deps["contract_provider"] = _contract_provider
+        return deps
     raise NotImplementedError(f"host-level resolve 미지원 module: {name!r}")
 
 

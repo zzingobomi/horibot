@@ -59,6 +59,7 @@ def test_load_deployment_mock():
         "motion",
         "camera",
         "camera_decoded",
+        "bridge",
     }
 
 

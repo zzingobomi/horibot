@@ -8,8 +8,8 @@
  *
  * Wire:
  *   - Motion.Stream.TCP_STATE — joints rad + position + quaternion
- *   - Motor.Stream.RAW_STATE — positions_raw (debug)
- *   - Motor.Event.TORQUE_CHANGED — torque state reactive
+ *   - Motor.Stream.RAW_STATE — positions_raw (debug, 20Hz kinematic)
+ *   - Motor.Stream.STATE — torque_enabled (5Hz driver control state, 초기 latch)
  *   - Motor.Service.SET_TORQUE — torque toggle
  *   - Motor.Service.GET_TOPOLOGY — arm joint count
  */
@@ -18,16 +18,10 @@ import {
   useService,
   useStream,
   useCapability,
-  useTopic,
   useBridgeConnected,
 } from "@/framework";
 import { Button } from "@/components/ui/button";
-import {
-  MotorKind,
-  ServiceKey,
-  Topic,
-  type TorqueChanged,
-} from "@/api/generated/contract";
+import { MotorKind, ServiceKey, Topic } from "@/api/generated/contract";
 import { DEFAULT_ROBOT_ID } from "@/constants";
 
 export function RobotStatePanel() {
@@ -43,11 +37,10 @@ export function RobotStatePanel() {
   const tcp = useStream(Topic.MOTION_TCP_STATE, { robotId });
   const raw = useStream(Topic.MOTOR_RAW_STATE, { robotId });
 
-  // torque state — TORQUE_CHANGED event reactive. 초기값 unknown (backend 박지 X).
-  const torqueEvt = useTopic(Topic.MOTOR_TORQUE_CHANGED, robotId) as
-    | TorqueChanged
-    | null;
-  const torqueEnabled = torqueEvt?.enabled ?? null; // null = unknown
+  // torque source = Motor.Stream.STATE (5Hz driver-state stream). event 가 아니라
+  // stream 이라 mount 직후 첫 frame 오면 즉시 활성화 — event chicken-and-egg 해소.
+  const driverState = useStream(Topic.MOTOR_STATE, { robotId });
+  const torqueEnabled = driverState.value?.torque_enabled ?? null;
 
   const setTorque = useService(ServiceKey.MOTOR_SET_TORQUE, robotId);
 

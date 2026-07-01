@@ -27,6 +27,7 @@ from .contract import (
     JointState,
     Motor,
     MotorCapabilities,
+    MotorState,
     MotorTopology,
     RebootRequest,
     RebootResponse,
@@ -41,12 +42,15 @@ from .drivers.protocol import MotorBackend
 
 logger = logging.getLogger(__name__)
 
-# 20Hz state publish. backend/ 의 motor_node 와 동일 (network bandwidth 자리)
+# 20Hz kinematic state publish. backend/ 의 motor_node 와 동일 (network bandwidth 자리)
 _STATE_PUBLISH_HZ = 20.0
+# driver control state — 저빈도 (변화 드묾, mount 직후 self-describing 목적).
+_DRIVER_STATE_HZ = 5.0
 
 
 @publishes(
     (Motor.Stream.RAW_STATE, JointState),
+    (Motor.Stream.STATE, MotorState),
     (Motor.Event.TORQUE_CHANGED, TorqueChanged),
 )
 class MotorDriverModule:
@@ -68,7 +72,9 @@ class MotorDriverModule:
 
         # state stream seq counter (§8.5 invariant)
         self._seq = 0
+        self._driver_state_seq = 0
         self._state_task: asyncio.Task[None] | None = None
+        self._driver_state_task: asyncio.Task[None] | None = None
         self._stop_requested = False
 
     # ── lifecycle ─────────────────────────────────────────────
@@ -81,17 +87,19 @@ class MotorDriverModule:
 
         self._stop_requested = False
         self._state_task = asyncio.create_task(self._state_loop())
+        self._driver_state_task = asyncio.create_task(self._driver_state_loop())
 
     async def stop(self) -> None:
         self._stop_requested = True
-        task = self._state_task
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            self._state_task = None
+        for attr in ("_state_task", "_driver_state_task"):
+            task = getattr(self, attr)
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                setattr(self, attr, None)
         self._driver.close()
 
     # ── service handlers ──────────────────────────────────────
@@ -136,6 +144,31 @@ class MotorDriverModule:
             self._driver.write_positions(cmd.positions_raw)
         except Exception:
             logger.exception("MotorDriver write_positions 실패 robot_id=%s", self.robot_id)
+
+    # ── driver control state loop (5Hz) — self-describing latch ──
+
+    async def _driver_state_loop(self) -> None:
+        interval = 1.0 / _DRIVER_STATE_HZ
+        try:
+            while not self._stop_requested:
+                try:
+                    self.runtime.publish(
+                        Motor.Stream.STATE,
+                        MotorState(
+                            robot_id=self.robot_id,
+                            seq=self._driver_state_seq,
+                            timestamp_unix=time.time(),
+                            torque_enabled=self._driver.get_torque_enabled(),
+                        ),
+                    )
+                    self._driver_state_seq += 1
+                except Exception:
+                    logger.exception(
+                        "MotorDriver STATE publish 실패 robot_id=%s", self.robot_id
+                    )
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            pass
 
     # ── state stream loop (20Hz) ──────────────────────────────
 

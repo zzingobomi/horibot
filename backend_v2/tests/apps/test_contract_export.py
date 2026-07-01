@@ -76,11 +76,11 @@ def test_contract_json_shape():
     finally:
         transport.close()
 
-    # 노출 keys = FRONTEND_EXPOSED (topic 5 + service 4)
+    # 노출 keys = FRONTEND_EXPOSED (topic 6 + service 4)
     topic_keys = {t["key"] for t in data["topics"]}
     service_keys = {s["key"] for s in data["services"]}
     assert topic_keys | service_keys == FRONTEND_EXPOSED
-    assert len(data["topics"]) == 5
+    assert len(data["topics"]) == 6
     assert len(data["services"]) == 4
     # 내부 전용 payload 는 도달성으로 제외 — JointCommand 안 나옴
     iface_names = {i["name"] for i in data["interfaces"]}
@@ -162,7 +162,7 @@ async def test_contract_json_endpoint_serves(contract_endpoint: str):
     data = res.json()
     assert set(data) == {"enums", "interfaces", "topics", "services"}
     # HTTP 로 serve 된 JSON = in-process build_contract_json 과 동일 계약
-    assert len(data["topics"]) == 5
+    assert len(data["topics"]) == 6
     assert len(data["services"]) == 4
 
 

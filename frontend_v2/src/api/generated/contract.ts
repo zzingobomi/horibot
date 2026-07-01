@@ -98,6 +98,13 @@ export interface MotorInfo {
   kind: MotorKindValue;
 }
 
+export interface MotorState {
+  robot_id: string;
+  seq: number;
+  timestamp_unix: number;
+  torque_enabled: boolean;
+}
+
 export interface MotorTopology {
   motors: MotorInfo[];
 }
@@ -123,6 +130,7 @@ export const Topic = {
   MOTION_JOG_TCP: "stream/motion/{robot_id}/jog_tcp",
   MOTION_TCP_STATE: "stream/motion/{robot_id}/tcp_state",
   MOTOR_RAW_STATE: "stream/motor/{robot_id}/raw_state",
+  MOTOR_STATE: "stream/motor/{robot_id}/state",
   MOTOR_TORQUE_CHANGED: "event/motor/{robot_id}/torque_changed",
 } as const;
 export type TopicKey = (typeof Topic)[keyof typeof Topic];
@@ -132,6 +140,7 @@ export type TopicPayloadMap = {
   "stream/motion/{robot_id}/jog_tcp": JogTcpInput;
   "stream/motion/{robot_id}/tcp_state": TcpState;
   "stream/motor/{robot_id}/raw_state": JointState;
+  "stream/motor/{robot_id}/state": MotorState;
   "event/motor/{robot_id}/torque_changed": TorqueChanged;
 };
 

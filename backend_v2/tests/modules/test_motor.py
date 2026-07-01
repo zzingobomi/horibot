@@ -28,6 +28,7 @@ from modules.motor.contract import (
     MotorCapabilities,
     MotorCapability,
     MotorKind,
+    MotorState,
     MotorTopology,
     RebootRequest,
     RebootResponse,
@@ -182,6 +183,52 @@ async def test_set_torque_broadcasts_torque_changed_event(runtime: Runtime):
     assert res.ok is True
     assert done.wait(timeout=2.0)
     assert received == [TorqueChanged(robot_id="so101_0", enabled=True)]
+
+
+# ─── 3b. Motor.Stream.STATE — driver state 별도 stream (계층 분리) ─────
+
+
+async def test_driver_state_stream_publishes_torque_enabled(runtime: Runtime):
+    """§B 결정 — driver control state 는 JointState 와 분리된 자기 stream 자리.
+    mount 직후 self-describing (초기 값 즉시 관찰 가능) — event chicken-and-egg 해소."""
+    received: list[MotorState] = []
+
+    class Listener:
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+
+        @subscriber(Motor.Stream.STATE)
+        def on_state(self, event: MotorState) -> None:
+            received.append(event)
+
+    driver = MockMotorBackend(_layout(6, True))
+    runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
+    runtime.add_module(Listener)
+    await runtime.start()
+
+    # 5Hz publish → 1 frame ~= 200ms. 1s 안 자연 여러 개 박힘.
+    for _ in range(30):
+        if received:
+            break
+        await asyncio.sleep(0.05)
+    assert received, "MotorState 첫 frame 안 옴 — mount 자기술 실패"
+    assert received[0].torque_enabled is False  # 초기 = torque OFF
+
+    # set_torque(True) 이후 다음 frame 은 torque_enabled=True
+    await runtime.module_runtime.call(
+        Motor.Service.SET_TORQUE,
+        SetTorqueRequest(enabled=True),
+        SetTorqueResponse,
+        robot_id="so101_0",
+    )
+    baseline = len(received)
+    for _ in range(30):
+        if len(received) > baseline and received[-1].torque_enabled:
+            break
+        await asyncio.sleep(0.05)
+    assert received[-1].torque_enabled is True, (
+        "set_torque 후에도 MotorState.torque_enabled=False 유지 — 재발행 실패"
+    )
 
 
 # ─── 4. reboot + set_gripper service ─────────────────────

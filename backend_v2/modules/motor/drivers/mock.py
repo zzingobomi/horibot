@@ -56,6 +56,9 @@ class MockMotorBackend:
     def read_loads(self) -> list[int] | None:
         return None  # mock — load 측정 없음
 
+    def get_torque_enabled(self) -> bool:
+        return self._torque_enabled
+
     # ── write ──
 
     def set_torque(self, enabled: bool) -> None:

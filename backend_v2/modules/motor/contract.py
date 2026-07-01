@@ -16,7 +16,8 @@ class Motor:
         SET_GRIPPER = "srv/motor/{robot_id}/set_gripper"
 
     class Stream(StrEnum):
-        RAW_STATE = "stream/motor/{robot_id}/raw_state"
+        RAW_STATE = "stream/motor/{robot_id}/raw_state"  # 20Hz kinematic (JointState)
+        STATE = "stream/motor/{robot_id}/state"  # 5Hz driver control state (MotorState)
         # Motion → Motor 위치 명령 (raw). 100Hz fire-and-forget. Motion 이
         # rad→raw 변환 후 publish, MotorDriver 가 write_positions (§4 — raw↔rad = Motion).
         COMMAND = "stream/motor/{robot_id}/command"
@@ -100,10 +101,13 @@ class SetGripperResponse(BaseModel):
 
 
 class JointState(BaseModel):
-    """20Hz motor state. raw int — rad 변환은 consumer (Motion) 책임.
+    """20Hz motor kinematic state. raw int — rad 변환은 consumer (Motion) 책임.
 
     seq / timestamp_unix invariant — frontend reconnect / lag / out-of-order
     detection 자리 (§8.5).
+
+    도메인 계층 분리 — 이 stream 은 *joint kinematic* (position/velocity/load) 만.
+    driver control state (torque_enabled / mode / error) 는 `Motor.Stream.STATE`.
     """
 
     robot_id: str
@@ -112,6 +116,23 @@ class JointState(BaseModel):
     positions_raw: list[int]  # 0..4095, motor_ids 순
     velocities_raw: list[int] | None = None  # 모델 / 모터 별
     loads_raw: list[int] | None = None  # torque sensor 있는 모델만
+
+
+class MotorState(BaseModel):
+    """Driver control state — mount 직후 self-describing (초기 latch).
+
+    JointState (kinematic) 와 계층 분리 — driver 가 소유하는 flag/mode/error 는
+    여기. 변화 signal 은 `TORQUE_CHANGED` event (state ≠ event 원칙).
+
+    현재 field = torque_enabled 하나뿐이지만 확장 예정 (control_mode / error /
+    homed 등) 자리로 미리 stream 을 뽑아둠 — 나중에 JointState 에서 뽑아내면
+    frontend contract / test / gen types / subscriber 다 재배선.
+    """
+
+    robot_id: str
+    seq: int
+    timestamp_unix: float
+    torque_enabled: bool
 
 
 class JointCommand(BaseModel):

@@ -62,6 +62,7 @@ FRONTEND_EXPOSED: set[str] = {
         Motor.Service.GET_TOPOLOGY,
         Motor.Service.SET_TORQUE,
         Motor.Stream.RAW_STATE,
+        Motor.Stream.STATE,
         Motor.Event.TORQUE_CHANGED,
         Motion.Service.MOVE_J,
         Motion.Stream.TCP_STATE,

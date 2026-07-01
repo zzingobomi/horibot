@@ -170,6 +170,17 @@ class FeetechBackend:
         for mid in self._motor_ids:
             self._write1(mid, ADDR_TORQUE_ENABLE, val)
 
+    def get_torque_enabled(self) -> bool:
+        # STS TORQUE_ENABLE = RAM register, 전원 on 시 0. 모든 모터 동시 set 이라
+        # 첫 모터만 read (bus overhead 최소). 실패 시 안전한 False fallback.
+        if not self._motor_ids:
+            return False
+        with self._lock:
+            val, result, _ = self._packet_handler.read1ByteTxRx(
+                self._port_handler, self._motor_ids[0], ADDR_TORQUE_ENABLE
+            )
+        return result == COMM_SUCCESS and val == 1
+
     def reboot(self) -> None:
         # STS = software reboot 명령 없음. 전원 cycle 필요.
         logger.warning("Feetech STS reboot 미지원 — 전원 cycle 필요")

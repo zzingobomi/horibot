@@ -49,13 +49,16 @@ describe("RobotStatePanel", () => {
       }),
     );
 
-    // 초기 torque state — TORQUE_CHANGED event 도착 후 store 갱신 (enabled=true)
+    // 초기 torque state — Motor.Stream.STATE 5Hz 발행 후 store 갱신 (torque_enabled=true).
+    // (backend_v2 결정 B — state ≠ event, torque 현재값은 stream 소유.)
     act(() => {
       useFrameworkStore
         .getState()
-        .setTopicData(`event/motor/${ROBOT_ID}/torque_changed`, {
+        .setTopicData(`stream/motor/${ROBOT_ID}/state`, {
           robot_id: ROBOT_ID,
-          enabled: true,
+          seq: 1,
+          timestamp_unix: Date.now() / 1000,
+          torque_enabled: true,
         });
     });
 
@@ -76,6 +79,58 @@ describe("RobotStatePanel", () => {
       expect(torqueCalls.length).toBeGreaterThan(0);
       const [, reqData] = torqueCalls[0];
       expect((reqData as { enabled: boolean }).enabled).toBe(false);
+    });
+  });
+
+  // 회귀 잡음 — 2026-07-01 사건: torque 초기값 얻는 자리가 event 였을 때 chicken-and-egg
+  // (event 는 set_torque 순간에만 발행 → 초기 state unknown → 버튼 영구 disabled).
+  // 이 assert 뒤집으면 그 회귀가 잡힘 — "MotorState stream 도착 → 버튼 활성화" 가 계약.
+  it("mount 직후 MotorState 도착 시 버튼 즉시 활성화 (chicken-and-egg 회귀 차단)", async () => {
+    vi.spyOn(bridge, "callService").mockResolvedValue({
+      success: true,
+      message: "",
+      data: { motors: [{ id: 1, kind: "joint" as const }] } as never,
+    });
+
+    const { findByRole } = renderPanel();
+
+    // 초기 = state 도착 전 — 버튼 disabled + label ambiguous
+    const btnBeforeState = await findByRole("button", { name: /torque/i });
+    expect(btnBeforeState).toBeDisabled();
+    expect(btnBeforeState.textContent).toMatch(/torque on/); // torqueEnabled=null → default label
+
+    // Motor.Stream.STATE 첫 frame 도착 — 실 wire 는 5Hz, mount 후 ~200ms 안 자연 도착
+    act(() => {
+      useFrameworkStore
+        .getState()
+        .setTopicData(`stream/motor/${ROBOT_ID}/state`, {
+          robot_id: ROBOT_ID,
+          seq: 0,
+          timestamp_unix: Date.now() / 1000,
+          torque_enabled: false,
+        });
+    });
+
+    // state 도착 순간 — 버튼 활성화 + 값 반영
+    await waitFor(() => {
+      const btn = btnBeforeState;
+      expect(btn).not.toBeDisabled();
+      expect(btn.textContent).toMatch(/torque on/); // enabled=false → "torque on" 라벨
+    });
+
+    // torque_enabled=true 로 갱신 — 라벨/badge 반응 검증
+    act(() => {
+      useFrameworkStore
+        .getState()
+        .setTopicData(`stream/motor/${ROBOT_ID}/state`, {
+          robot_id: ROBOT_ID,
+          seq: 1,
+          timestamp_unix: Date.now() / 1000,
+          torque_enabled: true,
+        });
+    });
+    await waitFor(() => {
+      expect(btnBeforeState.textContent).toMatch(/torque off/);
     });
   });
 

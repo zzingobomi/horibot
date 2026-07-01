@@ -14,6 +14,7 @@ import URDFLoader from "urdf-loader";
 import type { URDFRobot } from "urdf-loader";
 import { BASE_URL } from "@/constants";
 import type { BasePoseInfo } from "@/api/generated/contract";
+import { applyJoints } from "./jointMapping";
 
 interface URDFRobotProps {
   /** URDF type — `/robot/<type>/urdf/<type>.urdf` 경로 추론. */
@@ -67,17 +68,6 @@ function disposeMaterials(robot: URDFRobot) {
     const mat = mesh.material as THREE.Material | THREE.Material[];
     if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
     else if (mat) mat.dispose();
-  });
-}
-
-/** backend 계약 (TcpState.joint_names) 기반 매핑. URDF 파일 순서 안 믿음 —
- *  motors.yaml → backend → 이 prop 이 SSOT. name 으로 URDF joint 를 찾아 setJointValue. */
-function applyJoints(robot: URDFRobot, names: string[], angles: number[]) {
-  names.forEach((name, i) => {
-    const angle = angles[i];
-    if (angle !== undefined && robot.joints?.[name]) {
-      robot.setJointValue(name, angle);
-    }
   });
 }
 

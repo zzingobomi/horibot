@@ -195,6 +195,91 @@ async def test_jog_tcp_moves_motor(stack):
     assert driver.read_positions()[:6] != before, "JogTcp IK → 모터 이동 없음"
 
 
+async def test_jog_tcp_pure_translation_uses_position_only_ik(stack):
+    """회귀 잡음 — 2026-07-01 SO-101 실 hardware Z+ jog IK reject 사건.
+    orientation constraint 를 매 프레임 pin 하면 arm 최대 reach 근처 자리 orientation
+    exact solve 가 실패 (reason=orientation-only-fail). teach-pendant 표준 자리
+    pure translation (angular=0) = position-only IK (옛 backend cartesian path 원칙
+    `servo_tcp(pos, None, angles)` 과 동일).
+
+    이 assert 뒤집으면 회귀 즉시 잡힘 — angular=0 자리 kin.ik 가 quaternion=None 로
+    호출되는지 spy 로 계약 검증.
+    """
+    runtime, _driver, _robot = stack
+    assert await _wait_motion_ready(runtime)
+
+    # motion module 의 kinematics 를 spy 로 감싸 ik 호출 인자 캡처
+    from unittest.mock import MagicMock
+
+    # runtime 안 module 찾아 spy 주입
+    motion_mod = next(
+        m for m in runtime._modules if type(m).__name__ == "MotionModule"
+    )
+    orig_ik = motion_mod._kin.ik
+    ik_calls: list[tuple] = []
+
+    def spy_ik(pos, quat, cur):
+        ik_calls.append((pos, quat, tuple(cur)))
+        return orig_ik(pos, quat, cur)
+
+    motion_mod._kin.ik = MagicMock(side_effect=spy_ik)  # type: ignore[method-assign]
+
+    # pure Z+ translation — 계약: quaternion 인자 = None 이어야 함
+    for _ in range(15):
+        runtime.module_runtime.publish(
+            Motion.Stream.JOG_TCP,
+            JogTcpInput(
+                robot_id=_SO101, linear=(0.0, 0.0, 0.02), angular=(0.0, 0.0, 0.0)
+            ),
+        )
+        await asyncio.sleep(0.02)
+
+    # idle re-latch (첫 호출) 은 quat 포함 (fresh FK latch) — 이후 non-idle 호출 자리
+    # angular=0 이면 quat=None 이어야. non-idle 호출 최소 1건 확인.
+    non_idle = [c for c in ik_calls if c[1] is None]
+    assert len(non_idle) > 0, (
+        f"pure translation jog 인데 position-only IK (quat=None) 호출이 0건 — "
+        f"모든 호출: {[(c[1] is None) for c in ik_calls]}"
+    )
+
+
+async def test_jog_tcp_with_angular_uses_6dof_ik(stack):
+    """대응 계약 — angular 성분 있으면 quaternion 을 IK 에 넘겨 6DOF exact solve.
+    사용자가 명시적으로 orientation jog 하는 자리는 orientation 유지가 의도."""
+    runtime, _driver, _robot = stack
+    assert await _wait_motion_ready(runtime)
+
+    from unittest.mock import MagicMock
+
+    motion_mod = next(
+        m for m in runtime._modules if type(m).__name__ == "MotionModule"
+    )
+    orig_ik = motion_mod._kin.ik
+    ik_calls: list[tuple] = []
+
+    def spy_ik(pos, quat, cur):
+        ik_calls.append((pos, quat, tuple(cur)))
+        return orig_ik(pos, quat, cur)
+
+    motion_mod._kin.ik = MagicMock(side_effect=spy_ik)  # type: ignore[method-assign]
+
+    # angular Rz jog — quaternion 인자 포함 되어야
+    for _ in range(15):
+        runtime.module_runtime.publish(
+            Motion.Stream.JOG_TCP,
+            JogTcpInput(
+                robot_id=_SO101, linear=(0.0, 0.0, 0.0), angular=(0.0, 0.0, 0.1)
+            ),
+        )
+        await asyncio.sleep(0.02)
+
+    with_quat = [c for c in ik_calls if c[1] is not None]
+    assert len(with_quat) > 0, (
+        f"angular jog 인데 quaternion 넘긴 IK 호출이 0건 — "
+        f"6DOF exact solve 계약 위반"
+    )
+
+
 async def _try_snapshot(runtime) -> TcpState | None:
     try:
         return await runtime.module_runtime.call(

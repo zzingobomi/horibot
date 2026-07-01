@@ -226,24 +226,35 @@ class MotionModule:
         assert prev_pos is not None and prev_quat is not None
         dt = now - self._jog_tcp_t
         new_pos, new_quat = prev_pos, prev_quat
+        ang_mag = float(np.linalg.norm(angular))
         if np.any(linear):
             if inp.frame == "base":
                 new_pos = prev_pos + linear * dt
             else:  # tcp frame
                 new_pos = prev_pos + Rotation.from_quat(prev_quat).apply(linear) * dt
-        if float(np.linalg.norm(angular)) > 1e-9:
+        if ang_mag > 1e-9:
             delta = Rotation.from_rotvec(angular * dt)
             cur_r = Rotation.from_quat(prev_quat)
             new_r = (delta * cur_r) if inp.frame == "base" else (cur_r * delta)
             new_quat = new_r.as_quat()
 
         target_pos_tuple = (float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
-        target_quat_tuple = (
-            float(new_quat[0]),
-            float(new_quat[1]),
-            float(new_quat[2]),
-            float(new_quat[3]),
-        )
+        # Pure translation jog (angular = 0) → position-only IK.
+        # 이유: teach-pendant 표준 (UR/ABB pure X/Y/Z jog 은 orientation drift 허용).
+        # 옛 backend cartesian path 도 `servo_tcp(pos, None, angles)` = position-only
+        # ([backend/nodes/device/motion_node.py:101]). 6DOF exact solve 는 arm 최대
+        # reach 근처 자리 orientation 을 매 프레임 pin 하면 IK 수렴 실패 — 2026-07-01
+        # SO-101 Z+ jog IK reject 진단 (reason=orientation-only-fail).
+        # angular 도 있으면 사용자 명시 의도라 6DOF exact.
+        if ang_mag > 1e-9:
+            target_quat_tuple: tuple[float, float, float, float] | None = (
+                float(new_quat[0]),
+                float(new_quat[1]),
+                float(new_quat[2]),
+                float(new_quat[3]),
+            )
+        else:
+            target_quat_tuple = None
         sol = self._kin.ik(target_pos_tuple, target_quat_tuple, cur)
         if sol is None:
             # IK 실패 → ref 적분 전 값 유지 (마지막 valid hold, 누적 X)
@@ -275,7 +286,13 @@ class MotionModule:
                 self._jog_tcp_reject_count = 0
             return
         self._jog_tcp_pos = new_pos
-        self._jog_tcp_quat = new_quat
+        # position-only IK 성공 시 실 FK(sol) quat 로 sync — angular jog 로 전환 시
+        # stale reference 방지. angular 자리는 target 그대로 (사용자 의도).
+        if ang_mag > 1e-9:
+            self._jog_tcp_quat = new_quat
+        else:
+            _, actual_quat = self._kin.fk(sol)
+            self._jog_tcp_quat = np.asarray(actual_quat, dtype=float)
         self._jog_tcp_t = now
         self._publish_cmd(sol)
 

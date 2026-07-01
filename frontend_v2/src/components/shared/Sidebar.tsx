@@ -9,7 +9,7 @@
  */
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { Bot, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Bot, PanelLeftClose, PanelLeftOpen, Share2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRobots } from "@/hooks/useRobots";
 import { useBridgeConnected } from "@/framework";
@@ -119,6 +119,31 @@ export function Sidebar() {
           ),
         )}
       </nav>
+
+      {/* Dev 도구 — contract graph viewer (§6.1). 앱 기능 아니라 개발자 도구. */}
+      <div className="border-t border-zinc-800 px-2 py-2">
+        {!collapsed && (
+          <p className="px-3 pb-1 text-xs font-medium text-zinc-500 uppercase tracking-wider">
+            Dev
+          </p>
+        )}
+        <NavLink
+          to="/contract"
+          title="Contract graph"
+          className={({ isActive }) =>
+            cn(
+              "flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors",
+              collapsed && "justify-center px-2",
+              isActive
+                ? "bg-zinc-800 text-zinc-100 font-medium"
+                : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
+            )
+          }
+        >
+          <Share2 className="h-4 w-4 shrink-0" />
+          {!collapsed && <span>Contract graph</span>}
+        </NavLink>
+      </div>
 
       {/* 연결 상태 */}
       {!collapsed && (

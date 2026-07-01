@@ -22,6 +22,7 @@ import pytest
 
 from apps.contract_export import (
     FRONTEND_EXPOSED,
+    build_contract_graph,
     build_contract_json,
     check_exposed,
 )
@@ -163,3 +164,126 @@ async def test_contract_json_endpoint_serves(contract_endpoint: str):
     # HTTP 로 serve 된 JSON = in-process build_contract_json 과 동일 계약
     assert len(data["topics"]) == 5
     assert len(data["services"]) == 4
+
+
+# ─── build_contract_graph — unfiltered attribution + wiring (§5.2) ─
+
+
+def _built_graph() -> dict:
+    runtime, transport = _built_runtime()
+    try:
+        return build_contract_graph(
+            runtime.module_contracts(), runtime.contract_snapshot()
+        )
+    finally:
+        transport.close()
+
+
+def test_graph_nodes_are_contentful_modules_only():
+    graph = _built_graph()
+    ids = {m["id"] for m in graph["modules"]}
+    # contract 있는 4 module — bridge (relay, contract 0) 는 node 제외
+    assert ids == {
+        "MotorDriverModule",
+        "MotionModule",
+        "CameraDriverModule",
+        "CameraDecodedModule",
+    }
+    assert "BridgeModule" not in ids
+    by_id = {m["id"]: m for m in graph["modules"]}
+    assert by_id["MotorDriverModule"]["domain"] == "motor"
+    assert by_id["MotionModule"]["domain"] == "motion"
+    assert by_id["CameraDriverModule"]["domain"] == "camera"
+    assert all(m["robot_scoped"] for m in graph["modules"])
+
+
+def test_graph_edges_direction_and_no_service_edges():
+    graph = _built_graph()
+    edges = {(e["source"], e["target"], e["key"]) for e in graph["edges"]}
+    # Motor → Motion (raw_state 는 Motor 가 publish, Motion 이 subscribe)
+    assert (
+        "MotorDriverModule",
+        "MotionModule",
+        "stream/motor/{robot_id}/raw_state",
+    ) in edges
+    # Motion → Motor (command 는 Motion 이 publish, Motor 가 subscribe) — 반대 방향
+    assert (
+        "MotionModule",
+        "MotorDriverModule",
+        "stream/motor/{robot_id}/command",
+    ) in edges
+    # CameraDriver → CameraDecoded (jpeg / depth_raw)
+    assert (
+        "CameraDriverModule",
+        "CameraDecodedModule",
+        "stream/camera/{robot_id}/jpeg",
+    ) in edges
+    # backend publisher 없는 stream (JOG_J = frontend→backend) 은 엣지 없음
+    assert all("/jog_j" not in e["key"] for e in graph["edges"])
+    # service 는 엣지가 아니라 owner node 속성 (§2 caller 한계)
+    assert all(e["category"] in ("stream", "event") for e in graph["edges"])
+    assert all(not e["key"].startswith("srv/") for e in graph["edges"])
+
+
+def test_graph_is_unfiltered():
+    graph = _built_graph()
+    # 내부 wire (Motion→Motor COMMAND) 도 keys 에 포함 — build_contract_json 은 제외
+    cmd = "stream/motor/{robot_id}/command"
+    assert cmd in graph["keys"]
+    assert graph["keys"][cmd]["category"] == "stream"
+    assert graph["keys"][cmd]["payload"] == "JointCommand"
+    # 그 payload model 도 models 에 (build_contract_json 은 reachability 로 제외했음)
+    assert "JointCommand" in graph["models"]
+    assert graph["models"]["JointCommand"]["positions_raw"] == "number[]"
+    # service key 는 owner node 속성 — keys 엔 req/res 로
+    move_j = "srv/motion/{robot_id}/move_j"
+    assert graph["keys"][move_j]["category"] == "service"
+    assert "req" in graph["keys"][move_j] and "res" in graph["keys"][move_j]
+
+
+def test_graph_name_conflict_resolution():
+    graph = _built_graph()
+    # motor.CapabilitiesRequest ↔ camera.CapabilitiesRequest 충돌 → 둘 다 prefix
+    assert "MotorCapabilitiesRequest" in graph["models"]
+    assert "CameraCapabilitiesRequest" in graph["models"]
+    assert "CapabilitiesRequest" not in graph["models"]
+    # 그리고 keys 의 service req 이름이 resolved 이름을 참조 (models key 와 매칭)
+    cap = graph["keys"]["srv/motor/{robot_id}/capabilities"]
+    assert cap["req"] == "MotorCapabilitiesRequest"
+
+
+def test_graph_provider_closure_wired_on_bridge():
+    runtime, transport = _built_runtime()
+    try:
+        bridge = next(m for m in runtime._modules if isinstance(m, BridgeModule))
+        assert bridge._graph_provider is not None
+        data = bridge._graph_provider()
+        assert set(data) == {"modules", "keys", "models", "edges"}
+    finally:
+        transport.close()
+
+
+@pytest.fixture
+async def graph_endpoint():
+    transport = ZenohTransport(_LOCAL_CFG)
+    deploy, robots = load_configs("mock", _CONFIG_DIR)
+    runtime = build_runtime(deploy, robots, transport)
+    await runtime.start()
+    yield "http://127.0.0.1:8000/contract/graph"
+    await runtime.stop()
+    transport.close()
+
+
+async def test_contract_graph_endpoint_serves(graph_endpoint: str):
+    async with httpx.AsyncClient() as client:
+        res = await client.get(graph_endpoint)
+    assert res.status_code == 200
+    data = res.json()
+    assert set(data) == {"modules", "keys", "models", "edges"}
+    assert {m["id"] for m in data["modules"]} == {
+        "MotorDriverModule",
+        "MotionModule",
+        "CameraDriverModule",
+        "CameraDecodedModule",
+    }
+    assert len(data["edges"]) >= 4

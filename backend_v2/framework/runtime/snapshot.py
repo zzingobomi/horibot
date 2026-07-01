@@ -80,3 +80,64 @@ def _put_topic(
             f"topic {key!r} 가 서로 다른 payload 로 등록됨: "
             f"{existing.__name__} vs {payload_cls.__name__}"
         )
+
+
+# ─── module attribution (contract graph viewer — contract_graph_viewer.md §5.1) ──
+#
+# build_snapshot 은 module attribution + publish/subscribe 방향을 버리고 flat dict
+# 로 collapse 한다 (frontend gen 은 "wire_key → payload" 만 필요). 그래프 뷰어는
+# 반대로 그 attribution + 방향이 본질 — 어느 module 이 무엇을 serve/publish/subscribe
+# 하는지. 그래서 같은 discovery source 를 attribution 을 살려 다시 열거한다.
+
+
+@dataclass(frozen=True)
+class ModuleContract:
+    """한 Module class 가 노출하는 계약 (attribution + 방향 보존).
+
+    services / publishes / subscribes 는 wire_key template ({robot_id} 유지).
+    per-robot 인스턴스 (같은 class) 는 template 이 동일하니 module_id 로 dedup.
+    """
+
+    module_id: str  # type(m).__name__
+    robot_scoped: bool  # any wire_key 에 {robot_id} placeholder
+    services: tuple[str, ...]  # @service wire_keys (owner=server)
+    publishes: tuple[str, ...]  # @publishes wire_keys (output stream/event)
+    subscribes: tuple[str, ...]  # @subscriber wire_keys (input stream/event)
+
+
+def build_module_contracts(modules: list[Any]) -> list[ModuleContract]:
+    """로드된 Module 인스턴스 → class 별 ModuleContract.
+
+    같은 class 의 여러 인스턴스 (per-robot) 는 wire_key template 이 동일하므로
+    module_id 기준 dedup (첫 인스턴스 wins). contract 이 하나도 없는 Module
+    (Bridge 같은 relay) 도 여기선 그대로 열거 — 그래프 노드로 넣을지 (empty node
+    제외) 는 apps 빌더의 관심사 (framework 는 editorialize X)."""
+    seen: set[str] = set()
+    out: list[ModuleContract] = []
+    for module in modules:
+        module_id = type(module).__name__
+        if module_id in seen:
+            continue
+        seen.add(module_id)
+
+        services = sorted(spec.wire_key for _bound, spec in discover_services(module))
+        subscribes = sorted(
+            spec.wire_key for _bound, spec in discover_subscribers(module)
+        )
+        pub = get_publishes_spec(type(module))
+        publishes = sorted(wire_key for wire_key, _cls in pub.pairs) if pub else []
+
+        robot_scoped = any(
+            "{robot_id}" in k for k in (*services, *publishes, *subscribes)
+        )
+        out.append(
+            ModuleContract(
+                module_id=module_id,
+                robot_scoped=robot_scoped,
+                services=tuple(services),
+                publishes=tuple(publishes),
+                subscribes=tuple(subscribes),
+            )
+        )
+    out.sort(key=lambda mc: mc.module_id)
+    return out

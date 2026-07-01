@@ -72,7 +72,17 @@ def resolve_host_deps(
 
                 return build_contract_json(runtime.contract_snapshot())
 
+            def _graph_provider() -> dict:
+                # contract graph viewer (contract_graph_viewer.md §5.3) — unfiltered
+                # module attribution + wiring. contract_provider 와 같은 closure 패턴.
+                from apps.contract_export import build_contract_graph
+
+                return build_contract_graph(
+                    runtime.module_contracts(), runtime.contract_snapshot()
+                )
+
             deps["contract_provider"] = _contract_provider
+            deps["graph_provider"] = _graph_provider
         return deps
     raise NotImplementedError(f"host-level resolve 미지원 module: {name!r}")
 

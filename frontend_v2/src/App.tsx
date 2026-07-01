@@ -1,3 +1,4 @@
+import { Suspense, lazy } from "react";
 import { Route, Routes, Navigate } from "react-router-dom";
 import { Sidebar } from "@/components/shared/Sidebar";
 import { RobotsLayout } from "@/pages/RobotsLayout";
@@ -5,6 +6,14 @@ import { RobotModeRedirect } from "@/pages/robotModes/RobotModeRedirect";
 import { RobotMoveMode } from "@/pages/robotModes/RobotMoveMode";
 import { useFrameworkBootstrap } from "@/framework";
 import { DEFAULT_ROBOT_ID } from "@/constants";
+
+// contract viewer = dev 도구 (§6.1) — lazy import 로 React Flow 번들 code-split
+// (control/simulator 경로에 안 섞이게).
+const ContractGraphPage = lazy(() =>
+  import("@/features/contract-viewer/ContractGraphPage").then((m) => ({
+    default: m.ContractGraphPage,
+  })),
+);
 
 export function App() {
   useFrameworkBootstrap();
@@ -24,6 +33,20 @@ export function App() {
             <Route index element={<RobotModeRedirect />} />
             <Route path="move" element={<RobotMoveMode />} />
           </Route>
+          <Route
+            path="/contract"
+            element={
+              <Suspense
+                fallback={
+                  <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+                    contract viewer 로딩 중…
+                  </div>
+                }
+              >
+                <ContractGraphPage />
+              </Suspense>
+            }
+          />
         </Routes>
       </main>
     </div>

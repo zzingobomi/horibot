@@ -33,7 +33,7 @@ from typing import Any, Literal, Union, get_args, get_origin
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 
-from framework.runtime.snapshot import ContractSnapshot
+from framework.runtime.snapshot import ContractSnapshot, ModuleContract
 from modules.bridge.contract import RobotsResponse, SystemMetrics
 from modules.motion.contract import Motion
 from modules.motor.contract import Motor
@@ -539,3 +539,141 @@ def _type_name(catalog: Catalog, cls: type[BaseModel] | None) -> str:
     if cls is None:
         return "unknown"
     return catalog.type_name.get(cls, cls.__name__)
+
+
+# ─── contract graph (dev viewer — contract_graph_viewer.md §5.2) ──────
+#
+# build_contract_json 과 대칭: 같은 catalog / snapshot / ts_type / name-conflict
+# 재사용, 다른 축 3개 —
+#   1. **unfiltered** — FRONTEND_EXPOSED subset 이 아니라 전 module 의 전 계약
+#      (개발자 가시성 목적).
+#   2. **attribution 보존** — 어느 module 이 무엇을 serve/publish/subscribe 하는지
+#      (build_contract_json 은 wire_key→payload flat, 이건 module→wire 방향).
+#   3. **그래프 구조** — stream/event 는 publisher module → subscriber module 방향
+#      엣지. service 는 caller 를 정적으로 못 잡으니 owner node 속성으로만 (§2 한계).
+#
+# backend 는 React Flow 형식을 모르는 **중립 그래프** (position/layout 은 frontend).
+
+_CATEGORY_BY_PREFIX = {"srv": "service", "stream": "stream", "event": "event"}
+
+
+def _key_category(wire_key: str) -> str:
+    return _CATEGORY_BY_PREFIX.get(wire_key.split("/", 1)[0], "unknown")
+
+
+def _key_domain(wire_key: str) -> str:
+    """wire_key `srv/motor/{robot_id}/x` → domain `motor` (그룹 색상 등)."""
+    parts = wire_key.split("/")
+    return parts[1] if len(parts) >= 2 else ""
+
+
+def _module_domain(mc: ModuleContract) -> str:
+    for group in (mc.services, mc.publishes, mc.subscribes):
+        for k in group:
+            dom = _key_domain(k)
+            if dom:
+                return dom
+    return ""
+
+
+def build_contract_graph(
+    module_contracts: list[ModuleContract],
+    snapshot: ContractSnapshot,
+    modules_root: Path = _MODULES_ROOT,
+) -> dict:
+    """running runtime 의 module attribution + snapshot → 중립 계약 그래프 JSON.
+
+    응답 스키마 = contract_graph_viewer.md §4: {modules, keys, models, edges}.
+    필터 없음 (전 계약). name-conflict 해소는 build_contract_json 과 동일 catalog
+    (전 module contract.py universe) 로 — 그래야 keys 가 참조하는 payload 이름이
+    models dict key 와 정확히 매칭 (CapabilitiesRequest 충돌 → 접두사)."""
+    catalog = build_catalog(modules_root)
+    fill_payload_from_snapshot(catalog, snapshot)
+    by_key = {k.key: k for k in catalog.keys}
+
+    # contract 하나도 없는 Module (Bridge 같은 relay) 는 wiring 에 기여 0 → node 제외.
+    contentful = [
+        mc
+        for mc in module_contracts
+        if mc.services or mc.publishes or mc.subscribes
+    ]
+
+    modules_out = [
+        {
+            "id": mc.module_id,
+            "domain": _module_domain(mc),
+            "robot_scoped": mc.robot_scoped,
+            "services": list(mc.services),
+            "publishes": list(mc.publishes),
+            "subscribes": list(mc.subscribes),
+        }
+        for mc in contentful
+    ]
+
+    # keys — module 들이 참조하는 전 wire_key 의 category + payload/req/res 이름.
+    referenced: set[str] = set()
+    for mc in contentful:
+        referenced |= {*mc.services, *mc.publishes, *mc.subscribes}
+    keys_out: dict[str, dict] = {}
+    for wk in sorted(referenced):
+        entry = by_key.get(wk)
+        if entry is None:
+            # contract.py enum 에 없는 raw key — frontend gen 과 동일하게 skip
+            continue
+        if entry.category == "service":
+            keys_out[wk] = {
+                "category": "service",
+                "req": _type_name(catalog, entry.req_cls),
+                "res": _type_name(catalog, entry.res_cls),
+            }
+        else:
+            keys_out[wk] = {
+                "category": entry.category,
+                # topic payload 는 fill_payload_from_snapshot 이 req_cls 에 저장
+                "payload": _type_name(catalog, entry.req_cls),
+            }
+
+    # models — 참조된 전 payload/req/res 에서 field 그래프로 도달 가능한 model 의
+    # field:type map (드릴다운용). unfiltered — 노출 subset 아님.
+    reachable = reachable_models(catalog.keys, catalog)
+    models_out: dict[str, dict[str, str]] = {}
+    for entry in topo_models(catalog):
+        cls = entry.cls
+        if cls not in reachable:
+            continue
+        name = catalog.type_name.get(cls, cls.__name__)
+        models_out[name] = {
+            fname: ts_type(finfo.annotation, catalog)
+            for fname, finfo in cls.model_fields.items()
+        }
+
+    # edges — stream/event key 별 publisher module × subscriber module 곱 (방향).
+    # service 엣지 없음 (§2 caller 정적으로 못 잡음 — owner node 속성으로만).
+    publishers: dict[str, list[str]] = {}
+    subscribers: dict[str, list[str]] = {}
+    for mc in contentful:
+        for wk in mc.publishes:
+            publishers.setdefault(wk, []).append(mc.module_id)
+        for wk in mc.subscribes:
+            subscribers.setdefault(wk, []).append(mc.module_id)
+
+    edges_out: list[dict] = []
+    for wk in sorted(set(publishers) | set(subscribers)):
+        category = _key_category(wk)
+        for src in publishers.get(wk, []):
+            for dst in subscribers.get(wk, []):
+                edges_out.append(
+                    {
+                        "source": src,
+                        "target": dst,
+                        "key": wk,
+                        "category": category,
+                    }
+                )
+
+    return {
+        "modules": modules_out,
+        "keys": keys_out,
+        "models": models_out,
+        "edges": edges_out,
+    }

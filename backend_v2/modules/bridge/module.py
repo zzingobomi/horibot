@@ -45,6 +45,7 @@ class BridgeModule:
         port: int = 8000,
         robot_dir: Path | None = None,
         contract_provider: Callable[[], dict] | None = None,
+        graph_provider: Callable[[], dict] | None = None,
     ) -> None:
         self._transport = transport
         self._robots = robots
@@ -55,6 +56,9 @@ class BridgeModule:
         # bridge 는 apps/serializer 를 모르는 relay — opaque 콜러블만 호출 (§6.3).
         self._contract_provider = contract_provider
         self._contract_cache: dict | None = None
+        # contract graph viewer 용 provider (unfiltered 그래프). 같은 relay 패턴.
+        self._graph_provider = graph_provider
+        self._graph_cache: dict | None = None
 
         self._app = self._build_app()
         self._server: uvicorn.Server | None = None
@@ -99,6 +103,19 @@ class BridgeModule:
                 except Exception as e:  # incomplete-host 등 — 명확한 메시지로 500
                     raise HTTPException(500, f"contract 직렬화 실패: {e}") from e
             return self._contract_cache
+
+        @app.get("/contract/graph")
+        def get_contract_graph() -> dict:
+            # contract graph viewer (frontend /contract 페이지)가 fetch → React Flow.
+            # unfiltered module attribution + wiring. 계약은 boot 후 불변 → 캐시.
+            if self._graph_provider is None:
+                raise HTTPException(503, "graph provider 미주입 (viewer 전용 endpoint)")
+            if self._graph_cache is None:
+                try:
+                    self._graph_cache = self._graph_provider()
+                except Exception as e:
+                    raise HTTPException(500, f"contract graph 직렬화 실패: {e}") from e
+            return self._graph_cache
 
         @app.websocket("/ws")
         async def ws_endpoint(ws: WebSocket) -> None:

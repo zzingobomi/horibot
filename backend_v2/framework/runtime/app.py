@@ -17,7 +17,12 @@ from framework.contract.subscriber import SubscriberSpec
 from framework.runtime.api import ModuleRuntime
 from framework.runtime.discovery import discover_services, discover_subscribers
 from framework.runtime.lifecycle import has_start, has_stop
-from framework.runtime.snapshot import ContractSnapshot, build_snapshot
+from framework.runtime.snapshot import (
+    ContractSnapshot,
+    ModuleContract,
+    build_module_contracts,
+    build_snapshot,
+)
 from framework.transport.protocol import Handle, RemoteError, Transport
 
 logger = logging.getLogger(__name__)
@@ -180,6 +185,16 @@ class Runtime:
         (frontend_contract_gen.md §6.1). start 여부 무관 (add_module 만 되면 유효).
         """
         return build_snapshot(self._modules)
+
+    def module_contracts(self) -> list[ModuleContract]:
+        """로드된 Module 들의 계약 attribution (module → serve/publish/subscribe).
+
+        contract_snapshot 이 버리는 module 별 attribution + publish/subscribe 방향을
+        보존 — contract graph viewer (contract_graph_viewer.md §5.1) 의 source.
+        bridge 의 GET /contract/graph 가 apps 빌더 통해 노출. start 무관 (add_module
+        만 되면 유효).
+        """
+        return build_module_contracts(self._modules)
 
     # ── internal — register helpers ─────────────────────────
 

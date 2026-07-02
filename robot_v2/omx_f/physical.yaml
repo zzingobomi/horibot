@@ -1,0 +1,6 @@
+# Robot type physical model (omx_f) — so101_6dof/physical.yaml 참조.
+# 모델링 선택만 (URDF 물리량 복제 금지).
+#
+# sag_joint_motor_ids: OMX-F 5축 중 중력 부하 가장 큰 shoulder(2)/elbow(3).
+
+sag_joint_motor_ids: [2, 3]

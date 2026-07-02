@@ -4,6 +4,7 @@ import { Sidebar } from "@/components/shared/Sidebar";
 import { RobotsLayout } from "@/pages/RobotsLayout";
 import { RobotModeRedirect } from "@/pages/robotModes/RobotModeRedirect";
 import { RobotMoveMode } from "@/pages/robotModes/RobotMoveMode";
+import { RobotCalibrateMode } from "@/pages/robotModes/RobotCalibrateMode";
 import { useFrameworkBootstrap } from "@/framework";
 import { DEFAULT_ROBOT_ID } from "@/constants";
 
@@ -32,6 +33,7 @@ export function App() {
           <Route path="/robots/:id" element={<RobotsLayout />}>
             <Route index element={<RobotModeRedirect />} />
             <Route path="move" element={<RobotMoveMode />} />
+            <Route path="calibrate" element={<RobotCalibrateMode />} />
           </Route>
           <Route
             path="/contract"

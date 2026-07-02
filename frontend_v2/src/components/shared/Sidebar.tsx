@@ -14,9 +14,9 @@ import { cn } from "@/lib/utils";
 import { useRobots } from "@/hooks/useRobots";
 import { useBridgeConnected } from "@/framework";
 
-// Sidebar mode sub-route 자리 — UI page mode 만. calibrate 등은 Step E+.
-const SIDEBAR_MODES: ReadonlySet<string> = new Set(["move"]);
-const MODE_LABELS: Record<string, string> = { move: "Move" };
+// Sidebar mode sub-route 자리 — UI page mode 만.
+const SIDEBAR_MODES: ReadonlySet<string> = new Set(["move", "calibrate"]);
+const MODE_LABELS: Record<string, string> = { move: "Move", calibrate: "Calibrate" };
 
 const COLLAPSED_KEY = "omx.sidebar.collapsed";
 

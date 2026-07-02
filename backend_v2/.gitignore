@@ -1,0 +1,9 @@
+# runtime artifacts (Database-per-project, root single alembic)
+horibot_v2.db
+*.db-wal
+*.db-shm
+*.db-journal
+autogen_tmp.db
+# calibration blob object stores (deployment object_uri)
+.calib_blobs_mock/
+storage_v2/

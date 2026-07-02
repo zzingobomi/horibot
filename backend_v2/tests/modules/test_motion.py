@@ -275,8 +275,8 @@ async def test_jog_tcp_with_angular_uses_6dof_ik(stack):
 
     with_quat = [c for c in ik_calls if c[1] is not None]
     assert len(with_quat) > 0, (
-        f"angular jog 인데 quaternion 넘긴 IK 호출이 0건 — "
-        f"6DOF exact solve 계약 위반"
+        "angular jog 인데 quaternion 넘긴 IK 호출이 0건 — "
+        "6DOF exact solve 계약 위반"
     )
 
 

@@ -1,0 +1,14 @@
+# Robot type physical model (so101_6dof) — Motion·Calibration 공용 기구학 모델의
+# 타입레벨 설정. FkChain 이 도입되며 생긴 "robot physical model" 계층의 최소 config.
+#
+# ⚠️ 여기엔 **모델링 선택/규약만** 담는다. URDF 가 이미 가진 물리량
+#    (mass / inertia / center_of_mass / link geometry) 은 **복제 금지** — URDF 가
+#    그쪽 SSOT. 복제하면 두 번째 SSOT 가 되어 URDF 수정 시 조용히 어긋난다.
+#
+# sag_joint_motor_ids: 중력 sag 를 lumped-mass 모델로 보정할 관절 (motor id).
+#   URDF distributed mass 를 의도적으로 "안 믿는" 모델링 선택 (fk_chain 주석 참조:
+#   D405 카메라 교체 무게 미반영 + effective stiffness 흡수 → lumped 가 σ 우월).
+#   so101 = shoulder(2) / elbow(3) = 중력 부하 가장 큰 두 관절.
+#   offline BA 가 이 관절에만 sag 항을 fit (CLI --sag-joints 로 override 가능).
+
+sag_joint_motor_ids: [2, 3]

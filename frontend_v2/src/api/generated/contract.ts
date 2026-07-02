@@ -46,6 +46,239 @@ export interface SystemMetrics {
   mem_percent: number;
 }
 
+export interface ActivateResultRequest {
+  result_id: number;
+}
+
+export interface ActivateResultResponse {
+  ok: boolean;
+}
+
+export interface CalibrationActivated {
+  robot_id: string;
+  result_id: number;
+  kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
+}
+
+export interface IntrinsicResultData {
+  camera_matrix: number[][];
+  dist_coeffs: number[][];
+  image_size?: number[] | null;
+}
+
+export interface IntrinsicResultRecord {
+  id?: number | null;
+  run_id: number;
+  robot_id: string;
+  created_at: unknown;
+  is_active?: boolean;
+  sigma_rot?: number | null;
+  sigma_t?: number | null;
+  effective_sigma_rot?: number | null;
+  effective_sigma_t?: number | null;
+  kind?: "intrinsic";
+  result_data: IntrinsicResultData;
+}
+
+export interface HandEyeResultData {
+  R_cam2gripper: number[][];
+  t_cam2gripper: number[][];
+  method: string;
+}
+
+export interface HandEyeResultRecord {
+  id?: number | null;
+  run_id: number;
+  robot_id: string;
+  created_at: unknown;
+  is_active?: boolean;
+  sigma_rot?: number | null;
+  sigma_t?: number | null;
+  effective_sigma_rot?: number | null;
+  effective_sigma_t?: number | null;
+  kind?: "hand_eye";
+  result_data: HandEyeResultData;
+}
+
+export interface JointOffsetResultData {
+  offsets: Record<number, number>;
+  method: string;
+}
+
+export interface JointOffsetResultRecord {
+  id?: number | null;
+  run_id: number;
+  robot_id: string;
+  created_at: unknown;
+  is_active?: boolean;
+  sigma_rot?: number | null;
+  sigma_t?: number | null;
+  effective_sigma_rot?: number | null;
+  effective_sigma_t?: number | null;
+  kind?: "joint_offset";
+  result_data: JointOffsetResultData;
+}
+
+export interface LinkOffsetEntry {
+  joint_id: number;
+  trans_m: number[];
+  rot_rad: number[];
+}
+
+export interface LinkOffsetResultData {
+  offsets: LinkOffsetEntry[];
+  method: string;
+}
+
+export interface LinkOffsetResultRecord {
+  id?: number | null;
+  run_id: number;
+  robot_id: string;
+  created_at: unknown;
+  is_active?: boolean;
+  sigma_rot?: number | null;
+  sigma_t?: number | null;
+  effective_sigma_rot?: number | null;
+  effective_sigma_t?: number | null;
+  kind?: "link_offset";
+  result_data: LinkOffsetResultData;
+}
+
+export interface SagOffsetResultData {
+  k_rad_per_m: Record<number, number>;
+  method: string;
+}
+
+export interface SagOffsetResultRecord {
+  id?: number | null;
+  run_id: number;
+  robot_id: string;
+  created_at: unknown;
+  is_active?: boolean;
+  sigma_rot?: number | null;
+  sigma_t?: number | null;
+  effective_sigma_rot?: number | null;
+  effective_sigma_t?: number | null;
+  kind?: "sag";
+  result_data: SagOffsetResultData;
+}
+
+export interface CalibrationBundle {
+  robot_id: string;
+  intrinsic?: IntrinsicResultRecord | null;
+  hand_eye?: HandEyeResultRecord | null;
+  joint_offset?: JointOffsetResultRecord | null;
+  link_offset?: LinkOffsetResultRecord | null;
+  sag?: SagOffsetResultRecord | null;
+}
+
+export interface CalibrationCommitted {
+  robot_id: string;
+  run_id: number;
+}
+
+export interface CalibrationPreview {
+  robot_id: string;
+  seq: number;
+  timestamp_unix: number;
+  detected: boolean;
+  corner_count: number;
+  tilt_deg?: number | null;
+  verdict: string;
+  reasons?: string[];
+}
+
+export interface CalibrationRunRecord {
+  id?: number | null;
+  robot_id: string;
+  started_at: unknown;
+  ended_at?: unknown | null;
+  operator?: string | null;
+  note?: string | null;
+  algorithm: string;
+  algorithm_params?: Record<string, unknown>;
+  status: "in_progress" | "ready_for_analysis" | "success" | "failed";
+  kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
+}
+
+export interface CaptureQualityPayload {
+  verdict: string;
+  reasons?: string[];
+}
+
+export interface CaptureRequest {
+  run_id: number;
+  pose_index: number;
+}
+
+export interface CaptureResponse {
+  accepted: boolean;
+  capture_id?: number | null;
+  reproj_rms_px?: number | null;
+  tilt_deg?: number | null;
+  quality?: CaptureQualityPayload | null;
+  message?: string;
+}
+
+export interface FinalizeRunRequest {
+  run_id: number;
+}
+
+export interface FinalizeRunResponse {
+  ok: boolean;
+}
+
+export interface GetThresholdsRequest {
+}
+
+export interface GetThresholdsResponse {
+  thresholds: Record<string, number>;
+}
+
+export interface ListResultsRequest {
+  kind?: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag" | null;
+}
+
+export interface ListResultsResponse {
+  results: unknown[];
+}
+
+export interface ListRunsRequest {
+  kind?: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag" | null;
+}
+
+export interface ListRunsResponse {
+  runs: CalibrationRunRecord[];
+}
+
+export interface PreviewEnableRequest {
+  enabled: boolean;
+}
+
+export interface PreviewEnableResponse {
+  ok: boolean;
+}
+
+export interface SnapshotBundleRequest {
+}
+
+export interface StartRunRequest {
+  kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
+  algorithm: string;
+}
+
+export interface StartRunResponse {
+  run_id: number;
+}
+
+export interface UndoLastCaptureRequest {
+  run_id: number;
+}
+
+export interface UndoLastCaptureResponse {
+  ok: boolean;
+}
+
 export interface JogJInput {
   robot_id: string;
   velocities: number[];
@@ -126,6 +359,9 @@ export interface TorqueChanged {
 }
 
 export const Topic = {
+  CALIBRATION_ACTIVATED: "event/calibration/{robot_id}/activated",
+  CALIBRATION_COMMITTED: "event/calibration/{robot_id}/committed",
+  CALIBRATION_PREVIEW: "stream/calibration/{robot_id}/preview",
   MOTION_JOG_J: "stream/motion/{robot_id}/jog_j",
   MOTION_JOG_TCP: "stream/motion/{robot_id}/jog_tcp",
   MOTION_TCP_STATE: "stream/motion/{robot_id}/tcp_state",
@@ -136,6 +372,9 @@ export const Topic = {
 export type TopicKey = (typeof Topic)[keyof typeof Topic];
 
 export type TopicPayloadMap = {
+  "event/calibration/{robot_id}/activated": CalibrationActivated;
+  "event/calibration/{robot_id}/committed": CalibrationCommitted;
+  "stream/calibration/{robot_id}/preview": CalibrationPreview;
   "stream/motion/{robot_id}/jog_j": JogJInput;
   "stream/motion/{robot_id}/jog_tcp": JogTcpInput;
   "stream/motion/{robot_id}/tcp_state": TcpState;
@@ -145,6 +384,16 @@ export type TopicPayloadMap = {
 };
 
 export const ServiceKey = {
+  CALIBRATION_ACTIVATE_RESULT: "srv/calibration/{robot_id}/activate_result",
+  CALIBRATION_CAPTURE: "srv/calibration/{robot_id}/capture",
+  CALIBRATION_FINALIZE_RUN: "srv/calibration/{robot_id}/finalize_run",
+  CALIBRATION_GET_THRESHOLDS: "srv/calibration/{robot_id}/get_thresholds",
+  CALIBRATION_LIST_RESULTS: "srv/calibration/{robot_id}/list_results",
+  CALIBRATION_LIST_RUNS: "srv/calibration/{robot_id}/list_runs",
+  CALIBRATION_PREVIEW_ENABLE: "srv/calibration/{robot_id}/preview_enable",
+  CALIBRATION_SNAPSHOT_BUNDLE: "srv/calibration/{robot_id}/snapshot_bundle",
+  CALIBRATION_START_RUN: "srv/calibration/{robot_id}/start_run",
+  CALIBRATION_UNDO_LAST_CAPTURE: "srv/calibration/{robot_id}/undo_last_capture",
   MOTION_MOVE_J: "srv/motion/{robot_id}/move_j",
   MOTOR_CAPABILITIES: "srv/motor/{robot_id}/capabilities",
   MOTOR_GET_TOPOLOGY: "srv/motor/{robot_id}/topology",
@@ -153,6 +402,16 @@ export const ServiceKey = {
 export type ServiceKeyValue = (typeof ServiceKey)[keyof typeof ServiceKey];
 
 export type ServiceMap = {
+  "srv/calibration/{robot_id}/activate_result": { req: ActivateResultRequest; res: ActivateResultResponse };
+  "srv/calibration/{robot_id}/capture": { req: CaptureRequest; res: CaptureResponse };
+  "srv/calibration/{robot_id}/finalize_run": { req: FinalizeRunRequest; res: FinalizeRunResponse };
+  "srv/calibration/{robot_id}/get_thresholds": { req: GetThresholdsRequest; res: GetThresholdsResponse };
+  "srv/calibration/{robot_id}/list_results": { req: ListResultsRequest; res: ListResultsResponse };
+  "srv/calibration/{robot_id}/list_runs": { req: ListRunsRequest; res: ListRunsResponse };
+  "srv/calibration/{robot_id}/preview_enable": { req: PreviewEnableRequest; res: PreviewEnableResponse };
+  "srv/calibration/{robot_id}/snapshot_bundle": { req: SnapshotBundleRequest; res: CalibrationBundle };
+  "srv/calibration/{robot_id}/start_run": { req: StartRunRequest; res: StartRunResponse };
+  "srv/calibration/{robot_id}/undo_last_capture": { req: UndoLastCaptureRequest; res: UndoLastCaptureResponse };
   "srv/motion/{robot_id}/move_j": { req: MoveJRequest; res: MoveJResponse };
   "srv/motor/{robot_id}/capabilities": { req: MotorCapabilitiesRequest; res: MotorCapabilities };
   "srv/motor/{robot_id}/topology": { req: TopologyRequest; res: MotorTopology };

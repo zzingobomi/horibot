@@ -26,6 +26,19 @@ def build_runtime(
 ) -> Runtime:
     runtime = Runtime(transport)
 
+    # DB owner host (rdb_uri 지정) — process infra 싱글톤 engine/session_factory 1번
+    # 생성 + root alembic upgrade head. import 는 이 블록 안에서만 (Pi role 격리).
+    session_factory = None
+    if deploy.rdb_uri:
+        from infra.database.boot import open_database, run_migrations
+
+        engine, session_factory = open_database(deploy.rdb_uri)
+        run_migrations(engine)  # 테이블 생성/마이그레이션 → 모듈 시작 전
+        logger.info(
+            "DB ready — rdb_uri=%s (engine + session_factory + alembic upgrade head)",
+            deploy.rdb_uri,
+        )
+
     for entry in deploy.modules:
         # lazy — 이 host 의 deployment 에 있는 모듈만 import (role 격리)
         mod_cls = load_module_class(entry.name)
@@ -36,7 +49,7 @@ def build_runtime(
                     raise KeyError(
                         f"module {entry.name} 의 robot {rid!r} 가 robots.yaml 에 없음"
                     )
-                deps = resolve_deps(entry.name, robot, deploy)
+                deps = resolve_deps(entry.name, robot, deploy, session_factory)
                 runtime.add_module(mod_cls, robot_id=rid, **deps)
                 logger.info("add_module %s robot_id=%s", entry.name, rid)
         else:

@@ -7,9 +7,12 @@
   v2 자체 loader (깨끗한 데이터만 재사용, 옛 아키텍처 X).
 - **backend_v2/config/deployments/** — v2 배포 토폴로지 (host→module, driver_mode).
 
-robots.yaml 의 calibration 도메인 파라미터(pose_recommend_strategy /
-wrist_roll_motor_id / sag_joint_motor_ids)는 lean read 에서 무시 — Calibration
-Module config 자리 (Step E 재배치).
+calibration 도메인 파라미터 중:
+- `sag_joint_motor_ids` 는 로봇 타입의 **물리 모델 사실** (어느 관절이 중력 sag 를
+  받나) → `<type>/physical.yaml` 로 승격 (calibration 값이 아니라 robot physical
+  model — Motion sag decorator + offline BA 공용). FkChain 도입과 함께 자리 잡음.
+- `pose_recommend_strategy` / `wrist_roll_motor_id` 는 캘 전략이라 Calibration
+  Module config 자리 (Step E 재배치) — lean read 에서 여전히 무시.
 """
 
 from __future__ import annotations
@@ -75,6 +78,10 @@ class RobotConfig(BaseModel):
     # type-level (<type>/motion.yaml) — joint name 별 Ruckig 한계 + cartesian
     motion_joint_limits: dict[str, JointMotionLimit] = Field(default_factory=dict)
     cartesian_limits: CartesianLimit = Field(default_factory=CartesianLimit)
+    # type-level (<type>/physical.yaml) — robot physical model (모델링 선택만).
+    # 중력 sag lumped-mass 모델을 적용할 관절 (motor id). Motion sag decorator +
+    # offline BA 공용. 빈 list = sag 모델 없음.
+    sag_joint_motor_ids: list[int] = Field(default_factory=list)
 
 
 def _resolve_port(instance_raw: dict) -> tuple[str | None, int | None]:
@@ -125,6 +132,15 @@ def _load_motion(
     return joints, cart
 
 
+def _load_physical(robot_type: str, robot_dir: Path) -> list[int]:
+    """<type>/physical.yaml 의 sag_joint_motor_ids (없으면 빈 list)."""
+    path = robot_dir / robot_type / "physical.yaml"
+    if not path.exists():
+        return []
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return list(raw.get("sag_joint_motor_ids") or [])
+
+
 def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
     raw = yaml.safe_load((robot_dir / "robots.yaml").read_text(encoding="utf-8"))
     robots: dict[str, RobotConfig] = {}
@@ -151,6 +167,7 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
             motors=_load_motors(rtype, robot_dir),
             motion_joint_limits=motion_joints,
             cartesian_limits=cartesian,
+            sag_joint_motor_ids=_load_physical(rtype, robot_dir),
         )
     return robots
 
@@ -175,6 +192,12 @@ class DeploymentConfig(BaseModel):
     driver_mode: DriverMode = DriverMode.REAL
     zenoh: dict = Field(default_factory=dict)
     modules: list[ModuleEntry] = Field(default_factory=list)
+    # DB owner host (PC) 만 지정 — 공유 물리 DB URI. boot 가 process infra 싱글톤
+    # engine/session_factory 를 여기서 1번 생성 + root alembic upgrade head.
+    # Pi(motor/camera)는 없음 (DB 모듈 미배치).
+    rdb_uri: str | None = None
+    # blob 저장 (calibration capture 등) — file:///path. DB owner host 만.
+    object_uri: str | None = None
 
 
 def load_deployment(path: Path | str) -> DeploymentConfig:

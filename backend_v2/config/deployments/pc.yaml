@@ -4,6 +4,10 @@
 
 driver_mode: real
 
+# 공유 물리 DB (파일). 경로는 집 배포 시 조정 가능 (cwd=backend_v2 기준 상대).
+rdb_uri: "sqlite:///horibot_v2.db"
+object_uri: "storage_v2/blobs"  # calibration capture blob
+
 zenoh:
   mode: peer
   scouting:
@@ -12,5 +16,7 @@ zenoh:
 
 modules:
   - name: camera_decoded
+    robots: [so101_6dof_0]
+  - name: calibration
     robots: [so101_6dof_0]
   - name: bridge # HTTP/WS gateway (frontend_v2 진입점, :8000)

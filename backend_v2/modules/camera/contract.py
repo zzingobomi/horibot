@@ -13,6 +13,10 @@ class Camera:
         DECODED_SNAPSHOT = "srv/camera/{robot_id}/decoded_snapshot"
         DEPTH_DECODED_SNAPSHOT = "srv/camera/{robot_id}/depth_decoded_snapshot"
 
+        # factory intrinsic — internal (Calibration seed only, §7.6/§10.1).
+        # FRONTEND_EXPOSED X (프론트 미노출). Calibration.start() 가 pull → idempotent seed.
+        GET_FACTORY_INTRINSIC = "srv/camera/{robot_id}/get_factory_intrinsic"
+
     class Stream(StrEnum):
         # CameraDriver publish — raw wire (JPEG + zstd depth)
         JPEG = "stream/camera/{robot_id}/jpeg"
@@ -53,6 +57,25 @@ class DecodedSnapshotRequest(BaseModel):
 
 class DepthDecodedSnapshotRequest(BaseModel):
     pass
+
+
+class GetFactoryIntrinsicRequest(BaseModel):
+    pass
+
+
+class FactoryIntrinsic(BaseModel):
+    """driver-reported factory intrinsic (Calibration seed only, internal).
+
+    available=False = driver 가 factory intrinsic 없음 (USB UVC 등 — 사용자 캘 필요).
+    """
+
+    available: bool
+    fx: float = 0.0
+    fy: float = 0.0
+    cx: float = 0.0
+    cy: float = 0.0
+    width: int = 0
+    height: int = 0
 
 
 # ─── stream payload — raw wire (CameraDriver) ──────────────────────

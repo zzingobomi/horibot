@@ -30,6 +30,8 @@ from .contract import (
     CameraDepthRawFrame,
     CameraJpegFrame,
     CapabilitiesRequest,
+    FactoryIntrinsic,
+    GetFactoryIntrinsicRequest,
 )
 from .drivers.protocol import CameraDriver
 
@@ -98,6 +100,24 @@ class CameraDriverModule:
     def get_capabilities(self, req: CapabilitiesRequest) -> CameraCapabilities:
         assert self._capabilities is not None, "start() 박힌 후 호출"
         return self._capabilities
+
+    @service(Camera.Service.GET_FACTORY_INTRINSIC)
+    def get_factory_intrinsic(
+        self, req: GetFactoryIntrinsicRequest
+    ) -> FactoryIntrinsic:
+        # internal — Calibration seed only (§7.6). driver 가 없으면 available=False.
+        fi = self._driver.get_factory_intrinsics()
+        if fi is None:
+            return FactoryIntrinsic(available=False)
+        return FactoryIntrinsic(
+            available=True,
+            fx=fi.fx,
+            fy=fi.fy,
+            cx=fi.cx,
+            cy=fi.cy,
+            width=fi.width,
+            height=fi.height,
+        )
 
     # ── capture loop (30Hz) ───────────────────────────────────
 

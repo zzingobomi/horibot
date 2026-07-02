@@ -4,7 +4,9 @@
 >
 > ⚠️ **옛 `frontend/` 는 지우지 않고 의도적으로 남겨둔 carry-over reference 다** (단순 "옛 backend 호환" 보존이 아님). dockview 패널 조립 / RobotsLayout / sidebar / 패널 레지스트리 / 라우팅 / 각종 race fix — "페이지가 어떻게 구성·확장되는가" 의 답이 거기 이미 다 풀려 있다. **default = 그 구조를 가져온다. defer 는 backend module 이 아직 없어서 *지을 수 없는* feature 페이지만.** "최소로 짓고 shell/dockview 는 나중에" 로 판단하면 안 된다 (2026-07-01 그 실수 발생 — §2.3, anchor 1).
 >
-> **현재 status**: Step F1-F6 완료 — jog vertical slice + **dockview shell foundation** (RobotsLayout + ModeDockview + PANEL_COMPONENTS registry + Sidebar + RobotMoveMode 로 jog 을 fold). `pnpm lint` 0 + build clean + 31 vitest PASS. F6 의 L4 headed e2e 는 집 검증 (§15.6). 이후 feature = mode 파일 PANELS + registry 등록 snap-in. 구현 상세 = §1-§12, status + 다음 = §15. (옛 frontend_v2_status.md 통합.)
+> **현재 status**: Step F1-F6 (jog + dockview shell) + **RobotCalibrateMode 완료 (2026-07-02)**. jog vertical slice + dockview shell foundation + `CalibrationPanel`(preview traffic light + capture 세션 + active bundle + run history) + registry/sidebar/route. `pnpm lint` 0 + tsc clean + 31 vitest PASS + **Playwright headed calibrate e2e 4/4** (mock+sim: WS연결·bundle / preview toggle / start_run→history / preview 검출(green)+capture accepted). 이후 feature = mode 파일 PANELS + registry snap-in. 구현 상세 = §1-§12, status + 다음 = §15.
+>
+> **⚠️ calibration = `useService` (boot-query), `useMirror` 아님** — backend 가 Calibration Bundle 을 boot-time configuration 으로 결정 (Mirror 안 씀, [calibration_module_boundary.md §6](calibration_module_boundary.md)). 아래 §7/§11.1 의 "useMirror(CalibrationBundle)" 예시는 **superseded** — CalibrationPanel 은 `useService(CALIBRATION_SNAPSHOT_BUNDLE)` 로 조회. `useMirror` hook 자체는 정의만 유지 (현재 도메인 consumer 0, backend Mirror deferred 와 동일).
 
 ## 1. 개요
 
@@ -169,7 +171,7 @@ frontend_v2/src/
 │   └── robotModes/
 │       ├── ModeDockview.tsx ✓      # generic dockview wrapper (registry + 레이아웃 persist + reset)
 │       ├── RobotMoveMode.tsx ✓     # PANELS=[robotState, motion]
-│       ├── RobotCalibrateMode.tsx  # (Step E+)
+│       ├── RobotCalibrateMode.tsx  # ✅ (CalibrationPanel + RobotStatePanel)
 │       └── RobotModeRedirect.tsx ✓ # /robots/:id → 첫 mode redirect
 ├── components/
 │   ├── ui/{button,tabs,slider}.tsx ✓   # shadcn primitive (radix, CLI 생성·regenerate — lint override §12.6)
@@ -455,22 +457,25 @@ pnpm test        # 31 PASS
 
 0. **✅ 계약 타입 생성 재설계 — 구현·검증 완료 (2026-07-01, §2.1).** backend `/contract.json` EXPORT + frontend Node gen (`gen-contract.mjs`) fetch. 옛 source-introspection `gen_contract.py` 삭제, 노출 = `apps/contract_export.py::FRONTEND_EXPOSED`. 상세·기각대안·가드 = **§2.1** (옛 `frontend_contract_gen.md` 는 여기로 통합·삭제). backend 130 test + frontend render golden PASS.
 1. **backend bridge ws panic (latent, mid)** — frontend reload/close 시 `backend_v2/modules/bridge/ws.py` 의 `_drain_helper` `AssertionError` (websockets legacy). browser refresh 시 backend restart 필요. fix = ws.py connection cleanup 또는 새 websockets API migrate. (L4 e2e 는 test 당 fresh context 라 이번엔 안 걸렸음 — 실 사용 reload 시 재현.)
-2. **집: 실 SO-101 jog** (§15.6).
-3. **Step E+ feature 페이지** — backend Calibration / Detector / Scene3D / Scan / Reconstruction / Task / Gamepad 박힌 후 RobotCalibrateMode + `useMirror(CalibrationBundle)` + `useCapability(camera)` + Scene3D/Detection/Task 패널 carry over. 새 패널 = `panels/` 에 추가 + registry 한 줄 + mode PANELS 한 줄 snap-in (§4.1, §10).
+2. **✅ 집: 실 SO-101 jog — TCP jog 검증 완료 (2026-07-02, §15.6).** frontend_v2 화면에서 TCP jog → 실 모터 회전 확인. (joint jog / 3D 실데이터는 미확인.)
+3. **✅ RobotCalibrateMode 완료 (2026-07-02)** — `CalibrationPanel` (preview traffic light + start/capture/undo/finalize 세션 + active bundle + run history/rollback) + registry/sidebar/route. calibration = `useService` boot-query (Mirror 아님). `e2e/calibrate.spec.ts` Playwright 4/4 (mock+sim, capture-success over-wire 포함).
+4. **남은 Step E+ feature 페이지** — Detector / Scene3D / Scan / Reconstruction / Task / Gamepad 박힌 후 그 패널 carry over. Hand-Eye/Intrinsic 세부 패널은 capture UX 심화 시. 새 패널 = `panels/` + registry 한 줄 + mode PANELS 한 줄 snap-in (§4.1, §10).
 
 ### 15.5 jog robustness — IDLE_RESET 검토 거리
 
 jog 정확성이 publish rate < 200ms (`_JOG_IDLE_RESET_S`) 에 의존 (§11.2). 메인스레드 stall 시 jog 가 조용히 멈춤 — 실 GPU 머신은 50Hz 라 정상이지만 robustness 결정 거리: backend IDLE_RESET tolerance 완화 vs frontend rate 보장. (지금 fix X — 별도 검토.)
 
-### 15.6 hardware 검증 (집에서)
+### 15.6 hardware 검증 (집에서) — TCP jog ✅ (2026-07-02)
 
-목표 = 집에서 frontend_v2 로 실 SO-101 jog:
+**검증 완료**: 집에서 frontend_v2 화면 → **TCP jog → 실 SO-101 모터 회전 확인**. C2 wire (frontend→bridge) + Motion JogTcp→IK→feetech command + 토크 enable 이 실 하드웨어에서 동작. Feetech driver 실 통신(register map / sync / signed / clamp)이 TCP jog 경로에서 살아있음 확인됨.
+
+절차:
 1. `cd backend_v2; uv run python -m apps.main --host pc` (또는 pi_motor + pi_camera 분산)
 2. `cd frontend_v2; pnpm dev`
 3. 브라우저 `http://localhost:5174/robots/so101_6dof_0/move`
-4. J1+ button hold → 실 SO-101 motor 회전 확인
+4. TCP jog hold → 실 SO-101 motor 회전 확인 ✅
 
-잠재 issue: Feetech driver 실 통신 미검증 (register map / sync / signed / clamp), motors.yaml pid/profile 미적용 (EEPROM default), backend bridge ws panic (reload 시 restart).
+미확인/잠재 issue: joint jog / 3D 실데이터 렌더, motors.yaml pid/profile 미적용 (EEPROM default), backend bridge ws panic (reload 시 restart), camera(realsense) 통신.
 
 ### 15.7 F6 에서 L4 e2e 로 잡은 버그 (collapse dead-code)
 

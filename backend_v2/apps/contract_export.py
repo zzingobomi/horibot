@@ -40,6 +40,7 @@ from framework.runtime.snapshot import (
     build_snapshot_from_classes,
 )
 from modules.bridge.contract import RobotsResponse, SystemMetrics
+from modules.calibration.contract import Calibration
 from modules.motion.contract import Motion
 from modules.motor.contract import Motor
 
@@ -73,6 +74,20 @@ FRONTEND_EXPOSED: set[str] = {
         Motion.Stream.TCP_STATE,
         Motion.Stream.JOG_J,
         Motion.Stream.JOG_TCP,
+        # calibration — RobotCalibrateMode 페이지
+        Calibration.Service.START_RUN,
+        Calibration.Service.CAPTURE,
+        Calibration.Service.UNDO_LAST_CAPTURE,
+        Calibration.Service.FINALIZE_RUN,
+        Calibration.Service.ACTIVATE_RESULT,
+        Calibration.Service.PREVIEW_ENABLE,
+        Calibration.Service.SNAPSHOT_BUNDLE,
+        Calibration.Service.LIST_RUNS,
+        Calibration.Service.LIST_RESULTS,
+        Calibration.Service.GET_THRESHOLDS,
+        Calibration.Stream.PREVIEW,
+        Calibration.Event.ACTIVATED,
+        Calibration.Event.COMMITTED,
     )
 }
 

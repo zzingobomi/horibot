@@ -4,6 +4,10 @@
 
 driver_mode: mock
 
+# mock = 하드웨어 없는 UX/wire 검증 — in-memory DB (재시작 시 휘발). 실 파일 DB 는 pc.yaml.
+rdb_uri: "sqlite:///:memory:"
+object_uri: ".calib_blobs_mock"  # ephemeral (gitignore) — capture blob 검증용
+
 zenoh:
   mode: peer
   scouting:
@@ -18,5 +22,7 @@ modules:
   - name: camera
     robots: [so101_6dof_0]
   - name: camera_decoded
+    robots: [so101_6dof_0]
+  - name: calibration
     robots: [so101_6dof_0]
   - name: bridge

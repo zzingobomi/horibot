@@ -9,15 +9,24 @@ resolve import 만으로 pybullet/fastapi 끌어오면 안 됨).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .config import _ROBOT_DIR, DeploymentConfig, DriverMode, RobotConfig
 
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session, sessionmaker
+
 
 def resolve_deps(
-    name: str, robot: RobotConfig, deploy: DeploymentConfig
+    name: str,
+    robot: RobotConfig,
+    deploy: DeploymentConfig,
+    session_factory: sessionmaker[Session] | None = None,
 ) -> dict[str, Any]:
-    """robot-scoped Module 의 constructor deps (runtime / robot_id 제외)."""
+    """robot-scoped Module 의 constructor deps (runtime / robot_id 제외).
+
+    session_factory = boot 가 만든 process-shared DB factory (DB 모듈만 사용).
+    """
     if name == "motor":
         return {"driver": _motor_driver(robot, deploy)}
     if name == "camera":
@@ -26,6 +35,22 @@ def resolve_deps(
         return {}
     if name == "motion":
         return _motion_deps(robot)
+    if name == "calibration":
+        if session_factory is None:
+            raise ValueError(
+                "calibration 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)"
+            )
+        if deploy.object_uri is None:
+            raise ValueError("calibration 배치엔 deployment 의 object_uri 필요 (blob)")
+        from modules.calibration.persistence.repository import CalibrationRepository
+        from modules.motor.contract import MotorKind
+
+        arm_ids = [m.id for m in robot.motors if m.kind != MotorKind.GRIPPER]
+        return {
+            "repository": CalibrationRepository(session_factory),
+            "object_store": _object_store(deploy.object_uri),
+            "motor_ids": arm_ids,
+        }
     raise NotImplementedError(
         f"robot-scoped resolve 미지원 module: {name!r} (robot={robot.id})"
     )
@@ -87,6 +112,21 @@ def resolve_host_deps(
             deps["graph_provider"] = _graph_provider
         return deps
     raise NotImplementedError(f"host-level resolve 미지원 module: {name!r}")
+
+
+# ─── object store (blob) ────────────────────────────────────────
+
+
+def _object_store(object_uri: str) -> Any:
+    from infra.object_store.filesystem import FilesystemObjectStore
+
+    if object_uri.startswith("file:///"):
+        base = object_uri[len("file://") :]  # /path 유지
+    elif object_uri.startswith("file://"):
+        base = object_uri[len("file://") :]
+    else:
+        base = object_uri
+    return FilesystemObjectStore(base)
 
 
 # ─── driver / kinematics 선택 (lazy import) ─────────────────────

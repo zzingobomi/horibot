@@ -80,8 +80,8 @@ def test_contract_json_shape():
     topic_keys = {t["key"] for t in data["topics"]}
     service_keys = {s["key"] for s in data["services"]}
     assert topic_keys | service_keys == FRONTEND_EXPOSED
-    assert len(data["topics"]) == 6
-    assert len(data["services"]) == 4
+    assert len(data["topics"]) == 9  # +calibration PREVIEW/ACTIVATED/COMMITTED
+    assert len(data["services"]) == 14  # +calibration 10 서비스
     # 내부 전용 payload 는 도달성으로 제외 — JointCommand 안 나옴
     iface_names = {i["name"] for i in data["interfaces"]}
     assert "JointCommand" not in iface_names
@@ -162,8 +162,8 @@ async def test_contract_json_endpoint_serves(contract_endpoint: str):
     data = res.json()
     assert set(data) == {"enums", "interfaces", "topics", "services"}
     # HTTP 로 serve 된 JSON = in-process build_contract_json 과 동일 계약
-    assert len(data["topics"]) == 6
-    assert len(data["services"]) == 4
+    assert len(data["topics"]) == 9  # +calibration PREVIEW/ACTIVATED/COMMITTED
+    assert len(data["services"]) == 14  # +calibration 10 서비스
 
 
 # ─── build_contract_graph — unfiltered attribution + wiring (§5.2) ─
@@ -182,12 +182,13 @@ def _built_graph() -> dict:
 def test_graph_nodes_are_contentful_modules_only():
     graph = _built_graph()
     ids = {m["id"] for m in graph["modules"]}
-    # contract 있는 4 module — bridge (relay, contract 0) 는 node 제외
+    # contract 있는 module — bridge (relay, contract 0) 는 node 제외
     assert ids == {
         "MotorDriverModule",
         "MotionModule",
         "CameraDriverModule",
         "CameraDecodedModule",
+        "CalibrationModule",
     }
     assert "BridgeModule" not in ids
     by_id = {m["id"]: m for m in graph["modules"]}
@@ -329,5 +330,6 @@ async def test_contract_graph_endpoint_serves(graph_endpoint: str):
         "MotionModule",
         "CameraDriverModule",
         "CameraDecodedModule",
+        "CalibrationModule",
     }
     assert len(data["edges"]) >= 4

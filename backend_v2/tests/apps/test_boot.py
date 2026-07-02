@@ -51,6 +51,12 @@ def test_load_robots_parses_entries():
     assert robots["omx_f_0"].camera_backend == "opencv"
 
 
+def test_load_robots_reads_physical_sag_joints():
+    # <type>/physical.yaml 의 robot physical model (sag_joint_motor_ids) 로딩.
+    robots = load_robots()
+    assert robots[_SO101].sag_joint_motor_ids == [2, 3]  # shoulder / elbow
+
+
 def test_load_deployment_mock():
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "mock.yaml")
     assert deploy.driver_mode == "mock"
@@ -59,8 +65,10 @@ def test_load_deployment_mock():
         "motion",
         "camera",
         "camera_decoded",
+        "calibration",
         "bridge",
     }
+    assert deploy.rdb_uri == "sqlite:///:memory:"  # DB owner host
 
 
 # ─── resolve_deps ───────────────────────────────────────────────
@@ -164,6 +172,58 @@ async def test_boot_camera_capabilities_reachable(booted: Runtime):
         robot_id=_SO101,
     )
     assert CameraCapability.DEPTH in res.flags  # rgbd robot
+
+
+async def test_boot_calibration_snapshot_bundle_reachable(booted: Runtime):
+    # calibration robot-scoped Module 이 booted (rdb_uri :memory: + alembic upgrade head)
+    # → snapshot_bundle service 가 Zenoh 로 도달. §10.1 — Calibration.start() 가
+    # Camera GET_FACTORY_INTRINSIC pull → intrinsic 자동 seed (mock camera 는 synthetic).
+    from modules.calibration.contract import (
+        Calibration,
+        CalibrationBundle,
+        SnapshotBundleRequest,
+    )
+
+    res = await booted.module_runtime.call(
+        Calibration.Service.SNAPSHOT_BUNDLE,
+        SnapshotBundleRequest(),
+        CalibrationBundle,
+        robot_id=_SO101,
+    )
+    assert res.robot_id == _SO101
+    # factory intrinsic over-wire seed 검증 (§10.1)
+    assert res.intrinsic is not None
+    assert res.intrinsic.result_data.camera_matrix[0][0] > 0  # fx
+    # 나머지는 미활성 (hand_eye 등은 offline BA 자리)
+    assert res.hand_eye is None
+    assert res.signature() == (("intrinsic", res.intrinsic.id),)
+
+
+async def test_boot_calibration_start_run_and_list_over_wire(booted: Runtime):
+    # write 경로 + 마이그레이션 검증 — start_run(INSERT) → list_runs(SELECT) over Zenoh.
+    from modules.calibration.contract import (
+        Calibration,
+        ListRunsRequest,
+        ListRunsResponse,
+        StartRunRequest,
+        StartRunResponse,
+    )
+
+    started = await booted.module_runtime.call(
+        Calibration.Service.START_RUN,
+        StartRunRequest(kind="hand_eye", algorithm="hand_eye_capture_only"),
+        StartRunResponse,
+        robot_id=_SO101,
+    )
+    assert started.run_id > 0
+
+    listed = await booted.module_runtime.call(
+        Calibration.Service.LIST_RUNS,
+        ListRunsRequest(),
+        ListRunsResponse,
+        robot_id=_SO101,
+    )
+    assert any(r.id == started.run_id and r.kind == "hand_eye" for r in listed.runs)
 
 
 async def test_boot_camera_decode_stream_e2e(booted: Runtime):

@@ -51,6 +51,25 @@ def resolve_deps(
             "object_store": _object_store(deploy.object_uri),
             "motor_ids": arm_ids,
         }
+    if name == "scene3d":
+        return {}
+    if name == "scan":
+        if session_factory is None:
+            raise ValueError("scan 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)")
+        if deploy.object_uri is None:
+            raise ValueError("scan 배치엔 deployment 의 object_uri 필요 (blob)")
+        from modules.motion.adapters.pybullet import PybulletKinematics
+        from modules.motor.contract import MotorKind
+        from modules.scan.persistence.repository import ScanRepository
+
+        arm = [s for s in robot.motors if s.kind != MotorKind.GRIPPER]
+        urdf = _ROBOT_DIR / robot.type / "urdf" / f"{robot.type}.urdf"
+        return {
+            "repository": ScanRepository(session_factory),
+            "object_store": _object_store(deploy.object_uri),
+            "kinematics": PybulletKinematics(urdf),
+            "arm_specs": arm,
+        }
     raise NotImplementedError(
         f"robot-scoped resolve 미지원 module: {name!r} (robot={robot.id})"
     )

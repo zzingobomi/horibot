@@ -66,6 +66,8 @@ def test_load_deployment_mock():
         "camera",
         "camera_decoded",
         "calibration",
+        "scene3d",
+        "scan",
         "bridge",
     }
     assert deploy.rdb_uri == "sqlite:///:memory:"  # DB owner host

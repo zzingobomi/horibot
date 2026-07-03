@@ -1,5 +1,4 @@
-# runtime artifacts (Database-per-project, root single alembic)
-horibot_v2.db
+# horibot.db 는 git 추적 (개발 단계 — 캘 데이터 동기화). transient sidecar 만 무시.
 *.db-wal
 *.db-shm
 *.db-journal

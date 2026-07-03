@@ -12,6 +12,8 @@ import { OrbitControls, Grid, Environment } from "@react-three/drei";
 import * as THREE from "three";
 import { RobotLayer } from "./RobotLayer";
 import { AxisFrame } from "./AxisFrame";
+import { Scene3DLayer } from "./Scene3DLayer";
+import { MeshLayer } from "./MeshLayer";
 import { DEFAULT_SCENE_OPTIONS, type SceneOptions } from "./sceneOptions";
 import type { RobotInfo } from "@/api/generated/contract";
 
@@ -28,6 +30,10 @@ interface RobotSceneProps {
   focusId?: string | null;
   cameraPosition?: [number, number, number];
   cameraTarget?: [number, number, number];
+  /** focus robot base transform (z-up→y-up + base_pose) — scan mesh 배치용. */
+  robotBaseMatrix?: THREE.Matrix4 | null;
+  /** focus robot id — scan live cloud / hand_eye fetch 용. */
+  robotId?: string;
 }
 
 function SceneContent({
@@ -39,6 +45,8 @@ function SceneContent({
   robots,
   focusId,
   cameraTarget,
+  robotBaseMatrix = null,
+  robotId = "",
 }: RobotSceneProps) {
   return (
     <>
@@ -97,6 +105,10 @@ function SceneContent({
           labelColor="#ffcc44"
         />
       )}
+
+      {/* scan — 라이브 PC (scanStore.liveEnabled gate) + reconstruction mesh */}
+      {robotId && <Scene3DLayer tcpMatrix={tcpMatrix} robotId={robotId} />}
+      <MeshLayer robotBaseMatrix={robotBaseMatrix} />
 
       <OrbitControls
         makeDefault

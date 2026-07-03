@@ -206,12 +206,12 @@ export interface CaptureQualityPayload {
   reasons?: string[];
 }
 
-export interface CaptureRequest {
+export interface CalibrationCaptureRequest {
   run_id: number;
   pose_index: number;
 }
 
-export interface CaptureResponse {
+export interface CalibrationCaptureResponse {
   accepted: boolean;
   capture_id?: number | null;
   reproj_rms_px?: number | null;
@@ -358,6 +358,164 @@ export interface TorqueChanged {
   enabled: boolean;
 }
 
+export interface BuildProgress {
+  robot_id: string;
+  seq: number;
+  timestamp_unix: number;
+  session_row_id: number;
+  stage: string;
+  percent: number;
+  message?: string;
+  reconstruction_row_id?: number | null;
+}
+
+export interface BuildRequest {
+  session_row_id: number;
+  voxel_size?: number | null;
+  sdf_trunc?: number | null;
+  depth_trunc?: number | null;
+  icp_max_dist?: number | null;
+}
+
+export interface ReconstructionRecord {
+  id?: number | null;
+  session_row_id: number;
+  robot_id: string;
+  created_at: unknown;
+  blob_key: string;
+  voxel_size: number;
+  sdf_trunc: number;
+  depth_trunc: number;
+  icp_max_dist: number;
+  n_scans: number;
+  n_edges: number;
+  vertex_count: number;
+  triangle_count: number;
+  elapsed: number;
+}
+
+export interface BuildResponse {
+  accepted: boolean;
+  reconstruction?: ReconstructionRecord | null;
+  message?: string;
+}
+
+export interface ScanCaptureRequest {
+  session_row_id: number;
+  num_frames?: number;
+}
+
+export interface ScanRecord {
+  id?: number | null;
+  session_row_id: number;
+  robot_id: string;
+  scan_id: number;
+  created_at: unknown;
+  blob_key: string;
+  num_frames: number;
+  width: number;
+  height: number;
+  fx: number;
+  fy: number;
+  cx: number;
+  cy: number;
+  depth_scale: number;
+  motor_positions: number[];
+  arm_motor_ids: number[];
+}
+
+export interface ScanCaptureResponse {
+  accepted: boolean;
+  scan?: ScanRecord | null;
+  scan_count?: number;
+  message?: string;
+}
+
+export interface DeleteScanRequest {
+  scan_row_id: number;
+}
+
+export interface DeleteScanResponse {
+  ok: boolean;
+}
+
+export interface DeleteSessionRequest {
+  session_row_id: number;
+}
+
+export interface DeleteSessionResponse {
+  ok: boolean;
+}
+
+export interface GetMeshRequest {
+  reconstruction_row_id: number;
+}
+
+export interface GetMeshResponse {
+  ply_bytes: Uint8Array;
+  vertex_count: number;
+  triangle_count: number;
+}
+
+export interface ListReconstructionsRequest {
+  session_row_id: number;
+}
+
+export interface ListReconstructionsResponse {
+  reconstructions: ReconstructionRecord[];
+}
+
+export interface ListScansRequest {
+  session_row_id: number;
+}
+
+export interface ListScansResponse {
+  scans: ScanRecord[];
+}
+
+export interface ListSessionsRequest {
+}
+
+export interface ScanSessionRecord {
+  id?: number | null;
+  robot_id: string;
+  session_id: string;
+  created_at: unknown;
+  label?: string | null;
+}
+
+export interface ListSessionsResponse {
+  sessions: ScanSessionRecord[];
+}
+
+export interface NewSessionRequest {
+  label?: string | null;
+}
+
+export interface NewSessionResponse {
+  session: ScanSessionRecord;
+}
+
+export interface Scene3dCloud {
+  robot_id: string;
+  seq: number;
+  timestamp_unix: number;
+  point_count: number;
+  xyz_bytes: Uint8Array;
+  rgb_bytes: Uint8Array;
+}
+
+export interface SetStreamRequest {
+  enabled: boolean;
+  voxel_size?: number | null;
+}
+
+export interface SetStreamResponse {
+  ok: boolean;
+  enabled: boolean;
+  voxel_size: number;
+}
+
 export const Topic = {
   CALIBRATION_ACTIVATED: "event/calibration/{robot_id}/activated",
   CALIBRATION_COMMITTED: "event/calibration/{robot_id}/committed",
@@ -368,6 +526,8 @@ export const Topic = {
   MOTOR_RAW_STATE: "stream/motor/{robot_id}/raw_state",
   MOTOR_STATE: "stream/motor/{robot_id}/state",
   MOTOR_TORQUE_CHANGED: "event/motor/{robot_id}/torque_changed",
+  SCAN_BUILD_PROGRESS: "stream/scan/{robot_id}/build_progress",
+  SCENE3D_CLOUD: "stream/scene3d/{robot_id}/cloud",
 } as const;
 export type TopicKey = (typeof Topic)[keyof typeof Topic];
 
@@ -381,6 +541,8 @@ export type TopicPayloadMap = {
   "stream/motor/{robot_id}/raw_state": JointState;
   "stream/motor/{robot_id}/state": MotorState;
   "event/motor/{robot_id}/torque_changed": TorqueChanged;
+  "stream/scan/{robot_id}/build_progress": BuildProgress;
+  "stream/scene3d/{robot_id}/cloud": Scene3dCloud;
 };
 
 export const ServiceKey = {
@@ -398,12 +560,22 @@ export const ServiceKey = {
   MOTOR_CAPABILITIES: "srv/motor/{robot_id}/capabilities",
   MOTOR_GET_TOPOLOGY: "srv/motor/{robot_id}/topology",
   MOTOR_SET_TORQUE: "srv/motor/{robot_id}/set_torque",
+  SCAN_BUILD: "srv/scan/{robot_id}/build",
+  SCAN_CAPTURE: "srv/scan/{robot_id}/capture",
+  SCAN_DELETE_SCAN: "srv/scan/{robot_id}/delete_scan",
+  SCAN_DELETE_SESSION: "srv/scan/{robot_id}/delete_session",
+  SCAN_GET_MESH: "srv/scan/{robot_id}/get_mesh",
+  SCAN_LIST_RECONSTRUCTIONS: "srv/scan/{robot_id}/list_reconstructions",
+  SCAN_LIST_SCANS: "srv/scan/{robot_id}/list_scans",
+  SCAN_LIST_SESSIONS: "srv/scan/{robot_id}/list_sessions",
+  SCAN_NEW_SESSION: "srv/scan/{robot_id}/new_session",
+  SCENE3D_SET_STREAM: "srv/scene3d/{robot_id}/set_stream",
 } as const;
 export type ServiceKeyValue = (typeof ServiceKey)[keyof typeof ServiceKey];
 
 export type ServiceMap = {
   "srv/calibration/{robot_id}/activate_result": { req: ActivateResultRequest; res: ActivateResultResponse };
-  "srv/calibration/{robot_id}/capture": { req: CaptureRequest; res: CaptureResponse };
+  "srv/calibration/{robot_id}/capture": { req: CalibrationCaptureRequest; res: CalibrationCaptureResponse };
   "srv/calibration/{robot_id}/finalize_run": { req: FinalizeRunRequest; res: FinalizeRunResponse };
   "srv/calibration/{robot_id}/get_thresholds": { req: GetThresholdsRequest; res: GetThresholdsResponse };
   "srv/calibration/{robot_id}/list_results": { req: ListResultsRequest; res: ListResultsResponse };
@@ -416,4 +588,14 @@ export type ServiceMap = {
   "srv/motor/{robot_id}/capabilities": { req: MotorCapabilitiesRequest; res: MotorCapabilities };
   "srv/motor/{robot_id}/topology": { req: TopologyRequest; res: MotorTopology };
   "srv/motor/{robot_id}/set_torque": { req: SetTorqueRequest; res: SetTorqueResponse };
+  "srv/scan/{robot_id}/build": { req: BuildRequest; res: BuildResponse };
+  "srv/scan/{robot_id}/capture": { req: ScanCaptureRequest; res: ScanCaptureResponse };
+  "srv/scan/{robot_id}/delete_scan": { req: DeleteScanRequest; res: DeleteScanResponse };
+  "srv/scan/{robot_id}/delete_session": { req: DeleteSessionRequest; res: DeleteSessionResponse };
+  "srv/scan/{robot_id}/get_mesh": { req: GetMeshRequest; res: GetMeshResponse };
+  "srv/scan/{robot_id}/list_reconstructions": { req: ListReconstructionsRequest; res: ListReconstructionsResponse };
+  "srv/scan/{robot_id}/list_scans": { req: ListScansRequest; res: ListScansResponse };
+  "srv/scan/{robot_id}/list_sessions": { req: ListSessionsRequest; res: ListSessionsResponse };
+  "srv/scan/{robot_id}/new_session": { req: NewSessionRequest; res: NewSessionResponse };
+  "srv/scene3d/{robot_id}/set_stream": { req: SetStreamRequest; res: SetStreamResponse };
 };

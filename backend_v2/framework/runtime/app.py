@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import logging
 import time
+from concurrent.futures import Future
 from typing import Any, Callable, TypeVar, cast
 
 import msgspec
@@ -28,6 +29,18 @@ from framework.transport.protocol import Handle, RemoteError, Transport
 logger = logging.getLogger(__name__)
 
 TRes = TypeVar("TRes", bound=BaseModel)
+
+
+def _log_async_subscriber_exc(fut: "Future[Any]") -> None:
+    """fire-and-forget async subscriber 의 예외를 삼키지 않고 로깅."""
+    try:
+        exc = fut.exception()
+    except Exception:
+        return  # cancelled 등 — 무시
+    if exc is not None:
+        logger.error(
+            "async @subscriber callback 실패: %s: %s", type(exc).__name__, exc
+        )
 
 
 def _encode_request(req: BaseModel) -> bytes:
@@ -225,6 +238,20 @@ class Runtime:
         def handler_bytes(req_bytes: bytes) -> bytes:
             req = _decode_request(spec.req_cls, req_bytes)
             result = bound_method(req)
+            # async 핸들러 지원 — Zenoh 콜백(워커 스레드)에서 coroutine 이면 loop 로
+            # bridge (Mirror refetch 선례와 동일). 모듈은 `async def` + `await
+            # runtime.call(...)` 만 알면 되고, run_coroutine_threadsafe 는 안 봄.
+            # 워커 스레드는 핸들러 완료까지 .result() 블로킹 — sync 핸들러와 동일
+            # (long build 는 핸들러 안 `await to_thread` 로 loop 를 안 막음).
+            if asyncio.iscoroutine(result):
+                loop = self._loop
+                if loop is None or loop.is_closed():
+                    result.close()
+                    raise RuntimeError(
+                        f"@service {spec.method_name} 가 async 인데 event loop "
+                        "미확보 (Runtime.start 전이거나 stop 후 호출)"
+                    )
+                result = asyncio.run_coroutine_threadsafe(result, loop).result()
             if not isinstance(result, BaseModel):
                 raise TypeError(
                     f"@service {spec.method_name} return  BaseModel 박힘 "
@@ -248,7 +275,16 @@ class Runtime:
 
         def callback_bytes(payload: bytes) -> None:
             event = decode_event(spec.event_cls, payload)
-            bound_method(event)
+            result = bound_method(event)
+            # async subscriber 지원 — 반환값 없으니 결과 대기 X (fire-and-forget).
+            # 예외는 삼켜지지 않게 done callback 으로 로깅.
+            if asyncio.iscoroutine(result):
+                loop = self._loop
+                if loop is None or loop.is_closed():
+                    result.close()
+                    return
+                fut = asyncio.run_coroutine_threadsafe(result, loop)
+                fut.add_done_callback(_log_async_subscriber_exc)
 
         handle = self._transport.subscribe(topic, callback_bytes)
         self._handles.append(handle)

@@ -14,9 +14,21 @@ import { cn } from "@/lib/utils";
 import { useRobots } from "@/hooks/useRobots";
 import { useBridgeConnected } from "@/framework";
 
-// Sidebar mode sub-route 자리 — UI page mode 만.
+// Sidebar mode sub-route 자리 — capability 이름과 1:1 인 UI page mode.
 const SIDEBAR_MODES: ReadonlySet<string> = new Set(["move", "calibrate"]);
-const MODE_LABELS: Record<string, string> = { move: "Move", calibrate: "Calibrate" };
+const MODE_LABELS: Record<string, string> = {
+  move: "Move",
+  calibrate: "Calibrate",
+  scan: "Scan",
+};
+
+/** robot capabilities → sidebar mode 링크 list. rgbd → scan mode (capability 이름과
+ *  mode 이름이 다른 유일 케이스 — sensor capability 를 workflow mode 로 매핑). */
+function sidebarModes(caps: string[]): string[] {
+  const modes = caps.filter((c) => SIDEBAR_MODES.has(c));
+  if (caps.includes("rgbd")) modes.push("scan");
+  return modes;
+}
 
 const COLLAPSED_KEY = "omx.sidebar.collapsed";
 
@@ -97,8 +109,7 @@ export function Sidebar() {
                 <Bot className="h-4 w-4 shrink-0" />
                 <span className="flex-1 truncate">{r.id}</span>
               </div>
-              {(r.capabilities ?? ["move"])
-                .filter((cap) => SIDEBAR_MODES.has(cap))
+              {sidebarModes(r.capabilities ?? ["move"])
                 .map((cap) => (
                   <NavLink
                     key={cap}

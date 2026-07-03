@@ -43,6 +43,8 @@ from modules.bridge.contract import RobotsResponse, SystemMetrics
 from modules.calibration.contract import Calibration
 from modules.motion.contract import Motion
 from modules.motor.contract import Motor
+from modules.scan.contract import Scan
+from modules.scene3d.contract import Scene3d
 
 _MODULES_ROOT = Path(__file__).resolve().parents[1] / "modules"
 
@@ -88,6 +90,21 @@ FRONTEND_EXPOSED: set[str] = {
         Calibration.Stream.PREVIEW,
         Calibration.Event.ACTIVATED,
         Calibration.Event.COMMITTED,
+        # scene3d — 라이브 pointcloud (RobotScanMode)
+        Scene3d.Service.SET_STREAM,
+        Scene3d.Stream.CLOUD,
+        # scan — 세션/캡처/빌드/mesh (RobotScanMode). SNAPSHOT 은 scan 이 내부 호출 →
+        # 프론트 미노출.
+        Scan.Service.NEW_SESSION,
+        Scan.Service.LIST_SESSIONS,
+        Scan.Service.DELETE_SESSION,
+        Scan.Service.CAPTURE,
+        Scan.Service.LIST_SCANS,
+        Scan.Service.DELETE_SCAN,
+        Scan.Service.BUILD,
+        Scan.Service.LIST_RECONSTRUCTIONS,
+        Scan.Service.GET_MESH,
+        Scan.Stream.BUILD_PROGRESS,
     )
 }
 

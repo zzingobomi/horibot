@@ -94,6 +94,8 @@ export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) 
       robots={robots}
       focusId={effectiveFocus}
       cameraTarget={cameraTarget}
+      robotBaseMatrix={tcpRobotBaseMatrix}
+      robotId={calibRobotId}
     />
   );
 }

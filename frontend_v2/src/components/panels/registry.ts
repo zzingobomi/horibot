@@ -8,11 +8,13 @@
 import { RobotStatePanel } from "./RobotStatePanel";
 import { MotionPanel } from "./MotionPanel";
 import { CalibrationPanel } from "./CalibrationPanel";
+import { ScanPanel } from "./ScanPanel";
 
 export const PANEL_COMPONENTS = {
   robotState: RobotStatePanel,
   motion: MotionPanel,
   calibration: CalibrationPanel,
+  scan: ScanPanel,
 } as const;
 
 export type PanelComponentKey = keyof typeof PANEL_COMPONENTS;

@@ -1,8 +1,8 @@
-"""initial schema
+"""initial_schema
 
-Revision ID: 4fc8597a4120
+Revision ID: 236606bbc6f5
 Revises: 
-Create Date: 2026-07-02 09:41:19.030086
+Create Date: 2026-07-03 08:50:52.269027
 
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '4fc8597a4120'
+revision: str = '236606bbc6f5'
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -37,6 +37,18 @@ def upgrade() -> None:
     )
     with op.batch_alter_table('calibration_runs', schema=None) as batch_op:
         batch_op.create_index('idx_calibration_runs_in_progress', ['robot_id', 'kind'], unique=False, sqlite_where=sa.text("status = 'in_progress'"), postgresql_where=sa.text("status = 'in_progress'"))
+
+    op.create_table('scan_sessions',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('robot_id', sa.String(), nullable=False),
+    sa.Column('session_id', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('label', sa.Text(), nullable=True),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('robot_id', 'session_id')
+    )
+    with op.batch_alter_table('scan_sessions', schema=None) as batch_op:
+        batch_op.create_index('idx_scan_sessions_robot', ['robot_id', 'created_at'], unique=False)
 
     op.create_table('calibration_captures',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -73,6 +85,50 @@ def upgrade() -> None:
         batch_op.create_index('idx_calibration_results_active', ['robot_id', 'kind'], unique=True, sqlite_where=sa.text('is_active = 1'), postgresql_where=sa.text('is_active = TRUE'))
         batch_op.create_index('idx_calibration_results_lookup', ['robot_id', 'kind', 'created_at'], unique=False)
 
+    op.create_table('reconstructions',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('session_row_id', sa.Integer(), nullable=False),
+    sa.Column('robot_id', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('blob_key', sa.String(), nullable=False),
+    sa.Column('voxel_size', sa.Float(), nullable=False),
+    sa.Column('sdf_trunc', sa.Float(), nullable=False),
+    sa.Column('depth_trunc', sa.Float(), nullable=False),
+    sa.Column('icp_max_dist', sa.Float(), nullable=False),
+    sa.Column('n_scans', sa.Integer(), nullable=False),
+    sa.Column('n_edges', sa.Integer(), nullable=False),
+    sa.Column('vertex_count', sa.Integer(), nullable=False),
+    sa.Column('triangle_count', sa.Integer(), nullable=False),
+    sa.Column('elapsed', sa.Float(), nullable=False),
+    sa.ForeignKeyConstraint(['session_row_id'], ['scan_sessions.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('reconstructions', schema=None) as batch_op:
+        batch_op.create_index('idx_reconstructions_session', ['session_row_id', 'created_at'], unique=False)
+
+    op.create_table('scans',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('session_row_id', sa.Integer(), nullable=False),
+    sa.Column('robot_id', sa.String(), nullable=False),
+    sa.Column('scan_id', sa.Integer(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('blob_key', sa.String(), nullable=False),
+    sa.Column('num_frames', sa.Integer(), nullable=False),
+    sa.Column('width', sa.Integer(), nullable=False),
+    sa.Column('height', sa.Integer(), nullable=False),
+    sa.Column('fx', sa.Float(), nullable=False),
+    sa.Column('fy', sa.Float(), nullable=False),
+    sa.Column('cx', sa.Float(), nullable=False),
+    sa.Column('cy', sa.Float(), nullable=False),
+    sa.Column('depth_scale', sa.Float(), nullable=False),
+    sa.Column('motor_positions', sa.Text(), nullable=False),
+    sa.Column('arm_motor_ids', sa.Text(), nullable=False),
+    sa.ForeignKeyConstraint(['session_row_id'], ['scan_sessions.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('scans', schema=None) as batch_op:
+        batch_op.create_index('idx_scans_session', ['session_row_id', 'scan_id'], unique=False)
+
     op.create_table('calibration_capture_artifacts',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('capture_id', sa.Integer(), nullable=False),
@@ -97,6 +153,14 @@ def downgrade() -> None:
         batch_op.drop_index('idx_calibration_capture_artifacts_capture')
 
     op.drop_table('calibration_capture_artifacts')
+    with op.batch_alter_table('scans', schema=None) as batch_op:
+        batch_op.drop_index('idx_scans_session')
+
+    op.drop_table('scans')
+    with op.batch_alter_table('reconstructions', schema=None) as batch_op:
+        batch_op.drop_index('idx_reconstructions_session')
+
+    op.drop_table('reconstructions')
     with op.batch_alter_table('calibration_results', schema=None) as batch_op:
         batch_op.drop_index('idx_calibration_results_lookup')
         batch_op.drop_index('idx_calibration_results_active', sqlite_where=sa.text('is_active = 1'), postgresql_where=sa.text('is_active = TRUE'))
@@ -106,6 +170,10 @@ def downgrade() -> None:
         batch_op.drop_index('idx_calibration_captures_run')
 
     op.drop_table('calibration_captures')
+    with op.batch_alter_table('scan_sessions', schema=None) as batch_op:
+        batch_op.drop_index('idx_scan_sessions_robot')
+
+    op.drop_table('scan_sessions')
     with op.batch_alter_table('calibration_runs', schema=None) as batch_op:
         batch_op.drop_index('idx_calibration_runs_in_progress', sqlite_where=sa.text("status = 'in_progress'"), postgresql_where=sa.text("status = 'in_progress'"))
 

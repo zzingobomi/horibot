@@ -25,4 +25,8 @@ modules:
     robots: [so101_6dof_0]
   - name: calibration
     robots: [so101_6dof_0]
+  - name: scene3d
+    robots: [so101_6dof_0]
+  - name: scan
+    robots: [so101_6dof_0]
   - name: bridge

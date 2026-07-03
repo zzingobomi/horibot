@@ -65,10 +65,31 @@ uv run --no-sync python -m apps.main --host mock    # 실 boot (:8000)
 
 1. **detector 슬라이스 3 — 실 GDINO backend** (`Detect Object` 의 구현체). 현재
    `apps/resolve.py::_detector_backend` 가 mock 만 배선 (real = NotImplementedError —
-   그 메시지가 진입점). 할 일: `modules/detector/backend.py` 에 `GroundingDinoBackend`
-   adapter (계약 = `detect(img, prompt) -> (bbox, score) | None`, spec §17.1
-   "인터페이스 ≠ 구현") + 모델 preload — **옛 meta-tensor race trauma 라
-   reproduction script 가 fix 보다 먼저** ([llm_preload_race_debug.md](llm_preload_race_debug.md)).
+   그 메시지가 진입점).
+   **2026-07-03 착수 — pyproject 까지만 완료 (uncommitted)**: `pc` 그룹에
+   `transformers>=4.45,<5` + `accelerate` + `pillow` + `torch==2.11.0`
+   (cu130 uv.sources/index, 옛 backend 동일 판). `uv sync` 아직 안 돌림.
+   **transformers 상한 판단 (사용자 지적)**: 옛 backend 의 `<4.57` 핀 근거
+   (meta tensor + `.to(device)` 깨짐) 는 **Qwen LLM 로드에서 관측**된 것 —
+   GDINO 단독으론 분리 검증된 적 없고 v2 는 LLM 없음. 옛 결과를 근거로 인용하면
+   거짓 권위 → `<5` 만 남김 (v5 의 `AutoModelForZeroShotObjectDetection` 제거는
+   API 존재 문제라 확실). **smoke 때 최신 4.x 로 preload 검증 — 깨지면 그때
+   실측 근거로 핀**. 남은 구현 순서:
+   1. `modules/detector/gdino.py` 신규 — 옛 `backend/modules/detector/grounded_detector.py`
+      포팅 (계약 = `detect(img, prompt) -> (bbox, score) | None`). **별도 파일** =
+      torch/transformers import 를 mock 배치에서 격리 (motor/camera drivers 패턴 동형).
+      load lock + transformers module-top import 유지.
+   2. `backend.py` Protocol 에 `preload()` 추가 (Mock no-op).
+   3. `module.py` — `start()` background preload (`asyncio.to_thread`) + `detect()` 의
+      backend 호출도 `to_thread` (blocking 추론 → async 계약).
+   4. `resolve.py::_detector_backend` real branch 배선 + `pc.yaml` 에 detector 추가.
+   5. 테스트 (preload 배선 + real resolve 회귀) → `uv sync` → pytest/ruff/pyright →
+      실 모델 로드 smoke (최신 4.x 에서 preload OK 확인 — 위 상한 판단의 검증 자리.
+      깨지면 에러 실측 후 상한 핀 + 주석에 v2 측정 결과 기록).
+   preload race 판단: 옛 race 는 LLM+GDINO **두** `from_pretrained` 동시 실행 전제 —
+   v2 는 transformers 모델이 GDINO 하나라 전제가 구조적으로 없음. reproduction script
+   ([llm_preload_race_debug.md](llm_preload_race_debug.md)) 는 두 번째 transformers
+   소비자(LLM 포팅) 등장 시점의 프로토콜. 지금은 load lock + 단일 preload 경로로 보장.
    모델 로드/배선/mock 대비 회귀는 회사 가능, **검출 정확도는 집 하드웨어**.
    frontend 노출 필요 시 `FRONTEND_EXPOSED` 에 `Detector.Service.DETECT` 추가 + regen.
 2. **PnP task (task-first — spec §17)** — ② 필요 primitive 정의 → task #1 을 async 함수 +

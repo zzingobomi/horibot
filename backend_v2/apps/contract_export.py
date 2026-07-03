@@ -45,6 +45,7 @@ from modules.motion.contract import Motion
 from modules.motor.contract import Motor
 from modules.scan.contract import Scan
 from modules.scene3d.contract import Scene3d
+from modules.waypoint.contract import Waypoint
 
 _MODULES_ROOT = Path(__file__).resolve().parents[1] / "modules"
 
@@ -105,6 +106,18 @@ FRONTEND_EXPOSED: set[str] = {
         Scan.Service.LIST_RECONSTRUCTIONS,
         Scan.Service.GET_MESH,
         Scan.Stream.BUILD_PROGRESS,
+        # waypoint — Robot Asset Layer (RobotAssetsMode). 티칭 joint 자세 + group.
+        Waypoint.Service.TEACH,
+        Waypoint.Service.LIST,
+        Waypoint.Service.RENAME,
+        Waypoint.Service.DELETE,
+        Waypoint.Service.CREATE_GROUP,
+        Waypoint.Service.LIST_GROUPS,
+        Waypoint.Service.DELETE_GROUP,
+        Waypoint.Service.ADD_TO_GROUP,
+        Waypoint.Service.REMOVE_FROM_GROUP,
+        Waypoint.Service.REORDER_GROUP,
+        Waypoint.Service.LIST_GROUP_MEMBERS,
     )
 }
 

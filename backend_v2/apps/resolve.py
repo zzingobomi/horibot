@@ -70,6 +70,15 @@ def resolve_deps(
             "kinematics": PybulletKinematics(urdf),
             "arm_specs": arm,
         }
+    if name == "waypoint":
+        if session_factory is None:
+            raise ValueError(
+                "waypoint 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)"
+            )
+        # Waypoint 는 Motion 계약(TcpState rad+names)만 소비 → arm_specs/kinematics 불요.
+        from modules.waypoint.persistence.repository import WaypointRepository
+
+        return {"repository": WaypointRepository(session_factory)}
     raise NotImplementedError(
         f"robot-scoped resolve 미지원 module: {name!r} (robot={robot.id})"
     )

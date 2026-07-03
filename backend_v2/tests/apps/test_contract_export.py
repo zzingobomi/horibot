@@ -81,7 +81,7 @@ def test_contract_json_shape():
     service_keys = {s["key"] for s in data["services"]}
     assert topic_keys | service_keys == FRONTEND_EXPOSED
     assert len(data["topics"]) == 11  # +scene3d CLOUD +scan BUILD_PROGRESS
-    assert len(data["services"]) == 24  # +scene3d SET_STREAM +scan 9 서비스
+    assert len(data["services"]) == 35  # +scene3d SET_STREAM +scan 9 +waypoint 11
     # 내부 전용 payload 는 도달성으로 제외 — JointCommand 안 나옴
     iface_names = {i["name"] for i in data["interfaces"]}
     assert "JointCommand" not in iface_names
@@ -163,7 +163,7 @@ async def test_contract_json_endpoint_serves(contract_endpoint: str):
     assert set(data) == {"enums", "interfaces", "topics", "services"}
     # HTTP 로 serve 된 JSON = in-process build_contract_json 과 동일 계약
     assert len(data["topics"]) == 11  # +scene3d CLOUD +scan BUILD_PROGRESS
-    assert len(data["services"]) == 24  # +scene3d SET_STREAM +scan 9 서비스
+    assert len(data["services"]) == 35  # +scene3d SET_STREAM +scan 9 +waypoint 11
 
 
 # ─── build_contract_graph — unfiltered attribution + wiring (§5.2) ─
@@ -191,6 +191,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "CalibrationModule",
         "Scene3DModule",
         "ScanModule",
+        "WaypointModule",
     }
     assert "BridgeModule" not in ids
     by_id = {m["id"]: m for m in graph["modules"]}
@@ -335,5 +336,6 @@ async def test_contract_graph_endpoint_serves(graph_endpoint: str):
         "CalibrationModule",
         "Scene3DModule",
         "ScanModule",
+        "WaypointModule",
     }
     assert len(data["edges"]) >= 4

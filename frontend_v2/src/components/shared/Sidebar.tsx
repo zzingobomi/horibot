@@ -20,13 +20,16 @@ const MODE_LABELS: Record<string, string> = {
   move: "Move",
   calibrate: "Calibrate",
   scan: "Scan",
+  assets: "Assets",
 };
 
 /** robot capabilities → sidebar mode 링크 list. rgbd → scan mode (capability 이름과
- *  mode 이름이 다른 유일 케이스 — sensor capability 를 workflow mode 로 매핑). */
+ *  mode 이름이 다른 유일 케이스). assets(Waypoint) 는 capability 아니라 움직이는
+ *  robot 공통 자산 계층 → 항상 노출. */
 function sidebarModes(caps: string[]): string[] {
   const modes = caps.filter((c) => SIDEBAR_MODES.has(c));
   if (caps.includes("rgbd")) modes.push("scan");
+  modes.push("assets");
   return modes;
 }
 

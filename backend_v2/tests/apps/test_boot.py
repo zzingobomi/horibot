@@ -68,6 +68,7 @@ def test_load_deployment_mock():
         "calibration",
         "scene3d",
         "scan",
+        "waypoint",
         "bridge",
     }
     assert deploy.rdb_uri == "sqlite:///:memory:"  # DB owner host

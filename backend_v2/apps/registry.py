@@ -20,6 +20,7 @@ MODULE_REGISTRY: dict[str, str] = {
     "calibration": "modules.calibration.module:CalibrationModule",
     "scene3d": "modules.scene3d.module:Scene3DModule",
     "scan": "modules.scan.module:ScanModule",
+    "waypoint": "modules.waypoint.module:WaypointModule",
     "bridge": "modules.bridge.module:BridgeModule",
 }
 

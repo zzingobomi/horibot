@@ -27,6 +27,7 @@ from infra.database.types import UtcDateTime  # noqa: E402
 # 새 DB 모듈 추가 시 여기 한 줄. import 만으로 mapper 등록됨.
 import modules.calibration.persistence.orm  # noqa: E402,F401
 import modules.scan.persistence.orm  # noqa: E402,F401
+import modules.waypoint.persistence.orm  # noqa: E402,F401
 
 # ─────────────────────────────────────────────────────────────────
 

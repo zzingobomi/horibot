@@ -23,4 +23,6 @@ modules:
     robots: [so101_6dof_0]
   - name: scan # scan 세션/캡처/TSDF build (Open3D + DB owner, PC)
     robots: [so101_6dof_0]
+  - name: waypoint # Robot Asset Layer — 티칭 joint 자세(rad) + group (DB owner, PC)
+    robots: [so101_6dof_0]
   - name: bridge # HTTP/WS gateway (frontend_v2 진입점, :8000)

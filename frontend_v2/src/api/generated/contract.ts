@@ -516,6 +516,118 @@ export interface SetStreamResponse {
   voxel_size: number;
 }
 
+export interface AddToGroupRequest {
+  group_row_id: number;
+  waypoint_row_id: number;
+}
+
+export interface AddToGroupResponse {
+  ok: boolean;
+  message?: string;
+}
+
+export interface CreateGroupRequest {
+  name: string;
+}
+
+export interface WaypointGroupRecord {
+  id?: number | null;
+  robot_id: string;
+  name: string;
+}
+
+export interface CreateGroupResponse {
+  accepted: boolean;
+  group?: WaypointGroupRecord | null;
+  message?: string;
+}
+
+export interface DeleteGroupRequest {
+  group_row_id: number;
+}
+
+export interface DeleteGroupResponse {
+  ok: boolean;
+}
+
+export interface DeleteWaypointRequest {
+  waypoint_row_id: number;
+}
+
+export interface DeleteWaypointResponse {
+  ok: boolean;
+}
+
+export interface ListGroupMembersRequest {
+  group_row_id: number;
+}
+
+export interface WaypointRecord {
+  id?: number | null;
+  robot_id: string;
+  name: string;
+  joint_values: number[];
+  joint_names: string[];
+  created_at: unknown;
+}
+
+export interface ListGroupMembersResponse {
+  waypoints: WaypointRecord[];
+}
+
+export interface ListGroupsRequest {
+}
+
+export interface ListGroupsResponse {
+  groups: WaypointGroupRecord[];
+}
+
+export interface ListWaypointsRequest {
+}
+
+export interface ListWaypointsResponse {
+  waypoints: WaypointRecord[];
+}
+
+export interface RemoveFromGroupRequest {
+  group_row_id: number;
+  waypoint_row_id: number;
+}
+
+export interface RemoveFromGroupResponse {
+  ok: boolean;
+}
+
+export interface RenameWaypointRequest {
+  waypoint_row_id: number;
+  name: string;
+}
+
+export interface RenameWaypointResponse {
+  ok: boolean;
+  message?: string;
+}
+
+export interface ReorderGroupRequest {
+  group_row_id: number;
+  ordered_waypoint_row_ids: number[];
+}
+
+export interface ReorderGroupResponse {
+  ok: boolean;
+  message?: string;
+}
+
+export interface TeachRequest {
+  name: string;
+}
+
+export interface TeachResponse {
+  accepted: boolean;
+  waypoint?: WaypointRecord | null;
+  message?: string;
+}
+
 export const Topic = {
   CALIBRATION_ACTIVATED: "event/calibration/{robot_id}/activated",
   CALIBRATION_COMMITTED: "event/calibration/{robot_id}/committed",
@@ -570,6 +682,17 @@ export const ServiceKey = {
   SCAN_LIST_SESSIONS: "srv/scan/{robot_id}/list_sessions",
   SCAN_NEW_SESSION: "srv/scan/{robot_id}/new_session",
   SCENE3D_SET_STREAM: "srv/scene3d/{robot_id}/set_stream",
+  WAYPOINT_ADD_TO_GROUP: "srv/waypoint/{robot_id}/add_to_group",
+  WAYPOINT_CREATE_GROUP: "srv/waypoint/{robot_id}/create_group",
+  WAYPOINT_DELETE: "srv/waypoint/{robot_id}/delete",
+  WAYPOINT_DELETE_GROUP: "srv/waypoint/{robot_id}/delete_group",
+  WAYPOINT_LIST: "srv/waypoint/{robot_id}/list",
+  WAYPOINT_LIST_GROUPS: "srv/waypoint/{robot_id}/list_groups",
+  WAYPOINT_LIST_GROUP_MEMBERS: "srv/waypoint/{robot_id}/list_group_members",
+  WAYPOINT_REMOVE_FROM_GROUP: "srv/waypoint/{robot_id}/remove_from_group",
+  WAYPOINT_RENAME: "srv/waypoint/{robot_id}/rename",
+  WAYPOINT_REORDER_GROUP: "srv/waypoint/{robot_id}/reorder_group",
+  WAYPOINT_TEACH: "srv/waypoint/{robot_id}/teach",
 } as const;
 export type ServiceKeyValue = (typeof ServiceKey)[keyof typeof ServiceKey];
 
@@ -598,4 +721,15 @@ export type ServiceMap = {
   "srv/scan/{robot_id}/list_sessions": { req: ListSessionsRequest; res: ListSessionsResponse };
   "srv/scan/{robot_id}/new_session": { req: NewSessionRequest; res: NewSessionResponse };
   "srv/scene3d/{robot_id}/set_stream": { req: SetStreamRequest; res: SetStreamResponse };
+  "srv/waypoint/{robot_id}/add_to_group": { req: AddToGroupRequest; res: AddToGroupResponse };
+  "srv/waypoint/{robot_id}/create_group": { req: CreateGroupRequest; res: CreateGroupResponse };
+  "srv/waypoint/{robot_id}/delete": { req: DeleteWaypointRequest; res: DeleteWaypointResponse };
+  "srv/waypoint/{robot_id}/delete_group": { req: DeleteGroupRequest; res: DeleteGroupResponse };
+  "srv/waypoint/{robot_id}/list": { req: ListWaypointsRequest; res: ListWaypointsResponse };
+  "srv/waypoint/{robot_id}/list_groups": { req: ListGroupsRequest; res: ListGroupsResponse };
+  "srv/waypoint/{robot_id}/list_group_members": { req: ListGroupMembersRequest; res: ListGroupMembersResponse };
+  "srv/waypoint/{robot_id}/remove_from_group": { req: RemoveFromGroupRequest; res: RemoveFromGroupResponse };
+  "srv/waypoint/{robot_id}/rename": { req: RenameWaypointRequest; res: RenameWaypointResponse };
+  "srv/waypoint/{robot_id}/reorder_group": { req: ReorderGroupRequest; res: ReorderGroupResponse };
+  "srv/waypoint/{robot_id}/teach": { req: TeachRequest; res: TeachResponse };
 };

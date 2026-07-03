@@ -6,6 +6,7 @@ import { RobotModeRedirect } from "@/pages/robotModes/RobotModeRedirect";
 import { RobotMoveMode } from "@/pages/robotModes/RobotMoveMode";
 import { RobotCalibrateMode } from "@/pages/robotModes/RobotCalibrateMode";
 import { RobotScanMode } from "@/pages/robotModes/RobotScanMode";
+import { RobotAssetsMode } from "@/pages/robotModes/RobotAssetsMode";
 import { useFrameworkBootstrap } from "@/framework";
 import { DEFAULT_ROBOT_ID } from "@/constants";
 
@@ -36,6 +37,7 @@ export function App() {
             <Route path="move" element={<RobotMoveMode />} />
             <Route path="calibrate" element={<RobotCalibrateMode />} />
             <Route path="scan" element={<RobotScanMode />} />
+            <Route path="assets" element={<RobotAssetsMode />} />
           </Route>
           <Route
             path="/contract"

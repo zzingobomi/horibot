@@ -29,4 +29,6 @@ modules:
     robots: [so101_6dof_0]
   - name: scan
     robots: [so101_6dof_0]
+  - name: waypoint  # Robot Asset Layer — 티칭 joint 자세(rad) + group
+    robots: [so101_6dof_0]
   - name: bridge

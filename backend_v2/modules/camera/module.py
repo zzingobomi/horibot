@@ -1,6 +1,6 @@
 """CameraDriverModule — robot-scoped Hardware Layer Module.
 
-backend_v2_modules.md §1.1 #2 (CameraDriver) + §11 Build order Step B.
+backend_v2.md §16.1 #2 (CameraDriver) + §11 Build order Step B.
 
 책임:
 - driver.capture_color() → cv2.imencode JPEG → Camera.Stream.JPEG publish

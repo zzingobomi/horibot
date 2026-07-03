@@ -42,9 +42,10 @@ export function Scene3DLayer({ tcpMatrix, robotId }: Scene3DLayerProps) {
   const enabled = useScanStore((s) => s.liveEnabled);
   const bundle = useService(ServiceKey.CALIBRATION_SNAPSHOT_BUNDLE, robotId);
 
-  // hand_eye 1회 fetch (라이브 켤 때 최신값 반영)
+  // hand_eye 1회 fetch (라이브 켤 때 최신값 반영) — calibration 은 robot-agnostic,
+  // 대상 robot 은 req 필드.
   useEffect(() => {
-    if (enabled) void bundle.call({});
+    if (enabled) void bundle.call({ robot_id: robotId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, robotId]);
 

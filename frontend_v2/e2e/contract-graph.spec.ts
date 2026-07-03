@@ -2,7 +2,8 @@
 //
 // 검증 invariant:
 //   1. GET /contract/graph 200 (unfiltered 계약 그래프 export)
-//   2. 4 module 노드 렌더 (Motor/Motion/CameraDriver/CameraDecoded — bridge 제외)
+//   2. 9 contentful module 노드 렌더 (declared universe — bridge 제외.
+//      test_contract_export 의 registry 집합과 동일 SSOT)
 //   3. 방향 엣지 렌더 (React Flow edge)
 //   4. legend 의 module/edge 카운트
 //   5. 엣지 클릭 → payload 스키마 드릴다운 패널
@@ -12,6 +13,19 @@
 //   - frontend vite (port 5174): cd frontend_v2 && pnpm dev
 
 import { expect, test } from "@playwright/test";
+
+// declared universe (MODULE_REGISTRY contentful) — backend test_contract_export 정합
+const MODULE_IDS = [
+  "MotorDriverModule",
+  "MotionModule",
+  "CameraDriverModule",
+  "CameraDecodedModule",
+  "CalibrationModule",
+  "Scene3DModule",
+  "ScanModule",
+  "WaypointModule",
+  "DetectorModule",
+];
 
 test.describe("Contract graph viewer e2e (mock backend)", () => {
   test("/contract 로드 → GET /contract/graph 200 + module 노드 + 엣지 렌더", async ({
@@ -26,13 +40,8 @@ test.describe("Contract graph viewer e2e (mock backend)", () => {
     await page.goto("/contract");
     await graphReq;
 
-    // 4 contentful module 노드 — bridge (contract 0) 는 제외
-    for (const id of [
-      "MotorDriverModule",
-      "MotionModule",
-      "CameraDriverModule",
-      "CameraDecodedModule",
-    ]) {
+    // contentful module 노드 전부 — bridge (contract 0) 는 제외
+    for (const id of MODULE_IDS) {
       await expect(page.getByText(id, { exact: true })).toBeVisible({
         timeout: 5_000,
       });
@@ -40,7 +49,9 @@ test.describe("Contract graph viewer e2e (mock backend)", () => {
     await expect(page.getByText("BridgeModule")).toHaveCount(0);
 
     // React Flow 노드/엣지 실제 DOM 렌더
-    await expect(page.locator(".react-flow__node")).toHaveCount(4);
+    await expect(page.locator(".react-flow__node")).toHaveCount(
+      MODULE_IDS.length,
+    );
     const edgeCount = await page.locator(".react-flow__edge").count();
     expect(edgeCount).toBeGreaterThanOrEqual(4);
 
@@ -48,7 +59,9 @@ test.describe("Contract graph viewer e2e (mock backend)", () => {
     await expect(
       page.getByRole("main").getByText("Contract graph"),
     ).toBeVisible();
-    await expect(page.getByText(/modules 4 · edges/)).toBeVisible();
+    await expect(
+      page.getByText(new RegExp(`modules ${MODULE_IDS.length} · edges`)),
+    ).toBeVisible();
   });
 
   test("엣지 클릭 → payload 스키마 드릴다운 패널", async ({ page }) => {
@@ -57,7 +70,9 @@ test.describe("Contract graph viewer e2e (mock backend)", () => {
       (res) => res.url().includes("/contract/graph") && res.status() === 200,
       { timeout: 10_000 },
     );
-    await expect(page.locator(".react-flow__node")).toHaveCount(4);
+    await expect(page.locator(".react-flow__node")).toHaveCount(
+      MODULE_IDS.length,
+    );
 
     // 첫 엣지 클릭 (interaction path — 넓은 hit area). onEdgeClick → SchemaPanel.
     const edge = page.locator(".react-flow__edge").first();

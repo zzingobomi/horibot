@@ -4,7 +4,7 @@ Module SDK internal — driver 가 받아서 topology / raw 변환 / motion prof
 사용. apps.config 가 motors.yaml 을 읽어 list[MotorSpec] 로 만들어 resolve_deps
 가 driver 에 주입한다 (mock / feetech 공통).
 
-backend_v2_modules.md §7.4 — topology 값 SSOT = driver self-declare. 그 driver
+backend_v2.md §16.5 — topology 값 SSOT = driver self-declare. 그 driver
 가 self-declare 하는 근거 데이터가 이 spec (robot type 의 정적 사실).
 """
 
@@ -29,3 +29,13 @@ class MotorSpec(BaseModel):
     # motion slam-guard profile (Step D Motion 에서 사용). dps SSOT.
     velocity_dps: float
     acceleration_dpss: float
+
+    @property
+    def initial_raw(self) -> int:
+        """유효 초기 위치 — `home`(units 영점 기준)을 자기 limit 안으로 clamp.
+
+        `home` 은 raw↔rad 영점(0 rad)이라 도달 불가한 joint 가 있다 (so101 joint3:
+        영점 2048=0° 가 limit [58,1991] 밖). mock/driver 가 그 영점을 초기 위치로
+        그대로 쓰면 물리적으로 불가능한 자세로 시작 → clamp 로 유효 자세 보장.
+        """
+        return max(self.limit_min, min(self.limit_max, self.home))

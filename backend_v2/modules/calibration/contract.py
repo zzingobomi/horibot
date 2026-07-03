@@ -215,20 +215,25 @@ class CalibrationBundle(BaseModel):
 
 class Calibration:
     class Service(StrEnum):
+        # robot-agnostic (host 당 1, backend_v2.md §2.7) — 대상 robot 은
+        # req 필드로 식별: 새 세션(start_run/preview/조회)은 `req.robot_id`,
+        # 진행 중 자원은 그 식별자(run_id/result_id)에서 파생 (robot_id 중복 채널 X).
         # commands (write)
-        START_RUN = "srv/calibration/{robot_id}/start_run"
-        CAPTURE = "srv/calibration/{robot_id}/capture"
-        UNDO_LAST_CAPTURE = "srv/calibration/{robot_id}/undo_last_capture"
-        FINALIZE_RUN = "srv/calibration/{robot_id}/finalize_run"
-        ACTIVATE_RESULT = "srv/calibration/{robot_id}/activate_result"
-        PREVIEW_ENABLE = "srv/calibration/{robot_id}/preview_enable"
+        START_RUN = "srv/calibration/start_run"
+        CAPTURE = "srv/calibration/capture"
+        UNDO_LAST_CAPTURE = "srv/calibration/undo_last_capture"
+        FINALIZE_RUN = "srv/calibration/finalize_run"
+        ACTIVATE_RESULT = "srv/calibration/activate_result"
+        PREVIEW_ENABLE = "srv/calibration/preview_enable"
         # queries (read)
-        SNAPSHOT_BUNDLE = "srv/calibration/{robot_id}/snapshot_bundle"
-        LIST_RUNS = "srv/calibration/{robot_id}/list_runs"
-        LIST_RESULTS = "srv/calibration/{robot_id}/list_results"
-        GET_THRESHOLDS = "srv/calibration/{robot_id}/get_thresholds"
+        SNAPSHOT_BUNDLE = "srv/calibration/snapshot_bundle"
+        LIST_RUNS = "srv/calibration/list_runs"
+        LIST_RESULTS = "srv/calibration/list_results"
+        GET_THRESHOLDS = "srv/calibration/get_thresholds"
 
     class Stream(StrEnum):
+        # robot-scoped 키 유지 — payload 의 robot_id 로 framework 가 라우팅
+        # (frontend 는 관심 robot 만 구독). host-level publisher 무관.
         PREVIEW = "stream/calibration/{robot_id}/preview"  # 5Hz ChArUco overlay
 
     class Event(StrEnum):
@@ -238,13 +243,18 @@ class Calibration:
 
 
 # ─── request / response (service payload) ──────────────────────────
+#
+# robot_id 규칙 (host-level dispatch): 서비스가 다른 식별자로 robot 을 특정할 수
+# 없을 때만 req 에 robot_id. run_id/result_id 가 있는 요청은 DB row 에서 파생 —
+# "run A 에 robot B 캡처" 류 불일치 채널 자체를 없앰.
 
 
 class SnapshotBundleRequest(BaseModel):
-    pass
+    robot_id: str
 
 
 class StartRunRequest(BaseModel):
+    robot_id: str
     kind: CalibrationKind
     algorithm: str
 
@@ -278,6 +288,7 @@ class UndoLastCaptureResponse(BaseModel):
 
 
 class ListRunsRequest(BaseModel):
+    robot_id: str
     kind: CalibrationKind | None = None
 
 
@@ -286,6 +297,7 @@ class ListRunsResponse(BaseModel):
 
 
 class ListResultsRequest(BaseModel):
+    robot_id: str
     kind: CalibrationKind | None = None
 
 
@@ -313,6 +325,7 @@ class CaptureResponse(BaseModel):
 
 
 class PreviewEnableRequest(BaseModel):
+    robot_id: str
     enabled: bool
 
 

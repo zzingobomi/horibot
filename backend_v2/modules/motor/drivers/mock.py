@@ -20,8 +20,9 @@ class MockMotorBackend:
 
     def __init__(self, motors: list[MotorSpec]) -> None:
         self._motors = list(motors)
-        # 초기 position = 각 모터 home (real 첫 read 와 동형)
-        self._positions: list[int] = [m.home for m in self._motors]
+        # 초기 position = 각 모터 유효 초기 자세 (home 영점을 limit 안으로 clamp —
+        # joint3 처럼 영점 0° 가 limit 밖인 축도 물리적으로 유효한 자세로 시작)
+        self._positions: list[int] = [m.initial_raw for m in self._motors]
         self._torque_enabled = False
 
     # ── self-declare ──

@@ -69,6 +69,7 @@ def test_load_deployment_mock():
         "scene3d",
         "scan",
         "waypoint",
+        "detector",
         "bridge",
     }
     assert deploy.rdb_uri == "sqlite:///:memory:"  # DB owner host
@@ -178,9 +179,10 @@ async def test_boot_camera_capabilities_reachable(booted: Runtime):
 
 
 async def test_boot_calibration_snapshot_bundle_reachable(booted: Runtime):
-    # calibration robot-scoped Module 이 booted (rdb_uri :memory: + alembic upgrade head)
-    # → snapshot_bundle service 가 Zenoh 로 도달. §10.1 — Calibration.start() 가
-    # Camera GET_FACTORY_INTRINSIC pull → intrinsic 자동 seed (mock camera 는 synthetic).
+    # calibration robot-agnostic Module 이 booted (rdb_uri :memory: + alembic upgrade
+    # head) → snapshot_bundle service 가 Zenoh 로 도달 (키에 {robot_id} 없음, 대상은
+    # req 필드). §10.1 — Calibration.start() 가 Camera GET_FACTORY_INTRINSIC pull →
+    # intrinsic 자동 seed (mock camera 는 synthetic).
     from modules.calibration.contract import (
         Calibration,
         CalibrationBundle,
@@ -189,9 +191,8 @@ async def test_boot_calibration_snapshot_bundle_reachable(booted: Runtime):
 
     res = await booted.module_runtime.call(
         Calibration.Service.SNAPSHOT_BUNDLE,
-        SnapshotBundleRequest(),
+        SnapshotBundleRequest(robot_id=_SO101),
         CalibrationBundle,
-        robot_id=_SO101,
     )
     assert res.robot_id == _SO101
     # factory intrinsic over-wire seed 검증 (§10.1)
@@ -214,17 +215,17 @@ async def test_boot_calibration_start_run_and_list_over_wire(booted: Runtime):
 
     started = await booted.module_runtime.call(
         Calibration.Service.START_RUN,
-        StartRunRequest(kind="hand_eye", algorithm="hand_eye_capture_only"),
+        StartRunRequest(
+            robot_id=_SO101, kind="hand_eye", algorithm="hand_eye_capture_only"
+        ),
         StartRunResponse,
-        robot_id=_SO101,
     )
     assert started.run_id > 0
 
     listed = await booted.module_runtime.call(
         Calibration.Service.LIST_RUNS,
-        ListRunsRequest(),
+        ListRunsRequest(robot_id=_SO101),
         ListRunsResponse,
-        robot_id=_SO101,
     )
     assert any(r.id == started.run_id and r.kind == "hand_eye" for r in listed.runs)
 

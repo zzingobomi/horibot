@@ -1,6 +1,6 @@
 """Bridge — public contract surface (frontend 노출).
 
-backend_v2_modules.md §1.1 #12 (Bridge) + §8.6 (Bridge = runtime relay only) +
+backend_v2.md §16.1 #12 (Bridge) + §8.6 (Bridge = runtime relay only) +
 §9.1 (/robots = RobotConfig list 의 read-only view relay, framework helper).
 
 Bridge 는 domain Module 이 아니라 Boundary Adapter — wire 의미는 해석하지 않고

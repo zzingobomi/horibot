@@ -53,7 +53,9 @@ def build_runtime(
                 runtime.add_module(mod_cls, robot_id=rid, **deps)
                 logger.info("add_module %s robot_id=%s", entry.name, rid)
         else:
-            deps = resolve_host_deps(entry.name, robots, deploy, runtime)
+            deps = resolve_host_deps(
+                entry.name, robots, deploy, runtime, session_factory
+            )
             runtime.add_module(mod_cls, **deps)
             logger.info("add_module %s (host-level)", entry.name)
 

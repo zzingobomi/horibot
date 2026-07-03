@@ -4,6 +4,11 @@
 Motion 계약만 소비 — raw encoder / calibration / units 모름 (계층 준수, D6/D4).
 Database-per-Module (WaypointRepository). PC 배치 (DB owner).
 
+**robot-agnostic** — host 당 1 인스턴스 (backend_v2.md §2.7).
+대상 robot 은 생성/목록은 req.robot_id, 나머지는
+row id 에서 파생. per-robot config 0 — joints 캐시는 TCP_STATE payload 의 robot_id
+키 dict (framework wildcard 구독), 이름 유일성은 DB (robot_id, name) 단위.
+
 모든 핸들러 sync — cross-module call 없음 (CRUD + joint 캐시). runtime 불필요.
 """
 
@@ -49,58 +54,62 @@ logger = logging.getLogger(__name__)
 
 
 class WaypointModule:
-    def __init__(self, robot_id: str, repository: WaypointRepository) -> None:
-        self.robot_id = robot_id
+    def __init__(self, repository: WaypointRepository) -> None:
         self._repo = repository
-        # 최신 joint (rad) + names — Motion.TcpState 에서 캐시. teach 소스.
-        self._joints: list[float] | None = None
-        self._joint_names: list[str] | None = None
+        # robot 별 최신 joint (rad) + names — Motion.TcpState 에서 캐시. teach 소스.
+        self._joints: dict[str, list[float]] = {}
+        self._joint_names: dict[str, list[str]] = {}
 
-    # ── joint state 캐시 (Motion 계약 소비) ────────────────────
+    # ── joint state 캐시 (Motion 계약 소비, 전 robot wildcard) ─
     @subscriber(Motion.Stream.TCP_STATE)
     def on_tcp_state(self, state: TcpState) -> None:
-        if state.robot_id != self.robot_id:
-            return
-        self._joints = list(state.joints)
-        self._joint_names = list(state.joint_names)
+        self._joints[state.robot_id] = list(state.joints)
+        self._joint_names[state.robot_id] = list(state.joint_names)
 
     # ── waypoint CRUD ─────────────────────────────────────────
     @service(Waypoint.Service.TEACH)
     def teach(self, req: TeachRequest) -> TeachResponse:
-        if self._joints is None or self._joint_names is None:
+        joints = self._joints.get(req.robot_id)
+        names = self._joint_names.get(req.robot_id)
+        if joints is None or names is None:
             return TeachResponse(
                 accepted=False, message="joint state 아직 없음 (Motion TcpState 대기)"
             )
         name = req.name.strip()
         if not name:
             return TeachResponse(accepted=False, message="이름 비어있음")
-        if self._repo.get_waypoint_by_name(self.robot_id, name) is not None:
+        if self._repo.get_waypoint_by_name(req.robot_id, name) is not None:
             return TeachResponse(accepted=False, message=f"'{name}' 이름 이미 있음")
         rec = self._repo.insert_waypoint(
             WaypointRecord(
-                robot_id=self.robot_id,
+                robot_id=req.robot_id,
                 name=name,
-                joint_values=list(self._joints),
-                joint_names=list(self._joint_names),
+                joint_values=list(joints),
+                joint_names=list(names),
                 created_at=datetime.now(UTC),
             )
         )
         logger.info(
-            "Waypoint teach '%s' (robot=%s, dof=%d)",
-            name, self.robot_id, len(self._joints),
+            "Waypoint teach '%s' (robot=%s, dof=%d)", name, req.robot_id, len(joints)
         )
         return TeachResponse(accepted=True, waypoint=rec)
 
     @service(Waypoint.Service.LIST)
     def list_waypoints(self, req: ListWaypointsRequest) -> ListWaypointsResponse:
-        return ListWaypointsResponse(waypoints=self._repo.list_waypoints(self.robot_id))
+        return ListWaypointsResponse(waypoints=self._repo.list_waypoints(req.robot_id))
 
     @service(Waypoint.Service.RENAME)
     def rename(self, req: RenameWaypointRequest) -> RenameWaypointResponse:
         name = req.name.strip()
         if not name:
             return RenameWaypointResponse(ok=False, message="이름 비어있음")
-        if self._repo.get_waypoint_by_name(self.robot_id, name) is not None:
+        # 대상 robot = waypoint row 소유자 (req 중복 채널 X) — 유일성은 그 robot 범위
+        wp = self._repo.get_waypoint(req.waypoint_row_id)
+        if wp is None:
+            return RenameWaypointResponse(
+                ok=False, message=f"waypoint {req.waypoint_row_id} 없음"
+            )
+        if self._repo.get_waypoint_by_name(wp.robot_id, name) is not None:
             return RenameWaypointResponse(ok=False, message=f"'{name}' 이름 이미 있음")
         try:
             self._repo.rename_waypoint(req.waypoint_row_id, name)
@@ -119,16 +128,16 @@ class WaypointModule:
         name = req.name.strip()
         if not name:
             return CreateGroupResponse(accepted=False, message="이름 비어있음")
-        if self._repo.get_group_by_name(self.robot_id, name) is not None:
+        if self._repo.get_group_by_name(req.robot_id, name) is not None:
             return CreateGroupResponse(accepted=False, message=f"'{name}' group 이미 있음")
         g = self._repo.insert_group(
-            WaypointGroupRecord(robot_id=self.robot_id, name=name)
+            WaypointGroupRecord(robot_id=req.robot_id, name=name)
         )
         return CreateGroupResponse(accepted=True, group=g)
 
     @service(Waypoint.Service.LIST_GROUPS)
     def list_groups(self, req: ListGroupsRequest) -> ListGroupsResponse:
-        return ListGroupsResponse(groups=self._repo.list_groups(self.robot_id))
+        return ListGroupsResponse(groups=self._repo.list_groups(req.robot_id))
 
     @service(Waypoint.Service.DELETE_GROUP)
     def delete_group(self, req: DeleteGroupRequest) -> DeleteGroupResponse:

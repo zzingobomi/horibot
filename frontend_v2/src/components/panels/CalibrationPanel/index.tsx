@@ -47,9 +47,11 @@ export function CalibrationPanel() {
   const [previewOn, setPreviewOn] = useState(false);
   const [lastMsg, setLastMsg] = useState("");
 
+  // calibration 은 robot-agnostic — 대상 robot 은 req 필드 (키 치환 아님).
+  // run 진행 서비스 (capture/finalize/undo/activate) 는 run_id/result_id 에서 파생.
   const refresh = useCallback(() => {
-    void snapshot.call({});
-    void listRuns.call({});
+    void snapshot.call({ robot_id: robotId });
+    void listRuns.call({ robot_id: robotId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [robotId]);
 
@@ -58,7 +60,11 @@ export function CalibrationPanel() {
   }, [refresh]);
 
   const onStart = async () => {
-    const res = await startRun.call({ kind: "hand_eye", algorithm: "hand_eye_capture_only" });
+    const res = await startRun.call({
+      robot_id: robotId,
+      kind: "hand_eye",
+      algorithm: "hand_eye_capture_only",
+    });
     const rid = (res.data as { run_id?: number } | null)?.run_id ?? null;
     setRunId(rid);
     setPoseIndex(0);
@@ -99,7 +105,7 @@ export function CalibrationPanel() {
 
   const onTogglePreview = async () => {
     const next = !previewOn;
-    await previewEnable.call({ enabled: next });
+    await previewEnable.call({ robot_id: robotId, enabled: next });
     setPreviewOn(next);
   };
 

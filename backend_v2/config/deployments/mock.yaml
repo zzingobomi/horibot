@@ -23,12 +23,9 @@ modules:
     robots: [so101_6dof_0]
   - name: camera_decoded
     robots: [so101_6dof_0]
-  - name: calibration
-    robots: [so101_6dof_0]
-  - name: scene3d
-    robots: [so101_6dof_0]
-  - name: scan
-    robots: [so101_6dof_0]
-  - name: waypoint  # Robot Asset Layer — 티칭 joint 자세(rad) + group
-    robots: [so101_6dof_0]
+  - name: calibration # robot-agnostic (host당 1 — req.robot_id dispatch)
+  - name: scene3d # robot-agnostic (rgbd robot 멤버십은 robots.yaml capability)
+  - name: scan # robot-agnostic (session row 의 robot_id 로 파생 dispatch)
+  - name: waypoint # robot-agnostic Robot Asset Layer — 티칭 joint 자세(rad) + group
+  - name: detector # Detect Object (robot-agnostic, host당 1 — mock backend)
   - name: bridge

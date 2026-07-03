@@ -1,6 +1,6 @@
 """MotorDriverModule — robot-scoped Hardware Layer Module.
 
-backend_v2_modules.md §1.1 #1 (MotorDriver) + §11 Build order Step A.
+backend_v2.md §16.1 #1 (MotorDriver) + §11 Build order Step A.
 
 책임:
 - driver Protocol relay (capabilities / topology / set_torque / reboot / gripper)

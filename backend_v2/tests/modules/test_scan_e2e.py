@@ -75,8 +75,10 @@ def _seed_hand_eye(runtime: Runtime) -> None:
         HandEyeResultRecord,
     )
 
+    # calibration 은 robot-agnostic (host당 1) — 인스턴스는 class 로만 찾고
+    # robot 은 DB row 의 robot_id 컬럼 (멀티테넌트).
     for m in runtime._modules:  # noqa: SLF001 — test 전용 introspection
-        if type(m).__name__ == "CalibrationModule" and getattr(m, "robot_id", None) == _SO101:
+        if type(m).__name__ == "CalibrationModule":
             repo = m._repo  # noqa: SLF001
             run = repo.create_run(_SO101, "hand_eye", "test_seed")
             assert run.id is not None
@@ -105,11 +107,11 @@ async def test_scene3d_live_stream_toggle(booted: Runtime):
         f"stream/scene3d/{_SO101}/cloud", lambda p: got.append(p)
     )
     try:
+        # scene3d 도 robot-agnostic — 대상 robot 은 req 필드
         res = await booted.module_runtime.call(
             Scene3d.Service.SET_STREAM,
-            SetStreamRequest(enabled=True),
+            SetStreamRequest(robot_id=_SO101, enabled=True),
             SetStreamResponse,
-            robot_id=_SO101,
         )
         assert res.enabled is True
         for _ in range(40):  # ~2s
@@ -124,35 +126,34 @@ async def test_scene3d_live_stream_toggle(booted: Runtime):
 async def test_scan_capture_build_mesh_e2e(booted: Runtime):
     _seed_hand_eye(booted)
 
-    # 1) 세션
+    # 1) 세션 — scan 은 robot-agnostic, 새 세션만 req.robot_id (이후는 세션에서 파생)
     sess = await booted.module_runtime.call(
         Scan.Service.NEW_SESSION,
-        NewSessionRequest(label="e2e"),
+        NewSessionRequest(robot_id=_SO101, label="e2e"),
         NewSessionResponse,
-        robot_id=_SO101,
     )
     sid = sess.session.id
     assert sid is not None
+    assert sess.session.robot_id == _SO101
 
-    # 2) capture x3 (consensus snapshot + blob 저장)
+    # 2) capture x3 (consensus snapshot + blob 저장) — robot 은 세션 row 파생
     for i in range(3):
         cap = await booted.module_runtime.call(
             Scan.Service.CAPTURE,
             CaptureRequest(session_row_id=sid, num_frames=5),
             CaptureResponse,
-            robot_id=_SO101,
             timeout=15.0,
         )
         assert cap.accepted, f"capture {i} 실패: {cap.message}"
         assert cap.scan is not None
         assert cap.scan.scan_id == i + 1  # monotonic
+        assert cap.scan.robot_id == _SO101  # 세션 소유 robot 로 저장
         await asyncio.sleep(0.2)
 
     scans = await booted.module_runtime.call(
         Scan.Service.LIST_SCANS,
         ListScansRequest(session_row_id=sid),
         ListScansResponse,
-        robot_id=_SO101,
     )
     assert len(scans.scans) == 3
 
@@ -161,7 +162,6 @@ async def test_scan_capture_build_mesh_e2e(booted: Runtime):
         Scan.Service.BUILD,
         BuildRequest(session_row_id=sid),
         BuildResponse,
-        robot_id=_SO101,
         timeout=90.0,
     )
     assert build.accepted, f"build 실패: {build.message}"
@@ -176,7 +176,6 @@ async def test_scan_capture_build_mesh_e2e(booted: Runtime):
         Scan.Service.GET_MESH,
         GetMeshRequest(reconstruction_row_id=recon_id),
         GetMeshResponse,
-        robot_id=_SO101,
     )
     assert len(mesh.ply_bytes) > 0
     assert mesh.ply_bytes[:3] == b"ply"  # PLY magic
@@ -186,7 +185,6 @@ async def test_scan_capture_build_mesh_e2e(booted: Runtime):
         Scan.Service.LIST_RECONSTRUCTIONS,
         ListReconstructionsRequest(session_row_id=sid),
         ListReconstructionsResponse,
-        robot_id=_SO101,
     )
     assert len(recons.reconstructions) == 1
 
@@ -195,9 +193,8 @@ async def test_scan_build_rejects_without_hand_eye(booted: Runtime):
     # hand_eye seed 안 함 → build 는 명확히 reject (accepted=False).
     sess = await booted.module_runtime.call(
         Scan.Service.NEW_SESSION,
-        NewSessionRequest(label="no_he"),
+        NewSessionRequest(robot_id=_SO101, label="no_he"),
         NewSessionResponse,
-        robot_id=_SO101,
     )
     sid = sess.session.id
     assert sid is not None
@@ -206,7 +203,6 @@ async def test_scan_build_rejects_without_hand_eye(booted: Runtime):
             Scan.Service.CAPTURE,
             CaptureRequest(session_row_id=sid, num_frames=3),
             CaptureResponse,
-            robot_id=_SO101,
             timeout=15.0,
         )
         await asyncio.sleep(0.15)
@@ -214,7 +210,6 @@ async def test_scan_build_rejects_without_hand_eye(booted: Runtime):
         Scan.Service.BUILD,
         BuildRequest(session_row_id=sid),
         BuildResponse,
-        robot_id=_SO101,
         timeout=30.0,
     )
     assert build.accepted is False

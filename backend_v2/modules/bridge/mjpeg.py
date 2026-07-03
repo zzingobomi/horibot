@@ -1,6 +1,6 @@
 """MJPEG relay — Camera.Stream.JPEG → multipart/x-mixed-replace (C1c).
 
-backend_v2_modules.md §8.6. domain logic 0 — frame envelope 에서 jpeg_bytes 만
+backend_v2.md §16.6. domain logic 0 — frame envelope 에서 jpeg_bytes 만
 꺼내 multipart 로 흘린다 (경계 포맷 변환, kinematics/detection 등 X).
 
 CameraJpegFrame 디코드를 위해 camera contract import — 순환 없음 (camera 는

@@ -67,8 +67,9 @@ class FeetechBackend:
         self._sync_read_load: GroupSyncRead | None = None
         self._lock = threading.Lock()
 
-        # 마지막 known position (sync read 실패 모터 fallback) — home 초기화
-        self._positions: list[int] = [m.home for m in self._motors]
+        # 마지막 known position (sync read 실패 모터 fallback) — 유효 초기 자세
+        # (home 영점을 limit 안으로 clamp). 실 모터는 첫 sync read 로 덮어씀.
+        self._positions: list[int] = [m.initial_raw for m in self._motors]
 
     # ── self-declare (§7.3) ──
 

@@ -1,6 +1,6 @@
 """CameraDecodedModule — robot-scoped Derived read model.
 
-backend_v2_modules.md §1.1 #3 (CameraDecoded) + §3 (derived read model 패턴)
+backend_v2.md §16.1 #3 (CameraDecoded) + §3 (derived read model 패턴)
 + §4 (decode dedup, Camera 만) + §4.1 (한 Module 두 stream).
 
 책임:

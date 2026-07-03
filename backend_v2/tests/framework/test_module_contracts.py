@@ -54,6 +54,22 @@ class _GlobalModule:
         return _Res(ok=True)
 
 
+@publishes(("stream/gamma/{robot_id}/preview", _Evt))
+class _HostLevelPublisherModule:
+    """robot-agnostic service + robot-scoped stream publish/subscribe (calibration 모양).
+
+    robot_scoped 판정 = **service 키** 만 — stream/event 는 payload robot_id 라우팅 /
+    wildcard 구독이라 host-level module 도 robot-scoped 키를 다룸 → False 여야 함.
+    """
+
+    @service("srv/gamma/do")
+    def do(self, req: _Req) -> _Res:
+        return _Res(ok=True)
+
+    @subscriber("stream/beta/{robot_id}/feed")
+    def on_feed(self, evt: _Evt) -> None: ...
+
+
 class _EmptyModule:
     """contract 0 (Bridge 같은 relay) — 열거는 되되 empty tuple."""
 
@@ -73,11 +89,21 @@ def test_attribution_direction_preserved():
 
 
 def test_robot_scoped_flag():
-    contracts = {c.module_id: c for c in build_module_contracts([_AlphaModule(), _GlobalModule()])}
+    contracts = {
+        c.module_id: c
+        for c in build_module_contracts(
+            [_AlphaModule(), _GlobalModule(), _HostLevelPublisherModule()]
+        )
+    }
     assert contracts["_AlphaModule"].robot_scoped is True
     assert contracts["_GlobalModule"].robot_scoped is False
     # global service 는 {robot_id} 없는 raw key
     assert contracts["_GlobalModule"].services == ("srv/global/ping",)
+    # ★ service 키만 판정 — robot-scoped stream 을 publish/subscribe 해도 host-level
+    host = contracts["_HostLevelPublisherModule"]
+    assert host.robot_scoped is False
+    assert host.publishes == ("stream/gamma/{robot_id}/preview",)
+    assert host.subscribes == ("stream/beta/{robot_id}/feed",)
 
 
 def test_per_robot_instances_dedup_by_class():

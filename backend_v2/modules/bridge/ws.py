@@ -1,13 +1,13 @@
 """WebSocket relay — browser ↔ Zenoh raw bytes 중계 (C1b).
 
-backend_v2_modules.md §8.6 (relay only — domain logic 0).
+backend_v2.md §16.6 (relay only — domain logic 0).
 
 프로토콜 v1:
   browser → Bridge : JSON 텍스트 제어 메시지
     {op:"subscribe", topic}
     {op:"unsubscribe", topic}
     {op:"publish", topic, data}           # data dict → msgpack 감싸 publish
-    {op:"service", key, request_id, data, robot_id?}  # ServiceRequest 봉투로 call
+    {op:"service", key, request_id, data}  # ServiceRequest 봉투로 call
 
   Bridge → browser : binary 프레임
     [u8 ver=1][u8 type][u16 BE key_len][key utf8][payload]
@@ -17,7 +17,8 @@ backend_v2_modules.md §8.6 (relay only — domain logic 0).
 
 Bridge 는 payload schema 를 해석하지 않는다. publish/service 의 data 를 msgpack
 으로 감싸고(framework envelope), topic_data 는 raw forward. robot_id 치환은
-frontend 책임 — Bridge 는 concrete key 만 받음.
+frontend 책임 — Bridge 는 concrete key 만 받음. robot-agnostic 서비스의
+robot_id 는 req 필드라 data 안에 이미 들어있음 (Bridge 무관심).
 """
 
 from __future__ import annotations

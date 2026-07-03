@@ -18,7 +18,7 @@
 >
 > **집(실물)에서 남은 것**: 실 D405 factory intrinsic (mock synthetic 대체) / 실 ChArUco 캡처 정확도 / **Motion boot consumer** (Motion.start() 가 snapshot_bundle 읽어 kinematics build — §9, 별도 slice 아직 미배선).
 >
-> 핵심 설계 결정: Calibration Bundle = boot-time configuration (Mirror 안 씀). §6 / §10.1 / §10.2 재작성 완료. SSOT spec = [backend_v2.md](backend_v2.md) + [backend_v2_modules.md](backend_v2_modules.md).
+> 핵심 설계 결정: Calibration Bundle = boot-time configuration (Mirror 안 씀). §6 / §10.1 / §10.2 재작성 완료. SSOT spec = [backend_v2.md](backend_v2.md) (§16 Module catalog 포함 — 옛 backend_v2_modules.md 통합).
 >
 > **v2 개선 (옛 → v2, 기계적 복사 X)**: ① ORM 이 shared storage Base → **calibration 자기 Base** (Database-per-Module). ② `UtcDateTime` storage 소유 → **`infra/database/types.py` 승격** (전역 UTC 컨벤션). ③ `infra/database/sqlite.py::open_sqlite` 에 **sqlite FK pragma 추가** (없으면 `ondelete=CASCADE` 조용히 no-op — calibration 이 첫 FK-CASCADE 테이블이라 드러남). ④ result data 모델 = **순수 pydantic** (옛 numpy helper 는 consumer 로). ⑤ result 계열 `extra="forbid"` (DB drift fail-fast). ⑥ **advanced-alchemy `SQLAlchemySyncRepository` = 모듈 내부 CRUD 헬퍼로만** (add/commit/refresh·get·get_many·delete ceremony 제거) — framework 는 전제 X (§10.4, plain Protocol 유지), 라이브러리 의존은 repository.py 안에 갇힘. 도메인 로직(activate atomic / bundle aggregate / undo)은 직접. ⑦ migration = **루트 단일 Alembic** (§8, 소유권≠마이그레이션 권위).
 >
@@ -262,7 +262,7 @@ backend_v2/
 
 ## 9. Motion consumer — 실 wire (boot-time)
 
-Step E 진입 시 Step D 자리 mock owner (tests/fixtures/mock_calibration_owner.py) 제거 + 실 Calibration 로 e2e 검증. Step E 검증의 핵심은 **Bundle atomic snapshot + Motion 의 boot-time kinematics build** ([backend_v2_modules.md §11.2](backend_v2_modules.md) — Step E 목표는 Mirror e2e 가 아니라 config boot-query e2e 로 정정됨).
+Step E 진입 시 Step D 자리 mock owner (tests/fixtures/mock_calibration_owner.py) 제거 + 실 Calibration 로 e2e 검증. Step E 검증의 핵심은 **Bundle atomic snapshot + Motion 의 boot-time kinematics build** (Step E 목표는 Mirror e2e 가 아니라 config boot-query e2e 로 정정됨 — [backend_v2.md §16.3](backend_v2.md)).
 
 즉 시나리오:
 1. offline `calibrate_offline.py --commit` → CalibrationResult INSERT + activate (backend 종료 상태에서 실행)
@@ -417,5 +417,5 @@ boot 순서: Calibration.start() 의 pull 이 성공하려면 Camera runtime 이
 
 **남은 자리 (framework 문서 반영 — 별도 단위)**:
 - **backend_v2.md**: 원칙 2 (Configuration vs Runtime State) first-class 추가 + anchor #2 (`Mirror[CalibrationBundle] 단일`) supersede 표시. worked code 예제(Motion 이 Mirror[CalibrationBundle] 쓰는 부분)는 boot-query 패턴으로 전면 rewrite 필요 — 대공사, 별도 진행.
-- **backend_v2_modules.md**: Step E 목표 "Mirror[Bundle] e2e" → "Runtime state 대표 모듈 Mirror e2e + calibration boot-query e2e" 로 일반화 (§11.2 표). Mirror consumer 로 calibration 쓰는 예제/표 rewrite.
+- ~~backend_v2_modules.md rewrite~~ — 반영 후 2026-07-03 [backend_v2.md](backend_v2.md) §16 으로 통합·폐기 (Mirror deferred + boot-query = §16.3 / anchor #2).
 - **§1-§5 재대조**: 원칙 2 관점에서 남은 산발 표현 점검 (이번 rewrite 로 대부분 정리됨).

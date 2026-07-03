@@ -342,12 +342,13 @@ export class BridgeClient {
         resolve(res);
       };
       this.pendingServices.set(request_id, cacheAndResolve);
+      // Bridge = 순수 transport — 키 확장(라우팅)만. robot-agnostic 서비스의
+      // robot_id 는 req 필드 (호출자가 data 에 넣음, 타입이 강제) — 여기서 주입 X.
       this._send({
         op: WsOp.Service,
         key: expanded,
         request_id,
         data: data as Record<string, unknown>,
-        robot_id: options?.robotId,
       });
 
       // backend 도 5s default timeout — frontend 가 safety net

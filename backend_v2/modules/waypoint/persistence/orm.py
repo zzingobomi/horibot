@@ -2,7 +2,7 @@
 
 Robot Asset Layer 영속성. joint 는 rad JSON 저장 (Motion.TcpState 계약 단위).
 Database-per-Module: 소유=이 모듈, 공유 Base 등록, 마이그레이션=루트 alembic.
-WaypointGroupMember 는 order 있는 join (docs/task_dsl_waypoint_port.md D5) — reorder/
+WaypointGroupMember 는 order 있는 join (docs/backend_v2.md §17.2 D5) — reorder/
 add/remove 가 행 단위 + position 컬럼이 드래그 UI 와 1:1.
 """
 

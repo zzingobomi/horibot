@@ -65,15 +65,17 @@ export function ScanPanel() {
     [listRecons],
   );
 
+  // scan/scene3d 는 robot-agnostic — 새 세션/목록/stream 은 req 에 robot_id,
+  // 진행 자원(capture/build/mesh 등)은 session/recon row id 에서 파생.
   useEffect(() => {
-    void listSessions.call({});
+    void listSessions.call({ robot_id: robotId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [robotId]);
 
   // unmount 시 라이브 stream 정리 (mode 벗어나면 카메라 PC decode 낭비 X)
   useEffect(() => {
     return () => {
-      void setStream.call({ enabled: false });
+      void setStream.call({ robot_id: robotId, enabled: false });
       setLiveEnabled(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -81,12 +83,12 @@ export function ScanPanel() {
 
   const onToggleLive = async () => {
     const next = !liveEnabled;
-    await setStream.call({ enabled: next });
+    await setStream.call({ robot_id: robotId, enabled: next });
     setLiveEnabled(next);
   };
 
   const onNewSession = async () => {
-    const res = await newSession.call({ label: null });
+    const res = await newSession.call({ robot_id: robotId, label: null });
     const sess = (res.data as { session?: ScanSessionRecord } | null)?.session;
     if (sess?.id != null) {
       setSessionRowId(sess.id);

@@ -3,7 +3,7 @@
 Robot Asset Layer (Motion 위). Waypoint = 티칭한 joint 자세(rad). WaypointGroup =
 목적별 묶음(ordered). Database-per-Module. 저장 단위 rad — Motion.TcpState.joints
 계약을 그대로 소비 (raw encoder 는 Waypoint 가 모름, 계층 준수).
-설계 docs/task_dsl_waypoint_port.md §2(D3~D8)·§4.
+설계 docs/backend_v2.md §17.2.
 """
 
 from __future__ import annotations
@@ -41,26 +41,30 @@ class WaypointGroupRecord(_Strict):
 
 class Waypoint:
     class Service(StrEnum):
+        # robot-agnostic (host 당 1, backend_v2.md §2.7) — 대상 robot 은
+        # 생성/목록(teach/list/create_group/list_groups)은 req.robot_id, 나머지는
+        # row id 에서 파생 (backend_v2.md §2.7.1).
         # waypoint CRUD
-        TEACH = "srv/waypoint/{robot_id}/teach"  # 현재 joint 로 저장
-        LIST = "srv/waypoint/{robot_id}/list"
-        RENAME = "srv/waypoint/{robot_id}/rename"
-        DELETE = "srv/waypoint/{robot_id}/delete"
+        TEACH = "srv/waypoint/teach"  # 현재 joint 로 저장
+        LIST = "srv/waypoint/list"
+        RENAME = "srv/waypoint/rename"
+        DELETE = "srv/waypoint/delete"
         # group CRUD
-        CREATE_GROUP = "srv/waypoint/{robot_id}/create_group"
-        LIST_GROUPS = "srv/waypoint/{robot_id}/list_groups"
-        DELETE_GROUP = "srv/waypoint/{robot_id}/delete_group"
+        CREATE_GROUP = "srv/waypoint/create_group"
+        LIST_GROUPS = "srv/waypoint/list_groups"
+        DELETE_GROUP = "srv/waypoint/delete_group"
         # group membership (order 있는 join)
-        ADD_TO_GROUP = "srv/waypoint/{robot_id}/add_to_group"
-        REMOVE_FROM_GROUP = "srv/waypoint/{robot_id}/remove_from_group"
-        REORDER_GROUP = "srv/waypoint/{robot_id}/reorder_group"
-        LIST_GROUP_MEMBERS = "srv/waypoint/{robot_id}/list_group_members"
+        ADD_TO_GROUP = "srv/waypoint/add_to_group"
+        REMOVE_FROM_GROUP = "srv/waypoint/remove_from_group"
+        REORDER_GROUP = "srv/waypoint/reorder_group"
+        LIST_GROUP_MEMBERS = "srv/waypoint/list_group_members"
 
 
 # ─── request / response ─────────────────────────────────────────────
 
 
 class TeachRequest(BaseModel):
+    robot_id: str
     name: str
 
 
@@ -71,7 +75,7 @@ class TeachResponse(BaseModel):
 
 
 class ListWaypointsRequest(BaseModel):
-    pass
+    robot_id: str
 
 
 class ListWaypointsResponse(BaseModel):
@@ -97,6 +101,7 @@ class DeleteWaypointResponse(BaseModel):
 
 
 class CreateGroupRequest(BaseModel):
+    robot_id: str
     name: str
 
 
@@ -107,7 +112,7 @@ class CreateGroupResponse(BaseModel):
 
 
 class ListGroupsRequest(BaseModel):
-    pass
+    robot_id: str
 
 
 class ListGroupsResponse(BaseModel):

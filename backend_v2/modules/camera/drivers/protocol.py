@@ -1,6 +1,6 @@
 """CameraDriver Protocol — Camera 도메인의 hardware adapter 계약.
 
-backend_v2_modules.md §6.2 (driver Protocol) + §7.3 (driver self-declare)
+backend_v2.md §16.4 (driver Protocol) + §16.5 (driver self-declare)
 + §7.6 (factory intrinsic — driver internal only, Calibration 의 public X).
 """
 

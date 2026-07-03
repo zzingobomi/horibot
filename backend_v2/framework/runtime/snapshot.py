@@ -99,7 +99,7 @@ class ModuleContract:
     """
 
     module_id: str  # type(m).__name__
-    robot_scoped: bool  # any wire_key 에 {robot_id} placeholder
+    robot_scoped: bool  # **service** wire_key 에 {robot_id} → per-robot 인스턴스 필요
     services: tuple[str, ...]  # @service wire_keys (owner=server)
     publishes: tuple[str, ...]  # @publishes wire_keys (output stream/event)
     subscribes: tuple[str, ...]  # @subscriber wire_keys (input stream/event)
@@ -127,9 +127,11 @@ def build_module_contracts(modules: list[Any]) -> list[ModuleContract]:
         pub = get_publishes_spec(type(module))
         publishes = sorted(wire_key for wire_key, _cls in pub.pairs) if pub else []
 
-        robot_scoped = any(
-            "{robot_id}" in k for k in (*services, *publishes, *subscribes)
-        )
+        # robot_scoped = **service 키** 의 {robot_id} — framework 가 self.robot_id
+        # 를 요구하는 유일한 자리 (per-robot 인스턴스 필요의 SSOT). stream/event 는
+        # payload robot_id 라우팅 / wildcard 구독이라 host-level module 도 robot-
+        # scoped 키를 publish/subscribe 함 (예: 호스트 1개 calibration 의 preview).
+        robot_scoped = any("{robot_id}" in k for k in services)
         out.append(
             ModuleContract(
                 module_id=module_id,
@@ -171,9 +173,8 @@ def build_module_contracts_from_classes(classes: list[type]) -> list[ModuleContr
         pub = get_publishes_spec(cls)
         publishes = sorted(wire_key for wire_key, _cls in pub.pairs) if pub else []
 
-        robot_scoped = any(
-            "{robot_id}" in k for k in (*services, *publishes, *subscribes)
-        )
+        # service 키 기준 — build_module_contracts 와 동일 규칙 (위 주석 참조)
+        robot_scoped = any("{robot_id}" in k for k in services)
         out.append(
             ModuleContract(
                 module_id=module_id,

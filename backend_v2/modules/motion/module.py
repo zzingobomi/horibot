@@ -1,6 +1,6 @@
 """MotionModule — robot-scoped Domain Module (kinematics + motion primitive).
 
-backend_v2_modules.md §1.1 #4. pi_motor 배치 (100Hz 명령 network 안 넘게 +
+backend_v2.md §16.1 #4. pi_motor 배치 (100Hz 명령 network 안 넘게 +
 IK RTT 0). D2 = MoveJ + TCP state/snapshot.
 
 raw↔rad = Motion 책임 (§4). Motor.Stream.RAW_STATE 구독 → arm rad cache,
@@ -31,9 +31,12 @@ from .contract import (
     JogJInput,
     JogTcpInput,
     MotionCompleted,
+    MotionFailed,
     Motion,
     MoveJRequest,
     MoveJResponse,
+    MoveLRequest,
+    MoveLResponse,
     StopRequest,
     StopResponse,
     TcpSnapshotRequest,
@@ -42,7 +45,7 @@ from .contract import (
     TrajStatus,
 )
 from .kinematics import Kinematics
-from .trajectory_runner import TrajectoryRunner
+from .trajectory_runner import LinearPath, TrajectoryRunner
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +96,10 @@ class MotionModule:
         self._traj_seq = 0
         self._tcp_task: asyncio.Task[None] | None = None
         self._stop = False
+        # Move 완료 대기 (§6.1 완료 계약) — await motion.move_* 가 trajectory 종료까지
+        # 반환 안 함. traj thread 의 terminal 상태를 loop 로 넘겨 future resolve.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._move_done: asyncio.Future[TrajStatus] | None = None
         # jog state (stateful — 단일 인스턴스). J / Tcp 별도.
         self._jog_j_ref: list[float] | None = None
         self._jog_j_t = 0.0
@@ -106,6 +113,8 @@ class MotionModule:
     # ── lifecycle ─────────────────────────────────────────────
 
     async def start(self) -> None:
+        # move 완료 future 를 traj thread 에서 resolve 하려면 loop 참조 필요.
+        self._loop = asyncio.get_running_loop()
         # PyBullet load (blocking) → to_thread (async 계약)
         await asyncio.to_thread(self._kin.initialize)
         self._joint_limits = self._kin.joint_limits()  # jog ref clamp 용 (URDF rad)
@@ -299,7 +308,7 @@ class MotionModule:
     # ── services ──────────────────────────────────────────────
 
     @service(Motion.Service.MOVE_J)
-    def move_j(self, req: MoveJRequest) -> MoveJResponse:
+    async def move_j(self, req: MoveJRequest) -> MoveJResponse:
         if len(req.target_joints) != self._dof:
             return MoveJResponse(
                 accepted=False,
@@ -308,9 +317,32 @@ class MotionModule:
         current = self._latest_arm_rad
         if current is None:
             return MoveJResponse(accepted=False, message="motor state 아직 없음")
-        assert self._runner is not None
+        if not self._begin_move():
+            return MoveJResponse(accepted=False, message="이전 motion 진행 중")
+        assert self._runner is not None and self._move_done is not None
+        fut = self._move_done
         self._runner.run_joint(current, list(req.target_joints))
+        await self._require_done(fut, "MoveJ")
         return MoveJResponse(accepted=True)
+
+    @service(Motion.Service.MOVE_L)
+    async def move_l(self, req: MoveLRequest) -> MoveLResponse:
+        """TCP 를 현재 위치 → target_position 직선 이동 (position-only v1). 완료까지 대기."""
+        current = self._latest_arm_rad
+        if current is None:
+            return MoveLResponse(accepted=False, message="motor state 아직 없음")
+        if not self._begin_move():
+            return MoveLResponse(accepted=False, message="이전 motion 진행 중")
+        assert self._runner is not None and self._move_done is not None
+        fut = self._move_done
+        start_pos, _ = self._kin.fk(current)
+        path = LinearPath(
+            np.asarray(start_pos, dtype=float),
+            np.asarray(req.target_position, dtype=float),
+        )
+        self._runner.run_cartesian(path, list(current))
+        await self._require_done(fut, "MoveL")
+        return MoveLResponse(accepted=True)
 
     @service(Motion.Service.TCP_SNAPSHOT)
     def tcp_snapshot(self, req: TcpSnapshotRequest) -> TcpState:
@@ -324,6 +356,35 @@ class MotionModule:
         if self._runner is not None:
             self._runner.stop()
         return StopResponse(ok=True)
+
+    # ── move 완료 대기 (§6.1 완료 계약) ────────────────────────
+
+    def _begin_move(self) -> bool:
+        """새 move 완료 future 준비. 이미 진행 중이면 False — runner 는 단일 trajectory
+        라 overlap 거부 (task 는 순차 await 라 안 걸림, 동시 호출만 방어)."""
+        if self._move_done is not None and not self._move_done.done():
+            return False
+        assert self._loop is not None
+        self._move_done = self._loop.create_future()
+        return True
+
+    async def _require_done(
+        self, fut: "asyncio.Future[TrajStatus]", label: str
+    ) -> None:
+        """trajectory 종료까지 대기. DONE 아니면 MotionFailed (완료 계약)."""
+        try:
+            status = await fut
+        finally:
+            if self._move_done is fut:
+                self._move_done = None
+        if status != TrajStatus.DONE:
+            raise MotionFailed(f"{label} {status.value}")
+
+    def _resolve_move(self, status: TrajStatus) -> None:
+        """traj thread 의 terminal 상태 → loop.call_soon_threadsafe 로 진입."""
+        fut = self._move_done
+        if fut is not None and not fut.done():
+            fut.set_result(status)
 
     # ── TrajectoryRunner 콜백 ──────────────────────────────────
 
@@ -358,6 +419,10 @@ class MotionModule:
                 Motion.Event.MOTION_COMPLETED,
                 MotionCompleted(robot_id=self.robot_id, status=status),
             )
+            # await motion.move_* 깨우기 — traj thread → loop 로 넘김 (thread-safe).
+            loop = self._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(self._resolve_move, status)
 
     def _solve_ik(self, pos, seed: list[float]) -> list[float] | None:
         # cartesian path 추종 (D2c) — position-only IK

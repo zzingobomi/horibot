@@ -7,7 +7,7 @@
  *
  * 티칭 소스 = backend WaypointModule 이 Motion.TcpState(rad) 를 캐시 → TEACH 는
  * "현재 joint 저장". 이 패널은 현재 자세를 tcp stream 으로 보여주기만 (참고용).
- * docs/task_dsl_waypoint_port.md §4.
+ * docs/backend_v2.md §17.2.
  */
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
@@ -49,19 +49,20 @@ export function WaypointPanel() {
   const [editName, setEditName] = useState("");
   const [msg, setMsg] = useState("");
 
+  // waypoint 는 robot-agnostic — 생성/목록은 req 에 robot_id, 나머지는 row id 파생.
   const refreshWaypoints = useCallback(async () => {
-    const res = await listSvc.call({});
+    const res = await listSvc.call({ robot_id: robotId });
     setWaypoints(
       (res.data as { waypoints?: WaypointRecord[] } | null)?.waypoints ?? [],
     );
-  }, [listSvc]);
+  }, [listSvc, robotId]);
 
   const refreshGroups = useCallback(async () => {
-    const res = await listGroupsSvc.call({});
+    const res = await listGroupsSvc.call({ robot_id: robotId });
     setGroups(
       (res.data as { groups?: WaypointGroupRecord[] } | null)?.groups ?? [],
     );
-  }, [listGroupsSvc]);
+  }, [listGroupsSvc, robotId]);
 
   const refreshMembers = useCallback(
     async (gid: number) => {
@@ -86,7 +87,7 @@ export function WaypointPanel() {
   const onTeach = async () => {
     const nm = name.trim();
     if (!nm) return;
-    const res = await teachSvc.call({ name: nm });
+    const res = await teachSvc.call({ robot_id: robotId, name: nm });
     const d = res.data as { accepted?: boolean } | null;
     if (d?.accepted) {
       setName("");
@@ -127,7 +128,7 @@ export function WaypointPanel() {
   const onCreateGroup = async () => {
     const nm = groupName.trim();
     if (!nm) return;
-    const res = await createGroupSvc.call({ name: nm });
+    const res = await createGroupSvc.call({ robot_id: robotId, name: nm });
     const d = res.data as { accepted?: boolean } | null;
     if (d?.accepted) {
       setGroupName("");

@@ -72,11 +72,12 @@ test.describe("RobotCalibrateMode e2e (mock backend)", () => {
     await page.goto(CAL_PATH);
     await expect(page.getByTestId("calibration-panel")).toBeVisible({ timeout: 5_000 });
 
-    // preview ON → 검출될 때까지 대기
+    // preview ON → 검출될 때까지 대기. 주의: "미검출" 이 "검출" 을 substring 으로
+    // 포함하므로 corner count 패턴으로만 검출 판정 (skip 오탐 방지).
     await page.getByTestId("preview-toggle").click();
     const detail = page.getByTestId("preview-detail");
     try {
-      await expect(detail).toContainText("검출", { timeout: 6_000 });
+      await expect(detail).toContainText(/검출 \d+ corners/, { timeout: 6_000 });
     } catch {
       test.skip(true, "sim board OFF (mock camera 라벨 이미지) — CALIB_SIM_BOARD=1 로 backend 필요");
     }

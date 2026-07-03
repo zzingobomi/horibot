@@ -12,7 +12,7 @@
 
 ## 0. TL;DR
 
-backend_v2 의 module 계약(service/stream/event)을 **Swagger 식 flat 나열이 아니라 노드+방향엣지 그래프**로 보여주는 **개발자 도구**. `backend_v2_modules.md §8` 의 "Developer contract viewer (Swagger-like)" 두 번째 소비자를 구현하는 것 ([backend_v2_modules.md](backend_v2_modules.md) §8.1 + §14 anchor 15).
+backend_v2 의 module 계약(service/stream/event)을 **Swagger 식 flat 나열이 아니라 노드+방향엣지 그래프**로 보여주는 **개발자 도구**. [backend_v2.md §16.6](backend_v2.md) 의 "contract.py = 두 소비자의 SSOT" 중 두 번째 소비자(developer contract viewer)를 구현하는 것.
 
 **왜 그래프인가**: HTTP 엔드포인트는 서로 독립이라 flat 나열로 충분하지만, 우리 계약은 **pub/sub 토폴로지** — module 들이 topic 으로 물려 돌아간다. 나열로는 그 관계가 안 드러난다.
 
@@ -191,7 +191,7 @@ frontend_v2/src/features/contract-viewer/    # feature 격리 (나중에 별도 
 ## 9. Open questions / 후속 (v1 에선 defer)
 
 - **service caller 엣지** (§2 한계) — 정적으로 안 잡힘. 옵션: (a) v1 = owner-attached, caller 엣지 없음 (추천); (b) 후속: caller 를 어딘가 선언 (registry) 또는 runtime call 로그 수집. v1 은 (a).
-- **`@service(description=, tags=)` metadata** ([backend_v2_modules.md §8.4](backend_v2_modules.md)) — 현재 `@service` 는 key 만 받음 ([framework/contract/service.py](../backend_v2/framework/contract/service.py)). 뷰어에 human 설명/태그 달려면 이 확장 필요. **v1 defer** — key + payload 스키마 + wiring 만. metadata 는 v2 (framework `@service` 확장 + graph JSON 에 desc/tags 추가).
+- **`@service(description=, tags=)` metadata** ([backend_v2.md §16.6](backend_v2.md)) — 현재 `@service` 는 key 만 받음 ([framework/contract/service.py](../backend_v2/framework/contract/service.py)). 뷰어에 human 설명/태그 달려면 이 확장 필요. **v1 defer** — key + payload 스키마 + wiring 만. metadata 는 v2 (framework `@service` 확장 + graph JSON 에 desc/tags 추가).
 - **노드 granularity** — v1 = module 노드 + topic 엣지 + service owner-attach. topic/service 를 별도 노드로 승격은 후속 (규모 커지면).
 
 ## 11. 구현 결과 + 설계 대비 편차 (2026-07-01)
@@ -207,6 +207,6 @@ frontend_v2/src/features/contract-viewer/    # feature 격리 (나중에 별도 
 **파일**: backend = [snapshot.py](../backend_v2/framework/runtime/snapshot.py) (`ModuleContract`/`build_module_contracts`) + [app.py](../backend_v2/framework/runtime/app.py) (`Runtime.module_contracts()`) + [contract_export.py](../backend_v2/apps/contract_export.py) (`build_contract_graph`) + [resolve.py](../backend_v2/apps/resolve.py) (`_graph_provider`) + [bridge/module.py](../backend_v2/modules/bridge/module.py) (`GET /contract/graph`). frontend = `frontend_v2/src/features/contract-viewer/` (types / useContractGraph / toReactFlow / nodes/ModuleNode / ContractGraphPage) + `App.tsx` lazy route + `Sidebar.tsx` Dev 링크.
 
 ## 10. 인접 문서
-- [backend_v2_modules.md §8](backend_v2_modules.md) — "두 generator 의 SSOT". 본 뷰어 = 그 두 번째 소비자(contract viewer)의 구현 결정. §8.1 의 CLI 원안은 본 문서가 runtime-served frontend 페이지로 정정.
+- [backend_v2.md §16.6](backend_v2.md) — "contract.py = 두 소비자의 SSOT". 본 뷰어 = 그 두 번째 소비자(contract viewer)의 구현 결정. 옛 CLI 원안은 본 문서가 runtime-served frontend 페이지로 정정.
 - [frontend_v2.md §2.1](frontend_v2.md) — frontend gen (첫 번째 소비자) + backend EXPORT / frontend CONSUME 경계. 본 뷰어가 그 경계를 그대로 따름.
 - [backend_v2.md](backend_v2.md) — framework spec (`@service`/`@publishes`/`@subscriber` origin).

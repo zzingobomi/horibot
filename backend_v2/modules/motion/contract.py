@@ -1,6 +1,6 @@
 """Motion domain — public contract surface.
 
-backend_v2_modules.md §1.1 #4 (Motion) + §3.3 (TCP stream/snapshot 분리) +
+backend_v2.md §16.1 #4 (Motion) + §3.3 (TCP stream/snapshot 분리) +
 §8.5 (stream seq/timestamp invariant).
 
 D2 = MoveJ + TCP_STATE/SNAPSHOT. MoveL/C/P (D2c) / Jog (D3) 후속.
@@ -16,6 +16,7 @@ from pydantic import BaseModel
 class Motion:
     class Service(StrEnum):
         MOVE_J = "srv/motion/{robot_id}/move_j"  # joint target → trajectory
+        MOVE_L = "srv/motion/{robot_id}/move_l"  # TCP 직선 (position-only v1)
         TCP_SNAPSHOT = "srv/motion/{robot_id}/tcp_snapshot"  # point-in-time TCP
         STOP = "srv/motion/{robot_id}/stop"
 
@@ -47,6 +48,22 @@ class MoveJRequest(BaseModel):
 
 
 class MoveJResponse(BaseModel):
+    accepted: bool
+    message: str = ""
+
+
+class MoveLRequest(BaseModel):
+    """TCP 를 현재 위치에서 target_position 으로 직선(MoveL) 이동.
+
+    **v1 제약 (계약 명시)**: XYZ 직선만 보장 / orientation 보장 안 함 (position-only IK —
+    seed 자세에 딸려감). orientation interpolation(quaternion SLERP) / cartesian
+    orientation constraint 는 MoveL v2 (실제 task 가 요구할 때).
+    """
+
+    target_position: tuple[float, float, float]  # base frame, m
+
+
+class MoveLResponse(BaseModel):
     accepted: bool
     message: str = ""
 
@@ -114,3 +131,15 @@ class TrajState(BaseModel):
 class MotionCompleted(BaseModel):
     robot_id: str
     status: TrajStatus  # DONE / FAILED / STOPPED
+
+
+# ─── errors (완료 계약 — backend_v2.md §17.3) ────────────────
+
+
+class MotionFailed(RuntimeError):
+    """trajectory 가 오류(FAILED)/취소(STOPPED)로 끝남.
+
+    `await motion.move_j()` / `move_l()` 의 완료 계약: 목표 정상 종료(DONE) → return,
+    IK 실패/충돌/Ruckig 오류(FAILED) → 이 예외, 사용자 STOP(STOPPED) → 이 예외.
+    Task DSL 규칙 = await 성공이면 완료, 다음 step 안전.
+    """

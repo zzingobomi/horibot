@@ -1,7 +1,12 @@
-"""ScanModule — robot-scoped scan workflow + persistence + reconstruction.
+"""ScanModule — robot-agnostic scan workflow + persistence + reconstruction.
 
 옛 StorageNode(scan) + ReconstructionNode + ScanTask orchestration 통합. Task DSL
 없이 frontend 가 서비스 직접 호출 (실용 슬라이스). PC 배치 (Open3D heavy + DB owner).
+
+**robot-agnostic** — host 당 1 인스턴스 (backend_v2.md §2.7).
+대상 robot 은 새 세션(new_session/list_sessions)
+은 req.robot_id, 진행 중 자원은 session row 에서 파생. per-robot config(kinematics/
+arm_specs)는 resolve 가 주입한 robots 투영으로 조회, runtime state 는 robot_id 키 dict.
 
 capture flow: scene3d SNAPSHOT(consensus) + latest raw motor → blob 저장.
 build flow: scans 로드 → raw→rad→FK→hand_eye 로 camera pose → TSDF (to_thread) →
@@ -18,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import numpy as np
@@ -70,43 +76,56 @@ from .persistence.repository import ScanRepository
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class ScanRobotSpec:
+    """robot 별 정적 config — resolve 가 robots.yaml/URDF 에서 투영해 주입.
+
+    wire contract 아님 (constructor dep). kinematics 인스턴스를 들고 있어
+    pydantic 아니라 dataclass (calibration 의 CalibrationRobotSpec 과 같은 role).
+    """
+
+    kinematics: Kinematics
+    arm_specs: list[MotorSpec]  # motors.yaml 순 (gripper 제외)
+
+
 @publishes((Scan.Stream.BUILD_PROGRESS, BuildProgress))
 class ScanModule:
     def __init__(
         self,
         runtime: ModuleRuntime,
-        robot_id: str,
         repository: ScanRepository,
         object_store: ObjectStore,
-        kinematics: Kinematics,
-        arm_specs: list[MotorSpec],
+        robots: dict[str, ScanRobotSpec],
     ) -> None:
         self.runtime = runtime
-        self.robot_id = robot_id
         self._repo = repository
         self._blob = object_store
-        self._kin = kinematics
-        self._arm = arm_specs
-        self._dof = len(arm_specs)
-        self._latest_raw: list[int] | None = None
-        self._progress_seq = 0
+        self._robots = robots
+        # runtime state — robot_id 키 dict (실행 중에만 존재)
+        self._latest_raw: dict[str, list[int]] = {}
+        self._progress_seq: dict[str, int] = {}
 
     # ── lifecycle ─────────────────────────────────────────────
     async def start(self) -> None:
-        logger.info("ScanModule start robot=%s", self.robot_id)
-        await asyncio.to_thread(self._kin.initialize)
+        logger.info("ScanModule start (host-level, robots=%s)", sorted(self._robots))
+        # PyBullet init 는 순차 (per-robot 독립 client 지만 thread 동시 init 회피)
+        for spec in self._robots.values():
+            await asyncio.to_thread(spec.kinematics.initialize)
 
     async def stop(self) -> None:
-        await asyncio.to_thread(self._kin.close)
-        logger.info("ScanModule stop robot=%s", self.robot_id)
+        for spec in self._robots.values():
+            await asyncio.to_thread(spec.kinematics.close)
+        logger.info("ScanModule stop (host-level)")
 
     @subscriber(Motor.Stream.RAW_STATE)
     def on_motor_raw(self, state: JointState) -> None:
-        if state.robot_id != self.robot_id:
+        spec = self._robots.get(state.robot_id)
+        if spec is None:
             return
-        if len(state.positions_raw) < self._dof:
+        dof = len(spec.arm_specs)
+        if len(state.positions_raw) < dof:
             return
-        self._latest_raw = list(state.positions_raw[: self._dof])
+        self._latest_raw[state.robot_id] = list(state.positions_raw[:dof])
 
     # ── sessions ──────────────────────────────────────────────
     @service(Scan.Service.NEW_SESSION)
@@ -115,7 +134,7 @@ class ScanModule:
         session_id = "session_" + now.strftime("%Y%m%d_%H%M%S")
         rec = self._repo.insert_session(
             ScanSessionRecord(
-                robot_id=self.robot_id,
+                robot_id=req.robot_id,
                 session_id=session_id,
                 created_at=now,
                 label=req.label,
@@ -125,7 +144,7 @@ class ScanModule:
 
     @service(Scan.Service.LIST_SESSIONS)
     def list_sessions(self, req: ListSessionsRequest) -> ListSessionsResponse:
-        return ListSessionsResponse(sessions=self._repo.list_sessions(self.robot_id))
+        return ListSessionsResponse(sessions=self._repo.list_sessions(req.robot_id))
 
     @service(Scan.Service.DELETE_SESSION)
     def delete_session(self, req: DeleteSessionRequest) -> DeleteSessionResponse:
@@ -138,16 +157,21 @@ class ScanModule:
         session = self._repo.get_session(req.session_row_id)
         if session is None:
             return CaptureResponse(accepted=False, message="scan 세션 없음")
-        raw = self._latest_raw
+        robot_id = session.robot_id  # 대상 robot = 세션 소유자 (req 중복 채널 X)
+        spec = self._robots.get(robot_id)
+        if spec is None:
+            return CaptureResponse(
+                accepted=False, message=f"robot {robot_id!r} 이 이 host fleet 에 없음"
+            )
+        raw = self._latest_raw.get(robot_id)
         if raw is None:
             return CaptureResponse(accepted=False, message="motor state 아직 없음")
 
         try:
             snap = await self.runtime.call(
                 Scene3d.Service.SNAPSHOT,
-                SnapshotRequest(num_frames=req.num_frames),
+                SnapshotRequest(robot_id=robot_id, num_frames=req.num_frames),
                 SnapshotResponse,
-                robot_id=self.robot_id,
                 timeout=8.0,
             )
         except Exception as e:
@@ -157,13 +181,13 @@ class ScanModule:
 
         blob = scan_blob.encode(snap.color_jpeg, snap.depth_zstd)
         scan_id = self._repo.allocate_scan_id(req.session_row_id)
-        key = f"scans/{self.robot_id}/{session.session_id}/{scan_id:03d}.bin"
+        key = f"scans/{robot_id}/{session.session_id}/{scan_id:03d}.bin"
         self._blob.put(key, blob)
         intr = snap.intrinsic
         saved = self._repo.insert_scan(
             ScanRecord(
                 session_row_id=req.session_row_id,
-                robot_id=self.robot_id,
+                robot_id=robot_id,
                 scan_id=scan_id,
                 created_at=datetime.now(UTC),
                 blob_key=key,
@@ -176,7 +200,7 @@ class ScanModule:
                 cy=intr.cy,
                 depth_scale=intr.depth_scale,
                 motor_positions=list(raw),
-                arm_motor_ids=[s.id for s in self._arm],
+                arm_motor_ids=[s.id for s in spec.arm_specs],
             )
         )
         count = len(self._repo.list_scans(req.session_row_id))
@@ -209,13 +233,19 @@ class ScanModule:
         session = self._repo.get_session(req.session_row_id)
         if session is None:
             return BuildResponse(accepted=False, message="scan 세션 없음")
+        robot_id = session.robot_id  # 대상 robot = 세션 소유자
+        spec = self._robots.get(robot_id)
+        if spec is None:
+            return BuildResponse(
+                accepted=False, message=f"robot {robot_id!r} 이 이 host fleet 에 없음"
+            )
 
         try:
+            # calibration 은 robot-agnostic — 대상 robot 은 req 필드.
             bundle = await self.runtime.call(
                 Calibration.Service.SNAPSHOT_BUNDLE,
-                SnapshotBundleRequest(),
+                SnapshotBundleRequest(robot_id=robot_id),
                 CalibrationBundle,
-                robot_id=self.robot_id,
                 timeout=5.0,
             )
         except Exception as e:
@@ -238,6 +268,7 @@ class ScanModule:
         inputs: list[recon.BuildScanInput] = []
         for i, s in enumerate(scans):
             self._publish_progress(
+                robot_id,
                 req.session_row_id,
                 "loading_scans",
                 (i + 1) / len(scans),
@@ -246,8 +277,8 @@ class ScanModule:
             color, depth = scan_blob.decode(
                 self._blob.get(s.blob_key), s.width, s.height
             )
-            arm_rad = self._arm_rad(s.motor_positions, s.arm_motor_ids)
-            rot, pos = self._kin.fk_to_matrix(arm_rad)
+            arm_rad = self._arm_rad(spec, s.motor_positions, s.arm_motor_ids)
+            rot, pos = spec.kinematics.fk_to_matrix(arm_rad)
             t_base_ee = np.eye(4)
             t_base_ee[:3, :3] = np.array(rot, dtype=float)
             t_base_ee[:3, 3] = np.array(pos, dtype=float)
@@ -277,7 +308,7 @@ class ScanModule:
             kwargs["icp_max_dist"] = req.icp_max_dist
 
         def _progress(stage: str, percent: float, message: str) -> None:
-            self._publish_progress(req.session_row_id, stage, percent, message)
+            self._publish_progress(robot_id, req.session_row_id, stage, percent, message)
 
         try:
             # heavy Open3D TSDF/ICP — event loop 를 안 막게 thread 로 offload.
@@ -286,20 +317,20 @@ class ScanModule:
                 recon.build_mesh, inputs, progress=_progress, **kwargs
             )
         except Exception as e:
-            logger.exception("build_mesh 실패 robot=%s", self.robot_id)
-            self._publish_progress(req.session_row_id, "failed", 1.0, str(e))
+            logger.exception("build_mesh 실패 robot=%s", robot_id)
+            self._publish_progress(robot_id, req.session_row_id, "failed", 1.0, str(e))
             return BuildResponse(accepted=False, message=f"build 실패: {e}")
 
         now = datetime.now(UTC)
         key = (
-            f"reconstructions/{self.robot_id}/{session.session_id}/"
+            f"reconstructions/{robot_id}/{session.session_id}/"
             f"recon_{int(now.timestamp() * 1000)}.ply"
         )
         self._blob.put(key, result.mesh_bytes)
         saved = self._repo.insert_reconstruction(
             ReconstructionRecord(
                 session_row_id=req.session_row_id,
-                robot_id=self.robot_id,
+                robot_id=robot_id,
                 created_at=now,
                 blob_key=key,
                 voxel_size=kwargs.get("voxel_size", recon.DEFAULT_VOXEL_SIZE),
@@ -314,6 +345,7 @@ class ScanModule:
             )
         )
         self._publish_progress(
+            robot_id,
             req.session_row_id,
             "done",
             1.0,
@@ -343,26 +375,29 @@ class ScanModule:
         )
 
     # ── internal ──────────────────────────────────────────────
+    @staticmethod
     def _arm_rad(
-        self, motor_positions: list[int], arm_motor_ids: list[int]
+        spec: ScanRobotSpec, motor_positions: list[int], arm_motor_ids: list[int]
     ) -> list[float]:
         """raw motor → arm rad. 저장된 motor id 로 매핑 (order 무관 robust)."""
         by_id = dict(zip(arm_motor_ids, motor_positions))
-        return [units.raw_to_rad(by_id[s.id], s) for s in self._arm]
+        return [units.raw_to_rad(by_id[s.id], s) for s in spec.arm_specs]
 
     def _publish_progress(
         self,
+        robot_id: str,
         session_row_id: int,
         stage: str,
         percent: float,
         message: str,
         recon_id: int | None = None,
     ) -> None:
+        seq = self._progress_seq.get(robot_id, 0)
         self.runtime.publish(
             Scan.Stream.BUILD_PROGRESS,
             BuildProgress(
-                robot_id=self.robot_id,
-                seq=self._progress_seq,
+                robot_id=robot_id,
+                seq=seq,
                 timestamp_unix=time.time(),
                 session_row_id=session_row_id,
                 stage=stage,
@@ -371,4 +406,4 @@ class ScanModule:
                 reconstruction_row_id=recon_id,
             ),
         )
-        self._progress_seq += 1
+        self._progress_seq[robot_id] = seq + 1

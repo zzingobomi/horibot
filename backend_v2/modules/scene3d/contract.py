@@ -16,12 +16,15 @@ from pydantic import BaseModel
 
 class Scene3d:
     class Service(StrEnum):
-        SET_STREAM = "srv/scene3d/{robot_id}/set_stream"  # 라이브 PC on/off + voxel
-        SNAPSHOT = "srv/scene3d/{robot_id}/snapshot"  # N-frame consensus RGBD
+        # robot-agnostic (host 당 1, backend_v2.md §2.7) — 대상 robot 은
+        # req.robot_id (다른 식별자 없음, backend_v2.md §2.7.1).
+        SET_STREAM = "srv/scene3d/set_stream"  # 라이브 PC on/off + voxel
+        SNAPSHOT = "srv/scene3d/snapshot"  # N-frame consensus RGBD
 
     class Stream(StrEnum):
         # 라이브 pointcloud (camera-frame xyz+rgb). frontend 가 tcp·hand_eye 부모
         # transform 적용 (옛 backend Scene3DLayer 패턴). seq/timestamp invariant §8.5.
+        # robot-scoped 키 유지 — payload robot_id 로 framework 라우팅 (host-level 발행).
         CLOUD = "stream/scene3d/{robot_id}/cloud"
 
 
@@ -44,6 +47,7 @@ class Scene3dIntrinsic(BaseModel):
 
 
 class SetStreamRequest(BaseModel):
+    robot_id: str
     enabled: bool
     voxel_size: float | None = None  # None = 현재 유지
 
@@ -58,6 +62,7 @@ class SetStreamResponse(BaseModel):
 
 
 class SnapshotRequest(BaseModel):
+    robot_id: str
     num_frames: int = 10
 
 

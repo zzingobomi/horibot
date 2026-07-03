@@ -8,6 +8,7 @@ mock motor → 회사 검증 가능, 실 모터는 집.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 
 import pytest
@@ -23,6 +24,8 @@ from modules.motion.contract import (
     Motion,
     MoveJRequest,
     MoveJResponse,
+    MoveLRequest,
+    MoveLResponse,
     TcpSnapshotRequest,
     TcpState,
 )
@@ -147,6 +150,74 @@ async def _wait_motion_ready(runtime) -> bool:
         if await _try_snapshot(runtime) is not None:
             return True
     return False
+
+
+async def test_move_l_reaches_target_position(stack):
+    # MoveL (position-only v1): home 자세로 MoveJ 후 직선 이동 검증 — 실제 task 흐름
+    # (시작 → home → 작업)과 동일. await 완료 대기 + TCP 가 target 근처 도달 확인.
+    # home = robot_poses.yaml 값 (검증됨: 6축 limit 안, IK OK). orientation 미검증(v1).
+    runtime, _driver, _robot = stack
+    assert await _wait_motion_ready(runtime)
+
+    home_rad = [math.radians(d) for d in (0.0, 15.0, -45.0, 85.0, -5.0, 90.0)]
+    mj = await runtime.module_runtime.call(
+        Motion.Service.MOVE_J,
+        MoveJRequest(target_joints=home_rad),
+        MoveJResponse,
+        robot_id=_SO101,
+    )
+    assert mj.accepted, mj.message
+    await asyncio.sleep(0.2)  # 20Hz 피드백이 home 반영할 시간 (snapshot 안정화)
+
+    start = await _try_snapshot(runtime)
+    assert start is not None
+    # 작은 직선 이동 (reach 안, base frame). +2cm x / -2cm z (하강, pick 접근 유사).
+    target = (start.position[0] + 0.02, start.position[1], start.position[2] - 0.02)
+
+    res = await runtime.module_runtime.call(
+        Motion.Service.MOVE_L,
+        MoveLRequest(target_position=target),
+        MoveLResponse,
+        robot_id=_SO101,
+    )
+    assert res.accepted, res.message
+
+    # await 완료 후 TCP 가 target 근처 (20Hz 피드백 lag 흡수 위해 짧게 poll)
+    end = None
+    err = 1.0
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        end = await _try_snapshot(runtime)
+        if end is None:
+            continue
+        err = max(abs(end.position[i] - target[i]) for i in range(3))
+        if err < 0.01:
+            break
+    assert end is not None
+    assert err < 0.01, (
+        f"MoveL 도달 오차 {err * 1000:.1f}mm > 10mm: {end.position} vs {target}"
+    )
+
+
+async def test_move_l_rejects_without_motor_state(robot):
+    # motor 없이 motion 만 → motor state 없음 → pre-flight 거부 (accepted=False, 예외 X)
+    transport = ZenohTransport(_LOCAL_CFG)
+    time.sleep(0.05)
+    runtime = Runtime(transport)
+    motion_deps = resolve_deps("motion", robot, _deploy_mock())
+    runtime.add_module(MotionModule, robot_id=_SO101, **motion_deps)
+    await runtime.start()
+    try:
+        res = await runtime.module_runtime.call(
+            Motion.Service.MOVE_L,
+            MoveLRequest(target_position=(0.2, 0.0, 0.2)),
+            MoveLResponse,
+            robot_id=_SO101,
+        )
+        assert not res.accepted
+    finally:
+        await runtime.stop()
+        transport.close()
 
 
 async def test_jog_j_moves_motor(stack):

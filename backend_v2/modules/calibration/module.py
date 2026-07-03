@@ -1,12 +1,15 @@
-"""CalibrationModule — robot-scoped Domain Module (5 종 산출물 owner).
+"""CalibrationModule — robot-agnostic Domain Module (5 종 산출물 owner).
 
-boundary spec = [docs/calibration_module_boundary.md]. **robot-scoped** — service key
-`srv/calibration/{robot_id}/...` 가 framework 에서 self.robot_id 로 확장. PC 배치.
+boundary spec = [docs/calibration_module_boundary.md]. **robot-agnostic** — host 당
+1 인스턴스 (backend_v2.md §2.7). 서비스
+키에 {robot_id} 없음; 대상 robot 은 req.robot_id 또는 run_id/result_id 의 DB row 에서
+파생. runtime state 는 전부 robot_id 키 dict, robot config(모터 id 등)는 resolve 가
+주입한 robots 투영으로 요청 시점 조회 (모듈이 복사·재보유 X). PC 배치.
 
 service 핸들러는 sync → 옛 FrameCache/JointStateCache 패턴대로 camera decoded frame +
 motor raw 를 @subscriber 로 캐시하고 capture 가 sync 로 읽음 (runtime.call async 회피).
-
-미구현(다음): preview 5Hz stream / factory-intrinsic pull(§10.1, camera-coupled).
+@subscriber 는 framework 가 {robot_id}→* wildcard 구독 — 전 robot frame 이 들어오고
+payload 의 robot_id 로 dict 캐시.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from datetime import UTC, datetime
 
 import cv2
 import numpy as np
+from pydantic import BaseModel
 
 from framework.contract.publisher import publishes
 from framework.contract.service import service
@@ -80,6 +84,17 @@ def _raw_to_rad(raw: int) -> float:
 _PREVIEW_HZ = 5.0
 
 
+class CalibrationRobotSpec(BaseModel):
+    """robot 별 정적 config — resolve 가 robots.yaml 에서 투영해 주입.
+
+    wire contract 아님 (constructor dep). 모듈은 robots SSOT 를 재보유하지 않고
+    이 lean 투영으로 요청 시점 조회 (bridge 의 RobotInfo 변환과 동형).
+    """
+
+    motor_ids: list[int]  # arm joint motor ids (motors.yaml 순)
+    has_camera: bool  # factory intrinsic seed 시도 대상 (camera_backend 있음)
+
+
 @publishes(
     (Calibration.Event.ACTIVATED, CalibrationActivated),
     (Calibration.Event.COMMITTED, CalibrationCommitted),
@@ -89,60 +104,67 @@ class CalibrationModule:
     def __init__(
         self,
         runtime: ModuleRuntime,
-        robot_id: str,
         repository: CalibrationRepository,
         object_store: ObjectStore,
-        motor_ids: list[int],
+        robots: dict[str, CalibrationRobotSpec],
     ) -> None:
         self.runtime = runtime
-        self.robot_id = robot_id
         self._repo = repository
         self._blob = object_store
-        self._motor_ids = motor_ids  # arm joint motor ids (motors.yaml 순)
-        # 캐시 (subscriber 갱신 → capture 가 sync read)
-        self._latest_frame: np.ndarray | None = None
-        self._latest_raw: dict[int, int] | None = None
-        # preview
-        self._preview_on = False
-        self._preview_seq = 0
+        self._robots = robots
+        # runtime state — 전부 robot_id 키 dict (실행 중에만 존재, 대부분 0~1 sparse)
+        self._latest_frame: dict[str, np.ndarray] = {}
+        self._latest_raw: dict[str, dict[int, int]] = {}
+        self._preview_on: dict[str, bool] = {}
+        self._preview_seq: dict[str, int] = {}
         self._stop = False
         self._preview_task: asyncio.Task[None] | None = None
 
     # ── lifecycle ─────────────────────────────────────────────
     async def start(self) -> None:
-        logger.info("CalibrationModule start robot=%s", self.robot_id)
-        await self._seed_factory_intrinsic()
+        logger.info(
+            "CalibrationModule start (host-level, robots=%s)", sorted(self._robots)
+        )
+        # 카메라 보유 robot 전체 seed — gather 로 동시 (미배치 robot 의 timeout 이
+        # 직렬로 안 쌓이게). 각 seed 는 내부 try/except → 하나 실패해도 나머지 진행.
+        seeds = [
+            self._seed_factory_intrinsic(rid)
+            for rid, spec in self._robots.items()
+            if spec.has_camera
+        ]
+        if seeds:
+            await asyncio.gather(*seeds)
         self._stop = False
         self._preview_task = asyncio.create_task(self._preview_loop())
 
-    async def _seed_factory_intrinsic(self) -> None:
+    async def _seed_factory_intrinsic(self, robot_id: str) -> None:
         """§10.1 A — Camera 에서 factory intrinsic pull → idempotent seed.
 
         이미 active intrinsic 있으면 skip (사용자 chessboard 캘 결과 덮지 않음). Camera
         미배치/실패면 skip (USB UVC 는 available=False → 사용자 캘 자리)."""
-        if self._repo.get_active(self.robot_id, "intrinsic") is not None:
+        if self._repo.get_active(robot_id, "intrinsic") is not None:
             return
         try:
             fi = await self.runtime.call(
                 Camera.Service.GET_FACTORY_INTRINSIC,
                 GetFactoryIntrinsicRequest(),
                 FactoryIntrinsic,
-                robot_id=self.robot_id,
+                robot_id=robot_id,
                 timeout=3.0,
             )
         except Exception:
-            logger.info("factory intrinsic pull 실패/미배치 — skip robot=%s", self.robot_id)
+            logger.info("factory intrinsic pull 실패/미배치 — skip robot=%s", robot_id)
             return
         if not fi.available:
             return
         cm = [[fi.fx, 0.0, fi.cx], [0.0, fi.fy, fi.cy], [0.0, 0.0, 1.0]]
-        run = self._repo.create_run(self.robot_id, "intrinsic", "factory")
+        run = self._repo.create_run(robot_id, "intrinsic", "factory")
         assert run.id is not None
         rid = self._repo.save_result(
             run.id,
             IntrinsicResultRecord(
                 run_id=run.id,
-                robot_id=self.robot_id,
+                robot_id=robot_id,
                 created_at=datetime.now(UTC),
                 result_data=IntrinsicResultData(
                     camera_matrix=cm,
@@ -153,7 +175,7 @@ class CalibrationModule:
         )
         self._repo.finalize_run(run.id, "success")
         self._repo.activate_result(rid)
-        logger.info("factory intrinsic seeded robot=%s", self.robot_id)
+        logger.info("factory intrinsic seeded robot=%s", robot_id)
 
     async def stop(self) -> None:
         self._stop = True
@@ -165,47 +187,56 @@ class CalibrationModule:
             except asyncio.CancelledError:
                 pass
             self._preview_task = None
-        logger.info("CalibrationModule stop robot=%s", self.robot_id)
+        logger.info("CalibrationModule stop (host-level)")
 
-    # ── camera / motor 캐시 (sync callback) ───────────────────
+    # ── camera / motor 캐시 (sync callback, 전 robot wildcard) ──
     @subscriber(Camera.Stream.DECODED)
     def on_decoded_frame(self, frame: CameraDecodedFrame) -> None:
-        if frame.robot_id != self.robot_id:
+        if frame.robot_id not in self._robots:
             return
         arr = np.frombuffer(frame.ndarray_bytes, dtype=np.uint8)
         expected = frame.height * frame.width * 3
         if arr.size != expected:
             return
-        self._latest_frame = arr.reshape(frame.height, frame.width, 3)
+        self._latest_frame[frame.robot_id] = arr.reshape(
+            frame.height, frame.width, 3
+        )
 
     @subscriber(Motor.Stream.RAW_STATE)
     def on_motor_raw(self, state: JointState) -> None:
-        if state.robot_id != self.robot_id:
+        spec = self._robots.get(state.robot_id)
+        if spec is None:
             return
-        n = min(len(self._motor_ids), len(state.positions_raw))
-        self._latest_raw = {
-            self._motor_ids[i]: int(state.positions_raw[i]) for i in range(n)
+        n = min(len(spec.motor_ids), len(state.positions_raw))
+        self._latest_raw[state.robot_id] = {
+            spec.motor_ids[i]: int(state.positions_raw[i]) for i in range(n)
         }
 
     # ── commands (write) ──────────────────────────────────────
     @service(Calibration.Service.START_RUN)
     def start_run(self, req: StartRunRequest) -> StartRunResponse:
-        run = self._repo.create_run(self.robot_id, req.kind, req.algorithm)
+        run = self._repo.create_run(req.robot_id, req.kind, req.algorithm)
         assert run.id is not None
         return StartRunResponse(run_id=run.id)
 
     @service(Calibration.Service.CAPTURE)
     def capture(self, req: CaptureRequest) -> CaptureResponse:
-        """현재 캐시된 frame + raw 로 ChArUco PnP → gate → DB row + color blob.
+        """run 의 robot frame + raw 로 ChArUco PnP → gate → DB row + color blob.
 
+        대상 robot = run 소유자 (run_id 에서 파생 — req robot_id 중복 채널 X).
         gate: 미검출 / reproj RMS > reject 임계 시 accepted=False (capture 안 들임 —
         trauma source 입구 차단, thresholds §HANDEYE_PNP).
         """
-        frame = self._latest_frame
+        run = self._repo.get_run(req.run_id)
+        if run is None:
+            raise KeyError(f"run {req.run_id} 없음")
+        robot_id = run.robot_id
+
+        frame = self._latest_frame.get(robot_id)
         if frame is None:
             return CaptureResponse(accepted=False, message="카메라 프레임 없음")
 
-        intrinsic = self._repo.get_active(self.robot_id, "intrinsic")
+        intrinsic = self._repo.get_active(robot_id, "intrinsic")
         if not isinstance(intrinsic, IntrinsicResultRecord):
             return CaptureResponse(
                 accepted=False,
@@ -233,12 +264,12 @@ class CalibrationModule:
                 f"{thr.HANDEYE_PNP_RMS_REJECT_PX}px",
             )
 
-        quality = self._evaluate_quality(req.run_id, det)
+        quality = self._evaluate_quality(req.run_id, det, robot_id)
 
         capture = CalibrationCaptureRecord(
             run_id=req.run_id,
             pose_index=req.pose_index,
-            motor_positions=self._latest_raw,
+            motor_positions=self._latest_raw.get(robot_id),
             board_in_cam=det.board_in_cam,
             corners_2d=det.corners_2d,
             corner_ids=det.corner_ids,
@@ -251,7 +282,7 @@ class CalibrationModule:
         ok, buf = cv2.imencode(".jpg", frame)
         if ok:
             key = (
-                f"calib_captures/{self.robot_id}/{req.run_id}/"
+                f"calib_captures/{robot_id}/{req.run_id}/"
                 f"{req.pose_index:03d}_color.jpg"
             )
             self._blob.put(key, buf.tobytes())
@@ -279,10 +310,13 @@ class CalibrationModule:
 
     @service(Calibration.Service.FINALIZE_RUN)
     def finalize_run(self, req: FinalizeRunRequest) -> FinalizeRunResponse:
+        run = self._repo.get_run(req.run_id)
+        if run is None:
+            raise KeyError(f"run {req.run_id} 없음")
         self._repo.finalize_run(req.run_id, "ready_for_analysis")
         self.runtime.publish(
             Calibration.Event.COMMITTED,
-            CalibrationCommitted(robot_id=self.robot_id, run_id=req.run_id),
+            CalibrationCommitted(robot_id=run.robot_id, run_id=req.run_id),
         )
         return FinalizeRunResponse(ok=True)
 
@@ -292,7 +326,7 @@ class CalibrationModule:
         self.runtime.publish(
             Calibration.Event.ACTIVATED,
             CalibrationActivated(
-                robot_id=self.robot_id, result_id=req.result_id, kind=rec.kind
+                robot_id=rec.robot_id, result_id=req.result_id, kind=rec.kind
             ),
         )
         return ActivateResultResponse(ok=True)
@@ -306,47 +340,53 @@ class CalibrationModule:
 
     @service(Calibration.Service.PREVIEW_ENABLE)
     def preview_enable(self, req: PreviewEnableRequest) -> PreviewEnableResponse:
-        self._preview_on = req.enabled
+        if req.robot_id not in self._robots:
+            raise KeyError(f"robot {req.robot_id!r} 이 이 host fleet 에 없음")
+        self._preview_on[req.robot_id] = req.enabled
         return PreviewEnableResponse(ok=True)
 
     # ── queries (read) ────────────────────────────────────────
     @service(Calibration.Service.SNAPSHOT_BUNDLE)
     def snapshot_bundle(self, req: SnapshotBundleRequest) -> CalibrationBundle:
-        return self._repo.get_active_bundle(self.robot_id)
+        return self._repo.get_active_bundle(req.robot_id)
 
     @service(Calibration.Service.LIST_RUNS)
     def list_runs(self, req: ListRunsRequest) -> ListRunsResponse:
-        return ListRunsResponse(runs=self._repo.list_runs(self.robot_id, req.kind))
+        return ListRunsResponse(runs=self._repo.list_runs(req.robot_id, req.kind))
 
     @service(Calibration.Service.LIST_RESULTS)
     def list_results(self, req: ListResultsRequest) -> ListResultsResponse:
         return ListResultsResponse(
-            results=self._repo.list_results(self.robot_id, req.kind)
+            results=self._repo.list_results(req.robot_id, req.kind)
         )
 
     @service(Calibration.Service.GET_THRESHOLDS)
     def get_thresholds(self, req: GetThresholdsRequest) -> GetThresholdsResponse:
         return GetThresholdsResponse(thresholds=thr.as_dict())
 
-    # ── preview loop (5Hz) ────────────────────────────────────
+    # ── preview loop (5Hz, robot 별) ──────────────────────────
     async def _preview_loop(self) -> None:
         interval = 1.0 / _PREVIEW_HZ
         try:
             while not self._stop:
-                if self._preview_on and self._latest_frame is not None:
+                # snapshot 순회 — preview_enable(워커 스레드)의 dict 변경과 격리
+                for rid, on in list(self._preview_on.items()):
+                    if not on or self._latest_frame.get(rid) is None:
+                        continue
                     try:
-                        self._publish_preview()
+                        # detect_and_pnp 는 CPU-bound — loop 블로킹 방지
+                        await asyncio.to_thread(self._publish_preview, rid)
                     except Exception:
-                        logger.exception("preview publish 실패 %s", self.robot_id)
+                        logger.exception("preview publish 실패 %s", rid)
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass
 
-    def _publish_preview(self) -> None:
-        frame = self._latest_frame
+    def _publish_preview(self, robot_id: str) -> None:
+        frame = self._latest_frame.get(robot_id)
         if frame is None:
             return
-        intrinsic = self._repo.get_active(self.robot_id, "intrinsic")
+        intrinsic = self._repo.get_active(robot_id, "intrinsic")
         det = None
         detected = False
         corner_count = 0
@@ -357,9 +397,9 @@ class CalibrationModule:
         if det is not None:
             detected = True
             corner_count = len(det.corner_ids)
-            run = self._repo.get_in_progress_run(self.robot_id, "hand_eye")
+            run = self._repo.get_in_progress_run(robot_id, "hand_eye")
             quality = (
-                self._evaluate_quality(run.id, det)
+                self._evaluate_quality(run.id, det, robot_id)
                 if run is not None and run.id is not None
                 else capture_quality.CaptureQuality("green", ["첫 자세 — 캡처 권장"])
             )
@@ -373,11 +413,12 @@ class CalibrationModule:
             verdict = "red"
             reasons = ["보드 미검출"] if not ok else ["자세 추정 불가 (intrinsic 확인)"]
             tilt = None
+        seq = self._preview_seq.get(robot_id, 0)
         self.runtime.publish(
             Calibration.Stream.PREVIEW,
             CalibrationPreview(
-                robot_id=self.robot_id,
-                seq=self._preview_seq,
+                robot_id=robot_id,
+                seq=seq,
                 timestamp_unix=time.time(),
                 detected=detected,
                 corner_count=corner_count,
@@ -386,11 +427,11 @@ class CalibrationModule:
                 reasons=reasons,
             ),
         )
-        self._preview_seq += 1
+        self._preview_seq[robot_id] = seq + 1
 
     # ── internal ──────────────────────────────────────────────
     def _evaluate_quality(
-        self, run_id: int, det: processing.CaptureDetection
+        self, run_id: int, det: processing.CaptureDetection, robot_id: str
     ) -> capture_quality.CaptureQuality:
         """현재 자세 vs run 의 기존 capture 들 → traffic light."""
         existing = self._repo.list_captures(run_id)
@@ -407,9 +448,10 @@ class CalibrationModule:
                     [_raw_to_rad(c.motor_positions[m]) for m in sorted(c.motor_positions)]
                 )
         cur_T = np.array(det.board_in_cam, dtype=np.float64)
+        latest_raw = self._latest_raw.get(robot_id)
         cur_joints = (
-            [_raw_to_rad(self._latest_raw[m]) for m in sorted(self._latest_raw)]
-            if self._latest_raw
+            [_raw_to_rad(latest_raw[m]) for m in sorted(latest_raw)]
+            if latest_raw
             else None
         )
         return capture_quality.evaluate_capture_quality(

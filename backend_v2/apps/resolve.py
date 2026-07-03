@@ -35,50 +35,6 @@ def resolve_deps(
         return {}
     if name == "motion":
         return _motion_deps(robot)
-    if name == "calibration":
-        if session_factory is None:
-            raise ValueError(
-                "calibration 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)"
-            )
-        if deploy.object_uri is None:
-            raise ValueError("calibration 배치엔 deployment 의 object_uri 필요 (blob)")
-        from modules.calibration.persistence.repository import CalibrationRepository
-        from modules.motor.contract import MotorKind
-
-        arm_ids = [m.id for m in robot.motors if m.kind != MotorKind.GRIPPER]
-        return {
-            "repository": CalibrationRepository(session_factory),
-            "object_store": _object_store(deploy.object_uri),
-            "motor_ids": arm_ids,
-        }
-    if name == "scene3d":
-        return {}
-    if name == "scan":
-        if session_factory is None:
-            raise ValueError("scan 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)")
-        if deploy.object_uri is None:
-            raise ValueError("scan 배치엔 deployment 의 object_uri 필요 (blob)")
-        from modules.motion.adapters.pybullet import PybulletKinematics
-        from modules.motor.contract import MotorKind
-        from modules.scan.persistence.repository import ScanRepository
-
-        arm = [s for s in robot.motors if s.kind != MotorKind.GRIPPER]
-        urdf = _ROBOT_DIR / robot.type / "urdf" / f"{robot.type}.urdf"
-        return {
-            "repository": ScanRepository(session_factory),
-            "object_store": _object_store(deploy.object_uri),
-            "kinematics": PybulletKinematics(urdf),
-            "arm_specs": arm,
-        }
-    if name == "waypoint":
-        if session_factory is None:
-            raise ValueError(
-                "waypoint 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)"
-            )
-        # Waypoint 는 Motion 계약(TcpState rad+names)만 소비 → arm_specs/kinematics 불요.
-        from modules.waypoint.persistence.repository import WaypointRepository
-
-        return {"repository": WaypointRepository(session_factory)}
     raise NotImplementedError(
         f"robot-scoped resolve 미지원 module: {name!r} (robot={robot.id})"
     )
@@ -89,12 +45,89 @@ def resolve_host_deps(
     robots: dict[str, RobotConfig],
     deploy: DeploymentConfig,
     runtime: Any | None = None,
+    session_factory: sessionmaker[Session] | None = None,
 ) -> dict[str, Any]:
     """host-level (robot-agnostic) Module 의 constructor deps.
 
     runtime = build_runtime 이 넘기는 Runtime (bridge 의 contract provider closure 용).
     None 이면 provider 미주입 (GET /contract.json → 503) — contract gen 안 쓰는
-    배선/test 경로."""
+    배선/test 경로. session_factory = boot 가 만든 process-shared DB factory
+    (DB owner host 의 robot-agnostic DB 모듈만 사용)."""
+    if name == "detector":
+        # robot-agnostic (host 당 1) — 무거운 모델 1회 로드, req.robot_id 로 dispatch.
+        return {"backend": _detector_backend(deploy)}
+    if name == "calibration":
+        # robot-agnostic (host 당 1) — DB robot_id 멀티테넌트, req.robot_id dispatch.
+        if session_factory is None:
+            raise ValueError(
+                "calibration 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)"
+            )
+        if deploy.object_uri is None:
+            raise ValueError("calibration 배치엔 deployment 의 object_uri 필요 (blob)")
+        from modules.calibration.module import CalibrationRobotSpec
+        from modules.calibration.persistence.repository import CalibrationRepository
+        from modules.motor.contract import MotorKind
+
+        # robots.yaml → lean 투영 (enabled 만). 모듈은 RobotConfig 원본을 안 봄 —
+        # bridge 의 RobotInfo 변환과 동형 (내부 config → module dep 는 apps 책임).
+        specs = {
+            r.id: CalibrationRobotSpec(
+                motor_ids=[m.id for m in r.motors if m.kind != MotorKind.GRIPPER],
+                has_camera=r.camera_backend is not None,
+            )
+            for r in robots.values()
+            if r.enabled
+        }
+        return {
+            "repository": CalibrationRepository(session_factory),
+            "object_store": _object_store(deploy.object_uri),
+            "robots": specs,
+        }
+    if name == "scene3d":
+        # robot-agnostic (host 당 1) — 멤버십만 (rgbd capability + enabled).
+        return {
+            "robot_ids": [
+                r.id
+                for r in robots.values()
+                if r.enabled and "rgbd" in r.capabilities
+            ]
+        }
+    if name == "scan":
+        # robot-agnostic (host 당 1) — rgbd robot 별 kinematics/arm 투영 + DB/blob.
+        if session_factory is None:
+            raise ValueError("scan 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)")
+        if deploy.object_uri is None:
+            raise ValueError("scan 배치엔 deployment 의 object_uri 필요 (blob)")
+        from modules.motion.adapters.pybullet import PybulletKinematics
+        from modules.motor.contract import MotorKind
+        from modules.scan.module import ScanRobotSpec
+        from modules.scan.persistence.repository import ScanRepository
+
+        scan_specs = {
+            r.id: ScanRobotSpec(
+                kinematics=PybulletKinematics(
+                    _ROBOT_DIR / r.type / "urdf" / f"{r.type}.urdf"
+                ),
+                arm_specs=[m for m in r.motors if m.kind != MotorKind.GRIPPER],
+            )
+            for r in robots.values()
+            if r.enabled and "rgbd" in r.capabilities
+        }
+        return {
+            "repository": ScanRepository(session_factory),
+            "object_store": _object_store(deploy.object_uri),
+            "robots": scan_specs,
+        }
+    if name == "waypoint":
+        # robot-agnostic (host 당 1) — per-robot config 0 (joints 캐시는 payload 키,
+        # 이름 유일성은 DB (robot_id, name)). Motion 계약만 소비.
+        if session_factory is None:
+            raise ValueError(
+                "waypoint 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)"
+            )
+        from modules.waypoint.persistence.repository import WaypointRepository
+
+        return {"repository": WaypointRepository(session_factory)}
     if name == "bridge":
         from modules.bridge.contract import BasePoseInfo, RobotInfo
 
@@ -179,6 +212,17 @@ def _motor_driver(robot: RobotConfig, deploy: DeploymentConfig) -> Any:
         )
     raise NotImplementedError(
         f"real motor driver {robot.motor_backend!r} 미구현 (dynamixel 등 후속)."
+    )
+
+
+def _detector_backend(deploy: DeploymentConfig) -> Any:
+    if deploy.driver_mode == DriverMode.MOCK:
+        from modules.detector.backend import MockDetectorBackend
+
+        return MockDetectorBackend()
+    raise NotImplementedError(
+        "real detector backend (GroundingDinoBackend) 미구현 — detector 슬라이스 3 "
+        "(모델 로드 + preload race, 정확도는 집 하드웨어). 현재 mock 배치만."
     )
 
 

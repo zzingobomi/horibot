@@ -192,13 +192,27 @@ def test_graph_nodes_are_contentful_modules_only():
         "Scene3DModule",
         "ScanModule",
         "WaypointModule",
+        "DetectorModule",
     }
     assert "BridgeModule" not in ids
     by_id = {m["id"]: m for m in graph["modules"]}
     assert by_id["MotorDriverModule"]["domain"] == "motor"
     assert by_id["MotionModule"]["domain"] == "motion"
     assert by_id["CameraDriverModule"]["domain"] == "camera"
-    assert all(m["robot_scoped"] for m in graph["modules"])
+    # robot-agnostic (host당 1, 설계 §2.7) — 2026-07-03 드리프트 정정 완료
+    # (backend_v2.md §2.7). robot-scoped = 물리 자원 owner 만.
+    host_level = {
+        "DetectorModule",
+        "CalibrationModule",
+        "Scene3DModule",
+        "ScanModule",
+        "WaypointModule",
+    }
+    for mid in host_level:
+        assert by_id[mid]["robot_scoped"] is False, mid
+    assert all(
+        m["robot_scoped"] for m in graph["modules"] if m["id"] not in host_level
+    )
 
 
 def test_graph_edges_direction_and_no_service_edges():
@@ -337,5 +351,6 @@ async def test_contract_graph_endpoint_serves(graph_endpoint: str):
         "Scene3DModule",
         "ScanModule",
         "WaypointModule",
+        "DetectorModule",
     }
     assert len(data["edges"]) >= 4

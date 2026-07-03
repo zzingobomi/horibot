@@ -1,6 +1,6 @@
 """BridgeModule — Boundary Adapter (HTTP/WS ↔ Transport raw relay).
 
-backend_v2_modules.md §1.1 #12 + §8.6 (relay only — domain logic 0).
+backend_v2.md §16.1 #12 + §8.6 (relay only — domain logic 0).
 
 endpoint: HTTP helper (`/robots` / `/system`) + WS relay (`/ws`, → ws.py) +
 MJPEG (`/robots/{id}/camera/stream`, → mjpeg.py).

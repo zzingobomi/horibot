@@ -75,17 +75,21 @@ class ReconstructionRecord(_Strict):
 
 class Scan:
     class Service(StrEnum):
-        NEW_SESSION = "srv/scan/{robot_id}/new_session"
-        LIST_SESSIONS = "srv/scan/{robot_id}/list_sessions"
-        DELETE_SESSION = "srv/scan/{robot_id}/delete_session"
-        CAPTURE = "srv/scan/{robot_id}/capture"
-        LIST_SCANS = "srv/scan/{robot_id}/list_scans"
-        DELETE_SCAN = "srv/scan/{robot_id}/delete_scan"
-        BUILD = "srv/scan/{robot_id}/build"
-        LIST_RECONSTRUCTIONS = "srv/scan/{robot_id}/list_reconstructions"
-        GET_MESH = "srv/scan/{robot_id}/get_mesh"
+        # robot-agnostic (host 당 1, backend_v2.md §2.7) — 대상 robot 은
+        # 새 세션/조회는 req.robot_id, 진행 중 자원은 session/scan/recon row 에서
+        # 파생 (robot_id 중복 채널 X, backend_v2.md §2.7.1).
+        NEW_SESSION = "srv/scan/new_session"
+        LIST_SESSIONS = "srv/scan/list_sessions"
+        DELETE_SESSION = "srv/scan/delete_session"
+        CAPTURE = "srv/scan/capture"
+        LIST_SCANS = "srv/scan/list_scans"
+        DELETE_SCAN = "srv/scan/delete_scan"
+        BUILD = "srv/scan/build"
+        LIST_RECONSTRUCTIONS = "srv/scan/list_reconstructions"
+        GET_MESH = "srv/scan/get_mesh"
 
     class Stream(StrEnum):
+        # robot-scoped 키 유지 — payload robot_id 로 framework 라우팅 (host-level 발행)
         BUILD_PROGRESS = "stream/scan/{robot_id}/build_progress"
 
 
@@ -96,6 +100,7 @@ BuildStage = str  # loading_scans/pairwise_registration/pose_graph/tsdf/mesh/don
 
 
 class NewSessionRequest(BaseModel):
+    robot_id: str
     label: str | None = None
 
 
@@ -104,7 +109,7 @@ class NewSessionResponse(BaseModel):
 
 
 class ListSessionsRequest(BaseModel):
-    pass
+    robot_id: str
 
 
 class ListSessionsResponse(BaseModel):

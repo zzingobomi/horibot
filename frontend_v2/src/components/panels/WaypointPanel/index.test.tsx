@@ -100,7 +100,10 @@ describe("WaypointPanel", () => {
     await waitFor(() => {
       const calls = spy.mock.calls.filter((c) => String(c[0]).includes("/teach"));
       expect(calls.length).toBeGreaterThan(0);
-      expect((calls[0][1] as { name: string }).name).toBe("search_left");
+      const req = calls[0][1] as { robot_id: string; name: string };
+      expect(req.name).toBe("search_left");
+      // robot-agnostic 계약 — robot_id 는 req 필드 (키 치환 아님)
+      expect(req.robot_id).toBe(ROBOT_ID);
     });
   });
 

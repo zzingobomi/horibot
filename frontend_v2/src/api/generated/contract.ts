@@ -236,6 +236,7 @@ export interface GetThresholdsResponse {
 }
 
 export interface ListResultsRequest {
+  robot_id: string;
   kind?: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag" | null;
 }
 
@@ -244,6 +245,7 @@ export interface ListResultsResponse {
 }
 
 export interface ListRunsRequest {
+  robot_id: string;
   kind?: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag" | null;
 }
 
@@ -252,6 +254,7 @@ export interface ListRunsResponse {
 }
 
 export interface PreviewEnableRequest {
+  robot_id: string;
   enabled: boolean;
 }
 
@@ -260,9 +263,11 @@ export interface PreviewEnableResponse {
 }
 
 export interface SnapshotBundleRequest {
+  robot_id: string;
 }
 
 export interface StartRunRequest {
+  robot_id: string;
   kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
   algorithm: string;
 }
@@ -474,6 +479,7 @@ export interface ListScansResponse {
 }
 
 export interface ListSessionsRequest {
+  robot_id: string;
 }
 
 export interface ScanSessionRecord {
@@ -489,6 +495,7 @@ export interface ListSessionsResponse {
 }
 
 export interface NewSessionRequest {
+  robot_id: string;
   label?: string | null;
 }
 
@@ -506,6 +513,7 @@ export interface Scene3dCloud {
 }
 
 export interface SetStreamRequest {
+  robot_id: string;
   enabled: boolean;
   voxel_size?: number | null;
 }
@@ -527,6 +535,7 @@ export interface AddToGroupResponse {
 }
 
 export interface CreateGroupRequest {
+  robot_id: string;
   name: string;
 }
 
@@ -576,6 +585,7 @@ export interface ListGroupMembersResponse {
 }
 
 export interface ListGroupsRequest {
+  robot_id: string;
 }
 
 export interface ListGroupsResponse {
@@ -583,6 +593,7 @@ export interface ListGroupsResponse {
 }
 
 export interface ListWaypointsRequest {
+  robot_id: string;
 }
 
 export interface ListWaypointsResponse {
@@ -619,6 +630,7 @@ export interface ReorderGroupResponse {
 }
 
 export interface TeachRequest {
+  robot_id: string;
   name: string;
 }
 
@@ -658,78 +670,78 @@ export type TopicPayloadMap = {
 };
 
 export const ServiceKey = {
-  CALIBRATION_ACTIVATE_RESULT: "srv/calibration/{robot_id}/activate_result",
-  CALIBRATION_CAPTURE: "srv/calibration/{robot_id}/capture",
-  CALIBRATION_FINALIZE_RUN: "srv/calibration/{robot_id}/finalize_run",
-  CALIBRATION_GET_THRESHOLDS: "srv/calibration/{robot_id}/get_thresholds",
-  CALIBRATION_LIST_RESULTS: "srv/calibration/{robot_id}/list_results",
-  CALIBRATION_LIST_RUNS: "srv/calibration/{robot_id}/list_runs",
-  CALIBRATION_PREVIEW_ENABLE: "srv/calibration/{robot_id}/preview_enable",
-  CALIBRATION_SNAPSHOT_BUNDLE: "srv/calibration/{robot_id}/snapshot_bundle",
-  CALIBRATION_START_RUN: "srv/calibration/{robot_id}/start_run",
-  CALIBRATION_UNDO_LAST_CAPTURE: "srv/calibration/{robot_id}/undo_last_capture",
+  CALIBRATION_ACTIVATE_RESULT: "srv/calibration/activate_result",
+  CALIBRATION_CAPTURE: "srv/calibration/capture",
+  CALIBRATION_FINALIZE_RUN: "srv/calibration/finalize_run",
+  CALIBRATION_GET_THRESHOLDS: "srv/calibration/get_thresholds",
+  CALIBRATION_LIST_RESULTS: "srv/calibration/list_results",
+  CALIBRATION_LIST_RUNS: "srv/calibration/list_runs",
+  CALIBRATION_PREVIEW_ENABLE: "srv/calibration/preview_enable",
+  CALIBRATION_SNAPSHOT_BUNDLE: "srv/calibration/snapshot_bundle",
+  CALIBRATION_START_RUN: "srv/calibration/start_run",
+  CALIBRATION_UNDO_LAST_CAPTURE: "srv/calibration/undo_last_capture",
   MOTION_MOVE_J: "srv/motion/{robot_id}/move_j",
   MOTOR_CAPABILITIES: "srv/motor/{robot_id}/capabilities",
   MOTOR_GET_TOPOLOGY: "srv/motor/{robot_id}/topology",
   MOTOR_SET_TORQUE: "srv/motor/{robot_id}/set_torque",
-  SCAN_BUILD: "srv/scan/{robot_id}/build",
-  SCAN_CAPTURE: "srv/scan/{robot_id}/capture",
-  SCAN_DELETE_SCAN: "srv/scan/{robot_id}/delete_scan",
-  SCAN_DELETE_SESSION: "srv/scan/{robot_id}/delete_session",
-  SCAN_GET_MESH: "srv/scan/{robot_id}/get_mesh",
-  SCAN_LIST_RECONSTRUCTIONS: "srv/scan/{robot_id}/list_reconstructions",
-  SCAN_LIST_SCANS: "srv/scan/{robot_id}/list_scans",
-  SCAN_LIST_SESSIONS: "srv/scan/{robot_id}/list_sessions",
-  SCAN_NEW_SESSION: "srv/scan/{robot_id}/new_session",
-  SCENE3D_SET_STREAM: "srv/scene3d/{robot_id}/set_stream",
-  WAYPOINT_ADD_TO_GROUP: "srv/waypoint/{robot_id}/add_to_group",
-  WAYPOINT_CREATE_GROUP: "srv/waypoint/{robot_id}/create_group",
-  WAYPOINT_DELETE: "srv/waypoint/{robot_id}/delete",
-  WAYPOINT_DELETE_GROUP: "srv/waypoint/{robot_id}/delete_group",
-  WAYPOINT_LIST: "srv/waypoint/{robot_id}/list",
-  WAYPOINT_LIST_GROUPS: "srv/waypoint/{robot_id}/list_groups",
-  WAYPOINT_LIST_GROUP_MEMBERS: "srv/waypoint/{robot_id}/list_group_members",
-  WAYPOINT_REMOVE_FROM_GROUP: "srv/waypoint/{robot_id}/remove_from_group",
-  WAYPOINT_RENAME: "srv/waypoint/{robot_id}/rename",
-  WAYPOINT_REORDER_GROUP: "srv/waypoint/{robot_id}/reorder_group",
-  WAYPOINT_TEACH: "srv/waypoint/{robot_id}/teach",
+  SCAN_BUILD: "srv/scan/build",
+  SCAN_CAPTURE: "srv/scan/capture",
+  SCAN_DELETE_SCAN: "srv/scan/delete_scan",
+  SCAN_DELETE_SESSION: "srv/scan/delete_session",
+  SCAN_GET_MESH: "srv/scan/get_mesh",
+  SCAN_LIST_RECONSTRUCTIONS: "srv/scan/list_reconstructions",
+  SCAN_LIST_SCANS: "srv/scan/list_scans",
+  SCAN_LIST_SESSIONS: "srv/scan/list_sessions",
+  SCAN_NEW_SESSION: "srv/scan/new_session",
+  SCENE3D_SET_STREAM: "srv/scene3d/set_stream",
+  WAYPOINT_ADD_TO_GROUP: "srv/waypoint/add_to_group",
+  WAYPOINT_CREATE_GROUP: "srv/waypoint/create_group",
+  WAYPOINT_DELETE: "srv/waypoint/delete",
+  WAYPOINT_DELETE_GROUP: "srv/waypoint/delete_group",
+  WAYPOINT_LIST: "srv/waypoint/list",
+  WAYPOINT_LIST_GROUPS: "srv/waypoint/list_groups",
+  WAYPOINT_LIST_GROUP_MEMBERS: "srv/waypoint/list_group_members",
+  WAYPOINT_REMOVE_FROM_GROUP: "srv/waypoint/remove_from_group",
+  WAYPOINT_RENAME: "srv/waypoint/rename",
+  WAYPOINT_REORDER_GROUP: "srv/waypoint/reorder_group",
+  WAYPOINT_TEACH: "srv/waypoint/teach",
 } as const;
 export type ServiceKeyValue = (typeof ServiceKey)[keyof typeof ServiceKey];
 
 export type ServiceMap = {
-  "srv/calibration/{robot_id}/activate_result": { req: ActivateResultRequest; res: ActivateResultResponse };
-  "srv/calibration/{robot_id}/capture": { req: CalibrationCaptureRequest; res: CalibrationCaptureResponse };
-  "srv/calibration/{robot_id}/finalize_run": { req: FinalizeRunRequest; res: FinalizeRunResponse };
-  "srv/calibration/{robot_id}/get_thresholds": { req: GetThresholdsRequest; res: GetThresholdsResponse };
-  "srv/calibration/{robot_id}/list_results": { req: ListResultsRequest; res: ListResultsResponse };
-  "srv/calibration/{robot_id}/list_runs": { req: ListRunsRequest; res: ListRunsResponse };
-  "srv/calibration/{robot_id}/preview_enable": { req: PreviewEnableRequest; res: PreviewEnableResponse };
-  "srv/calibration/{robot_id}/snapshot_bundle": { req: SnapshotBundleRequest; res: CalibrationBundle };
-  "srv/calibration/{robot_id}/start_run": { req: StartRunRequest; res: StartRunResponse };
-  "srv/calibration/{robot_id}/undo_last_capture": { req: UndoLastCaptureRequest; res: UndoLastCaptureResponse };
+  "srv/calibration/activate_result": { req: ActivateResultRequest; res: ActivateResultResponse };
+  "srv/calibration/capture": { req: CalibrationCaptureRequest; res: CalibrationCaptureResponse };
+  "srv/calibration/finalize_run": { req: FinalizeRunRequest; res: FinalizeRunResponse };
+  "srv/calibration/get_thresholds": { req: GetThresholdsRequest; res: GetThresholdsResponse };
+  "srv/calibration/list_results": { req: ListResultsRequest; res: ListResultsResponse };
+  "srv/calibration/list_runs": { req: ListRunsRequest; res: ListRunsResponse };
+  "srv/calibration/preview_enable": { req: PreviewEnableRequest; res: PreviewEnableResponse };
+  "srv/calibration/snapshot_bundle": { req: SnapshotBundleRequest; res: CalibrationBundle };
+  "srv/calibration/start_run": { req: StartRunRequest; res: StartRunResponse };
+  "srv/calibration/undo_last_capture": { req: UndoLastCaptureRequest; res: UndoLastCaptureResponse };
   "srv/motion/{robot_id}/move_j": { req: MoveJRequest; res: MoveJResponse };
   "srv/motor/{robot_id}/capabilities": { req: MotorCapabilitiesRequest; res: MotorCapabilities };
   "srv/motor/{robot_id}/topology": { req: TopologyRequest; res: MotorTopology };
   "srv/motor/{robot_id}/set_torque": { req: SetTorqueRequest; res: SetTorqueResponse };
-  "srv/scan/{robot_id}/build": { req: BuildRequest; res: BuildResponse };
-  "srv/scan/{robot_id}/capture": { req: ScanCaptureRequest; res: ScanCaptureResponse };
-  "srv/scan/{robot_id}/delete_scan": { req: DeleteScanRequest; res: DeleteScanResponse };
-  "srv/scan/{robot_id}/delete_session": { req: DeleteSessionRequest; res: DeleteSessionResponse };
-  "srv/scan/{robot_id}/get_mesh": { req: GetMeshRequest; res: GetMeshResponse };
-  "srv/scan/{robot_id}/list_reconstructions": { req: ListReconstructionsRequest; res: ListReconstructionsResponse };
-  "srv/scan/{robot_id}/list_scans": { req: ListScansRequest; res: ListScansResponse };
-  "srv/scan/{robot_id}/list_sessions": { req: ListSessionsRequest; res: ListSessionsResponse };
-  "srv/scan/{robot_id}/new_session": { req: NewSessionRequest; res: NewSessionResponse };
-  "srv/scene3d/{robot_id}/set_stream": { req: SetStreamRequest; res: SetStreamResponse };
-  "srv/waypoint/{robot_id}/add_to_group": { req: AddToGroupRequest; res: AddToGroupResponse };
-  "srv/waypoint/{robot_id}/create_group": { req: CreateGroupRequest; res: CreateGroupResponse };
-  "srv/waypoint/{robot_id}/delete": { req: DeleteWaypointRequest; res: DeleteWaypointResponse };
-  "srv/waypoint/{robot_id}/delete_group": { req: DeleteGroupRequest; res: DeleteGroupResponse };
-  "srv/waypoint/{robot_id}/list": { req: ListWaypointsRequest; res: ListWaypointsResponse };
-  "srv/waypoint/{robot_id}/list_groups": { req: ListGroupsRequest; res: ListGroupsResponse };
-  "srv/waypoint/{robot_id}/list_group_members": { req: ListGroupMembersRequest; res: ListGroupMembersResponse };
-  "srv/waypoint/{robot_id}/remove_from_group": { req: RemoveFromGroupRequest; res: RemoveFromGroupResponse };
-  "srv/waypoint/{robot_id}/rename": { req: RenameWaypointRequest; res: RenameWaypointResponse };
-  "srv/waypoint/{robot_id}/reorder_group": { req: ReorderGroupRequest; res: ReorderGroupResponse };
-  "srv/waypoint/{robot_id}/teach": { req: TeachRequest; res: TeachResponse };
+  "srv/scan/build": { req: BuildRequest; res: BuildResponse };
+  "srv/scan/capture": { req: ScanCaptureRequest; res: ScanCaptureResponse };
+  "srv/scan/delete_scan": { req: DeleteScanRequest; res: DeleteScanResponse };
+  "srv/scan/delete_session": { req: DeleteSessionRequest; res: DeleteSessionResponse };
+  "srv/scan/get_mesh": { req: GetMeshRequest; res: GetMeshResponse };
+  "srv/scan/list_reconstructions": { req: ListReconstructionsRequest; res: ListReconstructionsResponse };
+  "srv/scan/list_scans": { req: ListScansRequest; res: ListScansResponse };
+  "srv/scan/list_sessions": { req: ListSessionsRequest; res: ListSessionsResponse };
+  "srv/scan/new_session": { req: NewSessionRequest; res: NewSessionResponse };
+  "srv/scene3d/set_stream": { req: SetStreamRequest; res: SetStreamResponse };
+  "srv/waypoint/add_to_group": { req: AddToGroupRequest; res: AddToGroupResponse };
+  "srv/waypoint/create_group": { req: CreateGroupRequest; res: CreateGroupResponse };
+  "srv/waypoint/delete": { req: DeleteWaypointRequest; res: DeleteWaypointResponse };
+  "srv/waypoint/delete_group": { req: DeleteGroupRequest; res: DeleteGroupResponse };
+  "srv/waypoint/list": { req: ListWaypointsRequest; res: ListWaypointsResponse };
+  "srv/waypoint/list_groups": { req: ListGroupsRequest; res: ListGroupsResponse };
+  "srv/waypoint/list_group_members": { req: ListGroupMembersRequest; res: ListGroupMembersResponse };
+  "srv/waypoint/remove_from_group": { req: RemoveFromGroupRequest; res: RemoveFromGroupResponse };
+  "srv/waypoint/rename": { req: RenameWaypointRequest; res: RenameWaypointResponse };
+  "srv/waypoint/reorder_group": { req: ReorderGroupRequest; res: ReorderGroupResponse };
+  "srv/waypoint/teach": { req: TeachRequest; res: TeachResponse };
 };

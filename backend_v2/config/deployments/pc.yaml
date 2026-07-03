@@ -17,12 +17,8 @@ zenoh:
 modules:
   - name: camera_decoded
     robots: [so101_6dof_0]
-  - name: calibration
-    robots: [so101_6dof_0]
-  - name: scene3d # 라이브 pointcloud + consensus snapshot (Open3D, PC)
-    robots: [so101_6dof_0]
-  - name: scan # scan 세션/캡처/TSDF build (Open3D + DB owner, PC)
-    robots: [so101_6dof_0]
-  - name: waypoint # Robot Asset Layer — 티칭 joint 자세(rad) + group (DB owner, PC)
-    robots: [so101_6dof_0]
+  - name: calibration # robot-agnostic (host당 1 — req.robot_id dispatch)
+  - name: scene3d # robot-agnostic 라이브 pointcloud + consensus snapshot (Open3D, PC)
+  - name: scan # robot-agnostic scan 세션/캡처/TSDF build (Open3D + DB owner, PC)
+  - name: waypoint # robot-agnostic Robot Asset Layer — 티칭 rad + group (DB owner, PC)
   - name: bridge # HTTP/WS gateway (frontend_v2 진입점, :8000)

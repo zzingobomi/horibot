@@ -1,7 +1,9 @@
 """CalibrationModule (@service wire) 검증 — in-process, hardware 불요.
 
-DB-backed 서비스가 Repository 로 올바로 배선되고 ACTIVATED/COMMITTED 이벤트를 내는지.
-capture/preview/factory-intrinsic 은 다음 slice (camera 결합) 라 여기 없음.
+robot-agnostic (host 당 1) — 단일 인스턴스가 req.robot_id / run 파생으로 dispatch.
+DB-backed 서비스가 Repository 로 올바로 배선되고 ACTIVATED/COMMITTED 이벤트를 내는지
++ **multi-robot 눈속임 방지** (backend_v2.md §2.7.3): so101(6DOF) 과
+omx(5DOF) 를 같은 인스턴스로 구동 — 한쪽 하드코딩 잔재는 다른쪽 경로에서 터짐.
 """
 
 from __future__ import annotations
@@ -37,14 +39,19 @@ from modules.calibration.contract import (
     UndoLastCaptureRequest,
 )
 from modules.calibration.persistence.orm import Base
-from modules.calibration.module import CalibrationModule
+from modules.calibration.module import CalibrationModule, CalibrationRobotSpec
 from modules.calibration.persistence.repository import CalibrationRepository
 from modules.calibration.vision.se3 import make_T
 from modules.camera.contract import CameraDecodedFrame
 from modules.motor.contract import JointState
 
-_ROBOT = "so101_6dof_0"
-_MOTOR_IDS = [1, 2, 3, 4, 5, 6]
+_SO101 = "so101_6dof_0"
+_OMX = "omx_f_0"
+# motors.yaml SSOT — so101 arm 6개(1..6), omx_f arm 5개(1..5, 6=gripper 제외)
+_ROBOTS = {
+    _SO101: CalibrationRobotSpec(motor_ids=[1, 2, 3, 4, 5, 6], has_camera=True),
+    _OMX: CalibrationRobotSpec(motor_ids=[1, 2, 3, 4, 5], has_camera=True),
+}
 _W, _H = 1280, 720
 _CM = [[900.0, 0.0, 640.0], [0.0, 900.0, 360.0], [0.0, 0.0, 1.0]]
 _DIST = [[0.0, 0.0, 0.0, 0.0, 0.0]]
@@ -73,43 +80,48 @@ def _module(
     store = FilesystemObjectStore(tmp_path / "blobs")
     mod = CalibrationModule(
         runtime=rt,
-        robot_id=_ROBOT,
         repository=repo,
         object_store=store,
-        motor_ids=_MOTOR_IDS,
+        robots=dict(_ROBOTS),
     )
     return mod, rt, repo
 
 
-def _seed_intrinsic(repo: CalibrationRepository) -> None:
-    run = repo.create_run(_ROBOT, "intrinsic", "test")
+def _seed_intrinsic(
+    repo: CalibrationRepository, robot_id: str = _SO101, fx: float = 900.0
+) -> None:
+    cm = [[fx, 0.0, 640.0], [0.0, fx, 360.0], [0.0, 0.0, 1.0]]
+    run = repo.create_run(robot_id, "intrinsic", "test")
     assert run.id is not None
     rid = repo.save_result(
         run.id,
         IntrinsicResultRecord(
             run_id=run.id,
-            robot_id=_ROBOT,
+            robot_id=robot_id,
             created_at=datetime.now(UTC),
             result_data=IntrinsicResultData(
-                camera_matrix=_CM, dist_coeffs=_DIST, image_size=[_W, _H]
+                camera_matrix=cm, dist_coeffs=_DIST, image_size=[_W, _H]
             ),
         ),
     )
     repo.activate_result(rid)
 
 
-def _board_frame(rvec: list[float], tvec: list[float]) -> CameraDecodedFrame:
+def _board_frame(
+    rvec: list[float], tvec: list[float], robot_id: str = _SO101, fx: float = 900.0
+) -> CameraDecodedFrame:
     """rvec/tvec 포즈의 sim ChArUco 보드를 렌더한 decoded frame."""
+    cm = np.array([[fx, 0.0, 640.0], [0.0, fx, 360.0], [0.0, 0.0, 1.0]])
     bic = make_T(cv2.Rodrigues(np.array(rvec))[0], np.array(tvec))
     img = sim_board.render_charuco_at_pose(
         width=_W,
         height=_H,
-        camera_matrix=np.array(_CM),
+        camera_matrix=cm,
         dist_coeffs=np.array(_DIST),
         board_in_cam=bic,
     )
     return CameraDecodedFrame(
-        robot_id=_ROBOT,
+        robot_id=robot_id,
         seq=0,
         timestamp_unix=0.0,
         ndarray_bytes=img.tobytes(),
@@ -118,17 +130,22 @@ def _board_frame(rvec: list[float], tvec: list[float]) -> CameraDecodedFrame:
     )
 
 
-def _feed(mod: CalibrationModule, frame: CameraDecodedFrame, raw: list[int]) -> None:
+def _feed(
+    mod: CalibrationModule,
+    frame: CameraDecodedFrame,
+    raw: list[int],
+    robot_id: str = _SO101,
+) -> None:
     mod.on_decoded_frame(frame)
     mod.on_motor_raw(
-        JointState(robot_id=_ROBOT, seq=0, timestamp_unix=0.0, positions_raw=raw)
+        JointState(robot_id=robot_id, seq=0, timestamp_unix=0.0, positions_raw=raw)
     )
 
 
-def _he(run_id: int) -> HandEyeResultRecord:
+def _he(run_id: int, robot_id: str = _SO101) -> HandEyeResultRecord:
     return HandEyeResultRecord(
         run_id=run_id,
-        robot_id=_ROBOT,
+        robot_id=robot_id,
         created_at=datetime.now(UTC),
         result_data=HandEyeResultData(
             R_cam2gripper=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
@@ -153,35 +170,48 @@ def test_service_wiring_discovers_all_keys(tmp_path: Path):
         Calibration.Service.LIST_RESULTS,
         Calibration.Service.GET_THRESHOLDS,
     }
+    # robot-agnostic — 서비스 키에 {robot_id} placeholder 없음 (§2.7.3 acceptance 1)
+    assert all("{robot_id}" not in k for k in keys)
+
+
+def test_module_is_host_level_no_robot_id_attr(tmp_path: Path):
+    # §2.7.3 acceptance 1 — host-level 인스턴스는 self.robot_id 미보유
+    mod, _, _ = _module(tmp_path)
+    assert not hasattr(mod, "robot_id")
 
 
 def test_start_run_creates_in_progress(tmp_path: Path):
     mod, _, repo = _module(tmp_path)
-    res = mod.start_run(StartRunRequest(kind="hand_eye", algorithm="hand_eye_capture_only"))
+    res = mod.start_run(
+        StartRunRequest(
+            robot_id=_SO101, kind="hand_eye", algorithm="hand_eye_capture_only"
+        )
+    )
     run = repo.get_run(res.run_id)
     assert run is not None and run.status == "in_progress" and run.kind == "hand_eye"
+    assert run.robot_id == _SO101
 
 
 def test_activate_result_publishes_activated_event(tmp_path: Path):
     mod, rt, repo = _module(tmp_path)
-    run = repo.create_run(_ROBOT, "hand_eye", "x")
+    run = repo.create_run(_SO101, "hand_eye", "x")
     assert run.id is not None
     rid = repo.save_result(run.id, _he(run.id))
 
     res = mod.activate_result(ActivateResultRequest(result_id=rid))
     assert res.ok
-    assert repo.get_active(_ROBOT, "hand_eye").id == rid  # type: ignore[union-attr]
-    # ACTIVATED 이벤트 (kind 포함) — "재시작 필요" 알림
+    assert repo.get_active(_SO101, "hand_eye").id == rid  # type: ignore[union-attr]
+    # ACTIVATED 이벤트 (kind 포함) — robot_id 는 result row 에서 파생
     published = [e for k, e in rt.events if k == Calibration.Event.ACTIVATED]
     assert len(published) == 1
     ev = published[0]
     assert isinstance(ev, CalibrationActivated)
-    assert ev.robot_id == _ROBOT and ev.result_id == rid and ev.kind == "hand_eye"
+    assert ev.robot_id == _SO101 and ev.result_id == rid and ev.kind == "hand_eye"
 
 
 def test_finalize_run_publishes_committed_and_sets_status(tmp_path: Path):
     mod, rt, repo = _module(tmp_path)
-    run = repo.create_run(_ROBOT, "hand_eye", "x")
+    run = repo.create_run(_SO101, "hand_eye", "x")
     assert run.id is not None
 
     res = mod.finalize_run(FinalizeRunRequest(run_id=run.id))
@@ -190,24 +220,25 @@ def test_finalize_run_publishes_committed_and_sets_status(tmp_path: Path):
     committed = [e for k, e in rt.events if k == Calibration.Event.COMMITTED]
     assert len(committed) == 1
     assert isinstance(committed[0], CalibrationCommitted)
-    assert committed[0].run_id == run.id
+    # robot_id 는 run row 에서 파생 (req 에 없음)
+    assert committed[0].run_id == run.id and committed[0].robot_id == _SO101
 
 
 def test_snapshot_bundle_returns_active(tmp_path: Path):
     mod, _, repo = _module(tmp_path)
-    run = repo.create_run(_ROBOT, "hand_eye", "x")
+    run = repo.create_run(_SO101, "hand_eye", "x")
     assert run.id is not None
     rid = repo.save_result(run.id, _he(run.id))
     repo.activate_result(rid)
 
-    bundle = mod.snapshot_bundle(SnapshotBundleRequest())
-    assert bundle.robot_id == _ROBOT
+    bundle = mod.snapshot_bundle(SnapshotBundleRequest(robot_id=_SO101))
+    assert bundle.robot_id == _SO101
     assert bundle.hand_eye is not None and bundle.hand_eye.id == rid
 
 
 def test_list_runs_and_results_and_undo(tmp_path: Path):
     mod, _, repo = _module(tmp_path)
-    run = repo.create_run(_ROBOT, "hand_eye", "x")
+    run = repo.create_run(_SO101, "hand_eye", "x")
     assert run.id is not None
     repo.save_result(run.id, _he(run.id))
     from modules.calibration.contract import CalibrationCaptureRecord
@@ -215,8 +246,15 @@ def test_list_runs_and_results_and_undo(tmp_path: Path):
     repo.append_capture(run.id, CalibrationCaptureRecord(run_id=run.id, pose_index=0))
     repo.append_capture(run.id, CalibrationCaptureRecord(run_id=run.id, pose_index=1))
 
-    assert len(mod.list_runs(ListRunsRequest()).runs) == 1
-    assert len(mod.list_results(ListResultsRequest(kind="hand_eye")).results) == 1
+    assert len(mod.list_runs(ListRunsRequest(robot_id=_SO101)).runs) == 1
+    assert (
+        len(
+            mod.list_results(
+                ListResultsRequest(robot_id=_SO101, kind="hand_eye")
+            ).results
+        )
+        == 1
+    )
 
     assert mod.undo_last_capture(UndoLastCaptureRequest(run_id=run.id)).ok
     assert [c.pose_index for c in repo.list_captures(run.id)] == [0]
@@ -228,7 +266,7 @@ def test_list_runs_and_results_and_undo(tmp_path: Path):
 def test_capture_detects_pnp_stores_row_and_blob(tmp_path: Path):
     mod, _, repo = _module(tmp_path)
     _seed_intrinsic(repo)
-    run = repo.create_run(_ROBOT, "hand_eye", "hand_eye_capture_only")
+    run = repo.create_run(_SO101, "hand_eye", "hand_eye_capture_only")
     assert run.id is not None
     _feed(mod, _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35]), [2041, 2342, 903, 2846, 2120, 3122])
 
@@ -245,19 +283,19 @@ def test_capture_detects_pnp_stores_row_and_blob(tmp_path: Path):
     assert c.motor_positions == {1: 2041, 2: 2342, 3: 903, 4: 2846, 5: 2120, 6: 3122}
     assert c.board_in_cam is not None and len(c.board_in_cam) == 4
     assert c.corner_ids and len(c.corner_ids) >= 12
-    # color blob 저장됨 (artifact row + object store)
+    # color blob 저장됨 (artifact row + object store) — 키가 run 소유 robot 경로
     art = c.find_artifact("color")
-    assert art is not None and art.blob_key.endswith("000_color.jpg")
+    assert art is not None and art.blob_key == f"calib_captures/{_SO101}/{run.id}/000_color.jpg"
 
 
 def test_capture_rejects_when_no_board(tmp_path: Path):
     mod, _, repo = _module(tmp_path)
     _seed_intrinsic(repo)
-    run = repo.create_run(_ROBOT, "hand_eye", "x")
+    run = repo.create_run(_SO101, "hand_eye", "x")
     assert run.id is not None
     # 빈(보드 없는) frame
     blank = CameraDecodedFrame(
-        robot_id=_ROBOT,
+        robot_id=_SO101,
         seq=0,
         timestamp_unix=0.0,
         ndarray_bytes=np.full((_H, _W, 3), 50, dtype=np.uint8).tobytes(),
@@ -274,7 +312,7 @@ def test_capture_rejects_when_no_board(tmp_path: Path):
 
 def test_capture_rejects_when_no_intrinsic(tmp_path: Path):
     mod, _, repo = _module(tmp_path)  # intrinsic seed 안 함
-    run = repo.create_run(_ROBOT, "hand_eye", "x")
+    run = repo.create_run(_SO101, "hand_eye", "x")
     assert run.id is not None
     _feed(mod, _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35]), [2048] * 6)
 
@@ -286,7 +324,7 @@ def test_capture_rejects_when_no_intrinsic(tmp_path: Path):
 def test_capture_second_pose_quality_diversity(tmp_path: Path):
     mod, _, repo = _module(tmp_path)
     _seed_intrinsic(repo)
-    run = repo.create_run(_ROBOT, "hand_eye", "x")
+    run = repo.create_run(_SO101, "hand_eye", "x")
     assert run.id is not None
     # 1st capture
     _feed(mod, _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35]), [2041, 2342, 903, 2846, 2120, 3122])
@@ -298,18 +336,97 @@ def test_capture_second_pose_quality_diversity(tmp_path: Path):
     assert res.quality is not None and res.quality.verdict in ("red", "yellow")
 
 
+# ──────────────── multi-robot 눈속임 방지 (§2.7.3 acceptance) ────────────────
+
+
+def test_single_instance_serves_so101_and_omx_isolated(tmp_path: Path):
+    """★ 리트머스 — 한 host-level 인스턴스가 6DOF so101 + 5DOF omx 동시 구동.
+
+    각 robot 의 세션이 자기 frame/raw/intrinsic 만 보고 서로 안 새는지: so101
+    하드코딩 잔재가 있으면 omx 경로(5 모터, 다른 보드 자세, 다른 fx)가 깨져 잡힘.
+    """
+    mod, _, repo = _module(tmp_path)
+    _seed_intrinsic(repo, _SO101, fx=900.0)
+    _seed_intrinsic(repo, _OMX, fx=700.0)  # 다른 카메라 (fx 로 구분)
+
+    run_so = mod.start_run(
+        StartRunRequest(robot_id=_SO101, kind="hand_eye", algorithm="x")
+    ).run_id
+    run_omx = mod.start_run(
+        StartRunRequest(robot_id=_OMX, kind="hand_eye", algorithm="x")
+    ).run_id
+
+    # 두 robot 의 frame + raw 를 **둘 다** 캐시에 넣은 뒤 (interleave) 각각 capture —
+    # 상대 frame 이 섞이면 board z / motor 개수가 어긋나 fail.
+    _feed(mod, _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35], _SO101, fx=900.0),
+          [2041, 2342, 903, 2846, 2120, 3122], _SO101)
+    _feed(mod, _board_frame([-0.2, 0.3, 0.1], [0.05, 0.0, 0.55], _OMX, fx=700.0),
+          [2100, 2200, 2300, 2400, 2500], _OMX)
+
+    res_so = mod.capture(CaptureRequest(run_id=run_so, pose_index=0))
+    res_omx = mod.capture(CaptureRequest(run_id=run_omx, pose_index=0))
+    assert res_so.accepted, res_so.message
+    assert res_omx.accepted, res_omx.message
+
+    cap_so = repo.list_captures(run_so)[0]
+    cap_omx = repo.list_captures(run_omx)[0]
+    # motor raw — DOF 와 값이 각 robot 의 것 (6 vs 5)
+    assert cap_so.motor_positions == {1: 2041, 2: 2342, 3: 903, 4: 2846, 5: 2120, 6: 3122}
+    assert cap_omx.motor_positions == {1: 2100, 2: 2200, 3: 2300, 4: 2400, 5: 2500}
+    # board 자세 — 각자 자기 frame 의 PnP (z 0.35 vs 0.55)
+    assert cap_so.board_in_cam is not None and cap_omx.board_in_cam is not None
+    assert abs(cap_so.board_in_cam[2][3] - 0.35) < 0.02
+    assert abs(cap_omx.board_in_cam[2][3] - 0.55) < 0.02
+    # blob 경로 — robot 별 분리
+    assert cap_so.find_artifact("color").blob_key.startswith(f"calib_captures/{_SO101}/")  # type: ignore[union-attr]
+    assert cap_omx.find_artifact("color").blob_key.startswith(f"calib_captures/{_OMX}/")  # type: ignore[union-attr]
+
+    # bundle / run 목록 — DB 멀티테넌트 격리
+    assert mod.snapshot_bundle(SnapshotBundleRequest(robot_id=_SO101)).intrinsic.result_data.camera_matrix[0][0] == 900.0  # type: ignore[union-attr]
+    assert mod.snapshot_bundle(SnapshotBundleRequest(robot_id=_OMX)).intrinsic.result_data.camera_matrix[0][0] == 700.0  # type: ignore[union-attr]
+    so_runs = {r.id for r in mod.list_runs(ListRunsRequest(robot_id=_SO101, kind="hand_eye")).runs}
+    omx_runs = {r.id for r in mod.list_runs(ListRunsRequest(robot_id=_OMX, kind="hand_eye")).runs}
+    assert so_runs == {run_so} and omx_runs == {run_omx}
+
+
+async def test_preview_per_robot_isolated(tmp_path: Path):
+    """preview 도 robot 별 — so101 만 enable 시 omx frame 있어도 so101 만 발행."""
+    mod, rt, repo = _module(tmp_path)
+    _seed_intrinsic(repo, _SO101, fx=900.0)
+    _seed_intrinsic(repo, _OMX, fx=700.0)
+    _feed(mod, _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35], _SO101),
+          [2041, 2342, 903, 2846, 2120, 3122], _SO101)
+    _feed(mod, _board_frame([-0.2, 0.3, 0.1], [0.05, 0.0, 0.55], _OMX, fx=700.0),
+          [2100, 2200, 2300, 2400, 2500], _OMX)
+
+    await mod.start()
+    try:
+        mod.preview_enable(PreviewEnableRequest(robot_id=_SO101, enabled=True))
+        previews: list = []
+        for _ in range(30):  # ~1.5s 까지 대기 (5Hz)
+            await asyncio.sleep(0.05)
+            previews = [e for k, e in rt.events if k == Calibration.Stream.PREVIEW]
+            if previews:
+                break
+    finally:
+        await mod.stop()
+
+    assert previews, "preview stream 이 발행 안 됨"
+    assert all(p.robot_id == _SO101 for p in previews)  # omx 발행 X
+
+
 # ─────────────────────────── preview stream ───────────────────────────
 
 
 async def test_preview_publishes_detection_when_enabled(tmp_path: Path):
     mod, rt, repo = _module(tmp_path)
     _seed_intrinsic(repo)
-    repo.create_run(_ROBOT, "hand_eye", "x")  # in-progress run (quality 비교 대상)
+    repo.create_run(_SO101, "hand_eye", "x")  # in-progress run (quality 비교 대상)
     _feed(mod, _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35]), [2041, 2342, 903, 2846, 2120, 3122])
 
     await mod.start()
     try:
-        mod.preview_enable(PreviewEnableRequest(enabled=True))
+        mod.preview_enable(PreviewEnableRequest(robot_id=_SO101, enabled=True))
         previews: list = []
         for _ in range(30):  # ~1.5s 까지 대기 (5Hz)
             await asyncio.sleep(0.05)

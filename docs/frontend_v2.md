@@ -369,9 +369,8 @@ pnpm add -D vitest @testing-library/react @testing-library/dom \
 
 ## 13. 인접 문서
 
-- [backend_v2.md](backend_v2.md) — backend SSOT. frontend 어휘 (Mirror / Stream / Capability / seq invariant) origin
-- [backend_v2_modules.md](backend_v2_modules.md) — Module catalog. store / component 1:1 매핑
-- [backend_v2_status.md](backend_v2_status.md) — backend 진행 status. Step E+ 시점 결정
+- [backend_v2.md](backend_v2.md) — backend SSOT. frontend 어휘 (Mirror / Stream / Capability / seq invariant) origin + Module catalog (§16 — store / component 1:1 매핑)
+- [backend_v2_status.md](backend_v2_status.md) — backend 진행 status
 - [testing_strategy.md](testing_strategy.md) — backend 4 계층 검증. §12 정합
 
 ## 14. 핵심 결정 anchor

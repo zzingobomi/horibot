@@ -22,6 +22,16 @@ export const MotorKind = {
 } as const;
 export type MotorKindValue = (typeof MotorKind)[keyof typeof MotorKind];
 
+export const TaskStatus = {
+  IDLE: "idle",
+  RUNNING: "running",
+  PAUSED: "paused",
+  SUCCESS: "success",
+  FAILED: "failed",
+  STOPPED: "stopped",
+} as const;
+export type TaskStatusValue = (typeof TaskStatus)[keyof typeof TaskStatus];
+
 export interface BasePoseInfo {
   x?: number;
   y?: number;
@@ -284,6 +294,41 @@ export interface UndoLastCaptureResponse {
   ok: boolean;
 }
 
+export interface DetectRequest {
+  robot_id: string;
+  prompt: string;
+  top_k?: number;
+}
+
+export interface Detection {
+  prompt: string;
+  position: [number, number, number];
+  score: number;
+  base_z: number;
+  height: number;
+}
+
+export interface DetectResponse {
+  found: boolean;
+  candidates?: Detection[];
+  message?: string;
+}
+
+export interface ParseCommandRequest {
+  text: string;
+}
+
+export interface ParsedPickPlace {
+  pick_object: string;
+  place_object?: string | null;
+}
+
+export interface ParseCommandResponse {
+  ok: boolean;
+  parsed?: ParsedPickPlace | null;
+  message?: string;
+}
+
 export interface JogJInput {
   robot_id: string;
   velocities: number[];
@@ -524,6 +569,79 @@ export interface SetStreamResponse {
   voxel_size: number;
 }
 
+export interface PreviewRequest {
+  robot_id: string;
+  task_name: string;
+  params?: Record<string, string>;
+}
+
+export interface PreviewResponse {
+  ok: boolean;
+  message?: string;
+}
+
+export interface RunRequest {
+  robot_id: string;
+  task_name: string;
+  params?: Record<string, string>;
+}
+
+export interface RunResponse {
+  accepted: boolean;
+  message?: string;
+}
+
+export interface RunToRequest {
+  robot_id: string;
+  step_id: string;
+}
+
+export interface TaskControlRequest {
+  robot_id: string;
+}
+
+export interface TaskControlResponse {
+  ok: boolean;
+}
+
+export interface TaskState {
+  robot_id: string;
+  seq: number;
+  timestamp_unix: number;
+  status: TaskStatusValue;
+  task_name?: string;
+  current_step?: number;
+  total_steps?: number;
+  current_label?: string;
+  current_step_id?: string;
+  error?: string | null;
+  step_statuses?: Record<string, string>;
+  breakpoints?: string[];
+}
+
+export interface TaskStepResult {
+  robot_id: string;
+  seq: number;
+  timestamp_unix: number;
+  step_id: string;
+  type: string;
+  value?: unknown;
+}
+
+export interface TaskTree {
+  robot_id: string;
+  seq: number;
+  timestamp_unix: number;
+  task_name?: string;
+  description?: string;
+  steps?: unknown[];
+}
+
+export interface ToggleBreakpointRequest {
+  robot_id: string;
+  step_id: string;
+}
+
 export interface AddToGroupRequest {
   group_row_id: number;
   waypoint_row_id: number;
@@ -652,6 +770,9 @@ export const Topic = {
   MOTOR_TORQUE_CHANGED: "event/motor/{robot_id}/torque_changed",
   SCAN_BUILD_PROGRESS: "stream/scan/{robot_id}/build_progress",
   SCENE3D_CLOUD: "stream/scene3d/{robot_id}/cloud",
+  TASK_STATE: "stream/task/{robot_id}/state",
+  TASK_STEP_RESULT: "stream/task/{robot_id}/step_result",
+  TASK_TREE: "stream/task/{robot_id}/tree",
 } as const;
 export type TopicKey = (typeof Topic)[keyof typeof Topic];
 
@@ -667,6 +788,9 @@ export type TopicPayloadMap = {
   "event/motor/{robot_id}/torque_changed": TorqueChanged;
   "stream/scan/{robot_id}/build_progress": BuildProgress;
   "stream/scene3d/{robot_id}/cloud": Scene3dCloud;
+  "stream/task/{robot_id}/state": TaskState;
+  "stream/task/{robot_id}/step_result": TaskStepResult;
+  "stream/task/{robot_id}/tree": TaskTree;
 };
 
 export const ServiceKey = {
@@ -680,6 +804,8 @@ export const ServiceKey = {
   CALIBRATION_SNAPSHOT_BUNDLE: "srv/calibration/snapshot_bundle",
   CALIBRATION_START_RUN: "srv/calibration/start_run",
   CALIBRATION_UNDO_LAST_CAPTURE: "srv/calibration/undo_last_capture",
+  DETECTOR_DETECT: "srv/detector/detect",
+  LLM_PARSE_COMMAND: "srv/llm/parse_command",
   MOTION_MOVE_J: "srv/motion/{robot_id}/move_j",
   MOTOR_CAPABILITIES: "srv/motor/{robot_id}/capabilities",
   MOTOR_GET_TOPOLOGY: "srv/motor/{robot_id}/topology",
@@ -694,6 +820,14 @@ export const ServiceKey = {
   SCAN_LIST_SESSIONS: "srv/scan/list_sessions",
   SCAN_NEW_SESSION: "srv/scan/new_session",
   SCENE3D_SET_STREAM: "srv/scene3d/set_stream",
+  TASK_PAUSE: "srv/task/pause",
+  TASK_PREVIEW: "srv/task/preview",
+  TASK_RESUME: "srv/task/resume",
+  TASK_RUN: "srv/task/run",
+  TASK_RUN_TO: "srv/task/run_to",
+  TASK_STEP_ONCE: "srv/task/step_once",
+  TASK_STOP: "srv/task/stop",
+  TASK_TOGGLE_BREAKPOINT: "srv/task/toggle_breakpoint",
   WAYPOINT_ADD_TO_GROUP: "srv/waypoint/add_to_group",
   WAYPOINT_CREATE_GROUP: "srv/waypoint/create_group",
   WAYPOINT_DELETE: "srv/waypoint/delete",
@@ -719,6 +853,8 @@ export type ServiceMap = {
   "srv/calibration/snapshot_bundle": { req: SnapshotBundleRequest; res: CalibrationBundle };
   "srv/calibration/start_run": { req: StartRunRequest; res: StartRunResponse };
   "srv/calibration/undo_last_capture": { req: UndoLastCaptureRequest; res: UndoLastCaptureResponse };
+  "srv/detector/detect": { req: DetectRequest; res: DetectResponse };
+  "srv/llm/parse_command": { req: ParseCommandRequest; res: ParseCommandResponse };
   "srv/motion/{robot_id}/move_j": { req: MoveJRequest; res: MoveJResponse };
   "srv/motor/{robot_id}/capabilities": { req: MotorCapabilitiesRequest; res: MotorCapabilities };
   "srv/motor/{robot_id}/topology": { req: TopologyRequest; res: MotorTopology };
@@ -733,6 +869,14 @@ export type ServiceMap = {
   "srv/scan/list_sessions": { req: ListSessionsRequest; res: ListSessionsResponse };
   "srv/scan/new_session": { req: NewSessionRequest; res: NewSessionResponse };
   "srv/scene3d/set_stream": { req: SetStreamRequest; res: SetStreamResponse };
+  "srv/task/pause": { req: TaskControlRequest; res: TaskControlResponse };
+  "srv/task/preview": { req: PreviewRequest; res: PreviewResponse };
+  "srv/task/resume": { req: TaskControlRequest; res: TaskControlResponse };
+  "srv/task/run": { req: RunRequest; res: RunResponse };
+  "srv/task/run_to": { req: RunToRequest; res: TaskControlResponse };
+  "srv/task/step_once": { req: TaskControlRequest; res: TaskControlResponse };
+  "srv/task/stop": { req: TaskControlRequest; res: TaskControlResponse };
+  "srv/task/toggle_breakpoint": { req: ToggleBreakpointRequest; res: TaskControlResponse };
   "srv/waypoint/add_to_group": { req: AddToGroupRequest; res: AddToGroupResponse };
   "srv/waypoint/create_group": { req: CreateGroupRequest; res: CreateGroupResponse };
   "srv/waypoint/delete": { req: DeleteWaypointRequest; res: DeleteWaypointResponse };

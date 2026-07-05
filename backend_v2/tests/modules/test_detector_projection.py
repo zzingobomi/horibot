@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from modules.detector.projection import unproject_to_base, z_cam_from_depth_bbox
+from modules.detector.projection import (
+    floor_z_and_height,
+    unproject_to_base,
+    z_cam_from_depth_bbox,
+)
 
 
 def test_center_pixel_identity_pose():
@@ -93,3 +97,32 @@ def test_z_cam_from_depth_bbox_no_valid_returns_none():
     assert z_cam_from_depth_bbox(depth, (10, 10, 30, 30), 0.001) is None
     # 무효 bbox
     assert z_cam_from_depth_bbox(np.ones((50, 50), np.uint16), (30, 30, 10, 10), 0.001) is None
+
+
+def test_floor_z_and_height_ring():
+    # 카메라가 base 를 내려다봄 (cam +z → base -z): R_be=diag(1,-1,-1), t_be z=0.5.
+    # 물체 윗면 depth 200 (z_cam 0.2) → base_z=-0.2+0.5=0.3. 주변 책상 depth 250
+    # (z_cam 0.25) → base_z=-0.25+0.5=0.25. height = 0.3 - 0.25 = 0.05.
+    depth = np.full((200, 200), 250, dtype=np.uint16)  # 전체 = 책상 (멀리)
+    depth[90:110, 90:110] = 200  # 중앙 = 물체 (카메라에 가까움)
+    fx = fy = 500.0
+    cx, cy = 100.0, 100.0
+    r_be = np.diag([1.0, -1.0, -1.0])
+    t_be = np.array([0.0, 0.0, 0.5])
+    floor_z, height = floor_z_and_height(
+        depth, (90.0, 90.0, 110.0, 110.0), 0.001, fx, fy, cx, cy,
+        r_be, t_be, np.eye(3), np.zeros(3), obj_top_base_z=0.3,
+    )
+    assert abs(floor_z - 0.25) < 1e-6, floor_z
+    assert abs(height - 0.05) < 1e-6, height
+
+
+def test_floor_z_and_height_no_ring_returns_top():
+    # ring 에 valid depth 없음 (물체만 있고 주변 0) → floor_z=obj_top, height=0.
+    depth = np.zeros((200, 200), dtype=np.uint16)
+    depth[90:110, 90:110] = 200
+    floor_z, height = floor_z_and_height(
+        depth, (90.0, 90.0, 110.0, 110.0), 0.001, 500.0, 500.0, 100.0, 100.0,
+        np.eye(3), np.zeros(3), np.eye(3), np.zeros(3), obj_top_base_z=0.7,
+    )
+    assert floor_z == 0.7 and height == 0.0, (floor_z, height)

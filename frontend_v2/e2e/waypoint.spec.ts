@@ -19,7 +19,7 @@ const ASSETS_PATH = "/robots/so101_6dof_0/assets";
 test.describe("RobotAssetsMode e2e (mock backend)", () => {
   test("WS 연결 + WaypointPanel 렌더", async ({ page }) => {
     await page.goto(ASSETS_PATH);
-    await expect(page.getByText("connected", { exact: true })).toBeVisible({
+    await expect(page.getByText("online", { exact: true })).toBeVisible({
       timeout: 5_000,
     });
     await expect(page.getByTestId("waypoint-panel")).toBeVisible({

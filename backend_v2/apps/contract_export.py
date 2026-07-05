@@ -41,10 +41,13 @@ from framework.runtime.snapshot import (
 )
 from modules.bridge.contract import RobotsResponse, SystemMetrics
 from modules.calibration.contract import Calibration
+from modules.detector.contract import Detector
+from modules.llm.contract import Llm
 from modules.motion.contract import Motion
 from modules.motor.contract import Motor
 from modules.scan.contract import Scan
 from modules.scene3d.contract import Scene3d
+from modules.task.contract import Task
 from modules.waypoint.contract import Waypoint
 
 _MODULES_ROOT = Path(__file__).resolve().parents[1] / "modules"
@@ -118,6 +121,22 @@ FRONTEND_EXPOSED: set[str] = {
         Waypoint.Service.REMOVE_FROM_GROUP,
         Waypoint.Service.REORDER_GROUP,
         Waypoint.Service.LIST_GROUP_MEMBERS,
+        # detector — Detect Object (standalone 검출 테스트 + PnP 내부 소비)
+        Detector.Service.DETECT,
+        # llm — 자연어 → pick/place 파싱 (PromptPanel)
+        Llm.Service.PARSE_COMMAND,
+        # task — PnP 실행 + 디버거 + progress (PromptPanel / TaskProgressPanel)
+        Task.Service.RUN,
+        Task.Service.PREVIEW,
+        Task.Service.STOP,
+        Task.Service.PAUSE,
+        Task.Service.RESUME,
+        Task.Service.STEP_ONCE,
+        Task.Service.RUN_TO,
+        Task.Service.TOGGLE_BREAKPOINT,
+        Task.Stream.STATE,
+        Task.Stream.TREE,
+        Task.Stream.STEP_RESULT,
     )
 }
 

@@ -1,4 +1,4 @@
-import { ModeDockview, type PanelSpec } from "./ModeDockview";
+import { ModeDockview, type PanelSpec } from "@/components/shared/ModeDockview";
 
 /**
  * Move mode panel set. jog slice 의 RobotStatePanel + Motion(jog) 을 dockview

@@ -56,6 +56,9 @@ def resolve_host_deps(
     if name == "detector":
         # robot-agnostic (host 당 1) — 무거운 모델 1회 로드, req.robot_id 로 dispatch.
         return {"backend": _detector_backend(deploy)}
+    if name == "llm":
+        # robot-agnostic (host 당 1) — Qwen 1회 로드, 파싱은 robot 무관 (§2.7).
+        return {"backend": _llm_backend(deploy)}
     if name == "calibration":
         # robot-agnostic (host 당 1) — DB robot_id 멀티테넌트, req.robot_id dispatch.
         if session_factory is None:
@@ -128,6 +131,31 @@ def resolve_host_deps(
         from modules.waypoint.persistence.repository import WaypointRepository
 
         return {"repository": WaypointRepository(session_factory)}
+    if name == "task":
+        # host-level, robot-agnostic (§2.7) — task 정본은 tasks/ registry. 단 gripper
+        # open/close raw 등 per-robot 물리값은 TaskRobotSpec 로 주입 (calibration/scan
+        # robot spec 동형, motors.yaml SSOT — 추측 X, CLAUDE.md 안전수치 규칙).
+        from modules.motor.contract import MotorKind
+        from modules.task.spec import TaskRobotSpec
+
+        task_specs: dict[str, TaskRobotSpec] = {}
+        for r in robots.values():
+            if not r.enabled:
+                continue
+            grip = next((m for m in r.motors if m.kind == MotorKind.GRIPPER), None)
+            if grip is None:
+                continue  # gripper 없는 robot 은 PnP 대상 X — spec 생략
+            open_raw, close_raw = grip.limit_max, grip.limit_min
+            # 잡힘 threshold = close 에서 range 15% 위 (보수 default) — 하드웨어 tuning
+            # (§17.5 "정확도 = 집 하드웨어"). 이 값 미만 raw = 빈손 (VerifyGrasp).
+            held = close_raw + round((open_raw - close_raw) * 0.15)
+            task_specs[r.id] = TaskRobotSpec(
+                gripper_open_raw=open_raw,
+                gripper_close_raw=close_raw,
+                gripper_index=r.motors.index(grip),
+                gripper_held_threshold_raw=held,
+            )
+        return {"robots": task_specs}
     if name == "bridge":
         from modules.bridge.contract import BasePoseInfo, RobotInfo
 
@@ -217,13 +245,26 @@ def _motor_driver(robot: RobotConfig, deploy: DeploymentConfig) -> Any:
 
 def _detector_backend(deploy: DeploymentConfig) -> Any:
     if deploy.driver_mode == DriverMode.MOCK:
-        from modules.detector.backend import MockDetectorBackend
+        from modules.detector.drivers.mock import MockDetectorBackend
 
         return MockDetectorBackend()
-    raise NotImplementedError(
-        "real detector backend (GroundingDinoBackend) 미구현 — detector 슬라이스 3 "
-        "(모델 로드 + preload race, 정확도는 집 하드웨어). 현재 mock 배치만."
-    )
+    # real — Grounding DINO. torch/transformers 는 이 branch 에서만 lazy import
+    # (role 격리). 공유 load-lock + device_map="auto" 는 drivers/gdino.py.
+    from modules.detector.drivers.gdino import GroundingDinoBackend
+
+    return GroundingDinoBackend()
+
+
+def _llm_backend(deploy: DeploymentConfig) -> Any:
+    if deploy.driver_mode == DriverMode.MOCK:
+        from modules.llm.drivers.mock import MockLlmBackend
+
+        return MockLlmBackend()
+    # real — Qwen2.5. torch/transformers 는 이 branch 에서만 lazy import (role 격리).
+    # GDINO 와 공유 load-lock + device_map="auto" 는 drivers/qwen.py.
+    from modules.llm.drivers.qwen import QwenBackend
+
+    return QwenBackend()
 
 
 def _camera_driver(robot: RobotConfig, deploy: DeploymentConfig) -> Any:

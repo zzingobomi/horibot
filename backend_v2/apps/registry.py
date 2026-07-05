@@ -22,6 +22,8 @@ MODULE_REGISTRY: dict[str, str] = {
     "scan": "modules.scan.module:ScanModule",
     "waypoint": "modules.waypoint.module:WaypointModule",
     "detector": "modules.detector.module:DetectorModule",
+    "llm": "modules.llm.module:LlmModule",
+    "task": "modules.task.module:TaskModule",
     "bridge": "modules.bridge.module:BridgeModule",
 }
 

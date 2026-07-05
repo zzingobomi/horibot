@@ -57,7 +57,7 @@ test.describe("MovePage e2e (mock backend)", () => {
 
     await page.goto(MOVE_PATH);
 
-    await expect(page.getByText("connected", { exact: true })).toBeVisible({
+    await expect(page.getByText("online", { exact: true })).toBeVisible({
       timeout: 5_000,
     });
     await urdfReq;

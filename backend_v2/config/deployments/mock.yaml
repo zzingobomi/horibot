@@ -28,4 +28,6 @@ modules:
   - name: scan # robot-agnostic (session row 의 robot_id 로 파생 dispatch)
   - name: waypoint # robot-agnostic Robot Asset Layer — 티칭 joint 자세(rad) + group
   - name: detector # Detect Object (robot-agnostic, host당 1 — mock backend)
+  - name: llm # 자연어→pick/place 파서 (robot-agnostic, host당 1 — mock backend)
+  - name: task # Orchestration — task-first PnP (async runner + 디버거)
   - name: bridge

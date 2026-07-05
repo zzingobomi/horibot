@@ -1,5 +1,6 @@
 /**
- * /robots/:id/{mode} sub-route 들이 공유하는 dockview wrapper.
+ * dockview 패널 workspace wrapper — robot mode sub-route(/robots/:id/{mode}) + 최상위
+ * tasks 페이지(/tasks) 공유. registry 패널을 PANELS 로 배치, 이동/레이아웃 localStorage 영속.
  *
  * RobotsLayout 이 R3F Canvas 를 z-0 에 마운트한 상태에서, mode component 가
  * Outlet 으로 이 컴포넌트만 z-10 overlay 로 띄움. mode 전환 시 ModeDockview 는
@@ -54,7 +55,8 @@ function LockedTab(props: IDockviewPanelHeaderProps) {
 export function ModeDockview({ mode, panels }: ModeDockviewProps) {
   const { id = "" } = useParams<{ id: string }>();
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const layoutKey = `workspace3d.${id}.${mode}`;
+  // id 없는 최상위 페이지(tasks)는 "global" — robot mode 는 robot 별 배치 기억.
+  const layoutKey = `workspace3d.${id || "global"}.${mode}`;
 
   const addDefaultLayout = useCallback(
     (event: DockviewReadyEvent) => {

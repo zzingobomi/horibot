@@ -21,7 +21,7 @@ const SCAN_PATH = "/robots/so101_6dof_0/scan";
 test.describe("RobotScanMode e2e (mock backend)", () => {
   test("WS 연결 + ScanPanel 렌더", async ({ page }) => {
     await page.goto(SCAN_PATH);
-    await expect(page.getByText("connected", { exact: true })).toBeVisible({
+    await expect(page.getByText("online", { exact: true })).toBeVisible({
       timeout: 5_000,
     });
     await expect(page.getByTestId("scan-panel")).toBeVisible({ timeout: 5_000 });

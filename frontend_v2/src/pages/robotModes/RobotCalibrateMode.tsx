@@ -1,4 +1,4 @@
-import { ModeDockview, type PanelSpec } from "./ModeDockview";
+import { ModeDockview, type PanelSpec } from "@/components/shared/ModeDockview";
 
 /**
  * Calibrate mode panel set. RobotState(torque/home/jog 흡수) + Calibration

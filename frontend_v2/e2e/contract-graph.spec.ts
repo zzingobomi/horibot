@@ -2,7 +2,7 @@
 //
 // 검증 invariant:
 //   1. GET /contract/graph 200 (unfiltered 계약 그래프 export)
-//   2. 9 contentful module 노드 렌더 (declared universe — bridge 제외.
+//   2. 11 contentful module 노드 렌더 (declared universe — bridge 제외.
 //      test_contract_export 의 registry 집합과 동일 SSOT)
 //   3. 방향 엣지 렌더 (React Flow edge)
 //   4. legend 의 module/edge 카운트
@@ -25,6 +25,8 @@ const MODULE_IDS = [
   "ScanModule",
   "WaypointModule",
   "DetectorModule",
+  "LlmModule",
+  "TaskModule",
 ];
 
 test.describe("Contract graph viewer e2e (mock backend)", () => {

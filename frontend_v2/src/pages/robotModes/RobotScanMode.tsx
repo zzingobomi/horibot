@@ -1,4 +1,4 @@
-import { ModeDockview, type PanelSpec } from "./ModeDockview";
+import { ModeDockview, type PanelSpec } from "@/components/shared/ModeDockview";
 
 /**
  * Scan mode panel set — rgbd capability robot 자리 (backend scene3d + scan module).

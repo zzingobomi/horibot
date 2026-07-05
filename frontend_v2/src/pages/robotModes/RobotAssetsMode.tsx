@@ -1,4 +1,4 @@
-import { ModeDockview, type PanelSpec } from "./ModeDockview";
+import { ModeDockview, type PanelSpec } from "@/components/shared/ModeDockview";
 
 /**
  * Assets mode panel set — Robot Asset Layer (Motion 위).

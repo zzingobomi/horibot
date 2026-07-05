@@ -166,24 +166,27 @@ frontend_v2/src/
 │   ├── store.ts bootstrap.ts service.ts topic.ts resource.ts
 │   └── stream.ts mirror.ts capability.ts index.ts
 ├── hooks/useRobots.ts ✓
-├── pages/
-│   ├── RobotsLayout.tsx ✓          # R3F once + 우상단 meta + <Outlet>
-│   └── robotModes/
-│       ├── ModeDockview.tsx ✓      # generic dockview wrapper (registry + 레이아웃 persist + reset)
-│       ├── RobotMoveMode.tsx ✓     # PANELS=[robotState, motion]
-│       ├── RobotCalibrateMode.tsx  # ✅ (CalibrationPanel + RobotStatePanel)
-│       └── RobotModeRedirect.tsx ✓ # /robots/:id → 첫 mode redirect
+├── pages/                          # ★ 라우트 element 만 (App.tsx <Route>). 접미사=타입
+│   ├── RobotsLayout.tsx ✓          #   *Layout — /robots/:id (R3F once + meta + <Outlet>)
+│   ├── TasksPage.tsx ✓             #   *Page   — 최상위 /tasks (R3F focus=null + dockview)
+│   └── robotModes/                 #   *Mode   — /robots/:id/{mode} Outlet 뷰만
+│       ├── RobotMoveMode.tsx ✓     #     PANELS=[robotState, motion]
+│       ├── RobotCalibrateMode/RobotScanMode/RobotAssetsMode.tsx ✓
+│       └── RobotModeRedirect.tsx ✓ #     /robots/:id → 첫 mode redirect
 ├── components/
 │   ├── ui/{button,tabs,slider}.tsx ✓   # shadcn primitive (radix, CLI 생성·regenerate — lint override §12.6)
 │   ├── panels/                     # ★ 확장 단위. 새 기능 = 여기 패널 추가 (§4.1)
 │   │   ├── registry.ts ✓           # 패널만 import 하는 순수 key→component map
-│   │   ├── RobotStatePanel.tsx ✓   # 단순 패널 (단일 파일). useParams self-read + shadcn Button
-│   │   └── MotionPanel/            # 복잡 패널 = 폴더 (index = 등록 패널, 내부 control 캡슐화)
+│   │   ├── RobotStatePanel/        # 모든 패널 = 폴더 (§4.1). index.tsx = 등록 패널
+│   │   │   └── index.tsx ✓         # useParams self-read + shadcn Button
+│   │   └── MotionPanel/            # 복잡 패널 = 서브컴포넌트를 폴더 안 캡슐화
 │   │       ├── index.tsx ✓         # useParams → Tabs → control 에 robotId props
 │   │       ├── JogJControl.tsx ✓   # 순수 (robotId props) — 단위테스트 대상
 │   │       └── JogTcpControl.tsx ✓
 │   ├── scene/{Scene,Container,RobotLayer,RobotModel,AxisFrame,sceneOptions}.tsx ✓  # R3F 레이어
-│   └── shared/Sidebar.tsx ✓        # 앱 nav (재사용 위젯은 실제 재사용 생길 때만 — §2.4)
+│   └── shared/                     # app-shell (라우트 아님, 재사용)
+│       ├── Sidebar.tsx ✓           # 앱 nav
+│       └── ModeDockview.tsx ✓      # generic dockview shell (registry + 레이아웃 persist) — robot modes + TasksPage 공유
 ├── constants/index.ts ✓           # WS_URL / BASE_URL / DEFAULT_ROBOT_ID
 ├── lib/{utils.ts ✓, workspaceLayout.ts ✓}   # cn() + dockview 레이아웃 persist (collapse 는 PanelShell 도입 시)
 └── e2e/jog.spec.ts ✓              # L4 Playwright headed (2 PASS)
@@ -191,9 +194,17 @@ frontend_v2/src/
 
 ### 4.1 조직 원칙 — panel = 확장 단위 (extension unit)
 
-폴더 기준을 **"새 기능 추가하는 사람이 가장 먼저 찾는 위치"** 로 잡는다. 답이 `panels/` 이므로 패널 단위로 캡슐화:
+폴더 기준을 **"새 기능 추가하는 사람이 가장 먼저 찾는 위치"** 로 잡는다.
+
+- **`pages/` = 라우트 element 만** (App.tsx `<Route>` 에 직접 붙음). 접미사로 타입 자명:
+  `*Layout`(sub-route 감쌈) / `*Page`(최상위) / `*Mode`(/robots/:id/{mode}). **라우트에 안
+  붙는 공유 shell 은 `components/shared`** (ModeDockview·Sidebar), **page+로직+전용 컴포넌트
+  완결 feature 는 `features/`** (예: contract-viewer). 판단: "라우트에 붙나 / 재사용 조각인가
+  / 완결 feature 인가" → 페이지 늘어도(world/settings…) 흔들림 없음.
+
+패널은 `panels/` 단위로 캡슐화:
 - **`panels/` = 확장 단위.** 새 기능 = ① 패널 컴포넌트 만들고 ② registry 등록 ③ mode 파일 PANELS 배치. 끝. (`motor/`·`jog/` 같은 도메인 폴더를 최상위로 두면 "패널인가/재사용인가/어디 넣지" 인지 비용이 먼저 발생 → 안 함.)
-- **단순 패널 = 단일 파일**, **복잡 패널 = 폴더** (`index.tsx` = 등록 패널, 내부 Control/Status 는 그 패널만 쓰는 구현 세부라 폴더 안에 캡슐화). 폴더를 미리 강제 X — 쪼개질 때 승격.
+- **모든 패널 = 폴더** (`index.tsx` = 등록 패널; 내부 Control/Status 서브컴포넌트는 그 패널만 쓰는 구현 세부라 같은 폴더에 캡슐화). 단일/복잡 무관 **폴더-per-panel 통일** — "파일인가 폴더인가/언제 승격하나" 판단 비용 제거 + 구조 일관 (2026-07-04 결정, 옛 "단순=단일파일, 쪼개질 때 승격" 폐기 — RobotStatePanel 도 폴더화).
 - **registry 는 패널만 import 하는 순수 map** — 패널이 useParams(router 의존)를 자체 흡수하므로 wrapper 불필요.
 - **router 의존은 패널에서 끝. Control 은 순수 props** — 옛 frontend 는 control 이 useParams 직접 읽어 테스트가 어려웠음. v2 는 패널만 useParams, control 은 robotId props → 단위테스트 쉬움 (옛 구조 복사 X, 문제만 이해해 재해석).
 - **`shared/` 는 실제 재사용 생길 때만.** **PanelShell / shadcn 확대는 공통 chrome·디자인 요구가 충분히 쌓일 때** (지금 패널 2개엔 추상화가 구현보다 큼).

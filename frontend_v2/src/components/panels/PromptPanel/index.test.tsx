@@ -1,0 +1,134 @@
+// PromptPanel — 자연어 → LLM parse → PnP run wire 검증 (unit).
+// 클릭 → 올바른 ServiceKey + payload 로 callService 되는지 (WaypointPanel 철학 동일).
+// 실 파싱 정확도/실행은 실 backend + hardware (§17.5).
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { bridge } from "@/api/bridge";
+import { useFrameworkStore, type ServiceEntry } from "@/framework/store";
+import { PromptPanel } from "./index";
+
+const ROBOT_ID = "so101_6dof_0";
+
+function respond(key: string): unknown {
+  if (key.includes("parse_command")) {
+    return {
+      ok: true,
+      parsed: { pick_object: "white cube", place_object: "blue box" },
+      message: "",
+    };
+  }
+  if (key.includes("/run")) return { accepted: true, message: "" };
+  return { ok: true };
+}
+
+function mockBridge() {
+  return vi
+    .spyOn(bridge, "callService")
+    // @ts-expect-error — 테스트 stub, 응답 shape 는 respond() 가 책임
+    .mockImplementation(async (key, _req, opts) => {
+      const wk = bridge.expand(
+        key,
+        (opts as { robotId?: string })?.robotId ?? ROBOT_ID,
+      );
+      const entry: ServiceEntry = {
+        success: true,
+        message: "",
+        data: respond(String(key)),
+        timestamp: Date.now(),
+        pending: false,
+      };
+      useFrameworkStore.getState().setServiceData(wk, entry);
+      return entry;
+    });
+}
+
+function renderPanel() {
+  return render(
+    <MemoryRouter initialEntries={[`/robots/${ROBOT_ID}`]}>
+      <Routes>
+        <Route path="/robots/:id" element={<PromptPanel />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+beforeEach(() => {
+  useFrameworkStore.setState({
+    topicData: {},
+    serviceData: {},
+    bridgeConnected: true,
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("PromptPanel", () => {
+  it("패널 렌더", () => {
+    mockBridge();
+    const { getByTestId } = renderPanel();
+    expect(getByTestId("prompt-panel")).toBeTruthy();
+    expect(getByTestId("prompt-input")).toBeTruthy();
+  });
+
+  it("파싱 → LLM_PARSE_COMMAND 를 입력 text 로 call + 결과 표시", async () => {
+    const spy = mockBridge();
+    const { getByTestId } = renderPanel();
+
+    act(() => {
+      fireEvent.change(getByTestId("prompt-input"), {
+        target: { value: "흰색 큐브를 파란 상자에 둬" },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(getByTestId("prompt-parse"));
+    });
+
+    await waitFor(() => {
+      const calls = spy.mock.calls.filter((c) =>
+        String(c[0]).includes("parse_command"),
+      );
+      expect(calls.length).toBeGreaterThan(0);
+      const req = calls[0][1] as { text: string };
+      expect(req.text).toBe("흰색 큐브를 파란 상자에 둬");
+    });
+    // 파싱 결과 (pick/place) 표시
+    await waitFor(() => expect(getByTestId("prompt-parsed")).toBeTruthy());
+  });
+
+  it("실행 → TASK_RUN 을 pick_and_place + parsed params 로 call", async () => {
+    const spy = mockBridge();
+    const { getByTestId } = renderPanel();
+
+    act(() => {
+      fireEvent.change(getByTestId("prompt-input"), {
+        target: { value: "흰색 큐브를 파란 상자에 둬" },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(getByTestId("prompt-parse"));
+    });
+    await waitFor(() => expect(getByTestId("prompt-parsed")).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.click(getByTestId("prompt-run"));
+    });
+
+    await waitFor(() => {
+      const calls = spy.mock.calls.filter((c) => String(c[0]).endsWith("/run"));
+      expect(calls.length).toBeGreaterThan(0);
+      const req = calls[0][1] as {
+        robot_id: string;
+        task_name: string;
+        params: Record<string, string>;
+      };
+      expect(req.robot_id).toBe(ROBOT_ID);
+      expect(req.task_name).toBe("pick_and_place");
+      expect(req.params.pick_object).toBe("white cube");
+      expect(req.params.place_object).toBe("blue box");
+    });
+  });
+});

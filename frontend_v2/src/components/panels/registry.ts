@@ -10,13 +10,19 @@ import { MotionPanel } from "./MotionPanel";
 import { CalibrationPanel } from "./CalibrationPanel";
 import { ScanPanel } from "./ScanPanel";
 import { WaypointPanel } from "./WaypointPanel";
+import { PromptPanel } from "./PromptPanel";
+import { TaskProgressPanel } from "./TaskProgressPanel";
 
+// 모든 패널은 여기 등록 (§4.1 ② — dockview 가 string key→component 로 인스턴스화).
+// prompt/taskProgress 는 최상위 TasksPage(dockview) 의 PANELS 에서 이 key 로 배치.
 export const PANEL_COMPONENTS = {
   robotState: RobotStatePanel,
   motion: MotionPanel,
   calibration: CalibrationPanel,
   scan: ScanPanel,
   waypoints: WaypointPanel,
+  prompt: PromptPanel,
+  taskProgress: TaskProgressPanel,
 } as const;
 
 export type PanelComponentKey = keyof typeof PANEL_COMPONENTS;

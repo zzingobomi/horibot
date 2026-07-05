@@ -18,7 +18,7 @@ import pytest
 
 from apps.config import load_deployment, load_robots
 from apps.main import build_runtime, load_configs
-from apps.resolve import resolve_deps
+from apps.resolve import resolve_deps, resolve_host_deps
 from framework.runtime.app import Runtime
 from infra.transport.zenoh import ZenohTransport
 from modules.camera.contract import (
@@ -70,6 +70,8 @@ def test_load_deployment_mock():
         "scan",
         "waypoint",
         "detector",
+        "llm",
+        "task",
         "bridge",
     }
     assert deploy.rdb_uri == "sqlite:///:memory:"  # DB owner host
@@ -131,6 +133,16 @@ def test_resolve_deps_real_realsense_constructs():
     driver = resolve_deps("camera", robots[_SO101], deploy)["driver"]
     assert isinstance(driver, RealSenseD405Driver)
     assert CameraCapability.DEPTH in driver.capabilities().flags
+
+
+def test_resolve_host_deps_real_detector_constructs():
+    # real → GroundingDinoBackend 생성 (모델 로드 X — preload/detect 안 부름). 배선만.
+    from modules.detector.drivers.gdino import GroundingDinoBackend
+
+    deploy = load_deployment(_CONFIG_DIR / "deployments" / "pc.yaml")  # real
+    robots = load_robots()
+    backend = resolve_host_deps("detector", robots, deploy)["backend"]
+    assert isinstance(backend, GroundingDinoBackend)
 
 
 def test_resolve_deps_camera_mock_depth_from_rgbd_capability():

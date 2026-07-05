@@ -7,6 +7,7 @@ import { RobotMoveMode } from "@/pages/robotModes/RobotMoveMode";
 import { RobotCalibrateMode } from "@/pages/robotModes/RobotCalibrateMode";
 import { RobotScanMode } from "@/pages/robotModes/RobotScanMode";
 import { RobotAssetsMode } from "@/pages/robotModes/RobotAssetsMode";
+import { TasksPage } from "@/pages/TasksPage";
 import { useFrameworkBootstrap } from "@/framework";
 import { DEFAULT_ROBOT_ID } from "@/constants";
 
@@ -39,6 +40,8 @@ export function App() {
             <Route path="scan" element={<RobotScanMode />} />
             <Route path="assets" element={<RobotAssetsMode />} />
           </Route>
+          {/* tasks = 최상위 (host-level, robot-agnostic — 로봇 하위 mode 아님) */}
+          <Route path="/tasks" element={<TasksPage />} />
           <Route
             path="/contract"
             element={

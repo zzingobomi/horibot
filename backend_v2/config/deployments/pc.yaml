@@ -21,4 +21,7 @@ modules:
   - name: scene3d # robot-agnostic 라이브 pointcloud + consensus snapshot (Open3D, PC)
   - name: scan # robot-agnostic scan 세션/캡처/TSDF build (Open3D + DB owner, PC)
   - name: waypoint # robot-agnostic Robot Asset Layer — 티칭 rad + group (DB owner, PC)
+  - name: detector # Detect Object (robot-agnostic, host당 1 — real GDINO, PC compute)
+  - name: llm # 자연어→pick/place 파서 (robot-agnostic, host당 1 — real Qwen, PC compute)
+  - name: task # Orchestration — task-first PnP (async runner + 디버거, PC compute)
   - name: bridge # HTTP/WS gateway (frontend_v2 진입점, :8000)

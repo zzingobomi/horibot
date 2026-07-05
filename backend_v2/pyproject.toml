@@ -53,12 +53,15 @@ pc = [
     "advanced-alchemy>=1.11.0",  # 모듈 Repository 내부 CRUD ceremony 헬퍼 (framework 전제 X)
     "open3d>=0.18",  # Scene3D 라이브 PC + Reconstruction TSDF (ICP/PoseGraph/mesh)
     # Detector — Grounding DINO Swin-B (open-vocabulary detection).
-    # v5 는 AutoModelForZeroShotObjectDetection 제거 → <5 핀 (API 존재 문제, 확실).
-    # 옛 backend 의 <4.57 상한 (meta tensor + .to(device) 깨짐) 은 **Qwen LLM 로드**
-    # 에서 관측된 것 — GDINO 단독으론 분리 검증된 적 없고 v2 는 LLM 자체가 없음.
-    # → 상한 없이 preload smoke 먼저, 깨지면 그때 실측 근거로 핀
-    # (backend_v2_status.md 다음 작업 1 의 검증 단계).
-    "transformers>=4.45.0,<5",
+    # v5 채택: v2 는 그린필드 재구축 → 옛 핀 답습이 아니라 현재 표준(transformers v5,
+    # 2026-01 릴리스)을 밟는다. AutoModelForZeroShotObjectDetection 은 v5.12 에도
+    # 존재(공식 문서 확인) — 옛 "v5 가 제거" 주석은 사실 오류였음.
+    # 주의: v5.0.0 은 from_pretrained 기본 dtype=auto. 옛 backend 의 meta-tensor
+    # ".to(device)" 깨짐(<4.57 회피)은 Qwen LLM(prompt_parser) tied-weight meta-init
+    # 이슈였고, 그 LLM 은 NL PnP 로 v2 재등장 예정 → GDINO+Qwen 둘 다 이 transformers
+    # 를 씀. 관건은 버전 핀이 아니라 로더(device_map/dtype 명시)로 fix. preload race
+    # (llm_preload_race_debug.md)는 두 번째 소비자=Qwen 포팅 시점 프로토콜.
+    "transformers>=5.0.0,<6",
     "accelerate>=0.34.0",
     "pillow>=10.0.0",
     # CUDA 13 빌드 — host nvidia driver 와 매치. cu130 index 에서 받음

@@ -8,7 +8,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { bridge } from "@/api/bridge";
 import { _resetCapabilityCache } from "@/framework/capability";
 import { useFrameworkStore } from "@/framework/store";
-import { RobotStatePanel } from "./RobotStatePanel";
+import { RobotStatePanel } from "./index";
 
 const ROBOT_ID = "so101_6dof_0";
 

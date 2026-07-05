@@ -24,7 +24,7 @@ from modules.camera.contract import (
     CameraDecodedFrame,
     CameraDepthDecodedFrame,
 )
-from modules.detector.backend import MockDetectorBackend
+from modules.detector.drivers.mock import MockDetectorBackend
 from modules.detector.contract import DetectRequest
 from modules.detector.module import DetectorModule
 from modules.motion.contract import Motion, TcpState
@@ -71,15 +71,18 @@ def _bundle() -> CalibrationBundle:
     )
 
 
-async def test_detect_returns_base_position():
+async def test_detect_returns_topk_base_positions():
     w, h = 640, 480
     color = CameraDecodedFrame(
         robot_id=_ROBOT, seq=0, timestamp_unix=0.0,
         ndarray_bytes=np.zeros((h, w, 3), np.uint8).tobytes(), width=w, height=h,
     )
-    # mock bbox = 중앙 20% → x∈[256,384], y∈[192,288]. 그 영역 depth raw=300.
+    # mock 후보 2개: 중앙(320,240) 20% → x∈[256,384],y∈[192,288] depth 300 → z 0.3 →
+    # base [0,0,0.8]. 우상(448,144) → x∈[384,512],y∈[96,192] depth 500 → z 0.5 →
+    # base [0.1067,-0.08,1.0] (base_z 더 높음 = 후보 구분 근거).
     depth_arr = np.zeros((h, w), np.uint16)
     depth_arr[192:288, 256:384] = 300
+    depth_arr[96:192, 384:512] = 500
     depth = CameraDepthDecodedFrame(
         robot_id=_ROBOT, seq=0, timestamp_unix=0.0,
         depth_bytes=depth_arr.tobytes(), width=w, height=h, depth_scale=0.001,
@@ -99,14 +102,23 @@ async def test_detect_returns_base_position():
 
     res = await mod.detect(DetectRequest(robot_id=_ROBOT, prompt="cube"))
     assert res.found, res.message
-    assert res.detection is not None
-    # bbox center=(320,240)=(cx,cy) → X=Y=0, Z_cam=0.3; hand_eye=I; base t=[0,0,0.5]
-    # → base=[0,0,0.8]
-    assert np.allclose(res.detection.position, [0.0, 0.0, 0.8], atol=1e-6), (
-        res.detection.position
-    )
-    assert res.detection.prompt == "cube"
-    assert res.detection.score == 0.99
+    # Top-K: 후보 2개 + score 내림차순 (§17.5 ①)
+    assert len(res.candidates) == 2
+    assert res.candidates[0].score >= res.candidates[1].score
+
+    best = res.candidates[0]
+    # 중앙 bbox center=(320,240)=(cx,cy) → X=Y=0, Z_cam=0.3; hand_eye=I; base t=[0,0,0.5]
+    assert np.allclose(best.position, [0.0, 0.0, 0.8], atol=1e-6), best.position
+    assert best.prompt == "cube"
+    assert best.score == 0.95
+    # base_z/height 필드 전파 + 불변식 (ring floor_z/height 수치는 projection unit test).
+    assert isinstance(best.base_z, float) and isinstance(best.height, float)
+    assert best.height == max(0.0, best.position[2] - best.base_z)
+
+    # 2등 후보 = 우상 (score 낮음) — Top-K 누적 확인
+    second = res.candidates[1]
+    assert second.score == 0.60
+    assert abs(second.position[2] - 1.0) < 1e-6, second.position
 
 
 async def test_detect_without_calibration_not_found():
@@ -124,3 +136,28 @@ async def test_detect_empty_prompt_not_found():
     mod = DetectorModule(runtime=rt, backend=MockDetectorBackend())
     res = await mod.detect(DetectRequest(robot_id=_ROBOT, prompt="  "))
     assert not res.found
+
+
+async def test_start_triggers_backend_preload():
+    """start() 가 백그라운드로 backend.preload() 를 호출 — 첫 detect 지연 제거 배선.
+    (start 에서 preload 를 빼면 이 assert 가 깨짐 = 의미 있는 회귀.)"""
+
+    class _RecordingBackend:
+        def __init__(self) -> None:
+            self.preloaded = False
+
+        def detect(
+            self, image_bgr: np.ndarray, prompt: str, top_k: int
+        ) -> list[tuple[tuple[float, float, float, float], float]]:
+            return []
+
+        def preload(self) -> None:
+            self.preloaded = True
+
+    backend = _RecordingBackend()
+    mod = DetectorModule(runtime=_FakeRuntime({}), backend=backend)
+    await mod.start()
+    assert mod._preload_task is not None
+    await mod._preload_task  # 백그라운드 preload 완료 대기
+    assert backend.preloaded
+    await mod.stop()

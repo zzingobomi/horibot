@@ -21,7 +21,7 @@ const CAL_PATH = "/robots/so101_6dof_0/calibrate";
 test.describe("RobotCalibrateMode e2e (mock backend)", () => {
   test("WS 연결 + CalibrationPanel + active bundle 렌더", async ({ page }) => {
     await page.goto(CAL_PATH);
-    await expect(page.getByText("connected", { exact: true })).toBeVisible({
+    await expect(page.getByText("online", { exact: true })).toBeVisible({
       timeout: 5_000,
     });
     await expect(page.getByTestId("calibration-panel")).toBeVisible({

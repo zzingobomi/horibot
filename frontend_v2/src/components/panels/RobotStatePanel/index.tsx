@@ -2,9 +2,9 @@
  * RobotStatePanel — dockview 등록 패널 (robotState). connection / torque /
  * joint table / TCP position.
  *
- * 패널이라 router 의존(useParams)을 자체 흡수 (registry 는 순수 유지). 아직 내부
- * 분할(Control/Status) 필요 없어 단일 파일 — 쪼개질 때 폴더로 승격
- * (frontend_v2.md §2.3, "필요할 때" 원칙).
+ * 패널이라 router 의존(useParams)을 자체 흡수 (registry 는 순수 유지). 패널 = 폴더
+ * (index.tsx), 폴더-per-panel 통일 (frontend_v2.md §4.1) — 내부 분할(Control/Status)
+ * 필요 시 이 폴더에 서브 컴포넌트 추가.
  *
  * Wire:
  *   - Motion.Stream.TCP_STATE — joints rad + position + quaternion

@@ -85,6 +85,11 @@ infra-minio = [
 [tool.uv]
 default-groups = ["dev", "all"]
 
+# yourdfpy → trimesh[easy] 가 끌고 오는 optional ray-tracing 가속기 — aarch64(Pi)
+# 휠이 없어 pi-motor sync 실패. FkChain 은 load_meshes=False 라 mesh/ray 기능
+# 자체를 안 씀 → 전 플랫폼 제외 (never-true marker = uv 의 의존성 제거 패턴).
+override-dependencies = ["embreex; sys_platform == 'never'"]
+
 # PyTorch CUDA wheel — PyPI default 가 CPU 빌드를 주는 걸 피하려고 명시적 index.
 # Pi 머신(pi-motor/pi-camera 그룹)은 torch 의존이 없어 이 source 영향 없음.
 # cu130: CUDA 13 빌드. host nvidia driver 와 매치 (옛 backend 와 동일).

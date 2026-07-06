@@ -11,7 +11,7 @@ from framework.transport.protocol import Transport
 
 from .config import DeploymentConfig, RobotConfig, load_deployment, load_robots
 from .registry import load_module_class
-from .resolve import resolve_deps, resolve_host_deps
+from .resolve import resolve_robot_deps, resolve_host_deps
 
 logger = logging.getLogger(__name__)
 
@@ -26,21 +26,20 @@ def build_runtime(
 ) -> Runtime:
     runtime = Runtime(transport)
 
-    # DB owner host (rdb_uri 지정) — process infra 싱글톤 engine/session_factory 1번
-    # 생성 + root alembic upgrade head. import 는 이 블록 안에서만 (Pi role 격리).
     session_factory = None
     if deploy.rdb_uri:
         from infra.database.boot import open_database, run_migrations
 
         engine, session_factory = open_database(deploy.rdb_uri)
-        run_migrations(engine)  # 테이블 생성/마이그레이션 → 모듈 시작 전
+        # TODO: 여러 프로세스가 동일한 Postgres에 대해 migration을 수행할 수 있다면
+        # upgrade race를 방지하기 위해 advisory lock으로 직렬화해야 한다.
+        run_migrations(engine)
         logger.info(
             "DB ready — rdb_uri=%s (engine + session_factory + alembic upgrade head)",
             deploy.rdb_uri,
         )
 
     for entry in deploy.modules:
-        # lazy — 이 host 의 deployment 에 있는 모듈만 import (role 격리)
         mod_cls = load_module_class(entry.name)
         if entry.robots:
             for rid in entry.robots:
@@ -49,7 +48,7 @@ def build_runtime(
                     raise KeyError(
                         f"module {entry.name} 의 robot {rid!r} 가 robots.yaml 에 없음"
                     )
-                deps = resolve_deps(entry.name, robot, deploy, session_factory)
+                deps = resolve_robot_deps(entry.name, robot, deploy, session_factory)
                 runtime.add_module(mod_cls, robot_id=rid, **deps)
                 logger.info("add_module %s robot_id=%s", entry.name, rid)
         else:
@@ -66,7 +65,7 @@ def load_configs(
     host: str, config_dir: Path = _CONFIG_DIR
 ) -> tuple[DeploymentConfig, dict[str, RobotConfig]]:
     deploy = load_deployment(config_dir / "deployments" / f"{host}.yaml")
-    robots = load_robots()  # top-level robot_v2/ (config.py _ROBOT_DIR)
+    robots = load_robots()
     return deploy, robots
 
 

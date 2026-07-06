@@ -1,13 +1,3 @@
-"""MotorSpec — type-level 모터 1개 스펙 (robot/<type>/motors.yaml 한 줄).
-
-Module SDK internal — driver 가 받아서 topology / raw 변환 / motion profile 에
-사용. apps.config 가 motors.yaml 을 읽어 list[MotorSpec] 로 만들어 resolve_deps
-가 driver 에 주입한다 (mock / feetech 공통).
-
-backend_v2.md §16.5 — topology 값 SSOT = driver self-declare. 그 driver
-가 self-declare 하는 근거 데이터가 이 spec (robot type 의 정적 사실).
-"""
-
 from __future__ import annotations
 
 from pydantic import BaseModel
@@ -16,8 +6,6 @@ from .contract import MotorKind
 
 
 class MotorSpec(BaseModel):
-    """모터 1개 — id / kind / raw 변환(home·limit) / motion profile."""
-
     id: int
     name: str
     model: str  # STS3215 / STS3250 / XM430 ...
@@ -26,16 +14,21 @@ class MotorSpec(BaseModel):
     limit_min: int
     limit_max: int
     reverse: bool = False
-    # motion slam-guard profile (Step D Motion 에서 사용). dps SSOT.
     velocity_dps: float
     acceleration_dpss: float
 
     @property
     def initial_raw(self) -> int:
-        """유효 초기 위치 — `home`(units 영점 기준)을 자기 limit 안으로 clamp.
+        """
+        실제로 사용할 수 있는 초기 모터 위치(raw 값)를 반환한다.
 
-        `home` 은 raw↔rad 영점(0 rad)이라 도달 불가한 joint 가 있다 (so101 joint3:
-        영점 2048=0° 가 limit [58,1991] 밖). mock/driver 가 그 영점을 초기 위치로
-        그대로 쓰면 물리적으로 불가능한 자세로 시작 → clamp 로 유효 자세 보장.
+        home은 '이론적인 영점 위치'지만,
+        일부 조인트는 물리적인 limit 범위 밖에 있어 그대로 사용할 수 없다.
+
+        예: home=2048(0도 기준)인데 limit이 [58, 1991]이면
+        그대로 시작하면 물리적으로 도달 불가능한 자세가 된다.
+
+        그래서 home 값을 limit 범위 안으로 clamp 해서
+        안전하게 시작 가능한 초기 위치를 만든다.
         """
         return max(self.limit_min, min(self.limit_max, self.home))

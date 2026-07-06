@@ -15,7 +15,9 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter
+
+from framework.contract.model import StrictModel
 
 
 # ─── 어휘 (kind / status / artifact) — 실 DB SSOT ──────────────────
@@ -39,44 +41,38 @@ CalibrationRunStatus = Literal[
 CalibrationArtifactKind = Literal["primary", "color", "depth", "depth_vis", "ply"]
 
 
-class _Strict(BaseModel):
-    """result 계열 base — extra 금지. DB JSON drift 를 parse 시점에 fail-fast."""
-
-    model_config = ConfigDict(extra="forbid")
-
-
 # ─── result data (kind 별 payload) — 순수 data, 실 result_data shape ─
 
 
-class IntrinsicResultData(_Strict):
+class IntrinsicResultData(StrictModel):
     camera_matrix: list[list[float]]  # (3, 3)
     dist_coeffs: list[list[float]]  # (1, N)
     image_size: list[int] | None = None
 
 
-class HandEyeResultData(_Strict):
+class HandEyeResultData(StrictModel):
     R_cam2gripper: list[list[float]]  # (3, 3)
     t_cam2gripper: list[list[float]]  # (3, 1)
     method: str  # "BA(physical_sag_irls)" / "TSAI" 등
 
 
-class JointOffsetResultData(_Strict):
+class JointOffsetResultData(StrictModel):
     offsets: dict[int, float]  # motor_id → rad offset
     method: str
 
 
-class LinkOffsetEntry(_Strict):
+class LinkOffsetEntry(StrictModel):
     joint_id: int
     trans_m: list[float]  # (3,) — m
     rot_rad: list[float]  # (3,) — rad rotvec (Rodrigues)
 
 
-class LinkOffsetResultData(_Strict):
+class LinkOffsetResultData(StrictModel):
     offsets: list[LinkOffsetEntry]
     method: str
 
 
-class SagOffsetResultData(_Strict):
+class SagOffsetResultData(StrictModel):
     k_rad_per_m: dict[int, float]  # joint_id → stiffness
     method: str
 
@@ -84,7 +80,7 @@ class SagOffsetResultData(_Strict):
 # ─── result record (DB row ↔ wire) — discriminated union by kind ───
 
 
-class _ResultRecordBase(_Strict):
+class _ResultRecordBase(StrictModel):
     id: int | None = None
     run_id: int
     robot_id: str
@@ -139,7 +135,7 @@ CalibrationResultRecordAdapter: TypeAdapter[CalibrationResultRecord] = TypeAdapt
 # ─── run / capture / artifact record ───────────────────────────────
 
 
-class CalibrationRunRecord(_Strict):
+class CalibrationRunRecord(StrictModel):
     id: int | None = None
     robot_id: str
     started_at: datetime
@@ -152,7 +148,7 @@ class CalibrationRunRecord(_Strict):
     kind: CalibrationKind
 
 
-class CalibrationCaptureArtifactRecord(_Strict):
+class CalibrationCaptureArtifactRecord(StrictModel):
     id: int | None = None
     capture_id: int
     kind: CalibrationArtifactKind
@@ -162,7 +158,7 @@ class CalibrationCaptureArtifactRecord(_Strict):
     created_at: datetime
 
 
-class CalibrationCaptureRecord(_Strict):
+class CalibrationCaptureRecord(StrictModel):
     id: int | None = None
     run_id: int
     pose_index: int
@@ -342,7 +338,12 @@ class GetThresholdsResponse(BaseModel):
 
 
 class CalibrationPreview(BaseModel):
-    """5Hz preview stream — ChArUco 검출 상태 + traffic light (frontend overlay)."""
+    """5Hz preview stream — ChArUco 검출 상태 + traffic light (frontend overlay).
+
+    frontend 는 camera/stream(color MJPEG) 위에 corners_2d 를 canvas 오버레이로 그림 —
+    MJPEG 과 별 채널이라 좌표를 렌더 이미지 크기로 스케일하려면 원본 크기(image_width/
+    height)가 필요. corners_2d 는 intrinsic 유무와 무관하게 채움 (raw ChArUco 픽셀).
+    """
 
     robot_id: str
     seq: int
@@ -352,6 +353,9 @@ class CalibrationPreview(BaseModel):
     tilt_deg: float | None = None
     verdict: str  # green/yellow/red
     reasons: list[str] = Field(default_factory=list)
+    corners_2d: list[list[float]] = Field(default_factory=list)  # 검출 코너 픽셀 (N,2)
+    image_width: int | None = None  # 원본 프레임 크기 (overlay 좌표 스케일용)
+    image_height: int | None = None
 
 
 class CalibrationActivated(BaseModel):

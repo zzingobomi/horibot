@@ -44,6 +44,7 @@ export interface RobotInfo {
   type: string;
   base_pose?: BasePoseInfo;
   capabilities?: string[];
+  has_camera?: boolean;
 }
 
 export interface RobotsResponse {
@@ -196,6 +197,9 @@ export interface CalibrationPreview {
   tilt_deg?: number | null;
   verdict: string;
   reasons?: string[];
+  corners_2d?: number[][];
+  image_width?: number | null;
+  image_height?: number | null;
 }
 
 export interface CalibrationRunRecord {

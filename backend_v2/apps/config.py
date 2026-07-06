@@ -27,10 +27,7 @@ from pydantic import BaseModel, Field
 from modules.motor.contract import MotorKind
 from modules.motor.layout import MotorSpec
 
-# v2 소유 robot 데이터 — top-level robot_v2/ (apps → backend_v2 → repo root).
-# top-level 인 이유: robot 데이터(URDF/mesh)는 backend_v2 + frontend 가 공유하는
-# project-domain 자산. 옛 top-level robot/ 은 폐기될 옛 backend 용 — v2 는 robot_v2/
-# 를 소유하고 자유롭게 v2 아키텍처로 reshape (옛 backend 안 깨짐).
+
 _ROBOT_DIR = Path(__file__).resolve().parents[2] / "robot_v2"
 
 

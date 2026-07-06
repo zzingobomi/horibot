@@ -1,0 +1,64 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backend (mock)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "apps.main",
+      "args": ["--host", "mock"],
+      "cwd": "${workspaceFolder}/backend_v2",
+      "python": "${workspaceFolder}/backend_v2/.venv/Scripts/python.exe",
+      "console": "internalConsole",
+      "env": {
+        "CALIB_SIM_BOARD": "1"
+      }
+    },
+    {
+      "name": "Backend (pc — 분산 실물)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "apps.main",
+      "args": ["--host", "pc"],
+      "cwd": "${workspaceFolder}/backend_v2",
+      "python": "${workspaceFolder}/backend_v2/.venv/Scripts/python.exe",
+      "console": "internalConsole"
+    },
+    {
+      "name": "Frontend (Chrome)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5174",
+      "webRoot": "${workspaceFolder}/frontend_v2",
+      "preLaunchTask": "frontend: vite dev"
+    },
+    {
+      "name": "Attach: pi_motor (debugpy)",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": {
+        // uv run --no-sync python -m debugpy --listen 0.0.0.0:5678 -m apps.main --host pi_motor
+        "host": "192.168.0.101",
+        "port": 5678
+      },
+      "pathMappings": [
+        {
+          "localRoot": "${workspaceFolder}/backend_v2",
+          "remoteRoot": "/home/pi/horibot/backend_v2"
+        }
+      ]
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Full-stack (mock)",
+      "configurations": ["Backend (mock)", "Frontend (Chrome)"],
+      "stopAll": true
+    },
+    {
+      "name": "Full-stack (분산 PC측)",
+      "configurations": ["Backend (pc — 분산 실물)", "Frontend (Chrome)"],
+      "stopAll": true
+    }
+  ]
+}

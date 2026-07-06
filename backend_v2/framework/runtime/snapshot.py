@@ -1,17 +1,3 @@
-"""ContractSnapshot — 런타임에 로드된 Module 들이 노출하는 계약(wire_key → payload).
-
-frontend_contract_gen.md §6.1. gen_contract (frontend TS) 가 module.py (numpy/torch/
-open3d 등 heavy dep) 를 import 하지 않고도 key↔payload 매핑을 얻게, *이미 import 를
-끝낸 running runtime* 이 자기 registry 를 직렬화해 내준다.
-
-- services: wire_key(template, {robot_id} 유지) → (req_cls, res_cls)
-- topics:   wire_key(template) → payload_cls (stream + event, publish/subscribe 무관)
-
-category(service/stream/event) 는 wire_key prefix 로 유도 (srv/ stream/ event/).
-const 이름(GET_TOPOLOGY 등) 은 여기 없음 — contract.py enum 에만 있고, contract.py 는
-import-light (StrEnum + BaseModel 뿐) 라 serializer 가 직접 읽는다.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -32,10 +18,6 @@ class ContractSnapshot:
 
 
 def build_snapshot(modules: list[Any]) -> ContractSnapshot:
-    """로드된 Module 인스턴스들의 @service / @subscriber / @publishes spec 열거.
-
-    같은 wire_key 가 여러 Module (per-robot 인스턴스 등) 에서 나와도 template 이
-    동일하니 dedup — 다른 payload 로 충돌하면 fail-fast (spec invariant 위반)."""
     services: dict[str, tuple[type[BaseModel], type[BaseModel]]] = {}
     topics: dict[str, type[BaseModel]] = {}
 
@@ -82,27 +64,15 @@ def _put_topic(
         )
 
 
-# ─── module attribution (contract graph viewer — contract_graph_viewer.md §5.1) ──
-#
-# build_snapshot 은 module attribution + publish/subscribe 방향을 버리고 flat dict
-# 로 collapse 한다 (frontend gen 은 "wire_key → payload" 만 필요). 그래프 뷰어는
-# 반대로 그 attribution + 방향이 본질 — 어느 module 이 무엇을 serve/publish/subscribe
-# 하는지. 그래서 같은 discovery source 를 attribution 을 살려 다시 열거한다.
-
-
+# Graph Viewer는 모듈별 contract attribution을 유지해야 하므로
+# build_snapshot() 대신 discovery 결과를 직접 사용한다.
 @dataclass(frozen=True)
 class ModuleContract:
-    """한 Module class 가 노출하는 계약 (attribution + 방향 보존).
-
-    services / publishes / subscribes 는 wire_key template ({robot_id} 유지).
-    per-robot 인스턴스 (같은 class) 는 template 이 동일하니 module_id 로 dedup.
-    """
-
-    module_id: str  # type(m).__name__
-    robot_scoped: bool  # **service** wire_key 에 {robot_id} → per-robot 인스턴스 필요
-    services: tuple[str, ...]  # @service wire_keys (owner=server)
-    publishes: tuple[str, ...]  # @publishes wire_keys (output stream/event)
-    subscribes: tuple[str, ...]  # @subscriber wire_keys (input stream/event)
+    module_id: str
+    robot_scoped: bool
+    services: tuple[str, ...]
+    publishes: tuple[str, ...]
+    subscribes: tuple[str, ...]
 
 
 def build_module_contracts(modules: list[Any]) -> list[ModuleContract]:
@@ -167,9 +137,7 @@ def build_module_contracts_from_classes(classes: list[type]) -> list[ModuleContr
         seen.add(module_id)
 
         services = sorted(spec.wire_key for _bound, spec in discover_services(cls))
-        subscribes = sorted(
-            spec.wire_key for _bound, spec in discover_subscribers(cls)
-        )
+        subscribes = sorted(spec.wire_key for _bound, spec in discover_subscribers(cls))
         pub = get_publishes_spec(cls)
         publishes = sorted(wire_key for wire_key, _cls in pub.pairs) if pub else []
 

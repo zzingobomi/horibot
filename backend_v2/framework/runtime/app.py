@@ -38,9 +38,7 @@ def _log_async_subscriber_exc(fut: "Future[Any]") -> None:
     except Exception:
         return  # cancelled 등 — 무시
     if exc is not None:
-        logger.error(
-            "async @subscriber callback 실패: %s: %s", type(exc).__name__, exc
-        )
+        logger.error("async @subscriber callback 실패: %s: %s", type(exc).__name__, exc)
 
 
 def _encode_request(req: BaseModel) -> bytes:
@@ -105,19 +103,27 @@ class Runtime:
     def __init__(self, transport: Transport):
         self._transport = transport
         self._module_runtime: ModuleRuntime = cast(
-            ModuleRuntime, _TransportRuntime(transport))
+            ModuleRuntime, _TransportRuntime(transport)
+        )
         self._modules: list[Any] = []
         self._handles: list[Handle] = []
         self._started = False
         self._loop: asyncio.AbstractEventLoop | None = None
-        # Mirror initial snapshot timeout — Owner 안 떠 있으면 짧게 포기, event 로 fallback
         self.mirror_snapshot_timeout: float = 2.0
 
     def add_module(self, cls: type, **deps: Any) -> Any:
         if self._started:
-            raise RuntimeError("Runtime 이미 start — add_module stop 후 박음")
+            raise RuntimeError(
+                "Runtime 이 이미 start 됨 — add_module 은 start 전에만 가능 (stop 후 재구성)"
+            )
 
         sig = inspect.signature(cls.__init__)
+        unknown = set(deps) - set(sig.parameters)
+        if unknown:
+            raise TypeError(
+                f"Module {cls.__name__} __init__ 에 없는 dep key: {sorted(unknown)} "
+                f"— resolve 가 준 이름이 생성자 파라미터와 매칭돼야 함 (오타 의심)"
+            )
         kwargs: dict[str, Any] = {}
         for name, param in sig.parameters.items():
             if name == "self":
@@ -125,14 +131,16 @@ class Runtime:
             if name == "runtime":
                 kwargs[name] = self._module_runtime
             elif name == "transport":
-                # Boundary Module (Bridge) 전용 raw transport 주입.
-                # param 타입을 RawTransport 로 좁혀 close/register_service 권한 차단.
+                # Boundary module 은 raw transport 를 직접 사용한다.
+                # RawTransport 인터페이스를 주입해 relay 에 필요한 기능만 노출하고,
+                # transport lifecycle 및 service 등록 권한은 숨긴다.
                 kwargs[name] = self._transport
             elif name in deps:
                 kwargs[name] = deps[name]
             elif param.default is inspect.Parameter.empty:
                 raise TypeError(
-                    f"Module {cls.__name__} __init__ parameter {name!r}  박혀있지 X"
+                    f"Module {cls.__name__} 의 __init__ parameter {name!r} 가 주입 안 됨 "
+                    f"(resolve deps 또는 runtime/transport/robot_id 에 없음)"
                 )
 
         instance = cls(**kwargs)
@@ -141,19 +149,20 @@ class Runtime:
 
     async def start(self) -> None:
         if self._started:
-            raise RuntimeError("Runtime  이미 start 박힘")
+            raise RuntimeError("Runtime 이 이미 start 됨 — start 는 한 번만 호출 가능")
         self._started = True
         self._loop = asyncio.get_running_loop()
 
-        # Phase 2 — register all services + subscribers + Mirror subscribers
+        # 모든 통신 엔드포인트를 먼저 등록한다.
+        # 그래야 모듈의 start()에서 다른 모듈을 안전하게 호출할 수 있다.
         for module in self._modules:
             self._register_module(module)
 
-        # Phase 3a — Mirror initial snapshot fetch (non-blocking, fail OK)
+        # Mirror 초기 상태를 채운다.
         for module in self._modules:
             await self._initialize_mirrors(module)
 
-        # Phase 3b — Module.start() (sync or async)
+        # start()는 sync/async 모두 허용한다.
         for module in self._modules:
             if has_start(module):
                 result = module.start()
@@ -164,8 +173,6 @@ class Runtime:
         if not self._started:
             return
 
-        # 한 모듈의 stop() 실패가 나머지 stop + handle undeclare 를 막지 않게 격리.
-        # 실 하드웨어 (driver.close() 가 USB 에서 throw 가능) shutdown 누수 차단.
         for module in reversed(self._modules):
             if has_stop(module):
                 try:
@@ -191,22 +198,9 @@ class Runtime:
         return self._module_runtime
 
     def contract_snapshot(self) -> ContractSnapshot:
-        """로드된 Module 들의 계약(wire_key → payload) 스냅샷.
-
-        gen_contract (frontend TS) 가 module.py import 없이 payload 매핑을 얻는
-        source — bridge 의 GET /contract.json 이 serializer 통해 노출
-        (frontend_contract_gen.md §6.1). start 여부 무관 (add_module 만 되면 유효).
-        """
         return build_snapshot(self._modules)
 
     def module_contracts(self) -> list[ModuleContract]:
-        """로드된 Module 들의 계약 attribution (module → serve/publish/subscribe).
-
-        contract_snapshot 이 버리는 module 별 attribution + publish/subscribe 방향을
-        보존 — contract graph viewer (contract_graph_viewer.md §5.1) 의 source.
-        bridge 의 GET /contract/graph 가 apps 빌더 통해 노출. start 무관 (add_module
-        만 되면 유효).
-        """
         return build_module_contracts(self._modules)
 
     # ── internal — register helpers ─────────────────────────
@@ -230,19 +224,16 @@ class Runtime:
             robot_id = getattr(module, "robot_id", None)
             if robot_id is None:
                 raise ValueError(
-                    f"@service {key}  robot-scoped 박힘 — Module "
-                    f"{type(module).__name__}  self.robot_id 필요"
+                    f"@service {key} 가 robot-scoped ({{robot_id}} 포함) — Module "
+                    f"{type(module).__name__} 에 self.robot_id 필요"
                 )
             key = key.format(robot_id=robot_id)
 
         def handler_bytes(req_bytes: bytes) -> bytes:
             req = _decode_request(spec.req_cls, req_bytes)
             result = bound_method(req)
-            # async 핸들러 지원 — Zenoh 콜백(워커 스레드)에서 coroutine 이면 loop 로
-            # bridge (Mirror refetch 선례와 동일). 모듈은 `async def` + `await
-            # runtime.call(...)` 만 알면 되고, run_coroutine_threadsafe 는 안 봄.
-            # 워커 스레드는 핸들러 완료까지 .result() 블로킹 — sync 핸들러와 동일
-            # (long build 는 핸들러 안 `await to_thread` 로 loop 를 안 막음).
+            # Zenoh 콜백은 워커 스레드에서 실행된다.
+            # async 서비스는 이벤트 루프로 전달한 뒤 완료될 때까지 기다린다.
             if asyncio.iscoroutine(result):
                 loop = self._loop
                 if loop is None or loop.is_closed():
@@ -254,7 +245,7 @@ class Runtime:
                 result = asyncio.run_coroutine_threadsafe(result, loop).result()
             if not isinstance(result, BaseModel):
                 raise TypeError(
-                    f"@service {spec.method_name} return  BaseModel 박힘 "
+                    f"@service {spec.method_name} 의 return 은 BaseModel 이어야 함 "
                     f"(got {type(result)})"
                 )
             return _encode_response(result)
@@ -270,14 +261,13 @@ class Runtime:
     ) -> None:
         topic = spec.wire_key
         if "{robot_id}" in topic:
-            # robot-scoped event — Zenoh single-chunk wildcard
             topic = topic.replace("{robot_id}", "*")
 
         def callback_bytes(payload: bytes) -> None:
             event = decode_event(spec.event_cls, payload)
             result = bound_method(event)
-            # async subscriber 지원 — 반환값 없으니 결과 대기 X (fire-and-forget).
-            # 예외는 삼켜지지 않게 done callback 으로 로깅.
+            # async subscriber는 이벤트 루프로 전달해 실행한다.
+            # 호출자는 완료를 기다리지 않는다.
             if asyncio.iscoroutine(result):
                 loop = self._loop
                 if loop is None or loop.is_closed():
@@ -289,14 +279,13 @@ class Runtime:
         handle = self._transport.subscribe(topic, callback_bytes)
         self._handles.append(handle)
 
-    # ── Mirror — phase 2 subscribe + phase 3 snapshot ─────────
+    # ── Mirror ─────────
 
     def _register_mirror_subscriber(
         self,
         module: Any,
         state: MirrorState[Any],
     ) -> None:
-        """Phase 2 — change_topic subscribe. event 받으면 async refetch trigger."""
         topic = state.spec.change_topic
         if "{robot_id}" in topic:
             topic = topic.replace("{robot_id}", "*")
@@ -309,34 +298,38 @@ class Runtime:
             except Exception:
                 logger.exception("Mirror callback decode failed: topic=%s", topic)
                 return
-            # robot_id filter — robot-scoped Reader 면 자기 robot 만
+
             if own_robot_id is not None:
                 event_rid = getattr(event, "robot_id", None)
                 if event_rid != own_robot_id:
                     return
+
             loop = self._loop
             if loop is None or loop.is_closed():
                 return
-            # refetch — callback thread → asyncio loop
+
             asyncio.run_coroutine_threadsafe(
-                self._refetch_mirror(module, state), loop,
+                self._refetch_mirror(module, state),
+                loop,
             )
 
         handle = self._transport.subscribe(topic, callback)
         self._handles.append(handle)
 
     async def _initialize_mirrors(self, module: Any) -> None:
-        """Phase 3a — initial snapshot fetch. fail OK (Owner 안 떠 있으면 event 로 fallback)."""
         for _name, state in discover_mirrors(module):
             try:
                 await self._refetch_mirror(
-                    module, state, timeout=self.mirror_snapshot_timeout,
+                    module,
+                    state,
+                    timeout=self.mirror_snapshot_timeout,
                 )
             except (TimeoutError, RemoteError):
                 logger.info(
                     "Mirror initial snapshot 실패 (Owner 안 떠 있음) — event 받으면 refetch: "
                     "service=%s module=%s",
-                    state.spec.snapshot_service, type(module).__name__,
+                    state.spec.snapshot_service,
+                    type(module).__name__,
                 )
 
     async def _refetch_mirror(
@@ -346,7 +339,6 @@ class Runtime:
         *,
         timeout: float = 5.0,
     ) -> None:
-        """snapshot_service 호출 → value_cls decode → MirrorState._set."""
         req = state.spec.snapshot_req(module)
         key = state.spec.snapshot_service
         if "{robot_id}" in key:

@@ -1,12 +1,3 @@
-"""MJPEG relay — Camera.Stream.JPEG → multipart/x-mixed-replace (C1c).
-
-backend_v2.md §16.6. domain logic 0 — frame envelope 에서 jpeg_bytes 만
-꺼내 multipart 로 흘린다 (경계 포맷 변환, kinematics/detection 등 X).
-
-CameraJpegFrame 디코드를 위해 camera contract import — 순환 없음 (camera 는
-bridge 모름). MJPEG 은 카메라 전용 엔드포인트라 camera-specific 의존이 자연.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -22,9 +13,7 @@ logger = logging.getLogger(__name__)
 BOUNDARY = "frame"
 
 
-async def mjpeg_stream(
-    transport: RawTransport, robot_id: str
-) -> AsyncIterator[bytes]:
+async def mjpeg_stream(transport: RawTransport, robot_id: str) -> AsyncIterator[bytes]:
     """robot 의 JPEG stream 을 구독해 multipart chunk 로 yield.
 
     latest-wins (maxsize=1) — 느린 브라우저가 frame 쌓이게 두지 않는다.
@@ -56,10 +45,14 @@ async def mjpeg_stream(
         while True:
             jpeg = await queue.get()
             yield (
-                f"--{BOUNDARY}\r\n"
-                f"Content-Type: image/jpeg\r\n"
-                f"Content-Length: {len(jpeg)}\r\n\r\n"
-            ).encode("ascii") + jpeg + b"\r\n"
+                (
+                    f"--{BOUNDARY}\r\n"
+                    f"Content-Type: image/jpeg\r\n"
+                    f"Content-Length: {len(jpeg)}\r\n\r\n"
+                ).encode("ascii")
+                + jpeg
+                + b"\r\n"
+            )
     finally:
         try:
             handle.undeclare()

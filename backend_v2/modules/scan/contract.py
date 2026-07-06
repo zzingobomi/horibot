@@ -13,17 +13,15 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
-
-class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+from framework.contract.model import StrictModel
 
 
 # ─── records (DB row ↔ wire) ────────────────────────────────────────
 
 
-class ScanSessionRecord(_Strict):
+class ScanSessionRecord(StrictModel):
     id: int | None = None
     robot_id: str
     session_id: str  # human-readable (session_YYYYMMDD_HHMMSS)
@@ -31,7 +29,7 @@ class ScanSessionRecord(_Strict):
     label: str | None = None
 
 
-class ScanRecord(_Strict):
+class ScanRecord(StrictModel):
     id: int | None = None
     session_row_id: int
     robot_id: str
@@ -53,7 +51,7 @@ class ScanRecord(_Strict):
     arm_motor_ids: list[int]
 
 
-class ReconstructionRecord(_Strict):
+class ReconstructionRecord(StrictModel):
     id: int | None = None
     session_row_id: int
     robot_id: str

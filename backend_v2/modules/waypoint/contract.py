@@ -1,51 +1,17 @@
-"""Waypoint domain — public contract surface.
-
-Robot Asset Layer (Motion 위). Waypoint = 티칭한 joint 자세(rad). WaypointGroup =
-목적별 묶음(ordered). Database-per-Module. 저장 단위 rad — Motion.TcpState.joints
-계약을 그대로 소비 (raw encoder 는 Waypoint 가 모름, 계층 준수).
-설계 docs/backend_v2.md §17.2.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
-
-class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-# ─── records (DB row ↔ wire) ────────────────────────────────────────
-
-
-class WaypointRecord(_Strict):
-    id: int | None = None
-    robot_id: str
-    name: str
-    joint_values: list[float]  # rad (Motion 계약 단위 = TcpState.joints)
-    joint_names: list[str]  # parallel (TcpState.joint_names) — order-robust 매핑
-    created_at: datetime
-
-
-class WaypointGroupRecord(_Strict):
-    id: int | None = None
-    robot_id: str
-    name: str
-
-
-# ─── nested contract ────────────────────────────────────────────────
+from framework.contract.model import StrictModel
 
 
 class Waypoint:
     class Service(StrEnum):
-        # robot-agnostic (host 당 1, backend_v2.md §2.7) — 대상 robot 은
-        # 생성/목록(teach/list/create_group/list_groups)은 req.robot_id, 나머지는
-        # row id 에서 파생 (backend_v2.md §2.7.1).
         # waypoint CRUD
-        TEACH = "srv/waypoint/teach"  # 현재 joint 로 저장
+        TEACH = "srv/waypoint/teach"
         LIST = "srv/waypoint/list"
         RENAME = "srv/waypoint/rename"
         DELETE = "srv/waypoint/delete"
@@ -53,11 +19,26 @@ class Waypoint:
         CREATE_GROUP = "srv/waypoint/create_group"
         LIST_GROUPS = "srv/waypoint/list_groups"
         DELETE_GROUP = "srv/waypoint/delete_group"
-        # group membership (order 있는 join)
+        # group membership
         ADD_TO_GROUP = "srv/waypoint/add_to_group"
         REMOVE_FROM_GROUP = "srv/waypoint/remove_from_group"
         REORDER_GROUP = "srv/waypoint/reorder_group"
         LIST_GROUP_MEMBERS = "srv/waypoint/list_group_members"
+
+
+class WaypointRecord(StrictModel):
+    id: int | None = None
+    robot_id: str
+    name: str
+    joint_values: list[float]
+    joint_names: list[str]
+    created_at: datetime
+
+
+class WaypointGroupRecord(StrictModel):
+    id: int | None = None
+    robot_id: str
+    name: str
 
 
 # ─── request / response ─────────────────────────────────────────────
@@ -148,7 +129,7 @@ class RemoveFromGroupResponse(BaseModel):
 
 class ReorderGroupRequest(BaseModel):
     group_row_id: int
-    ordered_waypoint_row_ids: list[int]  # 새 순서 (position = index)
+    ordered_waypoint_row_ids: list[int]
 
 
 class ReorderGroupResponse(BaseModel):
@@ -161,4 +142,4 @@ class ListGroupMembersRequest(BaseModel):
 
 
 class ListGroupMembersResponse(BaseModel):
-    waypoints: list[WaypointRecord]  # position 순
+    waypoints: list[WaypointRecord]

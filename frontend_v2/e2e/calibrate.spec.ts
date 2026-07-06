@@ -91,4 +91,37 @@ test.describe("RobotCalibrateMode e2e (mock backend)", () => {
     await page.getByTestId("capture").click();
     await expect(page.getByTestId("capture-msg")).toContainText("캡처됨", { timeout: 6_000 });
   });
+
+  // 카메라 뷰 — so101(realsense)=has_camera → color MJPEG 뷰. preview ON 시 sim board
+  // 검출 좌표(corners_2d)가 CALIBRATION_PREVIEW 로 흘러 ChArUco 오버레이로 렌더
+  // (camera/stream[MJPEG] + preview[좌표] 별 채널 합성이 over-wire 로 동작하는지).
+  test("카메라 뷰 + preview 검출 시 ChArUco 오버레이 (over-wire)", async ({ page }) => {
+    await page.goto(CAL_PATH);
+    await expect(page.getByTestId("calibration-camera-panel")).toBeVisible({
+      timeout: 5_000,
+    });
+    // color 스트림 img (has_camera 게이트 통과 — rgbd 무관)
+    await expect(page.getByTestId("camera-stream")).toBeVisible({ timeout: 5_000 });
+
+    // preview ON → 검출되면 오버레이, sim board OFF 면 skip (capture 테스트와 동일 게이트)
+    await page.getByTestId("preview-toggle").click();
+    try {
+      await expect(page.getByTestId("preview-detail")).toContainText(
+        /검출 \d+ corners/,
+        { timeout: 6_000 },
+      );
+    } catch {
+      test.skip(true, "sim board OFF — CALIB_SIM_BOARD=1 로 backend 필요");
+    }
+    const overlay = page.getByTestId("charuco-overlay");
+    await expect(overlay).toBeVisible({ timeout: 6_000 });
+    // 검출 코너 수만큼 마커 (corners_2d → circle)
+    expect(await overlay.locator("circle").count()).toBeGreaterThan(0);
+    // 캡처 안내 HUD — 검출 시 green/yellow (첫 자세 green). 카메라 위 verdict 표시.
+    const guide = page.getByTestId("capture-guide");
+    await expect(guide).toBeVisible({ timeout: 6_000 });
+    expect(["green", "yellow"]).toContain(
+      await guide.getAttribute("data-verdict"),
+    );
+  });
 });

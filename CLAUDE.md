@@ -12,6 +12,7 @@ D405 RGBD가 한 메시지로 묶여 LAN에 흐르고, PC가 구독해 Open3D로
 
 세부 주제별 문서는 [docs/](docs/) 디렉토리:
 
+- [contract_gen_distribution.md](docs/contract_gen_distribution.md) — **contract gen 분산/정적 생성 논의 기록 (2026-07-06, 결정: 현행 유지 — 코드 무변경)**. "gen 이 runtime snapshot 에 의존하는 게 맞나 / 분산 배치에서 gen 되나 / contract.py 에 바인딩 선언해야 하나" 톤 나오면 본 문서 먼저 — 선택지 5개 검토·기각 근거 + 재논의 트리거(모듈 의존성 공존 불가 시점) + 그때의 지정 경로(모듈별 fragment 빌드 산출물 + merge) 박혀 있음. contract.py 바인딩 승격 / AST 파싱 = 기각 확정, 재검토 불필요.
 - [contract_graph_viewer.md](docs/contract_graph_viewer.md) — **backend_v2 계약 토폴로지 그래프 뷰어 (구현 완료 — `/contract` 페이지 + `GET /contract/graph`, Playwright e2e 포함)**. module 계약(service/stream/event)을 Swagger flat 나열이 아닌 **노드+방향엣지 그래프**로. backend_v2.md §16.6 의 두 번째 소비자(developer viewer). runtime-served + React Flow + declared universe (MODULE_REGISTRY 전체 — 분산 배치에서도 전 module 렌더). "contract viewer" / "그래프" / "React Flow" / "토폴로지" 톤 나오면 본 문서.
 - [architecture_review_protocol.md](docs/architecture_review_protocol.md) — **현재 진행 phase: 아키텍처 점검**. 기능 구현 phase 끝, 사용자가 코드 한 줄씩 읽으며 "이거 왜 이렇게 짰어?" 질문 + 의도 vs 임시 판별 framework + 분기 (의도→정당화 명문화+통일 / 임시→정석 수정+통일). **새 세션 자리 사용자가 검토 톤 던지면 본 protocol 진입**
 - [backend_v2_status.md](docs/backend_v2_status.md) — **backend_v2 진행 status + 다음 세션 handoff (진행 수치/다음 작업은 항상 이 문서)**. 2026-07-03 현재: framework + 10 Module 가동 + robot-agnostic 리팩터 완료 (backend 212 pytest / frontend 47 vitest / Playwright e2e 14/14). 다음 후보 = PnP task (task-first) / Motion boot consumer / offline BA 이월 / 집 하드웨어 검증.

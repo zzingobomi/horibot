@@ -1,11 +1,8 @@
-"""MODULE_REGISTRY — module name → "path:ClassName" (lazy import).
+"""MODULE_REGISTRY — module name → "path:ClassName" 매핑.
 
-**lazy 가 핵심** — host 는 자기 deployment 의 모듈만 import 해야 한다. eager import
-면 pi_camera 가 registry import 만으로 MotionModule(pybullet) / BridgeModule(fastapi)
-까지 끌어와 boot 실패 (role-split deps 무력화). importlib 로 instantiate 시점에만
-import → pi_camera 는 camera 모듈만, pi_motor 는 motor/motion 만 import.
-
-옛 backend node_registry 의 NodeSpec lazy-import 패턴과 동형.
+Module 클래스를 직접 참조하지 않고 import 경로만 저장한다.
+필요한 시점에만 import하여 현재 host가 실행하는 Module만 로드하고,
+다른 Module의 의존성은 가져오지 않는다.
 """
 
 from __future__ import annotations
@@ -29,7 +26,6 @@ MODULE_REGISTRY: dict[str, str] = {
 
 
 def load_module_class(name: str) -> type:
-    """name → 실 class (호출 시점에만 import). 미등록 시 KeyError."""
     spec = MODULE_REGISTRY.get(name)
     if spec is None:
         raise KeyError(f"MODULE_REGISTRY 에 module {name!r} 없음 — registry.py 확인")

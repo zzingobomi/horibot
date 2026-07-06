@@ -25,6 +25,12 @@ from modules.bridge.ws import (
     FRAME_SERVICE_ERROR,
     FRAME_SERVICE_RESPONSE,
     FRAME_TOPIC_DATA,
+    _EVENT_FIFO_MAX,
+    _LATEST_WINS_MAX,
+    _SERVICE_CHANNEL,
+    _SERVICE_MAX,
+    WsConnection,
+    _channel_maxlen,
 )
 from pathlib import Path
 
@@ -145,3 +151,50 @@ async def test_service_error_relays_error_frame(bridge):
     info = msgspec.msgpack.decode(payload)
     assert info["type"] == "ValueError"
     assert "의도된 실패" in info["message"]
+
+
+# ── send 큐 채널 정책 (backpressure) ────────────────────────────────
+# 데이터 중요도 구분: stream(최신만) / event(보존) / service(유실 방지) 를
+# 키 prefix taxonomy 로 나눔. 채널별 독립 큐라 고rate 토픽이 남을 안 밀어냄.
+
+
+def test_channel_maxlen_by_key_prefix():
+    # stream/* = telemetry → latest-wins(1)
+    assert _channel_maxlen("stream/motor/so101_6dof_0/state") == _LATEST_WINS_MAX
+    # event/* = 이산 이벤트 → 보존(FIFO)
+    assert _channel_maxlen("event/calibration/so101_6dof_0/activated") == _EVENT_FIFO_MAX
+    # service 응답 = 유실 방지
+    assert _channel_maxlen(_SERVICE_CHANNEL) == _SERVICE_MAX
+
+
+class _DummyWs:
+    pass
+
+
+class _DummyTransport:
+    pass
+
+
+async def test_enqueue_channel_isolation_and_retention():
+    # 실 WS/네트워크 없이 채널 큐 정책만 (get_running_loop 위해 async).
+    conn = WsConnection(_DummyWs(), _DummyTransport())  # type: ignore[arg-type]
+
+    # stream 채널 flood → 최신 1개만 (latest-wins)
+    for i in range(50):
+        conn._enqueue("stream/motor/r/state", bytes([i]))
+    assert list(conn._pending["stream/motor/r/state"]) == [bytes([49])]
+
+    # event 채널 flood → 최근 N개 보존 (drop-oldest, 유실은 하되 backlog 유지)
+    for i in range(_EVENT_FIFO_MAX + 30):
+        conn._enqueue("event/calibration/r/committed", bytes([i % 256]))
+    assert len(conn._pending["event/calibration/r/committed"]) == _EVENT_FIFO_MAX
+
+    # 격리 — event flood 가 stream 채널 프레임을 안 밀어냄
+    assert list(conn._pending["stream/motor/r/state"]) == [bytes([49])]
+
+    # service 응답 — stream/event 홍수와 무관하게 자기 채널에 쌓임 (유실 방지)
+    conn._enqueue(_SERVICE_CHANNEL, b"resp")
+    assert list(conn._pending[_SERVICE_CHANNEL]) == [b"resp"]
+
+    # drain 순서 — service 우선
+    assert conn._drain_order()[0] == _SERVICE_CHANNEL

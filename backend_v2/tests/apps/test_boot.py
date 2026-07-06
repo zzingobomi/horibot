@@ -2,7 +2,7 @@
 
 mock.yaml 을 격리 peer transport 로 한 process 에 띄우고:
 - config 파싱 (robots.yaml + deployment yaml)
-- resolve_deps → driver impl 선택 (mock)
+- resolve_robot_deps → driver impl 선택 (mock)
 - runtime.add_module 배선 + start
 - motor / camera service 도달 + camera → camera_decoded stream e2e
 까지 검증. 실 boot 의 build_runtime path 와 동일 (transport 만 주입).
@@ -18,7 +18,7 @@ import pytest
 
 from apps.config import load_deployment, load_robots
 from apps.main import build_runtime, load_configs
-from apps.resolve import resolve_deps, resolve_host_deps
+from apps.resolve import resolve_robot_deps, resolve_host_deps
 from framework.runtime.app import Runtime
 from infra.transport.zenoh import ZenohTransport
 from modules.camera.contract import (
@@ -77,13 +77,13 @@ def test_load_deployment_mock():
     assert deploy.rdb_uri == "sqlite:///:memory:"  # DB owner host
 
 
-# ─── resolve_deps ───────────────────────────────────────────────
+# ─── resolve_robot_deps ───────────────────────────────────────────────
 
 
-def test_resolve_deps_mock_motor_picks_mock_backend():
+def test_resolve_robot_deps_mock_motor_picks_mock_backend():
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "mock.yaml")
     robots = load_robots()
-    deps = resolve_deps("motor", robots[_SO101], deploy)
+    deps = resolve_robot_deps("motor", robots[_SO101], deploy)
     # mock motor → topology 6 joint + gripper
     topo = deps["driver"].topology()
     assert len(topo.motors) == 7
@@ -112,25 +112,25 @@ def test_registry_role_isolated_no_heavy_imports():
     assert "isolated-ok" in r.stdout
 
 
-def test_resolve_deps_real_feetech_constructs():
+def test_resolve_robot_deps_real_feetech_constructs():
     # real + feetech → FeetechBackend 생성 (하드웨어 없이 self-declare 만 검증, open X)
     from modules.motor.drivers.feetech import FeetechBackend
 
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_motor.yaml")  # real
     robots = load_robots()
-    driver = resolve_deps("motor", robots[_SO101], deploy)["driver"]
+    driver = resolve_robot_deps("motor", robots[_SO101], deploy)["driver"]
     assert isinstance(driver, FeetechBackend)
     assert len(driver.topology().motors) == 7  # motors.yaml SSOT
     assert MotorCapability.TORQUE_TOGGLE in driver.capabilities().flags
 
 
-def test_resolve_deps_real_realsense_constructs():
+def test_resolve_robot_deps_real_realsense_constructs():
     # real + realsense → RealSenseD405Driver 생성 (하드웨어 없이 self-declare 만, open X)
     from modules.camera.drivers.realsense_d405 import RealSenseD405Driver
 
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_camera.yaml")  # real
     robots = load_robots()
-    driver = resolve_deps("camera", robots[_SO101], deploy)["driver"]
+    driver = resolve_robot_deps("camera", robots[_SO101], deploy)["driver"]
     assert isinstance(driver, RealSenseD405Driver)
     assert CameraCapability.DEPTH in driver.capabilities().flags
 
@@ -145,13 +145,13 @@ def test_resolve_host_deps_real_detector_constructs():
     assert isinstance(backend, GroundingDinoBackend)
 
 
-def test_resolve_deps_camera_mock_depth_from_rgbd_capability():
+def test_resolve_robot_deps_camera_mock_depth_from_rgbd_capability():
     # mock camera 의 depth 여부 = rgbd capability (so101 ✅ / omx ❌)
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "mock.yaml")
     robots = load_robots()
-    so101_cam = resolve_deps("camera", robots[_SO101], deploy)["driver"]
+    so101_cam = resolve_robot_deps("camera", robots[_SO101], deploy)["driver"]
     assert CameraCapability.DEPTH in so101_cam.capabilities().flags
-    omx_cam = resolve_deps("camera", robots["omx_f_0"], deploy)["driver"]
+    omx_cam = resolve_robot_deps("camera", robots["omx_f_0"], deploy)["driver"]
     assert CameraCapability.DEPTH not in omx_cam.capabilities().flags
 
 

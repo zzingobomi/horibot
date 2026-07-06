@@ -424,3 +424,23 @@ async def test_module_async_start_stop(transport: ZenohTransport):
     await rt.start()
     await rt.stop()
     assert log == ["start", "stop"]
+
+
+# ─── 13. add_module dep key 오타 fail-fast ─────────────────────
+
+
+def test_add_module_rejects_unknown_dep_key(transport: ZenohTransport):
+    """생성자에 없는 dep key 는 조용히 버리지 않고 TypeError.
+
+    조용히 버리면 그 파라미터에 default 가 생기는 순간 resolve 오타가
+    silent 오배선 (default 로 대체) 이 됨 — 부팅 시점 거부가 안전.
+    """
+
+    class NeedsDriver:
+        def __init__(self, runtime: ModuleRuntime, driver: object):
+            self.runtime = runtime
+            self.driver = driver
+
+    rt = Runtime(transport)
+    with pytest.raises(TypeError, match="drivr"):
+        rt.add_module(NeedsDriver, drivr=object())  # 'driver' 오타

@@ -1,9 +1,3 @@
-"""WaypointRepository — waypoint 모듈 영속성 (Database-per-Module).
-
-scan/calibration repository 와 동형: advanced-alchemy sub-repo 를 단순 CRUD 헬퍼로,
-group membership ordering(position) 은 직접 SQL (max+1 / reorder / join).
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -39,7 +33,9 @@ class WaypointRepository:
     # ── waypoints ─────────────────────────────────────────────
     def insert_waypoint(self, rec: WaypointRecord) -> WaypointRecord:
         with self._session_factory() as session:
-            repo = _WaypointRepo(session=session, auto_commit=True, wrap_exceptions=False)
+            repo = _WaypointRepo(
+                session=session, auto_commit=True, wrap_exceptions=False
+            )
             orm = repo.add(waypoint_to_orm(rec))
             return orm_to_waypoint(orm)
 
@@ -73,9 +69,10 @@ class WaypointRepository:
             session.commit()
 
     def delete_waypoint(self, waypoint_row_id: int) -> bool:
-        """idempotent — 없으면 False. FK CASCADE → group members 제거."""
         with self._session_factory() as session:
-            repo = _WaypointRepo(session=session, auto_commit=True, wrap_exceptions=False)
+            repo = _WaypointRepo(
+                session=session, auto_commit=True, wrap_exceptions=False
+            )
             if repo.get_one_or_none(WaypointOrm.id == waypoint_row_id) is None:
                 return False
             repo.delete(waypoint_row_id)
@@ -98,12 +95,12 @@ class WaypointRepository:
     def list_groups(self, robot_id: str) -> list[WaypointGroupRecord]:
         with self._session_factory() as session:
             rows = _GroupRepo(session=session, wrap_exceptions=False).get_many(
-                WaypointGroupOrm.robot_id == robot_id, order_by=WaypointGroupOrm.name.asc()
+                WaypointGroupOrm.robot_id == robot_id,
+                order_by=WaypointGroupOrm.name.asc(),
             )
             return [orm_to_group(o) for o in rows]
 
     def delete_group(self, group_row_id: int) -> bool:
-        """idempotent — 없으면 False. FK CASCADE → members 제거."""
         with self._session_factory() as session:
             repo = _GroupRepo(session=session, auto_commit=True, wrap_exceptions=False)
             if repo.get_one_or_none(WaypointGroupOrm.id == group_row_id) is None:
@@ -111,9 +108,8 @@ class WaypointRepository:
             repo.delete(group_row_id)
             return True
 
-    # ── group membership (position ordering) ──────────────────
+    # ── group membership ──────────────────
     def add_member(self, group_id: int, waypoint_id: int) -> None:
-        """group 끝에 append (position = max+1). 이미 있으면 no-op (idempotent)."""
         with self._session_factory() as session:
             exists = session.scalar(
                 select(WaypointGroupMemberOrm).where(
@@ -147,7 +143,6 @@ class WaypointRepository:
             session.commit()
 
     def reorder_group(self, group_id: int, ordered_waypoint_ids: list[int]) -> None:
-        """ordered_waypoint_ids 순서대로 position 재부여. group 에 없는 id 는 무시."""
         with self._session_factory() as session:
             members = session.scalars(
                 select(WaypointGroupMemberOrm).where(
@@ -162,7 +157,6 @@ class WaypointRepository:
             session.commit()
 
     def list_group_members(self, group_id: int) -> list[WaypointRecord]:
-        """position 순 waypoint (join)."""
         with self._session_factory() as session:
             stmt = (
                 select(WaypointOrm)

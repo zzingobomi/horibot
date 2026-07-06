@@ -386,10 +386,12 @@ class CalibrationModule:
         frame = self._latest_frame.get(robot_id)
         if frame is None:
             return
+        img_h, img_w = int(frame.shape[0]), int(frame.shape[1])
         intrinsic = self._repo.get_active(robot_id, "intrinsic")
         det = None
         detected = False
         corner_count = 0
+        corners_2d: list[list[float]] = []
         if isinstance(intrinsic, IntrinsicResultRecord):
             cm = np.array(intrinsic.result_data.camera_matrix, dtype=np.float64)
             dist = np.array(intrinsic.result_data.dist_coeffs, dtype=np.float64)
@@ -397,6 +399,7 @@ class CalibrationModule:
         if det is not None:
             detected = True
             corner_count = len(det.corner_ids)
+            corners_2d = det.corners_2d
             run = self._repo.get_in_progress_run(robot_id, "hand_eye")
             quality = (
                 self._evaluate_quality(run.id, det, robot_id)
@@ -405,11 +408,14 @@ class CalibrationModule:
             )
             verdict, reasons, tilt = quality.verdict, quality.reasons, det.tilt_deg
         else:
-            # intrinsic 없거나 미검출 — detect-only (tilt 없음)
+            # intrinsic 없거나 미검출 — detect-only (tilt 없음). corners_2d 는 overlay
+            # 를 위해 intrinsic 없이도 raw ChArUco 픽셀로 채움 (PnP 불필요).
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            ok, _c, ids = calib_board.detect(gray)
+            ok, ch_corners, ids = calib_board.detect(gray)
             detected = ok
             corner_count = 0 if ids is None else len(ids)
+            if ok and ch_corners is not None:
+                corners_2d = ch_corners.reshape(-1, 2).astype(float).tolist()
             verdict = "red"
             reasons = ["보드 미검출"] if not ok else ["자세 추정 불가 (intrinsic 확인)"]
             tilt = None
@@ -425,6 +431,9 @@ class CalibrationModule:
                 tilt_deg=tilt,
                 verdict=verdict,
                 reasons=reasons,
+                corners_2d=corners_2d,
+                image_width=img_w,
+                image_height=img_h,
             ),
         )
         self._preview_seq[robot_id] = seq + 1

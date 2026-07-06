@@ -1,12 +1,3 @@
-"""resolve_deps — application logic: robot config → Module constructor deps (§5.2).
-
-**모듈 클래스를 top-level import 안 함** — module NAME(string) 으로 dispatch + 필요한
-것만 branch 안에서 lazy import. registry.py 와 같은 role 격리 이유 (pi_camera 가
-resolve import 만으로 pybullet/fastapi 끌어오면 안 됨).
-
-`runtime`/`robot_id` 은 Runtime/main 이 주입 — 여기선 그 외 dep (driver / kinematics 등).
-"""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -16,17 +7,19 @@ from .config import _ROBOT_DIR, DeploymentConfig, DriverMode, RobotConfig
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
 
+    from framework.storage.protocol import ObjectStore
+    from modules.camera.drivers.protocol import CameraDriver
+    from modules.detector.drivers.protocol import DetectorBackend
+    from modules.llm.drivers.protocol import LlmBackend
+    from modules.motor.drivers.protocol import MotorBackend
 
-def resolve_deps(
+
+def resolve_robot_deps(
     name: str,
     robot: RobotConfig,
     deploy: DeploymentConfig,
     session_factory: sessionmaker[Session] | None = None,
 ) -> dict[str, Any]:
-    """robot-scoped Module 의 constructor deps (runtime / robot_id 제외).
-
-    session_factory = boot 가 만든 process-shared DB factory (DB 모듈만 사용).
-    """
     if name == "motor":
         return {"driver": _motor_driver(robot, deploy)}
     if name == "camera":
@@ -47,32 +40,15 @@ def resolve_host_deps(
     runtime: Any | None = None,
     session_factory: sessionmaker[Session] | None = None,
 ) -> dict[str, Any]:
-    """host-level (robot-agnostic) Module 의 constructor deps.
-
-    runtime = build_runtime 이 넘기는 Runtime (bridge 의 contract provider closure 용).
-    None 이면 provider 미주입 (GET /contract.json → 503) — contract gen 안 쓰는
-    배선/test 경로. session_factory = boot 가 만든 process-shared DB factory
-    (DB owner host 의 robot-agnostic DB 모듈만 사용)."""
     if name == "detector":
-        # robot-agnostic (host 당 1) — 무거운 모델 1회 로드, req.robot_id 로 dispatch.
         return {"backend": _detector_backend(deploy)}
     if name == "llm":
-        # robot-agnostic (host 당 1) — Qwen 1회 로드, 파싱은 robot 무관 (§2.7).
         return {"backend": _llm_backend(deploy)}
     if name == "calibration":
-        # robot-agnostic (host 당 1) — DB robot_id 멀티테넌트, req.robot_id dispatch.
-        if session_factory is None:
-            raise ValueError(
-                "calibration 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)"
-            )
-        if deploy.object_uri is None:
-            raise ValueError("calibration 배치엔 deployment 의 object_uri 필요 (blob)")
         from modules.calibration.module import CalibrationRobotSpec
         from modules.calibration.persistence.repository import CalibrationRepository
         from modules.motor.contract import MotorKind
 
-        # robots.yaml → lean 투영 (enabled 만). 모듈은 RobotConfig 원본을 안 봄 —
-        # bridge 의 RobotInfo 변환과 동형 (내부 config → module dep 는 apps 책임).
         specs = {
             r.id: CalibrationRobotSpec(
                 motor_ids=[m.id for m in r.motors if m.kind != MotorKind.GRIPPER],
@@ -82,25 +58,19 @@ def resolve_host_deps(
             if r.enabled
         }
         return {
-            "repository": CalibrationRepository(session_factory),
-            "object_store": _object_store(deploy.object_uri),
+            "repository": CalibrationRepository(
+                _require_session_factory("calibration", session_factory)
+            ),
+            "object_store": _object_store(_require_object_uri("calibration", deploy)),
             "robots": specs,
         }
     if name == "scene3d":
-        # robot-agnostic (host 당 1) — 멤버십만 (rgbd capability + enabled).
         return {
             "robot_ids": [
-                r.id
-                for r in robots.values()
-                if r.enabled and "rgbd" in r.capabilities
+                r.id for r in robots.values() if r.enabled and "rgbd" in r.capabilities
             ]
         }
     if name == "scan":
-        # robot-agnostic (host 당 1) — rgbd robot 별 kinematics/arm 투영 + DB/blob.
-        if session_factory is None:
-            raise ValueError("scan 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)")
-        if deploy.object_uri is None:
-            raise ValueError("scan 배치엔 deployment 의 object_uri 필요 (blob)")
         from modules.motion.adapters.pybullet import PybulletKinematics
         from modules.motor.contract import MotorKind
         from modules.scan.module import ScanRobotSpec
@@ -117,24 +87,21 @@ def resolve_host_deps(
             if r.enabled and "rgbd" in r.capabilities
         }
         return {
-            "repository": ScanRepository(session_factory),
-            "object_store": _object_store(deploy.object_uri),
+            "repository": ScanRepository(
+                _require_session_factory("scan", session_factory)
+            ),
+            "object_store": _object_store(_require_object_uri("scan", deploy)),
             "robots": scan_specs,
         }
     if name == "waypoint":
-        # robot-agnostic (host 당 1) — per-robot config 0 (joints 캐시는 payload 키,
-        # 이름 유일성은 DB (robot_id, name)). Motion 계약만 소비.
-        if session_factory is None:
-            raise ValueError(
-                "waypoint 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)"
-            )
         from modules.waypoint.persistence.repository import WaypointRepository
 
-        return {"repository": WaypointRepository(session_factory)}
+        return {
+            "repository": WaypointRepository(
+                _require_session_factory("waypoint", session_factory)
+            )
+        }
     if name == "task":
-        # host-level, robot-agnostic (§2.7) — task 정본은 tasks/ registry. 단 gripper
-        # open/close raw 등 per-robot 물리값은 TaskRobotSpec 로 주입 (calibration/scan
-        # robot spec 동형, motors.yaml SSOT — 추측 X, CLAUDE.md 안전수치 규칙).
         from modules.motor.contract import MotorKind
         from modules.task.spec import TaskRobotSpec
 
@@ -144,10 +111,8 @@ def resolve_host_deps(
                 continue
             grip = next((m for m in r.motors if m.kind == MotorKind.GRIPPER), None)
             if grip is None:
-                continue  # gripper 없는 robot 은 PnP 대상 X — spec 생략
+                continue
             open_raw, close_raw = grip.limit_max, grip.limit_min
-            # 잡힘 threshold = close 에서 range 15% 위 (보수 default) — 하드웨어 tuning
-            # (§17.5 "정확도 = 집 하드웨어"). 이 값 미만 raw = 빈손 (VerifyGrasp).
             held = close_raw + round((open_raw - close_raw) * 0.15)
             task_specs[r.id] = TaskRobotSpec(
                 gripper_open_raw=open_raw,
@@ -159,7 +124,6 @@ def resolve_host_deps(
     if name == "bridge":
         from modules.bridge.contract import BasePoseInfo, RobotInfo
 
-        # 내부 config(RobotConfig) → frontend wire(RobotInfo). 변환은 apps 책임 (§9.1).
         infos = [
             RobotInfo(
                 id=r.id,
@@ -171,28 +135,22 @@ def resolve_host_deps(
                     yaw_deg=r.base_pose.yaw_deg,
                 ),
                 capabilities=list(r.capabilities),
+                has_camera=r.camera_backend is not None,
             )
             for r in robots.values()
         ]
-        # robot_v2/ 경로 주입 — /robot static mount (URDF/mesh). 레이어링: 경로는
-        # apps 가 앎, modules/bridge 는 받기만.
         deps: dict[str, Any] = {"robots": infos, "robot_dir": _ROBOT_DIR}
         if runtime is not None:
-            # contract provider — closure 가 runtime 을 capture. request 시점엔
-            # 이미 전 module add 됨 (add 순서상 bridge 가 먼저여도 안전). import 는
-            # request 시점에 (bridge host 만 apps.contract_export 끌어옴, role 격리).
+            # contract는 요청 시점에 생성한다.
+            # 이때는 모든 모듈 등록이 끝난 뒤이므로 최신 상태를 반환할 수 있다.
             def _contract_provider() -> dict:
                 from apps.contract_export import build_contract_json
 
                 return build_contract_json(runtime.contract_snapshot())
 
+            # runtime에는 현재 프로세스의 모듈만 있으므로,
+            # 그래프는 MODULE_REGISTRY를 기준으로 전체 모듈을 표시한다.
             def _graph_provider() -> dict:
-                # contract graph viewer (contract_graph_viewer.md §1 — 개발자 도구,
-                # §4 — unfiltered 전 module 의 전 계약). runtime.module_contracts()
-                # 는 자기 프로세스에 로드된 module 만 봄 → 분산 배치 (PC 는
-                # camera_decoded + bridge 만) 자리 다른 host 의 module (motor,
-                # motion, camera) 이 그래프에 안 나옴. MODULE_REGISTRY 전체를
-                # lazy introspect 해서 declared universe 를 그림.
                 from apps.contract_export import build_static_contract_graph
 
                 return build_static_contract_graph()
@@ -203,10 +161,29 @@ def resolve_host_deps(
     raise NotImplementedError(f"host-level resolve 미지원 module: {name!r}")
 
 
+# ─── 공통 dep 전제 (DB / blob) ──────────────────────────────────
+
+
+def _require_session_factory(
+    name: str, session_factory: sessionmaker[Session] | None
+) -> sessionmaker[Session]:
+    if session_factory is None:
+        raise ValueError(
+            f"{name} 배치엔 deployment 의 rdb_uri 필요 (session_factory 미주입)"
+        )
+    return session_factory
+
+
+def _require_object_uri(name: str, deploy: DeploymentConfig) -> str:
+    if deploy.object_uri is None:
+        raise ValueError(f"{name} 배치엔 deployment 의 object_uri 필요 (blob)")
+    return deploy.object_uri
+
+
 # ─── object store (blob) ────────────────────────────────────────
 
 
-def _object_store(object_uri: str) -> Any:
+def _object_store(object_uri: str) -> ObjectStore:
     from infra.object_store.filesystem import FilesystemObjectStore
 
     if object_uri.startswith("file:///"):
@@ -218,14 +195,14 @@ def _object_store(object_uri: str) -> Any:
     return FilesystemObjectStore(base)
 
 
-# ─── driver / kinematics 선택 (lazy import) ─────────────────────
+# ─── driver / kinematics ─────────────────────
 
 
-def _motor_driver(robot: RobotConfig, deploy: DeploymentConfig) -> Any:
+def _motor_driver(robot: RobotConfig, deploy: DeploymentConfig) -> MotorBackend:
     if deploy.driver_mode == DriverMode.MOCK:
         from modules.motor.drivers.mock import MockMotorBackend
 
-        return MockMotorBackend(motors=robot.motors)  # layout SSOT = motors.yaml
+        return MockMotorBackend(motors=robot.motors)
     if robot.motor_backend == "feetech":
         from modules.motor.drivers.feetech import FeetechBackend
 
@@ -243,31 +220,29 @@ def _motor_driver(robot: RobotConfig, deploy: DeploymentConfig) -> Any:
     )
 
 
-def _detector_backend(deploy: DeploymentConfig) -> Any:
+def _detector_backend(deploy: DeploymentConfig) -> DetectorBackend:
     if deploy.driver_mode == DriverMode.MOCK:
         from modules.detector.drivers.mock import MockDetectorBackend
 
         return MockDetectorBackend()
-    # real — Grounding DINO. torch/transformers 는 이 branch 에서만 lazy import
-    # (role 격리). 공유 load-lock + device_map="auto" 는 drivers/gdino.py.
+
     from modules.detector.drivers.gdino import GroundingDinoBackend
 
     return GroundingDinoBackend()
 
 
-def _llm_backend(deploy: DeploymentConfig) -> Any:
+def _llm_backend(deploy: DeploymentConfig) -> LlmBackend:
     if deploy.driver_mode == DriverMode.MOCK:
         from modules.llm.drivers.mock import MockLlmBackend
 
         return MockLlmBackend()
-    # real — Qwen2.5. torch/transformers 는 이 branch 에서만 lazy import (role 격리).
-    # GDINO 와 공유 load-lock + device_map="auto" 는 drivers/qwen.py.
+
     from modules.llm.drivers.qwen import QwenBackend
 
     return QwenBackend()
 
 
-def _camera_driver(robot: RobotConfig, deploy: DeploymentConfig) -> Any:
+def _camera_driver(robot: RobotConfig, deploy: DeploymentConfig) -> CameraDriver:
     if robot.camera_backend is None:
         raise ValueError(f"robot {robot.id} 에 camera_backend 없음 — camera 배치 불가.")
     if deploy.driver_mode == DriverMode.MOCK:
@@ -288,14 +263,11 @@ def _motion_deps(robot: RobotConfig) -> dict[str, Any]:
     from modules.motor.contract import MotorKind
 
     arm = [s for s in robot.motors if s.kind != MotorKind.GRIPPER]
-    # 순서 계약: arm 은 motors.yaml 의 prefix (gripper 등은 뒤). Motion 이
-    # positions_raw[:dof] 로 arm 추출 + write_positions(arm raw) 하므로, gripper 가
-    # 중간에 끼면 엉뚱한 모터 구동. boot 시 fail-fast 로 silent 오구동 차단.
     if robot.motors[: len(arm)] != arm:
         raise ValueError(
-            f"robot {robot.id}: arm 모터가 motors.yaml 의 prefix 가 아님 "
-            f"(gripper/rail 이 arm joint 앞/사이에 있음). Motion 의 positional "
-            f"raw 매핑이 깨짐 — motors.yaml 순서 (arm joints 먼저, gripper 뒤) 확인."
+            f"robot {robot.id}: arm joint가 motors.yaml의 앞쪽에 연속으로 배치되어 있지 않습니다. "
+            f"Motion은 motors.yaml의 앞쪽 DOF개를 arm joint로 사용하므로, "
+            f"gripper/rail은 arm joint 뒤에 배치해야 합니다."
         )
     limits = []
     for s in arm:

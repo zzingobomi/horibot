@@ -8,6 +8,8 @@
 import { RobotStatePanel } from "./RobotStatePanel";
 import { MotionPanel } from "./MotionPanel";
 import { CalibrationPanel } from "./CalibrationPanel";
+import { CameraPanel } from "./CameraPanel";
+import { CalibrationCameraPanel } from "./CalibrationCameraPanel";
 import { ScanPanel } from "./ScanPanel";
 import { WaypointPanel } from "./WaypointPanel";
 import { PromptPanel } from "./PromptPanel";
@@ -19,6 +21,8 @@ export const PANEL_COMPONENTS = {
   robotState: RobotStatePanel,
   motion: MotionPanel,
   calibration: CalibrationPanel,
+  camera: CameraPanel,
+  calibrationCamera: CalibrationCameraPanel,
   scan: ScanPanel,
   waypoints: WaypointPanel,
   prompt: PromptPanel,

@@ -1,24 +1,17 @@
-"""WebSocket relay — browser ↔ Zenoh raw bytes 중계 (C1b).
-
-backend_v2.md §16.6 (relay only — domain logic 0).
+"""WebSocket relay — browser ↔ Zenoh raw bytes 중계.
 
 프로토콜 v1:
   browser → Bridge : JSON 텍스트 제어 메시지
     {op:"subscribe", topic}
     {op:"unsubscribe", topic}
-    {op:"publish", topic, data}           # data dict → msgpack 감싸 publish
-    {op:"service", key, request_id, data}  # ServiceRequest 봉투로 call
+    {op:"publish", topic, data}           # data dict → msgpack으로 인코딩 후 publish
+    {op:"service", key, request_id, data} # ServiceRequest 봉투로 call
 
   Bridge → browser : binary 프레임
     [u8 ver=1][u8 type][u16 BE key_len][key utf8][payload]
-      type=1 topic_data        : key=topic,       payload=Zenoh raw msgpack (그대로)
-      type=2 service_response  : key=request_id,  payload=raw 응답 msgpack
-      type=3 service_error     : key=request_id,  payload=msgpack {type,message}
-
-Bridge 는 payload schema 를 해석하지 않는다. publish/service 의 data 를 msgpack
-으로 감싸고(framework envelope), topic_data 는 raw forward. robot_id 치환은
-frontend 책임 — Bridge 는 concrete key 만 받음. robot-agnostic 서비스의
-robot_id 는 req 필드라 data 안에 이미 들어있음 (Bridge 무관심).
+      type=1 topic_data        : key=topic,      payload=Zenoh raw msgpack (그대로 전달)
+      type=2 service_response  : key=request_id, payload=raw 응답 msgpack
+      type=3 service_error     : key=request_id, payload=msgpack {type, message}
 """
 
 from __future__ import annotations
@@ -28,6 +21,7 @@ import json
 import logging
 import struct
 import time
+from collections import deque
 from typing import Any
 
 import msgspec
@@ -42,8 +36,37 @@ FRAME_TOPIC_DATA = 1
 FRAME_SERVICE_RESPONSE = 2
 FRAME_SERVICE_ERROR = 3
 
-# 느린 클라이언트 메모리 폭증 방지 — bounded queue + latest-wins drop
-_SEND_QUEUE_MAX = 256
+# ── send 큐 정책 (채널별) ──────────────────────────────────────────
+#
+# 느린 클라이언트로 큐가 밀릴 때 무엇을 버릴지 = 데이터 중요도에 따라 다름.
+# 연결당 단일 큐면 두 문제가 생겨 → 채널(토픽/service)별 독립 큐로 분리:
+#   - 고rate 토픽(pointcloud 등)이 저rate 토픽 프레임을 밀어냄 (토픽 격리 없음)
+#   - service 응답이 스트림 홍수에 유실됨 → 프론트 호출 타임아웃
+#
+# 정책은 키 taxonomy(계약 SSOT: stream/event/srv prefix)로 결정 — metadata 불필요:
+#
+#   - stream/*  = telemetry (최신값만 의미 있음)
+#                 → maxlen 1 (latest-wins)
+#
+#   - event/*   = 이산 이벤트 (각 발생이 의미 있음)
+#                 → maxlen 128 (bounded FIFO, backlog retention)
+#
+#   - srv/*     = request/reply (request_id 기반 correlation)
+#                 → 큐 정책보다 응답 매칭이 핵심, 유실 시 client timeout 처리
+#
+# 주의:
+# bounded FIFO는 backlog retention이지 delivery guarantee(유실 0 보장)가 아님.
+# at-least-once semantics가 필요한 경우 ACK + replay 기반 프로토콜 tier 추가 필요
+_LATEST_WINS_MAX = 1
+_EVENT_FIFO_MAX = 128
+_SERVICE_MAX = 256
+_SERVICE_CHANNEL = "\x00service"  # topic 키와 충돌 없는 sentinel
+
+
+def _channel_maxlen(channel: str) -> int:
+    if channel == _SERVICE_CHANNEL:
+        return _SERVICE_MAX
+    return _EVENT_FIFO_MAX if channel.split("/", 1)[0] == "event" else _LATEST_WINS_MAX
 
 
 def encode_frame(ftype: int, key: str, payload: bytes) -> bytes:
@@ -52,13 +75,12 @@ def encode_frame(ftype: int, key: str, payload: bytes) -> bytes:
 
 
 class WsConnection:
-    """WS 연결 1개 — 자기 구독 set + send 큐 관리."""
-
     def __init__(self, ws: WebSocket, transport: RawTransport) -> None:
         self._ws = ws
         self._transport = transport
         self._subs: dict[str, Handle] = {}
-        self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=_SEND_QUEUE_MAX)
+        self._pending: dict[str, deque[bytes]] = {}
+        self._wake = asyncio.Event()
         self._loop = asyncio.get_running_loop()
         self._closed = False
 
@@ -88,26 +110,41 @@ class WsConnection:
     async def _sender(self) -> None:
         try:
             while True:
-                frame = await self._queue.get()
-                await self._ws.send_bytes(frame)
+                await self._wake.wait()
+                self._wake.clear()
+                # service 응답을 먼저 전송한다 (RPC 특성상 timeout 방지 위해 최우선).
+                # 이후 topic(stream/event) 큐를 한 번에 모두 꺼내 전송한다.
+                #
+                # send 중에도 새로운 데이터가 들어올 수 있으므로 큐를 완전히 비우고 끝내지 않고,
+                # drain 도중 신규 입력이 발생하면 _wake 플래그를 다시 설정하여 다음 send cycle에서 재처리한다.
+                for channel in self._drain_order():
+                    dq = self._pending.get(channel)
+                    if not dq:
+                        continue
+                    frames = list(dq)
+                    dq.clear()
+                    for frame in frames:
+                        await self._ws.send_bytes(frame)
         except asyncio.CancelledError:
             pass
         except Exception:
             logger.exception("WS send 실패")
 
-    def _enqueue(self, frame: bytes) -> None:
-        # asyncio loop thread 위에서 호출 (call_soon_threadsafe 경유)
+    def _drain_order(self) -> list[str]:
+        others = [c for c in self._pending if c != _SERVICE_CHANNEL]
+        return [_SERVICE_CHANNEL, *others]
+
+    def _enqueue(self, channel: str, frame: bytes) -> None:
+        # 채널별 독립 큐(stream/event/service) 사용 — overflow 시 해당 채널 내에서만 oldest drop.
+        # (stream=latest-wins / event=bounded retention / service=RPC queue)
         if self._closed:
             return
-        if self._queue.full():
-            try:
-                self._queue.get_nowait()  # latest-wins — 오래된 frame drop
-            except asyncio.QueueEmpty:
-                pass
-        try:
-            self._queue.put_nowait(frame)
-        except asyncio.QueueFull:
-            pass
+        dq = self._pending.get(channel)
+        if dq is None:
+            dq = deque(maxlen=_channel_maxlen(channel))
+            self._pending[channel] = dq
+        dq.append(frame)
+        self._wake.set()
 
     # ── op 처리 ────────────────────────────────────────────────
 
@@ -136,7 +173,7 @@ class WsConnection:
 
         def callback(payload: bytes, _topic: str = topic) -> None:
             frame = encode_frame(FRAME_TOPIC_DATA, _topic, payload)
-            self._loop.call_soon_threadsafe(self._enqueue, frame)
+            self._loop.call_soon_threadsafe(self._enqueue, _topic, frame)
 
         self._subs[topic] = self._transport.subscribe(topic, callback)
 
@@ -149,7 +186,6 @@ class WsConnection:
                 pass
 
     def _publish(self, topic: str, data: Any) -> None:
-        # data dict → msgpack (framework event wire format). schema 검증 X (relay)
         self._transport.publish(topic, msgspec.msgpack.encode(data))
 
     async def _service(self, msg: dict) -> None:
@@ -167,4 +203,5 @@ class WsConnection:
         except TimeoutError as e:
             err = msgspec.msgpack.encode({"type": "TimeoutError", "message": str(e)})
             frame = encode_frame(FRAME_SERVICE_ERROR, request_id, err)
-        self._enqueue(frame)
+
+        self._enqueue(_SERVICE_CHANNEL, frame)

@@ -53,4 +53,14 @@ test.describe("RobotScanMode e2e (mock backend)", () => {
     await capture.click();
     await expect(capture).toContainText("캡처 (2)", { timeout: 10_000 });
   });
+
+  // 카메라 뷰 — scan 은 3D 점군만이 아니라 color 카메라도 봐야 어디를 비추는지 앎.
+  // 범용 CameraPanel (오버레이 없음 — ChArUco 마커는 calibration 전용).
+  test("카메라 뷰 렌더 (color, 오버레이 없음)", async ({ page }) => {
+    await page.goto(SCAN_PATH);
+    await expect(page.getByTestId("camera-panel")).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId("camera-stream")).toBeVisible({ timeout: 5_000 });
+    // scan 카메라는 ChArUco 오버레이 없음 (calibration 전용 관심사)
+    await expect(page.getByTestId("charuco-overlay")).toHaveCount(0);
+  });
 });

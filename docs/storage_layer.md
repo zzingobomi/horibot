@@ -606,6 +606,60 @@ host yaml 별 부팅 자리 동작:
 
 별도 `alembic upgrade head` CLI 호출 자리 자체 X. (CLI 자리는 *revision 생성* `alembic revision --autogenerate` 자리, 또는 디버깅용 자리 `alembic current` / `alembic history` 자리 정도.)
 
+#### ⚠️ Known gap — Phase 3 shared Postgres 다중 프로세스 migration race
+
+위 "부팅 시 자동 upgrade" 설계는 **migrator 가 하나**라는 전제 위에 있다. 현재
+(SQLite 파일) 는 DB owner PC 가 1대뿐이라 이 전제가 자연히 성립 — `run_migrations`
+(backend_v2 `infra/database/boot.py`, v1 의 `_ensure_schema` 대응) 가 그 한 프로세스에서
+부팅당 1번만 돈다. 문제 없음.
+
+**Phase 3 에서 NAS 에 공유 Postgres 를 띄우고 PC 여러 대가 붙는 순간** 전제가 깨진다.
+DB 는 1개인데 거기에 붙는 앱 프로세스가 N개가 되고, 각 프로세스가 부팅 시 각자
+`command.upgrade(config, "head")` 를 같은 DB 에 건다:
+
+```
+PC A, B, C 거의 동시 부팅
+  → 셋 다 alembic_version 읽음 → "현재 base (스키마 없음)"
+  → 셋 다 revision 0001 실행 시도 (CREATE TABLE ...)
+  → A 먼저 커밋 성공
+  → B, C: "relation ... already exists" 로 크래시
+```
+
+주의 — **항상 죽는 게 아니다.** 스키마가 이미 head 인 상태의 재부팅은 셋 다 no-op 이라
+조용히 넘어간다. 터지는 건 **새 revision 을 추가한 배포 직후 첫 동시 부팅** 때뿐 —
+평소 멀쩡하다가 하필 스키마 바꾸는 배포에서만 터지는 형태라 더 고약하다.
+(SQLite → Postgres 전환 자체가 원인이 아니라, "공유 DB 1개 + 붙는 프로세스 N개"
+토폴로지가 원인. Postgres 는 DDL 도 트랜잭션 안이라 오히려 안전한 편이지만, 동시
+`upgrade` 를 alembic 이 기본으로 막지는 않는다.)
+
+**해결 (Phase 3 진입 시 적용, 지금 구현 X) — `pg_advisory_lock` 직렬화 (추천).**
+`run_migrations` 앞에서 advisory lock 을 잡고, 잡은 프로세스만 upgrade. 나머지는
+대기 → 풀리면 들어와 "이미 head" no-op:
+
+```python
+# boot.py run_migrations 의 postgres 분기에서만 (SQLite 는 단일 owner 라 불필요)
+with engine.connect() as conn:
+    conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": MIGRATION_LOCK_KEY})
+    try:
+        cfg.attributes["connection"] = conn
+        command.upgrade(cfg, "head")   # lock 잡은 1개만 실효, 나머지 no-op
+    finally:
+        conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": MIGRATION_LOCK_KEY})
+```
+
+이 방식의 이점 — "부팅하면 스키마 최신" 이라는 현재 편의를 그대로 유지하면서
+안전. 변경이 `boot.py` postgres 분기 한 곳에 국소적. 앱이 스스로 migrate 하는
+다중 인스턴스 배포의 정석 (여러 웹 프레임워크가 쓰는 패턴).
+
+**대안 — migrator 분리.** deployment config 플래그 (예: `db_migrator: true`) 로 한
+호스트만 upgrade, 나머지는 `open_database` 만. 또는 배포 파이프라인에서 앱 기동 전
+`alembic upgrade head` 를 1번 돌리고 앱은 migrate 안 함. "migration = 배포 단계"
+라는 더 엄격한 정석이지만 배포 순서를 강제하는 운영 machinery 가 늘어 현 규모엔 과함.
+
+→ Phase 3 에서 `factory.py` 에 Postgres 분기 추가하는 작업과 **한 묶음**으로 처리.
+그 전까지 SQLite 단일 owner 구조에선 레이스가 원천적으로 없어 미리 넣으면 안 쓰는
+복잡도만 추가 ([[project-storage-phase3-minio]]).
+
 #### Schema 변경 운영 절차 (정석 — npm/django-migrate 와 동일 패턴)
 
 **1. ORM 모델 수정**

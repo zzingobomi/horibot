@@ -14,7 +14,7 @@ import time
 import pytest
 
 from apps.config import DriverMode, load_robots
-from apps.resolve import resolve_deps
+from apps.resolve import resolve_robot_deps
 from framework.runtime.app import Runtime
 from infra.transport.zenoh import ZenohTransport
 from modules.motion import units
@@ -51,7 +51,7 @@ async def stack(robot):
     runtime = Runtime(transport)
     driver = MockMotorBackend(motors=robot.motors)
     runtime.add_module(MotorDriverModule, robot_id=_SO101, driver=driver)
-    motion_deps = resolve_deps("motion", robot, _deploy_mock())
+    motion_deps = resolve_robot_deps("motion", robot, _deploy_mock())
     runtime.add_module(MotionModule, robot_id=_SO101, **motion_deps)
     await runtime.start()
     yield runtime, driver, robot
@@ -111,8 +111,8 @@ def test_motion_resolve_rejects_non_prefix_arm(robot):
     reordered = robot.model_copy(
         update={"motors": [robot.motors[-1], *robot.motors[:-1]]}  # gripper 맨 앞
     )
-    with pytest.raises(ValueError, match="prefix"):
-        resolve_deps("motion", reordered, _deploy_mock())
+    with pytest.raises(ValueError, match="앞쪽에 연속으로 배치"):
+        resolve_robot_deps("motion", reordered, _deploy_mock())
 
 
 async def test_move_j_rejects_wrong_dof(stack):
@@ -204,7 +204,7 @@ async def test_move_l_rejects_without_motor_state(robot):
     transport = ZenohTransport(_LOCAL_CFG)
     time.sleep(0.05)
     runtime = Runtime(transport)
-    motion_deps = resolve_deps("motion", robot, _deploy_mock())
+    motion_deps = resolve_robot_deps("motion", robot, _deploy_mock())
     runtime.add_module(MotionModule, robot_id=_SO101, **motion_deps)
     await runtime.start()
     try:

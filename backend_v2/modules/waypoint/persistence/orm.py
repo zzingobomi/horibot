@@ -1,11 +1,3 @@
-"""Waypoint ORM — 3 entity (waypoints / waypoint_groups / waypoint_group_members).
-
-Robot Asset Layer 영속성. joint 는 rad JSON 저장 (Motion.TcpState 계약 단위).
-Database-per-Module: 소유=이 모듈, 공유 Base 등록, 마이그레이션=루트 alembic.
-WaypointGroupMember 는 order 있는 join (docs/backend_v2.md §17.2 D5) — reorder/
-add/remove 가 행 단위 + position 컬럼이 드래그 UI 와 1:1.
-"""
-
 from __future__ import annotations
 
 import json
@@ -33,12 +25,14 @@ class WaypointOrm(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     robot_id: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
-    joint_values: Mapped[str] = mapped_column(Text, nullable=False)  # JSON list[float] rad
+    joint_values: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )  # JSON list[float] rad
     joint_names: Mapped[str] = mapped_column(Text, nullable=False)  # JSON list[str]
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("robot_id", "name"),  # robot 당 이름 유일
+        UniqueConstraint("robot_id", "name"),
         Index("idx_waypoints_robot", "robot_id", "name"),
     )
 
@@ -70,11 +64,10 @@ class WaypointGroupMemberOrm(Base):
         ForeignKey("waypoints.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # 'order' 는 SQL 예약어 → 'position'. group 내 표시/실행 순서 (0-based).
     position: Mapped[int] = mapped_column(Integer, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("group_id", "waypoint_id"),  # 한 group 에 한 번만
+        UniqueConstraint("group_id", "waypoint_id"),
         Index("idx_wgm_group", "group_id", "position"),
     )
 

@@ -1,17 +1,3 @@
-"""WaypointModule — Robot Asset Layer (Motion 위).
-
-티칭 = Motion.Stream.TCP_STATE(rad joints + names) 캐시 → 현재 값 저장. Waypoint 는
-Motion 계약만 소비 — raw encoder / calibration / units 모름 (계층 준수, D6/D4).
-Database-per-Module (WaypointRepository). PC 배치 (DB owner).
-
-**robot-agnostic** — host 당 1 인스턴스 (backend_v2.md §2.7).
-대상 robot 은 생성/목록은 req.robot_id, 나머지는
-row id 에서 파생. per-robot config 0 — joints 캐시는 TCP_STATE payload 의 robot_id
-키 dict (framework wildcard 구독), 이름 유일성은 DB (robot_id, name) 단위.
-
-모든 핸들러 sync — cross-module call 없음 (CRUD + joint 캐시). runtime 불필요.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -56,11 +42,9 @@ logger = logging.getLogger(__name__)
 class WaypointModule:
     def __init__(self, repository: WaypointRepository) -> None:
         self._repo = repository
-        # robot 별 최신 joint (rad) + names — Motion.TcpState 에서 캐시. teach 소스.
         self._joints: dict[str, list[float]] = {}
         self._joint_names: dict[str, list[str]] = {}
 
-    # ── joint state 캐시 (Motion 계약 소비, 전 robot wildcard) ─
     @subscriber(Motion.Stream.TCP_STATE)
     def on_tcp_state(self, state: TcpState) -> None:
         self._joints[state.robot_id] = list(state.joints)
@@ -129,7 +113,9 @@ class WaypointModule:
         if not name:
             return CreateGroupResponse(accepted=False, message="이름 비어있음")
         if self._repo.get_group_by_name(req.robot_id, name) is not None:
-            return CreateGroupResponse(accepted=False, message=f"'{name}' group 이미 있음")
+            return CreateGroupResponse(
+                accepted=False, message=f"'{name}' group 이미 있음"
+            )
         g = self._repo.insert_group(
             WaypointGroupRecord(robot_id=req.robot_id, name=name)
         )
@@ -155,9 +141,7 @@ class WaypointModule:
         return AddToGroupResponse(ok=True)
 
     @service(Waypoint.Service.REMOVE_FROM_GROUP)
-    def remove_from_group(
-        self, req: RemoveFromGroupRequest
-    ) -> RemoveFromGroupResponse:
+    def remove_from_group(self, req: RemoveFromGroupRequest) -> RemoveFromGroupResponse:
         self._repo.remove_member(req.group_row_id, req.waypoint_row_id)
         return RemoveFromGroupResponse(ok=True)
 

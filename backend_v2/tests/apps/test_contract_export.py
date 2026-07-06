@@ -136,7 +136,8 @@ def test_incomplete_host_raises_helpful_error():
         services={k: v for k, v in full.services.items() if "/motion/" not in k},
         topics={k: v for k, v in full.topics.items() if "/motion/" not in k},
     )
-    with pytest.raises(RuntimeError, match="mock/dev"):
+    # 노출 키인데 payload 없음 = 그 module 이 이 host 에 로드 안 됨 → 명확한 안내로 거부.
+    with pytest.raises(RuntimeError, match="모든 module이 로드된 runtime"):
         build_contract_json(partial)
 
 

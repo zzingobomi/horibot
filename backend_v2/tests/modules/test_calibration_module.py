@@ -25,6 +25,7 @@ from modules.calibration.contract import (
     Calibration,
     CalibrationActivated,
     CalibrationCommitted,
+    CalibrationPreview,
     CaptureRequest,
     FinalizeRunRequest,
     HandEyeResultData,
@@ -258,6 +259,52 @@ def test_list_runs_and_results_and_undo(tmp_path: Path):
 
     assert mod.undo_last_capture(UndoLastCaptureRequest(run_id=run.id)).ok
     assert [c.pose_index for c in repo.list_captures(run.id)] == [0]
+
+
+# ─────────────────────────── preview overlay (sim board) ────────────────────
+
+
+def _last_preview(rt: _FakeRuntime) -> CalibrationPreview:
+    previews = [e for k, e in rt.events if k == Calibration.Stream.PREVIEW]
+    assert previews, "PREVIEW 이벤트 없음"
+    pv = previews[-1]
+    assert isinstance(pv, CalibrationPreview)
+    return pv
+
+
+def test_preview_emits_corners_and_image_dims_with_intrinsic(tmp_path: Path):
+    # intrinsic 있으면 PnP 경로 — corners_2d(overlay 좌표) + tilt + 원본 크기 발행.
+    # frontend ChArUcoOverlay 가 이 좌표를 camera/stream 위에 그림.
+    mod, rt, repo = _module(tmp_path)
+    _seed_intrinsic(repo)
+    _feed(mod, _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35]), [2048] * 6)
+
+    mod._publish_preview(_SO101)
+    pv = _last_preview(rt)
+
+    assert pv.detected is True
+    assert pv.corner_count > 0
+    assert len(pv.corners_2d) == pv.corner_count  # 개수 정합
+    assert all(len(c) == 2 for c in pv.corners_2d)  # (N,2) 픽셀
+    # 좌표는 원본 프레임 안 (overlay 스케일 기준)
+    assert all(0 <= x <= _W and 0 <= y <= _H for x, y in pv.corners_2d)
+    assert pv.image_width == _W and pv.image_height == _H
+    assert pv.tilt_deg is not None and pv.tilt_deg > 0
+
+
+def test_preview_emits_corners_without_intrinsic(tmp_path: Path):
+    # intrinsic 없어도(=PnP 불가) overlay 용 raw ChArUco 코너는 채운다 —
+    # 사용자가 자세 잡을 때 "보드가 잡히나"를 봐야 하므로 (tilt 만 None).
+    mod, rt, _ = _module(tmp_path)
+    _feed(mod, _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35]), [2048] * 6)
+
+    mod._publish_preview(_SO101)
+    pv = _last_preview(rt)
+
+    assert pv.detected is True
+    assert len(pv.corners_2d) == pv.corner_count > 0
+    assert pv.image_width == _W and pv.image_height == _H
+    assert pv.tilt_deg is None  # PnP 없어 tilt 미산출
 
 
 # ─────────────────────────── capture (sim board) ───────────────────────────

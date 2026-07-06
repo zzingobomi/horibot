@@ -12,11 +12,12 @@ export default defineConfig({
   },
   server: {
     host: true,
-    port: 5174, // frontend/ (옛 :5173) 와 동시 띄움 가능
+    port: 5174,
+    strictPort: true,
   },
   test: {
     environment: "happy-dom",
-    globals: false, // 명시 import (describe / it / expect / vi) — frontend_v2.md §12 정합
+    globals: false,
     setupFiles: ["./vitest.setup.ts"],
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
     coverage: {

@@ -12,11 +12,16 @@ import { WaypointPanel } from "./index";
 
 const ROBOT_ID = "so101_6dof_0";
 
+// 테스트별 주입 — 라이브러리 목록에 미리 waypoint 를 심어 행 인터랙션(이동/이름변경)
+// 을 렌더링. beforeEach 에서 초기화.
+let listWaypoints: unknown[] = [];
+
 /** key 별 최소 응답 — 패널이 res.data 를 읽으니 shape 맞춰줌. */
 function respond(key: string): unknown {
   if (key.includes("list_group_members")) return { waypoints: [] };
   if (key.includes("list_groups")) return { groups: [] };
-  if (key.endsWith("/list")) return { waypoints: [] };
+  if (key.endsWith("/list")) return { waypoints: listWaypoints };
+  if (key.includes("/move_j")) return { accepted: true };
   if (key.includes("/teach")) {
     return {
       accepted: true,
@@ -65,6 +70,7 @@ function renderPanel() {
 }
 
 beforeEach(() => {
+  listWaypoints = [];
   useFrameworkStore.setState({
     topicData: {},
     serviceData: {},
@@ -107,7 +113,62 @@ describe("WaypointPanel", () => {
     });
   });
 
+  it("이동 → MOTION_MOVE_J 를 waypoint joint_values 로 call", async () => {
+    listWaypoints = [
+      {
+        id: 7,
+        robot_id: ROBOT_ID,
+        name: "home",
+        joint_values: [0.1, 0.2, 0.3, 0, 0, 0],
+        joint_names: [],
+        created_at: "",
+      },
+    ];
+    const spy = mockBridge();
+    const { getByTestId } = renderPanel();
+
+    await waitFor(() => expect(getByTestId("wp-goto")).toBeTruthy());
+    await act(async () => {
+      fireEvent.click(getByTestId("wp-goto"));
+    });
+
+    await waitFor(() => {
+      const calls = spy.mock.calls.filter((c) => String(c[0]).includes("/move_j"));
+      expect(calls.length).toBeGreaterThan(0);
+      const req = calls[0][1] as { target_joints: number[] };
+      expect(req.target_joints).toEqual([0.1, 0.2, 0.3, 0, 0, 0]);
+    });
+  });
+
+  it("이름변경 → 취소 시 edit 모드 종료 (rename call 없음)", async () => {
+    listWaypoints = [
+      {
+        id: 7,
+        robot_id: ROBOT_ID,
+        name: "home",
+        joint_values: [],
+        joint_names: [],
+        created_at: "",
+      },
+    ];
+    const spy = mockBridge();
+    const { getByTestId, queryByTestId } = renderPanel();
+
+    await waitFor(() => expect(getByTestId("wp-rename")).toBeTruthy());
+    act(() => {
+      fireEvent.click(getByTestId("wp-rename"));
+    });
+    // edit 모드 진입 — 입력 + 취소 노출
+    expect(getByTestId("wp-edit-name")).toBeTruthy();
+    act(() => {
+      fireEvent.click(getByTestId("wp-rename-cancel"));
+    });
+    // view 모드 복귀 — 입력 사라짐, rename 서비스 미호출
+    expect(queryByTestId("wp-edit-name")).toBeNull();
+    expect(spy.mock.calls.filter((c) => String(c[0]).includes("/rename")).length).toBe(0);
+  });
+
   // group 생성/멤버/reorder 인터랙션(radix Tabs 전환 포함)은 실 chromium 에서
   // 검증 — e2e/waypoint.spec.ts. happy-dom + fireEvent 는 radix tab 전환을
-  // 재현 못 함(user-event 미설치). 여기선 패널 렌더 + teach wire 까지.
+  // 재현 못 함(user-event 미설치). 여기선 패널 렌더 + teach/goto/rename wire 까지.
 });

@@ -50,10 +50,25 @@ def test_registry_has_bridge():
 def test_resolve_host_deps_bridge_returns_robot_info():
     deps = resolve_host_deps("bridge", _robots(), _mock_bridge_deploy())
     infos = {r.id: r for r in deps["robots"]}
-    assert set(infos) == {"so101_6dof_0", "omx_f_0"}
+    # robots.yaml spec — enabled=false robot (omx_f_0) 은 런타임이 무시.
+    assert set(infos) == {"so101_6dof_0"}
     assert infos["so101_6dof_0"].type == "so101_6dof"
     assert "rgbd" in infos["so101_6dof_0"].capabilities
     assert infos["so101_6dof_0"].base_pose.x == 0.4  # RobotConfig → RobotInfo 변환
+    # default flag 생략 → 첫 enabled robot (spec).
+    assert deps["default_robot_id"] == "so101_6dof_0"
+
+
+def test_resolve_bridge_default_flag_wins_over_declaration_order():
+    # omx_f_0 재활성화 날 시나리오 — N=2 노출 + default 는 선언 순서(omx 가 먼저)가
+    # 아니라 so101 의 `default: true` flag. 이 flag 없으면 재활성화 시 default 가
+    # 소리 없이 omx 로 뒤집힌다 (첫 enabled fallback).
+    robots = load_robots()
+    robots["omx_f_0"] = robots["omx_f_0"].model_copy(update={"enabled": True})
+    deps = resolve_host_deps("bridge", robots, _mock_bridge_deploy())
+    ids = {r.id for r in deps["robots"]}
+    assert ids == {"omx_f_0", "so101_6dof_0"}
+    assert deps["default_robot_id"] == "so101_6dof_0"
 
 
 def test_build_runtime_wires_host_level_bridge():
@@ -87,8 +102,10 @@ async def test_get_robots(bridge_url: str):
     assert res.status_code == 200
     body = res.json()
     ids = {r["id"] for r in body["robots"]}
-    assert ids == {"so101_6dof_0", "omx_f_0"}
-    assert body["default"] in ids
+    # enabled=false (omx_f_0) 제외 + default = 첫 enabled — Tasks 페이지가
+    # 죽은 robot 을 default 로 받아 URDF 가 얼어붙던 회귀 가드.
+    assert ids == {"so101_6dof_0"}
+    assert body["default"] == "so101_6dof_0"
 
 
 async def test_static_robot_mount_serves_urdf(bridge_url: str):

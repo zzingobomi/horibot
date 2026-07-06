@@ -24,6 +24,10 @@ async def mjpeg_stream(transport: RawTransport, robot_id: str) -> AsyncIterator[
     loop = asyncio.get_running_loop()
 
     def on_frame(payload: bytes) -> None:
+        # zenoh 워커 스레드에서 실행 — shutdown 시 루프가 먼저 닫히면
+        # call_soon_threadsafe 가 RuntimeError. 닫힌 루프 가드 (ws.py 와 동일).
+        if loop.is_closed():
+            return
         try:
             frame = decode_event(CameraJpegFrame, payload)
         except Exception:
@@ -38,7 +42,10 @@ async def mjpeg_stream(transport: RawTransport, robot_id: str) -> AsyncIterator[
                     pass
             queue.put_nowait(frame.jpeg_bytes)
 
-        loop.call_soon_threadsafe(put)
+        try:
+            loop.call_soon_threadsafe(put)
+        except RuntimeError:
+            pass  # check 이후 루프가 닫힌 teardown 창 — 무시
 
     handle = transport.subscribe(topic, on_frame)
     try:

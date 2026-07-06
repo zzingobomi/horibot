@@ -496,3 +496,20 @@ jog 정확성이 publish rate < 200ms (`_JOG_IDLE_RESET_S`) 에 의존 (§11.2).
 **fix**: PanelShell 을 지금 안 넣기로 했으니(§4.1) collapse 기계를 제거 — `workspaceLayout` 에서 `loadCollapsed`/`saveCollapsed`/`PANEL_HEADER_HEIGHT`/`COLLAPSED_KEY` 삭제, `ModeDockview` 는 패널을 `p.height` full 로 생성. collapse 는 PanelShell 도입 시 함께. → L4 2 PASS.
 
 **교훈**: carry-over 시 "그 helper 를 구동하는 컴포넌트" 까지 세트로 안 가져오면 dead code 가 남고, 그게 런타임 UI 를 깨뜨린다. 부분 carry 는 그 자체로 검증 대상.
+
+
+### 15.8 Scene per-robot 재구성 + LivePointCloud 패널 (2026-07-06)
+
+**계기**: 실 hardware 분산 테스트에서 (a) Tasks 페이지 URDF 가 안 움직임, (b) 라이브 cloud 가 공중에 뜸(사선), (c) cloud 가 v1 보다 엉성함.
+
+**root cause 3건 + fix**:
+
+1. **backend `/robots` 가 robots.yaml spec 위반** — enabled 필터 없이 전 robot + `default = robots[0]` = 비활성 omx_f_0. Tasks(focus=null) 가 죽은 robot 의 stream 을 구독해 전원 freeze. fix = resolve 에서 enabled 필터 + `default: true` flag(생략 시 첫 enabled). `robot_v2/robots.yaml` 에 so101 `default: true` 명시 (omx 재활성화 시 default 안 뒤집힘 — 재활성화 시나리오 test 로 박음).
+2. **scene 이 "focus robot 1대 stream 을 전원에 적용" (옛 §4 결정 3 임시 호환)** — N=2 협동 자리 도래로 제거. **RobotLayer 가 robot 마다 자기 `MOTION_TCP_STATE` 구독** (RobotItem), TCP AxisFrame 도 per-robot. Scene3DLayer 는 robotId 만 받아 자립 (자기 tcp stream + hand_eye). base 배치 수학은 `scene/transforms.ts` 로 SSOT 화 (RobotLayer/Scene3DLayer/Container 3 소비자). Container 에서 "특정 robot 의 stream" 개념 소멸 — robot 추가 = yaml 만. 회귀 가드 = `RobotLayer.test.tsx` (두 robot 각자 joints, 단일 stream 공유로 되돌리면 즉시 깨짐).
+3. **hand_eye "토글 시 1회 fetch + silent identity fallback"** — 타임아웃(분산 stale queryable 등) 시 identity 로 굳어 cloud 가 TCP 에 매달림. fix = `useMirror` (mount/재연결/CALIBRATION_ACTIVATED 시 자동 refetch).
+
+**LivePointCloudPanel 포팅 (v1 → v2)** — Density radio 1/2/5mm (default 2mm, 사용자 정책 2026-06-21) → `SET_STREAM.voxel_size` 동봉, Point Size slider (mm → material size m). v2 backend `_DEFAULT_VOXEL=5mm` 만 믿던 자리가 엉성함의 원인. live 토글은 ScanPanel 에서 이 패널로 이동 (컨트롤 SSOT 1곳). scanStore 에 voxelSize/pointSize 추가 (현재 single-view — N robot 동시 라이브 필요 시 dict 화 주석).
+
+**같은 날 backend**: graceful shutdown 행 fix — uvicorn `timeout_graceful_shutdown=2` (WS/MJPEG 는 설계상 무한 연결이라 상한 없으면 "Waiting for connections to close" 무한 대기 + 임베딩이라 force_exit 시그널 경로 없음). 회귀 가드 = `test_bridge_shutdown.py` (WS+MJPEG 열어둔 채 stop bounded — inversion 으로 실제 잡힘 증명). main.py "Runtime stopped" 로그 추가.
+
+**검증**: backend tests/apps 48 PASS + frontend vitest 69 PASS + lint/pyright/tsc 0. **hardware 재검증 대기**: 분산 3-머신 재시작 후 (a) Tasks URDF 실시간, (b) cloud 가 책상 면에 앉는지(hand_eye), (c) 2mm density 촘촘함, (d) Ctrl+C 즉시 종료.

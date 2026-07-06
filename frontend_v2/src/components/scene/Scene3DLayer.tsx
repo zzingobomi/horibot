@@ -1,19 +1,27 @@
 /**
- * Scene3DLayer — 라이브 point cloud (backend scene3d module).
+ * Scene3DLayer — 라이브 point cloud (backend scene3d module). robotId 로 자립.
  *
- * scene3d 가 camera-frame xyz+rgb 를 발행 (Scene3dCloud, msgpack bin) → 여기서
- * 부모 transform = tcpMatrix · handEye 로 world 배치 (옛 backend Scene3DLayer 패턴).
- * hand_eye 는 calibration bundle 에서 1회 fetch (없으면 identity fallback — mock).
+ * scene3d 가 camera-frame xyz+rgb 발행 (Scene3dCloud, msgpack bin) → 여기서
+ * 부모 transform = base · tcp · hand_eye 로 world 배치. 필요한 상태를 전부
+ * 자체 구독 (per-robot — N robot 시 robotId 만 다르게 하나 더 마운트):
+ *   - TCP pose  : useStream(MOTION_TCP_STATE, robotId) — backend corrected FK SSOT
+ *   - hand_eye  : useMirror(CALIBRATION_SNAPSHOT_BUNDLE + CALIBRATION_ACTIVATED)
+ *                 — mount/재연결/캘 activate 시 자동 refetch. (옛 "토글 시 1회
+ *                 fetch" 는 타임아웃 시 identity 로 조용히 굳어 cloud 가 공중에
+ *                 뜨던 원인 — Mirror 로 제거.)
+ *   - pointSize : scanStore (LivePointCloud 패널의 시각 옵션)
  *
- * liveEnabled(scanStore) gate — scan 모드에서 [라이브] 켤 때만 구독.
+ * liveEnabled(scanStore) gate — [라이브] 켤 때만 cloud 구독.
  */
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { bridge, decodeMsgpackRecord, topicFor } from "@/api/bridge";
 import { ServiceKey, Topic } from "@/api/generated/contract";
 import type { CalibrationBundle } from "@/api/generated/contract";
-import { useService } from "@/framework";
+import { useMirror, useStream } from "@/framework";
+import { useRobots } from "@/hooks/useRobots";
 import { useScanStore } from "@/stores/scanStore";
+import { robotBaseMatrix, poseToWorldMatrix } from "./transforms";
 
 const MAX_POINTS = 400_000;
 
@@ -34,24 +42,28 @@ function handEyeMatrix(bundle: CalibrationBundle | null): THREE.Matrix4 {
 }
 
 interface Scene3DLayerProps {
-  tcpMatrix: THREE.Matrix4 | null;
   robotId: string;
 }
 
-export function Scene3DLayer({ tcpMatrix, robotId }: Scene3DLayerProps) {
+export function Scene3DLayer({ robotId }: Scene3DLayerProps) {
   const enabled = useScanStore((s) => s.liveEnabled);
-  const bundle = useService(ServiceKey.CALIBRATION_SNAPSHOT_BUNDLE, robotId);
+  const pointSize = useScanStore((s) => s.pointSize);
+  const { robots } = useRobots();
 
-  // hand_eye 1회 fetch (라이브 켤 때 최신값 반영) — calibration 은 robot-agnostic,
-  // 대상 robot 은 req 필드.
-  useEffect(() => {
-    if (enabled) void bundle.call({ robot_id: robotId });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, robotId]);
+  const tcp = useStream(Topic.MOTION_TCP_STATE, { robotId });
+
+  // hand_eye — Mirror (snapshot + CALIBRATION_ACTIVATED invalidate+refetch).
+  // calibration 은 robot-agnostic — 대상 robot 은 req 필드 (§2.7).
+  const bundle = useMirror({
+    snapshotService: ServiceKey.CALIBRATION_SNAPSHOT_BUNDLE,
+    snapshotReq: { robot_id: robotId },
+    changeTopic: Topic.CALIBRATION_ACTIVATED,
+    robotId,
+  });
 
   const handEye = useMemo(
-    () => handEyeMatrix(bundle.data as CalibrationBundle | null),
-    [bundle.data],
+    () => handEyeMatrix(bundle.value as CalibrationBundle | null),
+    [bundle.value],
   );
 
   // geometry + dynamic attribute 버퍼 (1회 할당)
@@ -100,15 +112,20 @@ export function Scene3DLayer({ tcpMatrix, robotId }: Scene3DLayerProps) {
     return unsub;
   }, [enabled, robotId, geom]);
 
+  // world 배치 = base(base_pose) · tcp(corrected FK) · hand_eye
   const transform = useMemo(() => {
-    if (!tcpMatrix) return null;
-    const m = tcpMatrix.clone().multiply(handEye);
+    if (!tcp.value) return null;
+    const robot = robots.find((r) => r.id === robotId);
+    if (!robot) return null;
+    const base = robotBaseMatrix(robot.base_pose);
+    const tcpWorld = poseToWorldMatrix(base, tcp.value.position, tcp.value.quaternion);
+    const m = tcpWorld.multiply(handEye);
     const p = new THREE.Vector3();
     const q = new THREE.Quaternion();
     const s = new THREE.Vector3();
     m.decompose(p, q, s);
     return { position: [p.x, p.y, p.z] as const, quaternion: [q.x, q.y, q.z, q.w] as const };
-  }, [tcpMatrix, handEye]);
+  }, [tcp.value, robots, robotId, handEye]);
 
   if (!enabled || !transform) return null;
 
@@ -124,7 +141,7 @@ export function Scene3DLayer({ tcpMatrix, robotId }: Scene3DLayerProps) {
       ]}
     >
       <primitive object={geom} attach="geometry" />
-      <pointsMaterial size={0.0025} vertexColors sizeAttenuation />
+      <pointsMaterial size={pointSize / 1000} vertexColors sizeAttenuation />
     </points>
   );
 }

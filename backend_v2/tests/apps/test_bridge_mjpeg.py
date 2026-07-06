@@ -16,8 +16,6 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from apps.config import DeploymentConfig, DriverMode, ModuleEntry, load_robots
-from apps.resolve import resolve_host_deps
 from framework.runtime.app import Runtime
 from framework.transport.protocol import Handle, RawTransport
 from infra.transport.zenoh import ZenohTransport
@@ -36,12 +34,16 @@ _SO101 = "so101_6dof_0"
 async def base_url():
     transport = ZenohTransport(_LOCAL_CFG)
     runtime = Runtime(transport)
-    robots = load_robots()
-    deploy = DeploymentConfig(
-        driver_mode=DriverMode.MOCK, modules=[ModuleEntry(name="bridge")]
-    )
-    deps = resolve_host_deps("bridge", robots, deploy)
-    runtime.add_module(BridgeModule, port=_PORT, host="127.0.0.1", **deps)
+    # 게이팅 케이스를 hand-built list 로 명시 — robots.yaml 의 enabled 상태
+    # (resolve 가 disabled 제외) 와 무관하게 camera/rgbd 조합별 gate 검증.
+    infos = [
+        RobotInfo(
+            id=_SO101, type="so101_6dof", capabilities=["move", "rgbd"], has_camera=True
+        ),
+        # camera 있고 rgbd 없음 — color MJPEG 은 성립해야 (옛 rgbd-gate 버그 가드)
+        RobotInfo(id="cam_norgbd", type="omx_f", capabilities=["move"], has_camera=True),
+    ]
+    runtime.add_module(BridgeModule, port=_PORT, host="127.0.0.1", robots=infos)
     runtime.add_module(
         CameraDriverModule, robot_id=_SO101, driver=MockCameraDriver(has_depth=True)
     )
@@ -67,11 +69,11 @@ async def test_mjpeg_stream_serves_jpeg_frames(base_url: str):
 
 
 async def test_mjpeg_camera_without_rgbd_streams(base_url: str):
-    # omx_f_0 = camera_backend(opencv) 있음, rgbd 없음. color MJPEG 은 depth 무관 →
+    # cam_norgbd = camera 있음, rgbd 없음. color MJPEG 은 depth 무관 →
     # 게이트 통과(200). (rgbd 로 게이트하던 옛 버그면 여기서 404 — 회귀 가드.)
-    # omx camera module 은 이 fixture 에 안 떠 프레임은 안 오지만, StreamingResponse
+    # 해당 camera module 은 이 fixture 에 안 떠 프레임은 안 오지만, StreamingResponse
     # 는 status/헤더를 body 전에 보내므로 status 만 확인하고 빠진다.
-    url = f"{base_url}/robots/omx_f_0/camera/stream"
+    url = f"{base_url}/robots/cam_norgbd/camera/stream"
     async with httpx.AsyncClient(timeout=5.0) as client:
         async with client.stream("GET", url) as resp:
             assert resp.status_code == 200

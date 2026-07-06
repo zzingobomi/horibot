@@ -11,6 +11,7 @@ import { CalibrationPanel } from "./CalibrationPanel";
 import { CameraPanel } from "./CameraPanel";
 import { CalibrationCameraPanel } from "./CalibrationCameraPanel";
 import { ScanPanel } from "./ScanPanel";
+import { LivePointCloudPanel } from "./LivePointCloudPanel";
 import { WaypointPanel } from "./WaypointPanel";
 import { PromptPanel } from "./PromptPanel";
 import { TaskProgressPanel } from "./TaskProgressPanel";
@@ -24,6 +25,7 @@ export const PANEL_COMPONENTS = {
   camera: CameraPanel,
   calibrationCamera: CalibrationCameraPanel,
   scan: ScanPanel,
+  livePointCloud: LivePointCloudPanel,
   waypoints: WaypointPanel,
   prompt: PromptPanel,
   taskProgress: TaskProgressPanel,

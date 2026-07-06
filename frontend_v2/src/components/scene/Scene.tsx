@@ -1,10 +1,8 @@
 /**
  * R3F Canvas + multi-robot URDF + base/TCP axis frame.
  *
- * frontend_v2 first cut — 옛 frontend Scene.tsx 의 simplified carry over:
- *   - 박지 X: Scene3DLayer / DetectionLayer / TaskResultLayer / RobotPreviewLayer /
- *     CameraFrustum / handEyeMatrix / calibration (Step E+ 박힐 때 carry over)
- *   - 박음: lights / Grid / RobotLayer / AxisFrame (BASE + TCP) / OrbitControls
+ * robot 상태(joint/TCP frame)는 RobotLayer 가 robot 마다 자기 stream 구독
+ * (per-robot — N=2 협동 자리). Scene 은 조명/grid/카메라 + layer 배치만.
  */
 import { useCallback, useMemo } from "react";
 import { Canvas } from "@react-three/fiber";
@@ -18,30 +16,22 @@ import { DEFAULT_SCENE_OPTIONS, type SceneOptions } from "./sceneOptions";
 import type { RobotInfo } from "@/api/generated/contract";
 
 interface RobotSceneProps {
-  /** focus robot 의 arm joint name list (backend TcpState.joint_names SSOT). */
-  jointNames: string[];
-  jointAngles: number[];
   options?: SceneOptions;
   linkVisibility?: Record<string, boolean>;
   onLinksLoaded?: (names: string[]) => void;
-  /** focus robot 의 TCP pose (R3F y-up world frame). source = Motion.Stream.TCP_STATE. */
-  tcpMatrix?: THREE.Matrix4 | null;
   robots: RobotInfo[];
   focusId?: string | null;
   cameraPosition?: [number, number, number];
   cameraTarget?: [number, number, number];
   /** focus robot base transform (z-up→y-up + base_pose) — scan mesh 배치용. */
   robotBaseMatrix?: THREE.Matrix4 | null;
-  /** focus robot id — scan live cloud / hand_eye fetch 용. */
+  /** focus robot id — scan live cloud (Scene3DLayer 가 stream/hand_eye 자체 구독). */
   robotId?: string;
 }
 
 function SceneContent({
-  jointNames,
-  jointAngles,
   options = DEFAULT_SCENE_OPTIONS,
   onLinksLoaded,
-  tcpMatrix = null,
   robots,
   focusId,
   cameraTarget,
@@ -88,26 +78,17 @@ function SceneContent({
         </group>
       )}
 
+      {/* joint + TCP frame — robot 마다 자기 TCP_STATE 구독 (per-robot) */}
       <RobotLayer
         robots={robots}
         focusId={focusId ?? null}
-        jointNames={jointNames}
-        jointAngles={jointAngles}
         onLinksLoaded={onLinksLoaded}
         showRobot={options.showRobot}
+        showTcpFrame={options.showTCPFrame}
       />
 
-      {options.showTCPFrame && tcpMatrix && (
-        <AxisFrame
-          matrix={tcpMatrix}
-          size={0.04}
-          label="TCP"
-          labelColor="#ffcc44"
-        />
-      )}
-
       {/* scan — 라이브 PC (scanStore.liveEnabled gate) + reconstruction mesh */}
-      {robotId && <Scene3DLayer tcpMatrix={tcpMatrix} robotId={robotId} />}
+      {robotId && <Scene3DLayer robotId={robotId} />}
       <MeshLayer robotBaseMatrix={robotBaseMatrix} />
 
       <OrbitControls

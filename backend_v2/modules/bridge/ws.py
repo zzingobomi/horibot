@@ -172,8 +172,16 @@ class WsConnection:
             return
 
         def callback(payload: bytes, _topic: str = topic) -> None:
+            # zenoh 워커 스레드에서 실행 — shutdown 시 루프가 먼저 닫히면
+            # call_soon_threadsafe 가 RuntimeError. 프레임워크 subscriber 와
+            # 동일하게 닫힌 루프 가드 (app.py _register_subscriber 참고).
+            if self._closed or self._loop.is_closed():
+                return
             frame = encode_frame(FRAME_TOPIC_DATA, _topic, payload)
-            self._loop.call_soon_threadsafe(self._enqueue, _topic, frame)
+            try:
+                self._loop.call_soon_threadsafe(self._enqueue, _topic, frame)
+            except RuntimeError:
+                pass  # check 이후 루프가 닫힌 teardown 창 — 무시
 
         self._subs[topic] = self._transport.subscribe(topic, callback)
 

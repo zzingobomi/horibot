@@ -84,24 +84,6 @@ export function Sidebar() {
 
       {/* Robots 섹션 — robots.yaml SSOT 자동 enumeration */}
       <nav className="flex-1 py-4 space-y-1 px-2 overflow-y-auto">
-        {/* 최상위 — task 는 host-level(robot-agnostic, §2.7). 로봇 하위 mode 아님
-            (design: /tasks TasksPage, multi-robot). move/calibrate 는 "이 로봇 조작". */}
-        <NavLink
-          to="/tasks"
-          title="Tasks"
-          className={({ isActive }) =>
-            cn(
-              "mb-2 flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors",
-              collapsed && "justify-center px-2",
-              isActive
-                ? "bg-zinc-800 text-zinc-100 font-medium"
-                : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
-            )
-          }
-        >
-          <ListTodo className="h-4 w-4 shrink-0" />
-          {!collapsed && <span>Tasks</span>}
-        </NavLink>
         {!collapsed && (
           <p className="px-3 pb-1 text-xs font-medium text-zinc-500 uppercase tracking-wider">
             Robots
@@ -150,6 +132,31 @@ export function Sidebar() {
             </div>
           ),
         )}
+
+        {/* Tasks 섹션 — host-level(robot-agnostic, §2.7). robots 목록 아래 (v1 배치). */}
+        <div className="pt-3">
+          {!collapsed && (
+            <p className="px-3 pb-1 text-xs font-medium text-zinc-500 uppercase tracking-wider">
+              Tasks
+            </p>
+          )}
+          <NavLink
+            to="/tasks"
+            title={collapsed ? "Tasks" : undefined}
+            className={({ isActive }) =>
+              cn(
+                "flex items-center rounded-md py-2 text-sm transition-colors",
+                collapsed ? "justify-center px-2" : "gap-3 px-3",
+                isActive
+                  ? "bg-zinc-800 text-zinc-100 font-medium"
+                  : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
+              )
+            }
+          >
+            <ListTodo className="h-4 w-4 shrink-0" />
+            {!collapsed && <span>Tasks</span>}
+          </NavLink>
+        </div>
       </nav>
 
       {/* Dev 도구 — contract graph viewer (§6.1). 앱 기능 아니라 개발자 도구. */}

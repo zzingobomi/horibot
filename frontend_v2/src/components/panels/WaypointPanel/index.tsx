@@ -14,7 +14,7 @@ import { useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DEFAULT_ROBOT_ID } from "@/constants";
-import { useService, useStream } from "@/framework";
+import { useBridgeConnected, useService, useStream } from "@/framework";
 import { ServiceKey, Topic } from "@/api/generated/contract";
 import type {
   WaypointGroupRecord,
@@ -25,7 +25,10 @@ export function WaypointPanel() {
   const { id } = useParams<{ id: string }>();
   const robotId = id ?? DEFAULT_ROBOT_ID;
 
+  const connected = useBridgeConnected();
+
   const teachSvc = useService(ServiceKey.WAYPOINT_TEACH, robotId);
+  const moveJSvc = useService(ServiceKey.MOTION_MOVE_J, robotId);
   const listSvc = useService(ServiceKey.WAYPOINT_LIST, robotId);
   const renameSvc = useService(ServiceKey.WAYPOINT_RENAME, robotId);
   const deleteSvc = useService(ServiceKey.WAYPOINT_DELETE, robotId);
@@ -75,13 +78,17 @@ export function WaypointPanel() {
   );
 
   useEffect(() => {
-    // 초기 목록 로드 — setState 는 await 이후(비동기)라 동기 cascading render 아님.
+    // 초기 목록 로드 — WS 미연결 시 callService 가 drop → timeout 후 빈 목록.
+    // connected 를 dep 으로 두어 연결 완료(및 리로드 시 재연결) 후 fetch.
+    // (mirror.ts / capability.ts 와 동일 패턴.)
+    if (!connected) return;
+    // setState 는 await 이후(비동기)라 동기 cascading render 아님.
     /* eslint-disable react-hooks/set-state-in-effect */
     void refreshWaypoints();
     void refreshGroups();
     /* eslint-enable react-hooks/set-state-in-effect */
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [robotId]);
+  }, [robotId, connected]);
 
   // ── waypoint CRUD ──────────────────────────────────────────
   const onTeach = async () => {
@@ -104,10 +111,22 @@ export function WaypointPanel() {
     if (selectedGroup != null) await refreshMembers(selectedGroup);
   };
 
+  // MoveJ 로 저장된 joint 자세 재현 (Ruckig trajectory).
+  const onGoto = async (wp: WaypointRecord) => {
+    const res = await moveJSvc.call({ target_joints: wp.joint_values });
+    const d = res.data as { accepted?: boolean } | null;
+    setMsg(d?.accepted ? `이동: ${wp.name}` : `이동 실패: ${res.message}`);
+  };
+
   const startEdit = (wp: WaypointRecord) => {
     if (wp.id == null) return;
     setEditingId(wp.id);
     setEditName(wp.name);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditName("");
   };
 
   const onRename = async (wid: number) => {
@@ -116,7 +135,7 @@ export function WaypointPanel() {
     const res = await renameSvc.call({ waypoint_row_id: wid, name: nm });
     const d = res.data as { ok?: boolean } | null;
     if (d?.ok) {
-      setEditingId(null);
+      cancelEdit();
       await refreshWaypoints();
       if (selectedGroup != null) await refreshMembers(selectedGroup);
     } else {
@@ -247,6 +266,11 @@ export function WaypointPanel() {
                         <input
                           value={editName}
                           onChange={(e) => setEditName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && w.id != null) onRename(w.id);
+                            else if (e.key === "Escape") cancelEdit();
+                          }}
+                          autoFocus
                           data-testid="wp-edit-name"
                           className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-900 px-1 font-mono"
                         />
@@ -258,10 +282,26 @@ export function WaypointPanel() {
                         >
                           저장
                         </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={cancelEdit}
+                          data-testid="wp-rename-cancel"
+                        >
+                          취소
+                        </Button>
                       </>
                     ) : (
                       <>
                         <span className="flex-1 truncate font-mono">{w.name}</span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => onGoto(w)}
+                          data-testid="wp-goto"
+                        >
+                          이동
+                        </Button>
                         <Button
                           size="sm"
                           variant="ghost"

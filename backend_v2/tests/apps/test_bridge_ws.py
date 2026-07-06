@@ -198,3 +198,66 @@ async def test_enqueue_channel_isolation_and_retention():
 
     # drain 순서 — service 우선
     assert conn._drain_order()[0] == _SERVICE_CHANNEL
+
+
+# ── shutdown 경로 회귀 가드 ──────────────────────────────────────────
+# 이 둘은 프로세스 종료 시에만 나타나던 버그 — 기존 fixture(clean start/stop,
+# 실 SIGINT 없음, 단일 프로세스)는 재현 못 함. 각 가드 자체를 결정적으로 고정.
+
+
+def test_embedded_server_does_not_capture_signals():
+    # 임베딩 uvicorn 이 SIGINT 핸들러를 가로채면(handle_exit + 종료 시 raise_signal)
+    # asyncio.run 의 _on_sigint 와 충돌 → shutdown 중 KeyboardInterrupt traceback.
+    # _EmbeddedUvicornServer.capture_signals 는 no-op 이어야. 되돌리면(기본 Server)
+    # 이 test 가 during != before 로 잡는다.
+    import signal
+    import threading
+
+    import uvicorn
+
+    from modules.bridge.module import _EmbeddedUvicornServer
+
+    async def _app(scope, receive, send):  # noqa: ANN001
+        pass
+
+    cfg = uvicorn.Config(app=_app, log_level="warning")
+    before = signal.getsignal(signal.SIGINT)
+    with _EmbeddedUvicornServer(cfg).capture_signals():
+        during = signal.getsignal(signal.SIGINT)
+    after = signal.getsignal(signal.SIGINT)
+    assert before is during is after  # 핸들러 안 건드림
+
+    # 대조 — 기본 Server 는 handle_exit 로 바꿈 (regression 이 실제로 잡히는지 증명).
+    # capture_signals 는 main thread 에서만 핸들러 설치.
+    if threading.current_thread() is threading.main_thread():
+        with uvicorn.Server(cfg).capture_signals():
+            assert signal.getsignal(signal.SIGINT) is not before
+
+
+async def test_ws_subscribe_callback_tolerates_closed_loop():
+    # zenoh 워커 스레드에서 도는 subscribe 콜백은, shutdown 때 루프가 먼저 닫혀도
+    # raise 하면 안 된다 ("Event loop is closed" spam 의 원인). 가드 없으면
+    # call_soon_threadsafe 가 RuntimeError → 이 test 가 잡는다.
+    captured: dict[str, object] = {}
+
+    class _CapTransport:
+        def subscribe(self, topic, cb):  # noqa: ANN001
+            captured["cb"] = cb
+            return _NullHandle()
+
+    class _NullHandle:
+        def undeclare(self) -> None:
+            pass
+
+    conn = WsConnection(_DummyWs(), _CapTransport())  # type: ignore[arg-type]
+    topic = "stream/camera/so101_6dof_0/jpeg"
+    conn._subscribe(topic)
+
+    dead = asyncio.new_event_loop()
+    dead.close()
+    conn._loop = dead  # 종료 창 재현: 콜백은 살아있고 루프는 닫힘
+
+    cb = captured["cb"]
+    assert callable(cb)
+    cb(b"\x80")  # raise 없이 조용히 무시돼야
+    assert topic not in conn._pending  # 닫힌 루프엔 enqueue 안 함

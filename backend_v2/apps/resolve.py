@@ -124,6 +124,13 @@ def resolve_host_deps(
     if name == "bridge":
         from modules.bridge.contract import BasePoseInfo, RobotInfo
 
+        # robots.yaml spec — enabled=false robot 은 런타임이 무시 (frontend 에
+        # 노출 X). default = `default: true` flag 우선, 생략 시 첫 enabled.
+        enabled_robots = [r for r in robots.values() if r.enabled]
+        default_robot = next(
+            (r for r in enabled_robots if r.default),
+            enabled_robots[0] if enabled_robots else None,
+        )
         infos = [
             RobotInfo(
                 id=r.id,
@@ -137,9 +144,13 @@ def resolve_host_deps(
                 capabilities=list(r.capabilities),
                 has_camera=r.camera_backend is not None,
             )
-            for r in robots.values()
+            for r in enabled_robots
         ]
-        deps: dict[str, Any] = {"robots": infos, "robot_dir": _ROBOT_DIR}
+        deps: dict[str, Any] = {
+            "robots": infos,
+            "default_robot_id": default_robot.id if default_robot else None,
+            "robot_dir": _ROBOT_DIR,
+        }
         if runtime is not None:
             # contract는 요청 시점에 생성한다.
             # 이때는 모든 모듈 등록이 끝난 뒤이므로 최신 상태를 반환할 수 있다.
@@ -279,7 +290,10 @@ def _motion_deps(robot: RobotConfig) -> dict[str, Any]:
         limits.append(lim)
     urdf = _ROBOT_DIR / robot.type / "urdf" / f"{robot.type}.urdf"
     return {
-        "kinematics": PybulletKinematics(urdf),
+        # D4 — link_offset(calibration) 이 patched URDF 경로를 결정하므로 factory 주입.
+        # PybulletKinematics 클래스 자체가 Path → Kinematics factory.
+        "kinematics_factory": PybulletKinematics,
+        "urdf_path": urdf,
         "arm_specs": arm,
         "joint_max_velocity": [x.max_velocity for x in limits],
         "joint_max_acceleration": [x.max_acceleration for x in limits],

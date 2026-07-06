@@ -85,3 +85,5 @@ backend/storage/*.db-journal
 # alembic.ini::sqlalchemy.url 자리.
 backend/.alembic_autogen.db
 backend/.alembic_autogen.db-*
+# Motion D4 — link_offset 적용 patched URDF (런타임 산출물, 원본 옆 생성)
+robot_v2/*/urdf/*.calibrated.urdf

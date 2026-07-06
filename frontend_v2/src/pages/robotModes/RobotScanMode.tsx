@@ -12,7 +12,14 @@ import { ModeDockview, type PanelSpec } from "@/components/shared/ModeDockview";
  */
 const PANELS: PanelSpec[] = [
   { id: "robot-state", component: "robotState", title: "Robot State", width: 260, height: 300 },
-  { id: "scan", component: "scan", title: "Scan", width: 320, height: 520 },
+  { id: "scan", component: "scan", title: "Scan", width: 320, height: 460 },
+  {
+    id: "live-pc",
+    component: "livePointCloud",
+    title: "Live PointCloud",
+    width: 300,
+    height: 320,
+  },
   { id: "camera", component: "camera", title: "Camera", width: 420, height: 340 },
 ];
 

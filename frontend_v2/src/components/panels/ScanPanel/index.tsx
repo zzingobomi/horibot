@@ -2,9 +2,10 @@
  * ScanPanel — scan 워크플로 (dockview 패널, RobotScanMode 코어).
  *
  * Task DSL 없이 서비스 직접 호출 (실용 슬라이스):
- *   라이브 PC 토글(SET_STREAM) → 세션(new/list) → 캡처 반복(CAPTURE) → 빌드(BUILD,
- *   진행 스트림) → mesh 보기(GET_MESH → scanStore → MeshLayer).
+ *   세션(new/list) → 캡처 반복(CAPTURE) → 빌드(BUILD, 진행 스트림) →
+ *   mesh 보기(GET_MESH → scanStore → MeshLayer).
  *
+ * 라이브 PC 토글/Density/Point Size 는 LivePointCloudPanel (컨트롤 SSOT 1곳).
  * 자세 잡기는 수동(토크오프) — 이 패널은 캡처/빌드 트리거만. 3D 뷰(라이브 PC/mesh)는
  * RobotsLayout Canvas 의 Scene3DLayer/MeshLayer 가 scanStore/stream 으로 렌더.
  */
@@ -26,7 +27,6 @@ export function ScanPanel() {
   const { id } = useParams<{ id: string }>();
   const robotId = id ?? DEFAULT_ROBOT_ID;
 
-  const setStream = useService(ServiceKey.SCENE3D_SET_STREAM, robotId);
   const newSession = useService(ServiceKey.SCAN_NEW_SESSION, robotId);
   const listSessions = useService(ServiceKey.SCAN_LIST_SESSIONS, robotId);
   const capture = useService(ServiceKey.SCAN_CAPTURE, robotId);
@@ -37,8 +37,6 @@ export function ScanPanel() {
   const getMesh = useService(ServiceKey.SCAN_GET_MESH, robotId);
   const progress = useStream(Topic.SCAN_BUILD_PROGRESS, { robotId, staleMs: 60_000 });
 
-  const liveEnabled = useScanStore((s) => s.liveEnabled);
-  const setLiveEnabled = useScanStore((s) => s.setLiveEnabled);
   const setMesh = useScanStore((s) => s.setMesh);
 
   const [sessionRowId, setSessionRowId] = useState<number | null>(null);
@@ -71,21 +69,6 @@ export function ScanPanel() {
     void listSessions.call({ robot_id: robotId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [robotId]);
-
-  // unmount 시 라이브 stream 정리 (mode 벗어나면 카메라 PC decode 낭비 X)
-  useEffect(() => {
-    return () => {
-      void setStream.call({ robot_id: robotId, enabled: false });
-      setLiveEnabled(false);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const onToggleLive = async () => {
-    const next = !liveEnabled;
-    await setStream.call({ robot_id: robotId, enabled: next });
-    setLiveEnabled(next);
-  };
 
   const onNewSession = async () => {
     const res = await newSession.call({ robot_id: robotId, label: null });
@@ -176,24 +159,6 @@ export function ScanPanel() {
 
   return (
     <div className="h-full overflow-y-auto p-3 text-[12px]" data-testid="scan-panel">
-      {/* 라이브 PC */}
-      <section className="mb-3">
-        <div className="mb-1 flex items-center justify-between">
-          <span className="font-mono uppercase text-muted-foreground">live cloud</span>
-          <Button
-            size="sm"
-            variant={liveEnabled ? "default" : "outline"}
-            onClick={onToggleLive}
-            data-testid="live-toggle"
-          >
-            {liveEnabled ? "ON" : "OFF"}
-          </Button>
-        </div>
-        <p className="text-muted-foreground">
-          토크오프로 자세 잡고 라이브 뷰 확인 → 캡처 반복.
-        </p>
-      </section>
-
       {/* 세션 */}
       <section className="mb-3">
         <div className="mb-1 font-mono uppercase text-muted-foreground">session</div>

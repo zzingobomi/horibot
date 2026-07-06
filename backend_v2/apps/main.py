@@ -48,6 +48,12 @@ def build_runtime(
                     raise KeyError(
                         f"module {entry.name} 의 robot {rid!r} 가 robots.yaml 에 없음"
                     )
+                if not robot.enabled:
+                    # robots.yaml spec — enabled=false 는 런타임이 무시.
+                    logger.warning(
+                        "module %s 의 robot %s 는 enabled=false — skip", entry.name, rid
+                    )
+                    continue
                 deps = resolve_robot_deps(entry.name, robot, deploy, session_factory)
                 runtime.add_module(mod_cls, robot_id=rid, **deps)
                 logger.info("add_module %s robot_id=%s", entry.name, rid)
@@ -95,6 +101,7 @@ async def run(host: str, config_dir: Path = _CONFIG_DIR) -> None:
         logger.info("Runtime stopping — host=%s", host)
         await runtime.stop()
         transport.close()
+        logger.info("Runtime stopped — host=%s", host)
 
 
 def main() -> None:

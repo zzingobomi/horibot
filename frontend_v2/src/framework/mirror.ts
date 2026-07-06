@@ -42,6 +42,8 @@ export function useMirror<
 
   // ① mount 1회 — Owner 가 떠 있으면 snapshot 받음. 안 떠 있으면 cache=null 유지.
   // WS 미연결 시 callService 가 drop → timeout — connected 후 fetch.
+  // 실패는 graceful (fail-fast 박지 X) 하되 **침묵 금지** — snapshot 미도달이
+  // identity fallback 류 조용한 오동작으로 이어진 전례 (2026-07-06 hand_eye).
   useEffect(() => {
     if (!connected) return;
     let cancelled = false;
@@ -52,11 +54,21 @@ export function useMirror<
           (config.snapshotReq ?? {}) as ServiceMap[S]["req"],
           config.robotId ? { robotId: config.robotId } : undefined,
         );
-        if (!cancelled && res.success) {
+        if (cancelled) return;
+        if (res.success) {
           setValue(res.data as T);
+        } else {
+          console.warn(
+            `[useMirror] snapshot 실패: ${String(config.snapshotService)} — ${res.message}`,
+          );
         }
-      } catch {
-        // graceful — fail-fast 박지 X
+      } catch (e) {
+        if (!cancelled) {
+          console.warn(
+            `[useMirror] snapshot 예외: ${String(config.snapshotService)}`,
+            e,
+          );
+        }
       }
     })();
     return () => {
@@ -78,11 +90,21 @@ export function useMirror<
           (config.snapshotReq ?? {}) as ServiceMap[S]["req"],
           config.robotId ? { robotId: config.robotId } : undefined,
         );
-        if (!cancelled && res.success) {
+        if (cancelled) return;
+        if (res.success) {
           setValue(res.data as T);
+        } else {
+          console.warn(
+            `[useMirror] refetch 실패: ${String(config.snapshotService)} — ${res.message}`,
+          );
         }
-      } catch {
-        /* graceful */
+      } catch (e) {
+        if (!cancelled) {
+          console.warn(
+            `[useMirror] refetch 예외: ${String(config.snapshotService)}`,
+            e,
+          );
+        }
       }
     })();
     return () => {

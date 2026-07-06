@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Generator
 
 import psutil
 import uvicorn
@@ -22,6 +23,22 @@ from .ws import WsConnection
 logger = logging.getLogger(__name__)
 
 
+class _EmbeddedUvicornServer(uvicorn.Server):
+    """임베딩 모드 uvicorn — 시그널은 apps/main.py 가 관리한다.
+
+    기본 Server.serve() 는 capture_signals() 로 SIGINT/SIGTERM 핸들러를 자기
+    handle_exit 로 덮어쓰고, 종료 시 raise_signal 로 되쏜다. 이게 asyncio.run 의
+    SIGINT 처리(_on_sigint → KeyboardInterrupt)와 충돌해 shutdown 중
+    KeyboardInterrupt traceback 을 만든다. 임베딩에선 main.py 가 stop_event +
+    graceful stop 으로 종료를 관리하고 bridge.stop() 이 should_exit 를 세우므로
+    uvicorn 이 시그널을 가로챌 필요가 없다 — no-op.
+    """
+
+    @contextlib.contextmanager
+    def capture_signals(self) -> Generator[None, None, None]:
+        yield
+
+
 class BridgeModule:
     def __init__(
         self,
@@ -32,9 +49,12 @@ class BridgeModule:
         robot_dir: Path | None = None,
         contract_provider: Callable[[], dict] | None = None,
         graph_provider: Callable[[], dict] | None = None,
+        default_robot_id: str | None = None,
     ) -> None:
         self._transport = transport
         self._robots = robots
+        # robots.yaml spec 의 default 계산 결과 (resolve 주입). 미주입 시 첫 robot.
+        self._default_robot_id = default_robot_id
         self._host = host
         self._port = port
         self._robot_dir = robot_dir
@@ -62,7 +82,8 @@ class BridgeModule:
         def get_robots() -> RobotsResponse:
             return RobotsResponse(
                 robots=self._robots,
-                default=self._robots[0].id if self._robots else None,
+                default=self._default_robot_id
+                or (self._robots[0].id if self._robots else None),
             )
 
         @app.get("/system")
@@ -132,9 +153,18 @@ class BridgeModule:
 
     async def start(self) -> None:
         config = uvicorn.Config(
-            self._app, host=self._host, port=self._port, log_level="warning"
+            self._app,
+            host=self._host,
+            port=self._port,
+            log_level="warning",
+            # graceful shutdown 상한 (초). WS(/ws) / MJPEG 는 설계상 안 끝나는
+            # 연결이라 상한 없으면 shutdown 이 "Waiting for connections to close"
+            # 에서 영원히 대기 (임베딩이라 force_exit 시그널 경로도 없음).
+            # 초과 시 uvicorn 이 handler task 를 cancel → WsConnection/mjpeg 의
+            # finally 가 구독 undeclare 까지 정상 수행.
+            timeout_graceful_shutdown=2,
         )
-        self._server = uvicorn.Server(config)
+        self._server = _EmbeddedUvicornServer(config)
         self._serve_task = asyncio.create_task(self._server.serve())
 
         # uvicorn 이 실제 listen 시작할 때까지 대기 (최대 5s)

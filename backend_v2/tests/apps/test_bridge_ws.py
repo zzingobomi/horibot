@@ -126,6 +126,50 @@ async def test_service_op_relays_response(bridge):
     assert msgspec.msgpack.decode(payload)["data"] == {"echo": {"x": 1}}
 
 
+async def test_service_timeout_s_propagates_to_zenoh_call(bridge):
+    # TSDF build(5-30s) 회귀 — frontend timeoutMs 가 wire(timeout_s) 로 bridge 의
+    # zenoh call 까지 전파돼야 함. 무시되면(고정 5s) ① 이 성공 응답이 돼서 깨짐.
+    transport, uri = bridge
+    key = "srv/test/slow"
+
+    def handler(req_bytes: bytes) -> bytes:
+        time.sleep(0.8)
+        return msgspec.msgpack.encode({"timestamp": time.time(), "data": {"ok": True}})
+
+    svc = transport.register_service(key, handler)
+    try:
+        async with connect(uri) as ws:
+            # ① 호출자 timeout(0.2s) < handler(0.8s) → TimeoutError 프레임
+            #    (bridge 가 자기 기본 5s 를 썼다면 성공했을 상황 — 전파 증명)
+            await ws.send(
+                json.dumps(
+                    {"op": "service", "key": key, "request_id": "t1",
+                     "data": {}, "timeout_s": 0.2}
+                )
+            )
+            ftype, rid, payload = _decode_frame(
+                await asyncio.wait_for(ws.recv(), timeout=5.0)
+            )
+            assert ftype == FRAME_SERVICE_ERROR
+            assert rid == "t1"
+            assert msgspec.msgpack.decode(payload)["type"] == "TimeoutError"
+
+            # ② 충분한 timeout → 정상 응답 (전파값으로 성공 경로)
+            await ws.send(
+                json.dumps(
+                    {"op": "service", "key": key, "request_id": "t2",
+                     "data": {}, "timeout_s": 3.0}
+                )
+            )
+            ftype, rid, _payload = _decode_frame(
+                await asyncio.wait_for(ws.recv(), timeout=5.0)
+            )
+            assert ftype == FRAME_SERVICE_RESPONSE
+            assert rid == "t2"
+    finally:
+        svc.undeclare()
+
+
 async def test_service_error_relays_error_frame(bridge):
     transport, uri = bridge
     key = "srv/test/boom"

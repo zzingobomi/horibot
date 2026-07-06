@@ -9,6 +9,7 @@ import { RobotStatePanel } from "./RobotStatePanel";
 import { MotionPanel } from "./MotionPanel";
 import { CalibrationPanel } from "./CalibrationPanel";
 import { CameraPanel } from "./CameraPanel";
+import { DetectionCameraPanel } from "./DetectionCameraPanel";
 import { CalibrationCameraPanel } from "./CalibrationCameraPanel";
 import { ScanPanel } from "./ScanPanel";
 import { LivePointCloudPanel } from "./LivePointCloudPanel";
@@ -23,6 +24,7 @@ export const PANEL_COMPONENTS = {
   motion: MotionPanel,
   calibration: CalibrationPanel,
   camera: CameraPanel,
+  detectionCamera: DetectionCameraPanel,
   calibrationCamera: CalibrationCameraPanel,
   scan: ScanPanel,
   livePointCloud: LivePointCloudPanel,

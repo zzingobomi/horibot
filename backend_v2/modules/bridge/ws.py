@@ -200,10 +200,17 @@ class WsConnection:
         request_id = str(msg.get("request_id", ""))
         key = msg["key"]
         data = msg.get("data", {})
+        # 호출자 지정 timeout (초) — 장시간 서비스(TSDF build 등)가 bridge 기본
+        # 5s 에 잘리지 않게 wire 로 전파. 비정상 값은 clamp (안전 상한 600s).
+        try:
+            timeout_s = float(msg.get("timeout_s") or 5.0)
+        except (TypeError, ValueError):
+            timeout_s = 5.0
+        timeout_s = max(0.1, min(600.0, timeout_s))
         envelope = {"timestamp": time.time(), "data": data}
         payload = msgspec.msgpack.encode(envelope)
         try:
-            res_bytes = await self._transport.call(key, payload)
+            res_bytes = await self._transport.call(key, payload, timeout=timeout_s)
             frame = encode_frame(FRAME_SERVICE_RESPONSE, request_id, res_bytes)
         except RemoteError as e:
             err = msgspec.msgpack.encode({"type": e.type_name, "message": e.message})

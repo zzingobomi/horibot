@@ -1,9 +1,10 @@
 /**
  * PromptPanel — 자연어 명령 → LLM 파싱 → PnP 실행 (§17 NL PnP, RobotTaskMode 코어).
  *
- * 흐름: 사용자가 "흰색 큐브를 파란 상자에 둬" 입력 → [파싱] LLM_PARSE_COMMAND →
- * (pick/place) 확인 표시 → [실행] TASK_RUN(pick_and_place, params). 파싱 결과를
- * 사용자가 보고 실행하는 2-스텝 (LLM 오해 시 확인 가능). 진행 상황은 TaskProgressPanel.
+ * 흐름 (v1 디버거 플로우 계승): [파싱] LLM_PARSE_COMMAND → (pick/place) 확인 표시
+ * + **자동 TASK_PREVIEW** (실행 없이 step tree publish → TaskProgressPanel 에 목록,
+ * 거기서 브레이크포인트 미리 박음) → [실행] TASK_RUN. 파싱 결과를 사용자가 보고
+ * 실행하는 2-스텝 (LLM 오해 시 확인 가능).
  *
  * detector/llm/task 는 robot-agnostic — LLM parse 는 robot 무관, TASK_RUN 은 req 에
  * robot_id (docs/backend_v2.md §2.7). 정확도(검출/파싱)는 실물 hardware tuning (§17.5).
@@ -20,15 +21,24 @@ interface Parsed {
   place_object: string | null;
 }
 
+/** parsed → TASK_RUN/PREVIEW 공용 params (한 곳). */
+function taskParams(p: Parsed): Record<string, string> {
+  const params: Record<string, string> = { pick_object: p.pick_object };
+  if (p.place_object) params.place_object = p.place_object;
+  return params;
+}
+
 export function PromptPanel() {
   const { id } = useParams<{ id: string }>();
   const robotId = id ?? DEFAULT_ROBOT_ID;
 
   const parseSvc = useService(ServiceKey.LLM_PARSE_COMMAND);
+  const previewSvc = useService(ServiceKey.TASK_PREVIEW, robotId);
   const runSvc = useService(ServiceKey.TASK_RUN, robotId);
   const stopSvc = useService(ServiceKey.TASK_STOP, robotId);
 
-  const [text, setText] = useState("");
+  // 개발 중 반복 입력 절감 — 대표 시나리오를 기본값으로 (§17.5 tuning 단계).
+  const [text, setText] = useState("흰색 큐브를 파란 상자에 둬");
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -46,7 +56,19 @@ export function PromptPanel() {
       | null;
     if (d?.ok && d.parsed) {
       setParsed(d.parsed);
-      setMsg("");
+      // v1 플로우 — 파싱 즉시 preview 로 step tree publish (실행 X).
+      // TaskProgressPanel 에 목록이 뜨고 거기서 브레이크포인트를 미리 박는다.
+      const pv = await previewSvc.call({
+        robot_id: robotId,
+        task_name: "pick_and_place",
+        params: taskParams(d.parsed),
+      });
+      const pd = pv.data as { ok?: boolean; message?: string } | null;
+      setMsg(
+        pd?.ok
+          ? "step 목록 확인 (Task Progress) — 브레이크포인트 설정 후 [실행]"
+          : `preview 실패: ${pd?.message ?? pv.message}`,
+      );
     } else {
       setMsg(`파싱 실패: ${d?.message ?? res.message}`);
     }
@@ -54,12 +76,10 @@ export function PromptPanel() {
 
   const onRun = async () => {
     if (!parsed) return;
-    const params: Record<string, string> = { pick_object: parsed.pick_object };
-    if (parsed.place_object) params.place_object = parsed.place_object;
     const res = await runSvc.call({
       robot_id: robotId,
       task_name: "pick_and_place",
-      params,
+      params: taskParams(parsed),
     });
     const d = res.data as { accepted?: boolean; message?: string } | null;
     setMsg(d?.accepted ? "실행 시작 — 진행은 Task Progress" : `거부: ${d?.message ?? res.message}`);

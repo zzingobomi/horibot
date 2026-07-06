@@ -55,12 +55,16 @@ class MoveJResponse(BaseModel):
 class MoveLRequest(BaseModel):
     """TCP 를 현재 위치에서 target_position 으로 직선(MoveL) 이동.
 
-    **v1 제약 (계약 명시)**: XYZ 직선만 보장 / orientation 보장 안 함 (position-only IK —
-    seed 자세에 딸려감). orientation interpolation(quaternion SLERP) / cartesian
-    orientation constraint 는 MoveL v2 (실제 task 가 요구할 때).
+    orientation:
+      - target_quaternion=None → position-only IK (orientation 은 seed 자세에
+        딸려감 — v1 제약 그대로).
+      - target_quaternion 지정 → 경로 전 구간 그 자세 고정 (constant-orientation
+        MoveL, UR 등가). 첫 소비자 = PnP 접근축 진입/자세고정 승강 (2026-07-07 —
+        45° 사선 하강이 큐브를 밀던 실패에서 도입). SLERP interpolation 은 후속.
     """
 
     target_position: tuple[float, float, float]  # base frame, m
+    target_quaternion: tuple[float, float, float, float] | None = None  # [x,y,z,w]
 
 
 class MoveLResponse(BaseModel):

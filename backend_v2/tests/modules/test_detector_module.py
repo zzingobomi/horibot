@@ -33,13 +33,14 @@ _ROBOT = "so101_6dof_0"
 
 
 class _FakeRuntime:
-    """key(str) → canned 응답. await runtime.call 만족 (async)."""
+    """key(str) → canned 응답. await runtime.call 만족 (async). publish 캡처."""
 
     def __init__(self, responses: dict):
         self._responses = responses
+        self.published: list[tuple[str, object]] = []
 
     def publish(self, wire_key, event):  # noqa: ANN001, D102
-        pass
+        self.published.append((str(wire_key), event))
 
     async def call(self, key, req, res_cls, *, robot_id=None, timeout=5.0):
         return self._responses[str(key)]
@@ -119,6 +120,18 @@ async def test_detect_returns_topk_base_positions():
     second = res.candidates[1]
     assert second.score == 0.60
     assert abs(second.position[2] - 1.0) < 1e-6, second.position
+
+    # bbox_2d 전파 — frontend 카메라 오버레이 소비 (중앙 후보 = x∈[256,384])
+    assert best.bbox_2d is not None
+    assert best.bbox_2d[0] == 256.0 and best.bbox_2d[2] == 384.0
+
+    # DETECT 마다 DetectionsUpdate publish (v1 DETECTOR_STATE 계승 — 오버레이 wire)
+    dets = [e for k, e in rt.published if k.endswith("/detections")]
+    assert len(dets) == 1
+    upd = dets[0]
+    assert upd.robot_id == _ROBOT  # type: ignore[attr-defined]
+    assert upd.image_width == w and upd.image_height == h  # type: ignore[attr-defined]
+    assert len(upd.candidates) == 2  # type: ignore[attr-defined]
 
 
 async def test_detect_without_calibration_not_found():

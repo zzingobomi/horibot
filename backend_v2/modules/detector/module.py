@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from framework.contract.publisher import publishes
 from framework.contract.service import service
 from framework.runtime.api import ModuleRuntime
 from modules.calibration.contract import (
@@ -37,12 +39,19 @@ from modules.camera.contract import (
 from modules.motion.contract import Motion, TcpSnapshotRequest, TcpState
 
 from . import projection
-from .contract import DetectRequest, DetectResponse, Detection, Detector
+from .contract import (
+    DetectRequest,
+    DetectResponse,
+    Detection,
+    DetectionsUpdate,
+    Detector,
+)
 from .drivers.protocol import DetectorBackend
 
 logger = logging.getLogger(__name__)
 
 
+@publishes((Detector.Stream.DETECTIONS, DetectionsUpdate))
 class DetectorModule:
     def __init__(
         self,
@@ -52,6 +61,7 @@ class DetectorModule:
         self.runtime = runtime
         self._backend = backend
         self._preload_task: asyncio.Task[None] | None = None
+        self._detections_seq = 0
 
     async def start(self) -> None:
         logger.info("DetectorModule start (host-level)")
@@ -117,6 +127,8 @@ class DetectorModule:
             self._backend.detect, img, prompt, req.top_k
         )
         if not cands:
+            # 빈 결과도 publish — frontend 오버레이 clear (검출 실패 가시화)
+            self._publish_detections(robot_id, prompt, color.width, color.height, [])
             return DetectResponse(found=False, message=f"'{prompt}' 감지 실패")
 
         # 5. 후보 공통 자원 1회 — TCP pose (ee → base) + intrinsic + hand_eye (cam → ee).
@@ -159,10 +171,40 @@ class DetectorModule:
                     score=float(score),
                     base_z=float(floor_z),
                     height=float(height),
+                    bbox_2d=(
+                        float(bbox[0]), float(bbox[1]),
+                        float(bbox[2]), float(bbox[3]),
+                    ),
                 )
             )
 
+        # frontend 카메라 오버레이 — DETECT 마다 결과 스냅샷 publish (빈 결과 포함).
+        self._publish_detections(
+            robot_id, prompt, color.width, color.height, detections
+        )
         if not detections:
             return DetectResponse(found=False, message="후보 bbox depth 전부 무효")
         # backend 가 score desc 로 줌 → candidates 도 desc 유지 (task SelectTarget 소비).
         return DetectResponse(found=True, candidates=detections)
+
+    def _publish_detections(
+        self,
+        robot_id: str,
+        prompt: str,
+        width: int,
+        height: int,
+        detections: list[Detection],
+    ) -> None:
+        self.runtime.publish(
+            Detector.Stream.DETECTIONS,
+            DetectionsUpdate(
+                robot_id=robot_id,
+                seq=self._detections_seq,
+                timestamp_unix=time.time(),
+                prompt=prompt,
+                image_width=width,
+                image_height=height,
+                candidates=detections,
+            ),
+        )
+        self._detections_seq += 1

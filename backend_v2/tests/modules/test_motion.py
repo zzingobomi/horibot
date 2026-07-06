@@ -199,6 +199,61 @@ async def test_move_l_reaches_target_position(stack):
     )
 
 
+async def test_move_l_holds_orientation_along_tool_axis(stack):
+    # MoveL constant-orientation — PnP 접근축 진입의 코어 (45° 사선 하강이 큐브를
+    # 밀던 실패 fix). home 자세에서 접근축(tcp x) 을 따라 3cm 슬라이드하며 자세
+    # 고정 → 완료 후 orientation 이 시작과 동일한지 검증. (position-only 였다면
+    # IK 가 자세를 흘려보내 dot 이 떨어짐 — target_quaternion 전파 증명.)
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+
+    runtime, _driver, _robot = stack
+    assert await _wait_motion_ready(runtime)
+
+    home_rad = [math.radians(d) for d in (0.0, 15.0, -45.0, 85.0, -5.0, 90.0)]
+    mj = await runtime.module_runtime.call(
+        Motion.Service.MOVE_J,
+        MoveJRequest(target_joints=home_rad),
+        MoveJResponse,
+        robot_id=_SO101,
+    )
+    assert mj.accepted, mj.message
+    await asyncio.sleep(0.2)
+
+    start = await _try_snapshot(runtime)
+    assert start is not None
+    r_start = Rotation.from_quat(list(start.quaternion))
+    adir = r_start.apply([1.0, 0.0, 0.0])  # 접근축 (그리퍼 pointing)
+    target = tuple(float(start.position[i] + 0.03 * adir[i]) for i in range(3))
+
+    res = await runtime.module_runtime.call(
+        Motion.Service.MOVE_L,
+        MoveLRequest(target_position=target, target_quaternion=start.quaternion),
+        MoveLResponse,
+        robot_id=_SO101,
+        timeout=15.0,
+    )
+    assert res.accepted, res.message
+
+    ok = False
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        end = await _try_snapshot(runtime)
+        if end is None:
+            continue
+        pos_err = max(abs(end.position[i] - target[i]) for i in range(3))
+        r_end = Rotation.from_quat(list(end.quaternion))
+        # 자세 유지 — 시작/끝 orientation 차이 각도
+        dangle = float(np.linalg.norm((r_end * r_start.inv()).as_rotvec()))
+        if pos_err < 0.01 and dangle < math.radians(5.0):
+            ok = True
+            break
+    assert ok, (
+        f"자세고정 MoveL 실패 — pos_err={pos_err * 1000:.1f}mm "
+        f"dangle={math.degrees(dangle):.1f}°"
+    )
+
+
 async def test_move_l_rejects_without_motor_state(robot):
     # motor 없이 motion 만 → motor state 없음 → pre-flight 거부 (accepted=False, 예외 X)
     transport = ZenohTransport(_LOCAL_CFG)

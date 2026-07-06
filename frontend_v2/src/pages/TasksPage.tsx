@@ -25,6 +25,14 @@ const TASK_PANELS: PanelSpec[] = [
     width: 340,
     height: 420,
   },
+  // 검출 bbox 오버레이 카메라 (v1 tasks 카메라 계승) — 큐브/상자 인식 확인
+  {
+    id: "detection-camera",
+    component: "detectionCamera",
+    title: "Camera (Detection)",
+    width: 440,
+    height: 330,
+  },
 ];
 
 export function TasksPage() {

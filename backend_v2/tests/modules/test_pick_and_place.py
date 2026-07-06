@@ -18,7 +18,7 @@ import pytest
 from pydantic import BaseModel
 
 from modules.detector.contract import DetectResponse, Detection, Detector
-from modules.motion.contract import Motion, MoveJResponse, MoveLResponse
+from modules.motion.contract import Motion, MoveJResponse, MoveLResponse, TcpState
 from modules.motor.contract import Motor, SetGripperResponse
 from modules.task.contract import TaskStatus
 from modules.task.runner import TaskRunner
@@ -86,6 +86,18 @@ class _FakeRuntime:
             return DetectResponse(found=True, candidates=[_HIGH, _LOW])
         if res_cls is SetGripperResponse:
             return SetGripperResponse(ok=True)
+        if res_cls is TcpState:
+            # ApproachAlongTool/hold 가 현재 자세 조회 — 접근축(tcp x) 이 45° 아래를
+            # 보는 자세 (search 유형). rotY(+45°): x → (cos45, 0, -sin45).
+            return TcpState(
+                robot_id=_ROBOT,
+                seq=0,
+                timestamp_unix=0.0,
+                position=(0.2, 0.0, 0.15),
+                quaternion=(0.0, 0.3826834, 0.0, 0.9238795),  # rotY(45°) xyzw
+                joint_names=[f"j{i}" for i in range(6)],
+                joints=[0.0] * 6,
+            )
         raise AssertionError(f"예상 못한 call: {key} / {res_cls.__name__}")
 
 

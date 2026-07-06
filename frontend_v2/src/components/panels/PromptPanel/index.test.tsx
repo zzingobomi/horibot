@@ -20,6 +20,7 @@ function respond(key: string): unknown {
     };
   }
   if (key.includes("/run")) return { accepted: true, message: "" };
+  if (key.includes("/preview")) return { ok: true, message: "" };
   return { ok: true };
 }
 
@@ -97,6 +98,25 @@ describe("PromptPanel", () => {
     });
     // 파싱 결과 (pick/place) 표시
     await waitFor(() => expect(getByTestId("prompt-parsed")).toBeTruthy());
+
+    // v1 디버거 플로우 — 파싱 성공 시 자동 TASK_PREVIEW (tree publish, 실행 X).
+    // 이게 빠지면 step 목록이 실행 전에 안 떠서 브레이크포인트를 미리 못 박음.
+    await waitFor(() => {
+      const previews = spy.mock.calls.filter((c) =>
+        String(c[0]).endsWith("/preview"),
+      );
+      expect(previews.length).toBe(1);
+      const req = previews[0][1] as {
+        robot_id: string;
+        task_name: string;
+        params: Record<string, string>;
+      };
+      expect(req.robot_id).toBe(ROBOT_ID);
+      expect(req.task_name).toBe("pick_and_place");
+      expect(req.params.pick_object).toBe("white cube");
+      // run 은 아직 호출 안 됨 (preview ≠ 실행)
+      expect(spy.mock.calls.filter((c) => String(c[0]).endsWith("/run")).length).toBe(0);
+    });
   });
 
   it("실행 → TASK_RUN 을 pick_and_place + parsed params 로 call", async () => {

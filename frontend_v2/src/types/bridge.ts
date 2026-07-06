@@ -23,6 +23,10 @@ export type WsOutgoing =
       key: string;
       request_id: string;
       data: Record<string, unknown>;
+      /** bridge→zenoh call timeout (초). 미지정 = bridge 기본(5s).
+       *  장시간 서비스(TSDF build 등)는 호출자가 명시 — frontend 자체 대기
+       *  (timeoutMs) 와 같은 값으로 전파. */
+      timeout_s?: number;
     };
 
 export const FrameType = {

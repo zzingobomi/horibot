@@ -310,12 +310,23 @@ export interface Detection {
   score: number;
   base_z: number;
   height: number;
+  bbox_2d?: [number, number, number, number] | null;
 }
 
 export interface DetectResponse {
   found: boolean;
   candidates?: Detection[];
   message?: string;
+}
+
+export interface DetectionsUpdate {
+  robot_id: string;
+  seq: number;
+  timestamp_unix: number;
+  prompt: string;
+  image_width: number;
+  image_height: number;
+  candidates?: Detection[];
 }
 
 export interface ParseCommandRequest {
@@ -766,6 +777,7 @@ export const Topic = {
   CALIBRATION_ACTIVATED: "event/calibration/{robot_id}/activated",
   CALIBRATION_COMMITTED: "event/calibration/{robot_id}/committed",
   CALIBRATION_PREVIEW: "stream/calibration/{robot_id}/preview",
+  DETECTOR_DETECTIONS: "stream/detector/{robot_id}/detections",
   MOTION_JOG_J: "stream/motion/{robot_id}/jog_j",
   MOTION_JOG_TCP: "stream/motion/{robot_id}/jog_tcp",
   MOTION_TCP_STATE: "stream/motion/{robot_id}/tcp_state",
@@ -784,6 +796,7 @@ export type TopicPayloadMap = {
   "event/calibration/{robot_id}/activated": CalibrationActivated;
   "event/calibration/{robot_id}/committed": CalibrationCommitted;
   "stream/calibration/{robot_id}/preview": CalibrationPreview;
+  "stream/detector/{robot_id}/detections": DetectionsUpdate;
   "stream/motion/{robot_id}/jog_j": JogJInput;
   "stream/motion/{robot_id}/jog_tcp": JogTcpInput;
   "stream/motion/{robot_id}/tcp_state": TcpState;

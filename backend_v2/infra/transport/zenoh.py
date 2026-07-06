@@ -82,7 +82,14 @@ class ZenohTransport:
                 return reply.ok.payload.to_bytes()
             err = reply.err
             if err is not None and err.payload is not None:
-                raise self._decode_err(err.payload.to_bytes())
+                err_bytes = err.payload.to_bytes()
+                # zenoh 자체 timeout 신호 = 평문 b"Timeout" (우리 reply_err 는 항상
+                # JSON) — RemoteError("Unknown", "Timeout") 로 둔갑하지 않게 정규화.
+                if err_bytes == b"Timeout":
+                    raise TimeoutError(
+                        f"service {key} 응답 없음 (timeout={timeout}s)"
+                    )
+                raise self._decode_err(err_bytes)
             raise RemoteError(type_name="Unknown", message="empty err reply")
         raise TimeoutError(f"service {key} 응답 없음 (timeout={timeout}s)")
 

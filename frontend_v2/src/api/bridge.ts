@@ -344,11 +344,14 @@ export class BridgeClient {
       this.pendingServices.set(request_id, cacheAndResolve);
       // Bridge = 순수 transport — 키 확장(라우팅)만. robot-agnostic 서비스의
       // robot_id 는 req 필드 (호출자가 data 에 넣음, 타입이 강제) — 여기서 주입 X.
+      // timeout 은 wire 로 전파 — bridge 의 zenoh call 이 같은 상한을 쓰게
+      // (장시간 서비스가 bridge 기본 5s 에 잘리던 회귀 방지).
       this._send({
         op: WsOp.Service,
         key: expanded,
         request_id,
         data: data as Record<string, unknown>,
+        timeout_s: timeoutMs / 1000,
       });
 
       // backend 도 5s default timeout — frontend 가 safety net

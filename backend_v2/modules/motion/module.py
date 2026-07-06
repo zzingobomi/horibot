@@ -446,7 +446,7 @@ class MotionModule:
             np.asarray(start_pos, dtype=float),
             np.asarray(req.target_position, dtype=float),
         )
-        self._runner.run_cartesian(path, list(current))
+        self._runner.run_cartesian(path, list(current), req.target_quaternion)
         await self._require_done(fut, "MoveL")
         return MoveLResponse(accepted=True)
 
@@ -531,10 +531,10 @@ class MotionModule:
             if loop is not None:
                 loop.call_soon_threadsafe(self._resolve_move, status)
 
-    def _solve_ik(self, pos, seed: list[float]) -> list[float] | None:
-        # cartesian path 추종 (D2c) — position-only IK. runner 는 start() 이후 생성.
+    def _solve_ik(self, pos, quat, seed: list[float]) -> list[float] | None:
+        # cartesian path 추종 — quat=None 이면 position-only. runner 는 start() 이후 생성.
         assert self._kin is not None
-        return self._kin.ik(pos, None, seed)
+        return self._kin.ik(pos, quat, seed)
 
     # ── TCP state loop (20Hz) ─────────────────────────────────
 

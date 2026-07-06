@@ -25,7 +25,7 @@ from ruckig import (
 from scipy.interpolate import CubicSpline
 
 from .contract import TrajStatus
-from .kinematics import Position3
+from .kinematics import Position3, Quaternion
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,8 @@ PublishCmdFn = Callable[[list[float]], None]
 PublishStateFn = Callable[[TrajStatus, float], None]
 ReleaseProfileFn = Callable[[], bool]
 RestoreProfileFn = Callable[[], bool]
-SolveIkFn = Callable[[Position3, list[float]], list[float] | None]
+# (position, orientation | None, seed) — None = position-only IK
+SolveIkFn = Callable[[Position3, Quaternion | None, list[float]], list[float] | None]
 
 
 class CartesianPath(ABC):
@@ -179,8 +180,15 @@ class TrajectoryRunner:
         self._thread = None
         self._stop_ev.clear()
 
-    def run_cartesian(self, path: CartesianPath, start_angles: list[float]) -> None:
-        self._launch(self._cartesian_loop, (path, list(start_angles)),
+    def run_cartesian(
+        self,
+        path: CartesianPath,
+        start_angles: list[float],
+        orientation: Quaternion | None = None,
+    ) -> None:
+        """orientation=None → position-only IK (자세는 seed 에 딸려감).
+        지정 시 경로 전 구간 그 자세로 IK (constant-orientation MoveL)."""
+        self._launch(self._cartesian_loop, (path, list(start_angles), orientation),
                      f"{path.label.lower()}-traj")
 
     def run_joint(self, start_angles: list[float], target_angles: list[float]) -> None:
@@ -197,7 +205,12 @@ class TrajectoryRunner:
         )
         self._thread.start()
 
-    def _cartesian_loop(self, path: CartesianPath, start_angles: list[float]) -> None:
+    def _cartesian_loop(
+        self,
+        path: CartesianPath,
+        start_angles: list[float],
+        orientation: Quaternion | None = None,
+    ) -> None:
         label = path.label
         if not self._release_profile():
             logger.warning("%s: profile 비활성화 실패 — 계속", label)
@@ -227,7 +240,7 @@ class TrajectoryRunner:
             nonlocal q_filt, last_raw
             wp_list = path.position_at(s)
             wp: Position3 = (wp_list[0], wp_list[1], wp_list[2])
-            raw = self._solve_ik(wp, q_filt)
+            raw = self._solve_ik(wp, orientation, q_filt)
             if raw is None:
                 logger.warning("%s IK 실패 | s=%.1fcm", label, s * 100)
                 return False

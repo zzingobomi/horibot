@@ -11,6 +11,7 @@ import * as THREE from "three";
 import { RobotLayer } from "./RobotLayer";
 import { AxisFrame } from "./AxisFrame";
 import { Scene3DLayer } from "./Scene3DLayer";
+import { TaskResultLayer } from "./TaskResultLayer";
 import { MeshLayer } from "./MeshLayer";
 import { DEFAULT_SCENE_OPTIONS, type SceneOptions } from "./sceneOptions";
 import type { RobotInfo } from "@/api/generated/contract";
@@ -89,6 +90,8 @@ function SceneContent({
 
       {/* scan — 라이브 PC (scanStore.liveEnabled gate) + reconstruction mesh */}
       {robotId && <Scene3DLayer robotId={robotId} />}
+      {/* task step 결과 (검출 sphere / 목표점 marker) — cloud 와 겹쳐 오차 확인 */}
+      {robotId && <TaskResultLayer robotId={robotId} />}
       <MeshLayer robotBaseMatrix={robotBaseMatrix} />
 
       <OrbitControls

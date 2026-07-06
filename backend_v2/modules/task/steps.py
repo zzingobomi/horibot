@@ -29,6 +29,8 @@ from modules.motion.contract import (
     MoveJResponse,
     MoveLRequest,
     MoveLResponse,
+    TcpSnapshotRequest,
+    TcpState,
 )
 from modules.motor.contract import Motor, SetGripperRequest, SetGripperResponse
 from modules.waypoint.contract import (
@@ -106,23 +108,43 @@ class MoveJ(Step[None]):
 
 @dataclass(kw_only=True)
 class MoveTCP(Step[None]):
-    """base frame (x,y,z) 로 MoveL (§17.5, position-only v1). target = Position3
-    (Detection→Position3 변환은 GraspPolicy/PlacePolicy 담당 → 계층 분리)."""
+    """base frame (x,y,z) 로 MoveL (§17.5). target = Position3
+    (Detection→Position3 변환은 GraspPolicy/PlacePolicy 담당 → 계층 분리).
+
+    orientation:
+      - "keep" : position-only IK — 자세는 현재에 딸려감 (v1 동작).
+      - "hold" : 현재 자세를 경로 내내 고정 (constant-orientation MoveL).
+        물건 든 채 이동/승강 등 자세가 흔들리면 안 되는 구간용.
+        (수직 top-down 강제는 SO-101 기구 한계로 기각 — hover 높이에서
+        접근축 수직은 unreachable, 2026-07-07 FK 20만 샘플 조사.)
+    """
 
     target: SlotOr[Position3]
     offset: Position3 = field(default_factory=lambda: Position3(x=0.0, y=0.0, z=0.0))
+    orientation: Literal["keep", "hold"] = "keep"
 
     async def execute(self, ctx: StepContext) -> None:
         base = ctx.resolve(self.target)
         if not isinstance(base, Position3):
             raise TypeError(f"MoveTCP.target: Position3 기대, {type(base).__name__}")
         pos = base + self.offset
+
+        quat: tuple[float, float, float, float] | None = None
+        if self.orientation == "hold":
+            snap = await ctx.call(
+                Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState
+            )
+            quat = snap.quaternion
+
         logger.info(
-            "MoveL → %.3f %.3f %.3f  [%s]", pos.x, pos.y, pos.z, self.label
+            "MoveL → %.3f %.3f %.3f (orientation=%s)  [%s]",
+            pos.x, pos.y, pos.z, self.orientation, self.label,
         )
         res = await ctx.call(
             Motion.Service.MOVE_L,
-            MoveLRequest(target_position=(pos.x, pos.y, pos.z)),
+            MoveLRequest(
+                target_position=(pos.x, pos.y, pos.z), target_quaternion=quat
+            ),
             MoveLResponse,
             timeout=60.0,
         )

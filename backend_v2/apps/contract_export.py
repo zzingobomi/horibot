@@ -91,6 +91,7 @@ FRONTEND_EXPOSED: set[str] = {
         Waypoint.Service.LIST_GROUP_MEMBERS,
         # Detector
         Detector.Service.DETECT,
+        Detector.Stream.DETECTIONS,  # 카메라 패널 bbox 오버레이 (v1 DETECTOR_STATE 계승)
         # Llm
         Llm.Service.PARSE_COMMAND,
         # Task

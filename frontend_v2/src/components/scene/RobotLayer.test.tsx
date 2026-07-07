@@ -95,6 +95,28 @@ describe("RobotLayer — robot 마다 자기 TCP stream 구독", () => {
     expect(b.jointAngles).toEqual(JOINTS_B); // dim 이어도 자기 joint (home 고정 아님)
   });
 
+  it("gripper 필드 있으면 arm 뒤에 append (URDF open/close 시각화)", () => {
+    // gripper 는 arm(joints)과 분리된 별도 필드 → arm 뒤에 이름+rad append.
+    // 이름 기반 URDF 매핑이라 joint7 이 열림/닫힘으로 렌더. joints(arm)에 안 섞임
+    // (섞이면 waypoint/MoveJ dof 회귀).
+    useFrameworkStore.setState({
+      topicData: {
+        "stream/motion/so101_6dof_0/tcp_state": {
+          ...tcpState("so101_6dof_0", JOINTS_A, NAMES_A),
+          gripper_joint_name: "joint7",
+          gripper_rad: 0.9,
+        },
+      },
+      serviceData: {},
+      bridgeConnected: true,
+    });
+    render(<RobotLayer robots={[ROBOT_A]} focusId={null} />);
+
+    const a = propsFor("so101_6dof");
+    expect(a.jointNames).toEqual([...NAMES_A, "joint7"]);
+    expect(a.jointAngles).toEqual([...JOINTS_A, 0.9]);
+  });
+
   it("stream 미도착 robot 은 빈 배열 (URDF 기본 pose 안전 fallback)", () => {
     useFrameworkStore.setState({ topicData: {}, serviceData: {}, bridgeConnected: true });
     render(<RobotLayer robots={[ROBOT_A]} focusId={null} />);

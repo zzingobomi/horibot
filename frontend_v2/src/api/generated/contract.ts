@@ -381,6 +381,8 @@ export interface TcpState {
   quaternion: [number, number, number, number];
   joint_names: string[];
   joints: number[];
+  gripper_joint_name?: string | null;
+  gripper_rad?: number | null;
   calibration_applied?: boolean;
   calibration_stale?: boolean;
 }

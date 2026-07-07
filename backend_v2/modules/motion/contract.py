@@ -119,6 +119,12 @@ class TcpState(BaseModel):
     quaternion: tuple[float, float, float, float]
     joint_names: list[str]  # arm joint names, motors.yaml 순서
     joints: list[float]  # arm rad, joint_names 와 same index
+    # gripper 관절 — arm(IK/waypoint 벡터)과 분리된 별도 필드. kinematic chain 은
+    # 아니지만 로봇 configuration 의 일부라 kinematic-state layer 가 rad 로 report
+    # (제어는 여전히 Motor.set_gripper). URDF 시각화가 arm 처럼 이름 기반 매핑.
+    # gripper 없는 robot 이거나 아직 raw 미수신이면 None.
+    gripper_joint_name: str | None = None
+    gripper_rad: float | None = None
     # D4 캘 적용 상태 표면화 — "무보정으로 조용히 돈다" 차단 (frontend 배지).
     calibration_applied: bool = False  # joint/link/sag 중 하나라도 적용됨
     calibration_stale: bool = False  # 적용 후 캘 변경 감지 — 재시작 필요

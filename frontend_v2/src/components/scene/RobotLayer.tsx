@@ -48,9 +48,20 @@ function RobotItem({
 }: RobotItemProps) {
   const tcp = useStream(Topic.MOTION_TCP_STATE, { robotId: robot.id });
   // parallel arrays — backend Motion 이 joint_names + joints 를 same order 로 발행.
-  // stream 미도착(motion 모듈 안 뜬 robot 등) 시 빈 배열 → URDF 기본 pose.
-  const jointNames = tcp.value?.joint_names ?? EMPTY_NAMES;
-  const jointAngles = tcp.value?.joints ?? EMPTY_JOINTS;
+  // gripper(joint7)는 arm(IK/waypoint 벡터)과 분리된 별도 필드로 오므로 뒤에 append
+  // — URDF 는 이름 기반 매핑이라 arm 처럼 열림/닫힘이 렌더된다 (raw→rad 는 backend
+  // units SSOT, frontend 재계산 X). stream 미도착 시 빈 배열 → URDF 기본 pose.
+  const { jointNames, jointAngles } = useMemo(() => {
+    const names = tcp.value?.joint_names;
+    const angles = tcp.value?.joints;
+    if (!names || !angles) return { jointNames: EMPTY_NAMES, jointAngles: EMPTY_JOINTS };
+    const gName = tcp.value?.gripper_joint_name;
+    const gRad = tcp.value?.gripper_rad;
+    if (gName != null && gRad != null) {
+      return { jointNames: [...names, gName], jointAngles: [...angles, gRad] };
+    }
+    return { jointNames: names, jointAngles: angles };
+  }, [tcp.value]);
 
   // TCP pose = backend corrected FK (SSOT — frontend 자체 FK 박지 X).
   const baseMatrix = useMemo(() => robotBaseMatrix(robot.base_pose), [robot.base_pose]);

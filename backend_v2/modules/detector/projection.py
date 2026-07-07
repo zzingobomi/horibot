@@ -66,6 +66,55 @@ def unproject_to_base(
     return obj_base
 
 
+def object_top_center_base(
+    depth_z16: np.ndarray,
+    bbox: tuple[float, float, float, float],
+    depth_scale: float,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    r_be: np.ndarray,
+    t_be: np.ndarray,
+    r_ce: np.ndarray,
+    t_ce: np.ndarray,
+    top_band_m: float = 0.010,
+    percentile: float = _TOP_PERCENTILE,
+) -> np.ndarray | None:
+    """bbox 물체 '윗면'의 base-frame 중심 (x, y, z). valid depth 없으면 None.
+
+    옛 방식(bbox 중심 픽셀 + 윗면 depth 로 unproject)의 systematic 편향 fix:
+    비스듬한 카메라에선 bbox 중심 픽셀이 윗면 중심이 아니라 실루엣(윗면+옆면) 중심 →
+    윗면 depth 로 unproject 하면 파지 x/y 가 카메라 쪽 모서리로 밀린다. 여기서는
+    **bbox 픽셀을 각자의 depth 로 base 에 unproject 한 뒤 윗면 band 만 골라 실제
+    3D centroid** 를 취해 픽셀·depth 불일치를 없앤다 → 큐브 윗면 중심(=바닥 중심 x/y).
+
+    윗면 = base_z 상위 (percentile 로 top_z 추정 후 top_band_m 아래까지). 픽셀·depth
+    일관 → 편향 없음. 순수 numpy — 결정적.
+    """
+    h, w = depth_z16.shape
+    ix1, iy1 = max(0, int(round(bbox[0]))), max(0, int(round(bbox[1])))
+    ix2, iy2 = min(w, int(round(bbox[2]))), min(h, int(round(bbox[3])))
+    if ix2 <= ix1 or iy2 <= iy1:
+        return None
+    roi = depth_z16[iy1:iy2, ix1:ix2]
+    vs_local, us_local = np.nonzero(roi)
+    if us_local.size == 0:
+        return None
+    us = us_local.astype(np.float64) + ix1
+    vs = vs_local.astype(np.float64) + iy1
+    z = roi[vs_local, us_local].astype(np.float64) * depth_scale
+    x = (us - cx) / fx * z
+    y = (vs - cy) / fy * z
+    pts_base = (np.stack([x, y, z], axis=1) @ r_ce.T + t_ce) @ r_be.T + t_be
+    # 윗면 = base_z 상위 percentile 기준 band (카메라 향한 top face). floor/노이즈 배제.
+    top_ref = float(np.percentile(pts_base[:, 2], 100.0 - percentile))
+    top = pts_base[pts_base[:, 2] >= top_ref - top_band_m]
+    if top.size == 0:
+        return None
+    return np.array([top[:, 0].mean(), top[:, 1].mean(), top[:, 2].mean()], dtype=float)
+
+
 def floor_z_and_height(
     depth_z16: np.ndarray,
     bbox: tuple[float, float, float, float],

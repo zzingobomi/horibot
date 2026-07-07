@@ -10,6 +10,7 @@ import numpy as np
 
 from modules.detector.projection import (
     floor_z_and_height,
+    object_top_center_base,
     unproject_to_base,
     z_cam_from_depth_bbox,
 )
@@ -90,6 +91,47 @@ def test_z_cam_from_depth_bbox_top_percentile():
     z = z_cam_from_depth_bbox(depth, (40, 40, 60, 60), depth_scale=0.001)
     # ROI 전부 1000 → percentile25 = 1000 → 1.0m
     assert z is not None and abs(z - 1.0) < 1e-6, z
+
+
+def test_object_top_center_uses_top_face_not_bbox_center():
+    """윗면 픽셀 3D centroid = 윗면 중심 (bbox 중심 픽셀 편향 fix, 결정적).
+
+    비스듬한 시점: bbox 안에서 윗면(가까운 depth)이 위쪽에 치우치고 아래는 옆면(더 멂).
+    옛 방식(bbox 중심 픽셀 + 윗면 depth)은 파지 x/y 를 아래(카메라 쪽)로 밀지만,
+    윗면 픽셀들의 실제 centroid 는 진짜 윗면 중심을 복원. 이 assert 를 옛 방식으로
+    되돌리면(bbox 중심) 즉시 깨짐.
+    """
+    fx = fy = 500.0
+    cx = cy = 100.0
+    r_be = np.diag([1.0, -1.0, -1.0])  # 카메라 수직 내려봄
+    t_be = np.array([0.0, 0.0, 0.5])
+    depth = np.zeros((200, 200), dtype=np.uint16)
+    depth[80:100, 80:120] = 200  # 윗면 (가까움, base_z 0.3) — bbox 위쪽 절반
+    depth[100:120, 80:120] = 230  # 옆면 (더 멂, base_z 0.27) — bbox 아래 절반
+    bbox = (80.0, 80.0, 120.0, 120.0)  # 중심 픽셀 (100, 100)
+
+    out = object_top_center_base(
+        depth, bbox, 0.001, fx, fy, cx, cy, r_be, t_be, np.eye(3), np.zeros(3)
+    )
+    assert out is not None
+    # 윗면 픽셀 centroid = (u=99.5, v=89.5) @ z_cam 0.2 → 이걸 복원해야.
+    expect = unproject_to_base(
+        99.5, 89.5, 0.2, fx, fy, cx, cy, r_be, t_be, np.eye(3), np.zeros(3)
+    )
+    assert np.allclose(out, expect, atol=1e-3), (out, expect)
+    # 옛 방식(bbox 중심 픽셀 v=100)과 유의미하게 다름 = 편향 제거 증명.
+    old_biased = unproject_to_base(
+        100.0, 100.0, 0.2, fx, fy, cx, cy, r_be, t_be, np.eye(3), np.zeros(3)
+    )
+    assert abs(out[1] - old_biased[1]) > 3e-3, (out[1], old_biased[1])
+
+
+def test_object_top_center_no_valid_returns_none():
+    depth = np.zeros((50, 50), dtype=np.uint16)
+    assert object_top_center_base(
+        depth, (10.0, 10.0, 30.0, 30.0), 0.001, 500.0, 500.0, 25.0, 25.0,
+        np.eye(3), np.zeros(3), np.eye(3), np.zeros(3),
+    ) is None
 
 
 def test_z_cam_from_depth_bbox_no_valid_returns_none():

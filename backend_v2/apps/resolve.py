@@ -292,12 +292,16 @@ def _motion_deps(robot: RobotConfig) -> dict[str, Any]:
             )
         limits.append(lim)
     urdf = _ROBOT_DIR / robot.type / "urdf" / f"{robot.type}.urdf"
+    # gripper 관절 report 용 (arm 아님) — URDF 시각화가 open/close 를 보이게.
+    gripper = next((s for s in robot.motors if s.kind == MotorKind.GRIPPER), None)
     return {
         # D4 — link_offset(calibration) 이 patched URDF 경로를 결정하므로 factory 주입.
         # PybulletKinematics 클래스 자체가 Path → Kinematics factory.
         "kinematics_factory": PybulletKinematics,
         "urdf_path": urdf,
         "arm_specs": arm,
+        "gripper_spec": gripper,
+        "gripper_index": robot.motors.index(gripper) if gripper else None,
         "joint_max_velocity": [x.max_velocity for x in limits],
         "joint_max_acceleration": [x.max_acceleration for x in limits],
         "joint_max_jerk": [x.max_jerk for x in limits],

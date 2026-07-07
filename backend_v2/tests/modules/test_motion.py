@@ -142,6 +142,10 @@ async def test_tcp_snapshot_returns_fk_pose(stack):
     # frontend 는 이 name list 로 URDF joint 를 찾아 매핑 — 순서 회귀 원천 차단.
     assert snap.joint_names == ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
     assert len(snap.joint_names) == len(snap.joints)
+    # gripper 는 arm(joints)과 분리된 별도 필드로 report — URDF open/close 시각화용.
+    # arm(6)에 섞이면 waypoint(state.joints 소비)/MoveJ dof 가 깨짐 → 별도 필드가 계약.
+    assert snap.gripper_joint_name == "joint7"
+    assert snap.gripper_rad is not None and isinstance(snap.gripper_rad, float)
 
 
 async def _wait_motion_ready(runtime) -> bool:

@@ -108,8 +108,10 @@ async def test_detect_returns_topk_base_positions():
     assert res.candidates[0].score >= res.candidates[1].score
 
     best = res.candidates[0]
-    # 중앙 bbox center=(320,240)=(cx,cy) → X=Y=0, Z_cam=0.3; hand_eye=I; base t=[0,0,0.5]
-    assert np.allclose(best.position, [0.0, 0.0, 0.8], atol=1e-6), best.position
+    # 중앙 균일 윗면 → 윗면 픽셀 centroid ≈ (cx,cy), Z_cam=0.3; hand_eye=I; base t=[0,0,0.5]
+    # → base ≈ [0,0,0.8]. (centroid 는 픽셀 그리드 중심이라 bbox 중심과 0.5px≈0.25mm 차 —
+    #  균일 블록에선 무해. object_top_center_base = 윗면 실측 중심.)
+    assert np.allclose(best.position, [0.0, 0.0, 0.8], atol=1e-3), best.position
     assert best.prompt == "cube"
     assert best.score == 0.95
     # base_z/height 필드 전파 + 불변식 (ring floor_z/height 수치는 projection unit test).

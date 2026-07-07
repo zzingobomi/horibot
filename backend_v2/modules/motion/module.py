@@ -82,6 +82,8 @@ class MotionModule:
         cartesian_max_velocity: float,
         cartesian_max_acceleration: float,
         cartesian_max_jerk: float,
+        gripper_spec: MotorSpec | None = None,
+        gripper_index: int | None = None,
     ) -> None:
         self.runtime = runtime
         self.robot_id = robot_id
@@ -96,6 +98,10 @@ class MotionModule:
         self._retired_kins: list[Kinematics] = []
         self._arm = arm_specs
         self._dof = len(arm_specs)
+        # gripper report (arm 아님) — URDF 시각화용. spec/index 둘 다 있어야 활성.
+        self._gripper_spec = gripper_spec
+        self._gripper_index = gripper_index
+        self._latest_gripper_rad: float | None = None
         self._j_max_vel = joint_max_velocity
         self._j_max_acc = joint_max_acceleration
         self._j_max_jerk = joint_max_jerk
@@ -195,6 +201,15 @@ class MotionModule:
         self._latest_arm_rad = units.joints_raw_to_rad(
             state.positions_raw[: self._dof], self._arm, self._joint_off
         )
+        # gripper rad (units SSOT, 캘 없음) — arm 과 별도. URDF open/close 시각화용.
+        if (
+            self._gripper_spec is not None
+            and self._gripper_index is not None
+            and self._gripper_index < len(state.positions_raw)
+        ):
+            self._latest_gripper_rad = units.raw_to_rad(
+                state.positions_raw[self._gripper_index], self._gripper_spec
+            )
 
     # ── jog (50Hz velocity 입력 → 적분 → command) ─────────────
 
@@ -564,6 +579,10 @@ class MotionModule:
             quaternion=quat,
             joint_names=[s.name for s in self._arm],
             joints=list(joints),
+            gripper_joint_name=(
+                self._gripper_spec.name if self._gripper_spec is not None else None
+            ),
+            gripper_rad=self._latest_gripper_rad,
             calibration_applied=self._calibration_applied,
             calibration_stale=self._calibration_stale,
         )

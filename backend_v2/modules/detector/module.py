@@ -150,16 +150,15 @@ class DetectorModule:
         # 6. 후보별 depth median Z → base 투영 + floor_z/height (§17.5 기하 prior).
         detections: list[Detection] = []
         for bbox, score in cands:
-            z_cam = projection.z_cam_from_depth_bbox(
-                depth, bbox, depth_f.depth_scale
+            # 윗면 픽셀들의 실제 3D centroid = 큐브 윗면 중심(=바닥 중심 x/y). bbox 중심
+            # 픽셀 + 윗면 depth 짝짓기의 systematic 편향(비스듬한 시점 → 파지점이 카메라
+            # 쪽 모서리로 밀림) fix. depth 없는 후보는 base 좌표 산출 불가 → 누락.
+            base = projection.object_top_center_base(
+                depth, bbox, depth_f.depth_scale, fx, fy, cx, cy,
+                r_be, t_be, r_ce, t_ce,
             )
-            if z_cam is None or z_cam <= 0:
-                continue  # depth 없는 후보는 base 좌표 산출 불가 → 누락
-            u = (bbox[0] + bbox[2]) / 2.0
-            v = (bbox[1] + bbox[3]) / 2.0
-            base = projection.unproject_to_base(
-                u, v, z_cam, fx, fy, cx, cy, r_be, t_be, r_ce, t_ce
-            )
+            if base is None:
+                continue
             floor_z, height = projection.floor_z_and_height(
                 depth, bbox, depth_f.depth_scale, fx, fy, cx, cy,
                 r_be, t_be, r_ce, t_ce, obj_top_base_z=float(base[2]),

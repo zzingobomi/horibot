@@ -22,6 +22,7 @@ from modules.motion.contract import (
     JogJInput,
     JogTcpInput,
     Motion,
+    MoveJPoseRequest,
     MoveJRequest,
     MoveJResponse,
     MoveLRequest,
@@ -200,6 +201,48 @@ async def test_move_l_reaches_target_position(stack):
     assert end is not None
     assert err < 0.01, (
         f"MoveL 도달 오차 {err * 1000:.1f}mm > 10mm: {end.position} vs {target}"
+    )
+
+
+async def test_move_j_pose_reaches_target_via_joint_space(stack):
+    # MOVE_J_POSE: pose → IK → 관절 이동 (Cartesian 직선 아님). pick 접근/승강이 씀.
+    # home 후 target pose(위치) 로 MoveJPose → TCP 가 target 근처 도달. 자세는 IK 자유
+    # (position-only) 라 위치만 검증. MoveL 과 달리 "자세 고정 경로" 제약이 없음.
+    runtime, _driver, _robot = stack
+    assert await _wait_motion_ready(runtime)
+
+    home_rad = [math.radians(d) for d in (0.0, 15.0, -45.0, 85.0, -5.0, 90.0)]
+    mj = await runtime.module_runtime.call(
+        Motion.Service.MOVE_J, MoveJRequest(target_joints=home_rad),
+        MoveJResponse, robot_id=_SO101,
+    )
+    assert mj.accepted, mj.message
+    await asyncio.sleep(0.2)
+
+    start = await _try_snapshot(runtime)
+    assert start is not None
+    target = (start.position[0] + 0.02, start.position[1], start.position[2] - 0.02)
+
+    res = await runtime.module_runtime.call(
+        Motion.Service.MOVE_J_POSE,
+        MoveJPoseRequest(target_position=target),
+        MoveJResponse, robot_id=_SO101,
+    )
+    assert res.accepted, res.message
+
+    end = None
+    err = 1.0
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        end = await _try_snapshot(runtime)
+        if end is None:
+            continue
+        err = max(abs(end.position[i] - target[i]) for i in range(3))
+        if err < 0.01:
+            break
+    assert end is not None
+    assert err < 0.01, (
+        f"MoveJPose 도달 오차 {err * 1000:.1f}mm > 10mm: {end.position} vs {target}"
     )
 
 

@@ -42,7 +42,7 @@ from modules.waypoint.contract import (
 
 from ..schema import Position3, SlotOr
 from ..step import Step, StepContext, TaskSpec
-from ..steps import Gripper, MoveJ, MoveTCP, VerifyGrasp, Wait
+from ..steps import Gripper, MoveJ, MoveToPose, VerifyGrasp, Wait
 
 logger = logging.getLogger(__name__)
 
@@ -276,20 +276,21 @@ def create_pick_and_place_task(
 
     steps += [
         grasp,
-        # 접근/파지/이동 전부 position-only — grasp 에 필요한 건 위치뿐, 자세는
-        # 팔이 그 위치에서 닿는 대로 IK 가 자유롭게 잡음. 자세를 고정하면 도달
-        # 가능한 위치인데도 IK 가 실패함 (constant-orientation 이 높이마다 변하는
-        # reachable 자세를 못 덮음 — 2026-07-07 검증).
-        MoveTCP(
+        # 관절 공간 config 전이(MoveToPose = pose→IK→MoveJ). Cartesian 직선(MoveL)은
+        # SO-101 workspace 에서 "자세 고정한 채 이동" 이 높이마다 변하는 도달 자세를
+        # 못 덮어 IK 실패 — 관절 이동으로 전환(2026-07-07). 위치는 어디든 도달하고
+        # 자세는 경로 따라 자유. approach=위 config, grasp=파지 config.
+        MoveToPose(
             target=grasp.out,
             offset=Position3(x=0.0, y=0.0, z=PRE_GRASP_DZ),
             label="pre_grasp",
         ),
-        MoveTCP(target=grasp.out, label="grasp"),
+        MoveToPose(target=grasp.out, label="grasp"),
         Gripper(action="close", label="close_gripper"),
         VerifyGrasp(label="verify_grasp"),
         Wait(duration_sec=0.5, label="grip_settle"),
-        MoveTCP(
+        # lift = 월드 Z 상승이 아니라 "위 config 로 복귀" → 큐브 자연 상승 (관절 이동).
+        MoveToPose(
             target=grasp.out,
             offset=Position3(x=0.0, y=0.0, z=LIFT_DZ),
             label="lift",
@@ -301,16 +302,16 @@ def create_pick_and_place_task(
         place_xyz = PlacePolicy(target=select_place.out, label="place_policy")
         steps += [
             place_xyz,
-            MoveTCP(
+            MoveToPose(
                 target=place_xyz.out,
                 offset=Position3(x=0.0, y=0.0, z=PLACE_HOVER_DZ),
                 label="pre_place",
             ),
-            MoveTCP(target=place_xyz.out, label="place"),
+            MoveToPose(target=place_xyz.out, label="place"),
             VerifyGrasp(label="verify_before_release"),
             Gripper(action="open", label="release"),
             Wait(duration_sec=0.3, label="release_settle"),
-            MoveTCP(
+            MoveToPose(
                 target=place_xyz.out,
                 offset=Position3(x=0.0, y=0.0, z=PLACE_HOVER_DZ),
                 label="post_place_retreat",

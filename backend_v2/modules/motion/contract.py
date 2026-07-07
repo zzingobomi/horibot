@@ -16,6 +16,7 @@ from pydantic import BaseModel
 class Motion:
     class Service(StrEnum):
         MOVE_J = "srv/motion/{robot_id}/move_j"  # joint target → trajectory
+        MOVE_J_POSE = "srv/motion/{robot_id}/move_j_pose"  # TCP pose → IK → joint move
         MOVE_L = "srv/motion/{robot_id}/move_l"  # TCP 직선 (position-only v1)
         TCP_SNAPSHOT = "srv/motion/{robot_id}/tcp_snapshot"  # point-in-time TCP
         STOP = "srv/motion/{robot_id}/stop"
@@ -50,6 +51,23 @@ class MoveJRequest(BaseModel):
 class MoveJResponse(BaseModel):
     accepted: bool
     message: str = ""
+
+
+class MoveJPoseRequest(BaseModel):
+    """목표 TCP pose → IK → **관절 공간** MoveJ (Cartesian 직선 아님).
+
+    MoveL 과의 차이 = 경로가 관절 보간이라 자세가 경로 따라 자유롭게 변함 → "특정
+    자세 고정한 채 직선" 이 강제하는 높이-의존 도달성 실패가 없음 (SO-101 처럼
+    workspace 안에서 자세가 위치마다 바뀌는 팔에 필수). UR `movej(pose)` 등가.
+    IK 는 현재 자세를 seed 로 → 목표 config 가 가까워 부드럽게 이동.
+
+    orientation:
+      - target_quaternion=None → position-only IK (자세는 IK 가 자유롭게 선택).
+      - 지정 → 그 자세로 IK (도달 가능해야 함).
+    """
+
+    target_position: tuple[float, float, float]  # base frame, m
+    target_quaternion: tuple[float, float, float, float] | None = None  # [x,y,z,w]
 
 
 class MoveLRequest(BaseModel):

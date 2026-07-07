@@ -30,6 +30,7 @@ from .contract import (
     MotionCompleted,
     MotionFailed,
     Motion,
+    MoveJPoseRequest,
     MoveJRequest,
     MoveJResponse,
     MoveLRequest,
@@ -378,6 +379,29 @@ class MotionModule:
         fut = self._move_done
         self._runner.run_joint(current, list(req.target_joints))
         await self._require_done(fut, "MoveJ")
+        return MoveJResponse(accepted=True)
+
+    @service(Motion.Service.MOVE_J_POSE)
+    async def move_j_pose(self, req: MoveJPoseRequest) -> MoveJResponse:
+        """목표 TCP pose → IK(현재 자세 seed, multi-restart) → 관절 공간 MoveJ.
+
+        Cartesian 직선(MoveL) 아님 — 경로가 관절 보간이라 "자세 고정한 채 이동" 이
+        강제하는 높이-의존 IK 실패가 없다. pick 접근/승강이 이걸 씀 (2026-07-07 —
+        MoveL 자세 고정 접근이 SO-101 workspace 에서 구조적으로 실패해 전환).
+        """
+        current = self._latest_arm_rad
+        if current is None:
+            return MoveJResponse(accepted=False, message="motor state 아직 없음")
+        assert self._kin is not None  # start() 이후만 서비스 도달
+        target = self._kin.ik(req.target_position, req.target_quaternion, current)
+        if target is None:
+            return MoveJResponse(accepted=False, message="IK 실패 — pose 도달 불가")
+        if not self._begin_move():
+            return MoveJResponse(accepted=False, message="이전 motion 진행 중")
+        assert self._runner is not None and self._move_done is not None
+        fut = self._move_done
+        self._runner.run_joint(list(current), target)
+        await self._require_done(fut, "MoveJPose")
         return MoveJResponse(accepted=True)
 
     @service(Motion.Service.MOVE_L)

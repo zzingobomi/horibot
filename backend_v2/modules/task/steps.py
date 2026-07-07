@@ -25,6 +25,7 @@ from typing import Literal
 
 from modules.motion.contract import (
     Motion,
+    MoveJPoseRequest,
     MoveJRequest,
     MoveJResponse,
     MoveLRequest,
@@ -150,6 +151,36 @@ class MoveTCP(Step[None]):
         )
         if not res.accepted:
             raise RuntimeError(f"MoveL 거부: {res.message} [{self.label}]")
+
+
+@dataclass(kw_only=True)
+class MoveToPose(Step[None]):
+    """base frame (x,y,z) 로 pose→IK→**관절 공간** 이동 (MOVE_J_POSE, Cartesian 직선 아님).
+
+    pick 접근/파지/승강용. MoveL(자세 고정 직선)이 SO-101 workspace 에서 높이-의존 IK
+    실패를 내던 것(2026-07-07)의 대체 — 관절 보간이라 자세가 경로 따라 자유롭게 변해
+    "특정 자세 유지한 채 이동/승강" 제약이 없음. 도달만 하면 됨(위치는 어디든 도달).
+    승강(lift)도 월드 Z 명령이 아니라 "든 자세 config 로 복귀" = 자연 상승.
+    orientation 은 position-only(IK 자유) — jaw 정렬(큐브 yaw)/pinch offset 은 후속.
+    """
+
+    target: SlotOr[Position3]
+    offset: Position3 = field(default_factory=lambda: Position3(x=0.0, y=0.0, z=0.0))
+
+    async def execute(self, ctx: StepContext) -> None:
+        base = ctx.resolve(self.target)
+        if not isinstance(base, Position3):
+            raise TypeError(f"MoveToPose.target: Position3 기대, {type(base).__name__}")
+        pos = base + self.offset
+        logger.info("MoveJPose → %.3f %.3f %.3f  [%s]", pos.x, pos.y, pos.z, self.label)
+        res = await ctx.call(
+            Motion.Service.MOVE_J_POSE,
+            MoveJPoseRequest(target_position=(pos.x, pos.y, pos.z)),
+            MoveJResponse,
+            timeout=60.0,
+        )
+        if not res.accepted:
+            raise RuntimeError(f"MoveJPose 거부: {res.message} [{self.label}]")
 
 
 # ─── Gripper ─────────────────────────────────────────────────────────

@@ -115,11 +115,13 @@ async def test_pick_and_place_runs_to_success():
     assert len(_reqs(rt, Detector.Service.DETECT)) == 4
 
     # SelectTarget 이 최고 score(_HIGH, x=0.3) 선택 → GraspPolicy grasp_z=0+0.05·0.5=0.025.
-    # grasp MOVE_L 좌표 = (0.3, 0.0, 0.025). low 후보(x=0.1)면 selection 회귀.
-    movel = [r.target_position for r in _reqs(rt, Motion.Service.MOVE_L)]  # type: ignore[attr-defined]
+    # grasp 는 MOVE_J_POSE(pose→IK→관절이동, Cartesian MoveL 아님) 좌표 = (0.3, 0.0, 0.025).
+    # low 후보(x=0.1)면 selection 회귀. MoveL 로 되돌리면(회귀) 이 assert 가 깨짐.
+    moves = [r.target_position for r in _reqs(rt, Motion.Service.MOVE_J_POSE)]  # type: ignore[attr-defined]
     assert any(
-        pos == pytest.approx((0.3, 0.0, 0.025)) for pos in movel
-    ), movel
+        pos == pytest.approx((0.3, 0.0, 0.025)) for pos in moves
+    ), moves
+    assert not _reqs(rt, Motion.Service.MOVE_L), "pick 은 MoveL 안 씀 (관절 이동)"
 
     # gripper open→close→open(release) raw 시퀀스 (spec 값)
     grips = [r.position_raw for r in _reqs(rt, Motor.Service.SET_GRIPPER)]  # type: ignore[attr-defined]

@@ -163,17 +163,32 @@ class Runtime:
             await self._initialize_mirrors(module)
 
         # start()는 sync/async 모두 허용한다.
-        for module in self._modules:
-            if has_start(module):
-                result = module.start()
-                if asyncio.iscoroutine(result):
-                    await result
+        started: list[Any] = []
+        try:
+            for module in self._modules:
+                if has_start(module):
+                    result = module.start()
+                    if asyncio.iscoroutine(result):
+                        await result
+                    started.append(module)
+        except BaseException:
+            # 부팅 중간 실패 — 이미 start 된 모듈을 역순 stop + endpoint 정리.
+            # 방치하면 worker thread/task 가 좀비로 남아 프로세스 종료를 막는다.
+            await self._stop_modules(started)
+            self._undeclare_handles()
+            self._started = False
+            raise
 
     async def stop(self) -> None:
         if not self._started:
             return
 
-        for module in reversed(self._modules):
+        await self._stop_modules(self._modules)
+        self._undeclare_handles()
+        self._started = False
+
+    async def _stop_modules(self, modules: list[Any]) -> None:
+        for module in reversed(modules):
             if has_stop(module):
                 try:
                     result = module.stop()
@@ -185,13 +200,13 @@ class Runtime:
                         type(module).__name__,
                     )
 
+    def _undeclare_handles(self) -> None:
         for handle in self._handles:
             try:
                 handle.undeclare()
             except Exception:
                 pass
         self._handles.clear()
-        self._started = False
 
     @property
     def module_runtime(self) -> ModuleRuntime:
@@ -212,6 +227,7 @@ class Runtime:
             self._register_subscriber(module, bound_method, spec)
         for _name, state in discover_mirrors(module):
             self._register_mirror_subscriber(module, state)
+            self._register_mirror_liveliness(module, state)
 
     def _register_service(
         self,
@@ -252,6 +268,7 @@ class Runtime:
 
         handle = self._transport.register_service(key, handler_bytes)
         self._handles.append(handle)
+        self._handles.append(self._transport.declare_liveliness(key))
 
     def _register_subscriber(
         self,
@@ -316,6 +333,23 @@ class Runtime:
         handle = self._transport.subscribe(topic, callback)
         self._handles.append(handle)
 
+    def _register_mirror_liveliness(
+        self,
+        module: Any,
+        state: MirrorState[Any],
+    ) -> None:
+        key = self._format_snapshot_key(module, state)
+
+        def callback(_key: str, alive: bool) -> None:
+            if not alive:
+                return
+            loop = self._loop
+            if loop is None or loop.is_closed():
+                return
+            asyncio.run_coroutine_threadsafe(self._refetch_mirror(module, state), loop)
+
+        self._handles.append(self._transport.subscribe_liveliness(key, callback))
+
     async def _initialize_mirrors(self, module: Any) -> None:
         for _name, state in discover_mirrors(module):
             try:
@@ -326,8 +360,8 @@ class Runtime:
                 )
             except (TimeoutError, RemoteError):
                 logger.info(
-                    "Mirror initial snapshot 실패 (Owner 안 떠 있음) — event 받으면 refetch: "
-                    "service=%s module=%s",
+                    "Mirror initial snapshot 실패 (Owner 안 떠 있음) — liveliness/"
+                    "event 로 자동 수렴: service=%s module=%s",
                     state.spec.snapshot_service,
                     type(module).__name__,
                 )
@@ -339,7 +373,31 @@ class Runtime:
         *,
         timeout: float = 5.0,
     ) -> None:
-        req = state.spec.snapshot_req(module)
+        key = self._format_snapshot_key(module, state)
+        async with state.refetch_lock:
+            req = state.spec.snapshot_req(module)
+            payload = _encode_request(req)
+            res_bytes = await self._transport.call(key, payload, timeout)
+            value = _decode_response(state.spec.value_cls, res_bytes)
+            old = state.peek()
+            state._set(value)
+            if old != value and state.on_change_name is not None:
+                cb = getattr(module, state.on_change_name, None)
+                if cb is None:
+                    return
+                try:
+                    result = cb(old, value)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    logger.exception(
+                        "Mirror on_change 실패 (%s.%s) — cache 는 갱신됨",
+                        type(module).__name__,
+                        state.on_change_name,
+                    )
+
+    @staticmethod
+    def _format_snapshot_key(module: Any, state: MirrorState[Any]) -> str:
         key = state.spec.snapshot_service
         if "{robot_id}" in key:
             rid = getattr(module, "robot_id", None)
@@ -349,8 +407,4 @@ class Runtime:
                     f"{type(module).__name__} 에 self.robot_id 필요"
                 )
             key = key.format(robot_id=rid)
-
-        payload = _encode_request(req)
-        res_bytes = await self._transport.call(key, payload, timeout)
-        value = _decode_response(state.spec.value_cls, res_bytes)
-        state._set(value)
+        return key

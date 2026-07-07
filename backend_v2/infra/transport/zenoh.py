@@ -69,6 +69,28 @@ class ZenohTransport:
 
         return self._session.declare_subscriber(key, _on_sample)
 
+    def declare_liveliness(self, key: str) -> "zenoh.LivelinessToken":
+        return self._session.liveliness().declare_token(key)
+
+    def subscribe_liveliness(
+        self, key_expr: str, callback: Callable[[str, bool], None]
+    ) -> "zenoh.Subscriber":
+        def _on_sample(sample: zenoh.Sample) -> None:
+            alive = sample.kind == zenoh.SampleKind.PUT
+            try:
+                callback(str(sample.key_expr), alive)
+            except Exception as e:
+                logger.error(
+                    "liveliness callback exception (%s): %s: %s",
+                    key_expr,
+                    type(e).__name__,
+                    e,
+                )
+
+        return self._session.liveliness().declare_subscriber(
+            key_expr, _on_sample, history=True
+        )
+
     def close(self) -> None:
         self._session.close()
         logger.info("ZenohTransport closed")
@@ -86,9 +108,7 @@ class ZenohTransport:
                 # zenoh 자체 timeout 신호 = 평문 b"Timeout" (우리 reply_err 는 항상
                 # JSON) — RemoteError("Unknown", "Timeout") 로 둔갑하지 않게 정규화.
                 if err_bytes == b"Timeout":
-                    raise TimeoutError(
-                        f"service {key} 응답 없음 (timeout={timeout}s)"
-                    )
+                    raise TimeoutError(f"service {key} 응답 없음 (timeout={timeout}s)")
                 raise self._decode_err(err_bytes)
             raise RemoteError(type_name="Unknown", message="empty err reply")
         raise TimeoutError(f"service {key} 응답 없음 (timeout={timeout}s)")

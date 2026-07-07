@@ -1,11 +1,3 @@
-"""LlmModule — 자연어 pick-and-place 명령 파서 (§17 NL PnP). PC 배치, robot-agnostic.
-
-host 당 1 (§2.7) — 무거운 모델(Qwen)을 1회 로드, PARSE_COMMAND 마다 텍스트 → (pick,
-place). 파싱은 robot 무관 (robot_id 불필요). 모델은 LlmBackend adapter 뒤 (§17.1).
-DetectorModule 동형 — 백그라운드 preload(boot 안 막음) + to_thread inference(event loop
-안 막음). frontend PromptPanel 이 PARSE_COMMAND → (pick,place) → Task.RUN 중계.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -62,7 +54,5 @@ class LlmModule:
             )
         return ParseCommandResponse(
             ok=True,
-            parsed=ParsedPickPlace(
-                pick_object=parsed.pick, place_object=parsed.place
-            ),
+            parsed=ParsedPickPlace(pick_object=parsed.pick, place_object=parsed.place),
         )

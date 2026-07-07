@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from pydantic import BaseModel
 
 from framework.runtime.discovery import discover_services
@@ -125,10 +126,14 @@ def _module(tmp_path: Path) -> tuple[ScanModule, _FakeRuntime, ScanRepository]:
         object_store=FilesystemObjectStore(tmp_path / "blobs"),
         robots={
             _SO101: ScanRobotSpec(
-                kinematics=_FakeKinematics(), arm_specs=_arm([1, 2, 3, 4, 5, 6])
+                kinematics_factory=lambda p: _FakeKinematics(),
+                urdf_path=tmp_path / "so101.urdf",
+                arm_specs=_arm([1, 2, 3, 4, 5, 6]),
             ),
             _OMX: ScanRobotSpec(
-                kinematics=_FakeKinematics(), arm_specs=_arm([1, 2, 3, 4, 5])
+                kinematics_factory=lambda p: _FakeKinematics(),
+                urdf_path=tmp_path / "omx.urdf",
+                arm_specs=_arm([1, 2, 3, 4, 5]),
             ),
         },
     )
@@ -209,3 +214,204 @@ async def test_capture_unknown_fleet_robot_rejected(tmp_path: Path):
     assert ghost.session.id is not None
     res = await mod.capture(CaptureRequest(session_row_id=ghost.session.id))
     assert not res.accepted and "fleet" in res.message
+
+
+# ─── build 캘 적용 — "raw 저장 + build 시 현재 캘로 재계산" FK 절반 ──
+# (2026-07-07: 옛 코드는 plain kinematics + joint_offset 미적용 — anchor 절대
+#  배치가 첫 scan FK 오차만큼 틀어지고 ICP 초기값 품질 저하. 공유 빌더로 수정.)
+
+
+class _RecordingKin:
+    """fk_to_matrix 입력 기록 + init/close 추적 — build 캘 적용 수치 검증용."""
+
+    def __init__(self) -> None:
+        self.fk_inputs: list[list[float]] = []
+        self.initialized = False
+        self.closed = False
+
+    def initialize(self) -> None:
+        self.initialized = True
+
+    def close(self) -> None:
+        self.closed = True
+
+    @property
+    def dof(self) -> int:
+        return 6
+
+    @property
+    def tcp_link_name(self) -> str:
+        return "tcp"
+
+    def fk(self, joint_angles):  # noqa: ANN001, ANN201
+        return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)
+
+    def ik(self, target_position, target_quaternion, current_joint_angles=None):  # noqa: ANN001, ANN201
+        return None
+
+    def fk_to_matrix(self, joint_angles):  # noqa: ANN001, ANN201
+        self.fk_inputs.append(list(joint_angles))
+        # 고정 EE pose — hand_eye 합성 수치 검증에 사용 (R=I, t=(0.1, 0.2, 0.3))
+        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], (0.1, 0.2, 0.3)
+
+    def joint_limits(self, n=None):  # noqa: ANN001, ANN201
+        return []
+
+    def self_collision(self, joint_angles) -> bool:  # noqa: ANN001
+        return False
+
+
+def _real_blob() -> tuple[bytes, int, int]:
+    """scan_blob.decode 가 실제로 풀 수 있는 blob (진짜 JPEG + zstd uint16)."""
+    import cv2
+    import numpy as np
+    import zstandard as zstd
+
+    from modules.scan import blob as scan_blob
+
+    w, h = 64, 48
+    ok, jpeg = cv2.imencode(".jpg", np.zeros((h, w, 3), dtype=np.uint8))
+    assert ok
+    depth = np.full((h, w), 500, dtype=np.uint16)
+    depth_zstd = zstd.ZstdCompressor().compress(depth.tobytes())
+    return scan_blob.encode(jpeg.tobytes(), depth_zstd), w, h
+
+
+async def test_build_applies_fresh_calibration_to_fk(tmp_path: Path, monkeypatch):
+    """★ build 가 fresh bundle 의 joint_offset(+빌더 경유 link/sag)을 FK 에 적용:
+    ① factory 로 kin 을 build 시점 구성 + initialize/close lifecycle
+    ② fk 입력 = raw_to_rad + joint_offset (수치)
+    ③ t_base_cam_init = t_base_ee · hand_eye (수치)
+    joint_offset 빠뜨리면(옛 코드) ② 가 red — 회귀 잠금.
+    """
+    from datetime import UTC, datetime
+
+    import numpy as np
+
+    from modules.calibration.contract import (
+        Calibration,
+        CalibrationBundle,
+        HandEyeResultData,
+        HandEyeResultRecord,
+        JointOffsetResultData,
+        JointOffsetResultRecord,
+    )
+    from modules.motion import units
+    from modules.scan import build as recon
+    from modules.scan.contract import BuildRequest
+    from modules.scan.contract import ScanRecord as ScanRow
+
+    arm = _arm([1, 2, 3, 4, 5, 6])
+    kins: list[_RecordingKin] = []
+
+    def factory(p: Path) -> _RecordingKin:
+        k = _RecordingKin()
+        kins.append(k)
+        return k
+
+    # bundle — joint_offset(모터 id 3 → +0.113) + hand_eye(R=I, t=(0.01, 0.02, 0.03))
+    kw = {"run_id": 1, "robot_id": _SO101, "created_at": datetime.now(UTC)}
+    bundle = CalibrationBundle(
+        robot_id=_SO101,
+        hand_eye=HandEyeResultRecord(
+            **kw,
+            result_data=HandEyeResultData(
+                R_cam2gripper=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                t_cam2gripper=[[0.01], [0.02], [0.03]],
+                method="test",
+            ),
+        ),
+        joint_offset=JointOffsetResultRecord(
+            **kw,
+            result_data=JointOffsetResultData(offsets={3: 0.113}, method="test"),
+        ),
+    )
+
+    engine, factory_db = open_sqlite(tmp_path / "scan.db")
+    Base.metadata.create_all(engine)
+    repo = ScanRepository(factory_db)
+    store = FilesystemObjectStore(tmp_path / "blobs")
+    rt = _FakeRuntime(
+        {(str(Calibration.Service.SNAPSHOT_BUNDLE), _SO101): bundle}
+    )
+    mod = ScanModule(
+        runtime=rt,
+        repository=repo,
+        object_store=store,
+        robots={
+            _SO101: ScanRobotSpec(
+                kinematics_factory=factory,
+                urdf_path=tmp_path / "so101.urdf",
+                arm_specs=arm,
+            )
+        },
+    )
+
+    # scan 2개 직접 삽입 (capture 경유 X — build 만 격리 검증)
+    sess = mod.new_session(NewSessionRequest(robot_id=_SO101, label="t"))
+    sid = sess.session.id
+    assert sid is not None
+    blob_bytes, w, h = _real_blob()
+    raws = [[2001, 2002, 2003, 2004, 2005, 2006], [2101, 2102, 2103, 2104, 2105, 2106]]
+    for i, raw in enumerate(raws):
+        scan_id = repo.allocate_scan_id(sid)
+        key = f"scans/{_SO101}/s/{scan_id:03d}.bin"
+        store.put(key, blob_bytes)
+        repo.insert_scan(
+            ScanRow(
+                session_row_id=sid,
+                robot_id=_SO101,
+                scan_id=scan_id,
+                created_at=datetime.now(UTC),
+                blob_key=key,
+                num_frames=1,
+                width=w,
+                height=h,
+                fx=600.0,
+                fy=600.0,
+                cx=32.0,
+                cy=24.0,
+                depth_scale=0.001,
+                motor_positions=raw,
+                arm_motor_ids=[1, 2, 3, 4, 5, 6],
+            )
+        )
+
+    # heavy Open3D 대신 inputs 캡처 (여기 관심 = FK/pose 준비 정확성)
+    captured: list[list[recon.BuildScanInput]] = []
+
+    def fake_build_mesh(inputs, *, progress, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        captured.append(list(inputs))
+        return recon.BuildResult(
+            mesh_bytes=b"ply", vertex_count=1, triangle_count=1,
+            n_scans=len(inputs), n_edges=0,
+        )
+
+    import modules.scan.module as scan_module_mod
+
+    monkeypatch.setattr(scan_module_mod.recon, "build_mesh", fake_build_mesh)
+
+    res = await mod.build(BuildRequest(session_row_id=sid))
+    assert res.accepted, res.message
+
+    # ① factory 구성 + lifecycle
+    assert len(kins) == 1, "build 마다 fresh kin 1개 구성"
+    assert kins[0].initialized and kins[0].closed
+
+    # ② fk 입력 = raw_to_rad + joint_offset (모터 id 3 = arm index 2 만 +0.113)
+    assert len(kins[0].fk_inputs) == 2
+    for raw, got in zip(raws, kins[0].fk_inputs):
+        plain = [units.raw_to_rad(raw[i], arm[i]) for i in range(6)]
+        expected = [
+            p + (0.113 if arm[i].id == 3 else 0.0) for i, p in enumerate(plain)
+        ]
+        assert got == pytest.approx(expected), (
+            "joint_offset 미적용 (옛 코드 회귀) — fk 입력이 plain raw_to_rad"
+        )
+
+    # ③ t_base_cam_init = t_base_ee(R=I, t=(0.1,0.2,0.3)) · hand_eye(t=(0.01,...))
+    t_init = captured[0][0].t_base_cam_init
+    assert np.allclose(t_init[:3, 3], [0.11, 0.22, 0.33]), (
+        f"hand_eye 합성 어긋남: {t_init[:3, 3]}"
+    )
+    assert np.allclose(t_init[:3, :3], np.eye(3))

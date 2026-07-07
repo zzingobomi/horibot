@@ -36,7 +36,6 @@ from pathlib import Path
 
 _CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 _LOCAL_CFG = {"mode": "peer", "scouting": {"multicast": {"enabled": False}}}
-_PORT = 8078
 
 
 def _decode_frame(frame: bytes | str) -> tuple[int, str, bytes]:
@@ -54,12 +53,14 @@ async def bridge():
     runtime = Runtime(transport)
     robots = load_robots()
     deploy = DeploymentConfig(
-        driver_mode=DriverMode.MOCK, modules=[ModuleEntry(name="bridge")]
+        driver_mode=DriverMode.MOCK,
+        modules=[ModuleEntry(name="bridge")],
+        bridge_port=0,  # ephemeral — 다른 backend/테스트와 포트 충돌 원천 차단
     )
     deps = resolve_host_deps("bridge", robots, deploy)
-    runtime.add_module(BridgeModule, port=_PORT, host="127.0.0.1", **deps)
+    bridge_mod = runtime.add_module(BridgeModule, host="127.0.0.1", **deps)
     await runtime.start()
-    yield transport, f"ws://127.0.0.1:{_PORT}/ws"
+    yield transport, f"ws://127.0.0.1:{bridge_mod.port}/ws"
     await runtime.stop()
     transport.close()
 

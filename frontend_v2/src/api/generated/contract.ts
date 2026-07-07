@@ -373,6 +373,8 @@ export interface TcpState {
   quaternion: [number, number, number, number];
   joint_names: string[];
   joints: number[];
+  calibration_applied?: boolean;
+  calibration_stale?: boolean;
 }
 
 export interface MotorCapabilitiesRequest {

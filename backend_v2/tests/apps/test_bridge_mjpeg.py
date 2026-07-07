@@ -26,7 +26,6 @@ from modules.camera.module import CameraDriverModule
 
 _CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 _LOCAL_CFG = {"mode": "peer", "scouting": {"multicast": {"enabled": False}}}
-_PORT = 8079
 _SO101 = "so101_6dof_0"
 
 
@@ -43,12 +42,15 @@ async def base_url():
         # camera 있고 rgbd 없음 — color MJPEG 은 성립해야 (옛 rgbd-gate 버그 가드)
         RobotInfo(id="cam_norgbd", type="omx_f", capabilities=["move"], has_camera=True),
     ]
-    runtime.add_module(BridgeModule, port=_PORT, host="127.0.0.1", robots=infos)
+    # port=0 (ephemeral) — 다른 backend/테스트와 포트 충돌 원천 차단
+    bridge = runtime.add_module(
+        BridgeModule, port=0, host="127.0.0.1", robots=infos
+    )
     runtime.add_module(
         CameraDriverModule, robot_id=_SO101, driver=MockCameraDriver(has_depth=True)
     )
     await runtime.start()
-    yield f"http://127.0.0.1:{_PORT}"
+    yield f"http://127.0.0.1:{bridge.port}"
     await runtime.stop()
     transport.close()
 

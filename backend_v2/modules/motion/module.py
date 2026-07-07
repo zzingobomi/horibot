@@ -1,23 +1,3 @@
-"""MotionModule — robot-scoped Domain Module (kinematics + motion primitive).
-
-backend_v2.md §16.1 #4. pi_motor 배치 (100Hz 명령 network 안 넘게 +
-IK RTT 0). D2 = MoveJ + TCP state/snapshot.
-
-raw↔rad = Motion 책임 (§4). Motor.Stream.RAW_STATE 구독 → arm rad cache,
-명령은 rad→raw → Motor.Stream.COMMAND publish.
-
-**D4 calibration consumer** — start() 에서 Calibration SNAPSHOT_BUNDLE 1회 조회
-(bundle = boot-time config, calibration contract §6 — Mirror 아님, 변경은 재부팅):
-  - joint_offset → raw↔rad 변환 (units offsets 인자)
-  - link_offset  → patched URDF 생성 후 kinematics 로드 (urdf_patch)
-  - sag          → SagCorrectedKinematics decorator (fk/ik 양방향)
-calibration 미도달(분산에서 PC 미부팅 등) 시 무보정 운전 + warning — PC 먼저
-부팅 후 motion 재시작이 적용 경로.
-
-release/restore_profile 콜백은 D2 no-op — motor default profile + Ruckig 둘 다
-limit 이라 (낮은 쪽 cap) 동작. 실 profile 해제(모터 velocity cap)는 후속.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -29,12 +9,14 @@ from typing import Callable
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from framework.contract.mirror import Mirror
 from framework.contract.publisher import publishes
 from framework.contract.service import service
 from framework.contract.subscriber import subscriber
 from framework.runtime.api import ModuleRuntime
 from modules.calibration.contract import (
     Calibration,
+    CalibrationActivated,
     CalibrationBundle,
     SnapshotBundleRequest,
 )
@@ -59,16 +41,16 @@ from .contract import (
     TrajState,
     TrajStatus,
 )
-from .fk_chain import FkChain
 from .kinematics import Kinematics
-from .sag_kinematics import SagCorrectedKinematics
+from .kinematics_builder import build_calibrated_kinematics
 from .trajectory_runner import LinearPath, TrajectoryRunner
-from .urdf_patch import patch_urdf_link_offsets
 
 logger = logging.getLogger(__name__)
 
 _TCP_STATE_HZ = 20.0
-# jog idle reset — 입력 끊긴 후 다시 시작 시 fresh latch (인코더-ref drift 차단).
+
+# Jog 입력이 0.2초 이상 끊기면 새 Jog로 간주하고,
+# 현재 인코더 위치를 기준(ref)으로 다시 잡아 이전 기준과의 오차 누적을 방지한다.
 _JOG_IDLE_RESET_S = 0.2
 
 
@@ -79,7 +61,13 @@ _JOG_IDLE_RESET_S = 0.2
     (Motion.Event.MOTION_COMPLETED, MotionCompleted),
 )
 class MotionModule:
-    """kinematics(PyBullet) + TrajectoryRunner(Ruckig) 보유. MoveJ + TCP state."""
+    calibration: Mirror[CalibrationBundle] = Mirror(
+        snapshot_service=Calibration.Service.SNAPSHOT_BUNDLE,
+        snapshot_req=lambda self: SnapshotBundleRequest(robot_id=self.robot_id),
+        change_topic=Calibration.Event.ACTIVATED,
+        value_cls=CalibrationBundle,
+        change_event_cls=CalibrationActivated,
+    )
 
     def __init__(
         self,
@@ -97,13 +85,15 @@ class MotionModule:
     ) -> None:
         self.runtime = runtime
         self.robot_id = robot_id
-        # kinematics 는 start() 에서 빌드 — calibration bundle 의 link_offset 이
-        # patched URDF 경로를 결정하므로 (D4), 인스턴스가 아니라 factory 주입.
         self._kin_factory = kinematics_factory
         self._urdf_path = Path(urdf_path)
         self._kin: Kinematics | None = None
-        # joint_offset (calibration D4) — None = 무보정 (units 가 그대로 통과)
         self._joint_off: list[float] | None = None
+        self._calibration_applied = False
+        self._calibration_stale = False
+        self._applied_signature: tuple[tuple[str, int], ...] | None = None
+        self._apply_lock = asyncio.Lock()
+        self._retired_kins: list[Kinematics] = []
         self._arm = arm_specs
         self._dof = len(arm_specs)
         self._j_max_vel = joint_max_velocity
@@ -113,25 +103,21 @@ class MotionModule:
         self._c_max_acc = cartesian_max_acceleration
         self._c_max_jerk = cartesian_max_jerk
 
-        self._latest_arm_rad: list[float] | None = None  # 최신 arm joint (rad)
+        self._latest_arm_rad: list[float] | None = None
         self._runner: TrajectoryRunner | None = None
-        self._joint_limits: list[tuple[float, float]] = []  # URDF rad (clamp용)
+        self._joint_limits: list[tuple[float, float]] = []
         self._tcp_seq = 0
         self._cmd_seq = 0
         self._traj_seq = 0
         self._tcp_task: asyncio.Task[None] | None = None
         self._stop = False
-        # Move 완료 대기 (§6.1 완료 계약) — await motion.move_* 가 trajectory 종료까지
-        # 반환 안 함. traj thread 의 terminal 상태를 loop 로 넘겨 future resolve.
         self._loop: asyncio.AbstractEventLoop | None = None
         self._move_done: asyncio.Future[TrajStatus] | None = None
-        # jog state (stateful — 단일 인스턴스). J / Tcp 별도.
         self._jog_j_ref: list[float] | None = None
         self._jog_j_t = 0.0
         self._jog_tcp_pos: np.ndarray | None = None
         self._jog_tcp_quat: np.ndarray | None = None
         self._jog_tcp_t = 0.0
-        # IK reject rate-limit — 매 프레임 warning 은 noise, 500ms 마다 1회 요약
         self._jog_tcp_reject_last_log = 0.0
         self._jog_tcp_reject_count = 0
 
@@ -140,8 +126,16 @@ class MotionModule:
     async def start(self) -> None:
         # move 완료 future 를 traj thread 에서 resolve 하려면 loop 참조 필요.
         self._loop = asyncio.get_running_loop()
-        # D4 — calibration bundle 조회 (boot-time config) 후 kinematics 빌드.
-        bundle = await self._fetch_calibration_bundle()
+        # D4 — calibration Mirror. Runtime 이 start 전에 initial snapshot 을
+        # 시도했으므로 (owner 떠 있으면) 이미 도착해 있음. 미도착 = 무보정 부팅,
+        # owner 등장 시 on_change 가 live 적용 (수렴 — 재시작 불필요).
+        bundle = self.calibration.peek()
+        if bundle is None:
+            logger.warning(
+                "calibration 미도달 robot=%s — 무보정 부팅 "
+                "(owner 등장 시 자동 적용, TcpState.calibration_applied 로 관측)",
+                self.robot_id,
+            )
         # URDF/PyBullet/FkChain 로드 (blocking) → to_thread (async 계약)
         await asyncio.to_thread(self._build_kinematics, bundle)
         assert self._kin is not None
@@ -163,6 +157,11 @@ class MotionModule:
         )
         self._stop = False
         self._tcp_task = asyncio.create_task(self._tcp_state_loop())
+        # build 진행 중 mirror 가 도착한 race 창 회수 — on_change 는 _kin 미빌드
+        # 시점(start 전)이라 무시했으므로 여기서 놓친 값을 직접 적용.
+        late = self.calibration.peek()
+        if bundle is None and late is not None:
+            asyncio.create_task(self._apply_bundle(late))
 
     async def stop(self) -> None:
         self._stop = True
@@ -178,79 +177,12 @@ class MotionModule:
             self._tcp_task = None
         if self._kin is not None:
             self._kin.close()
-
-    # ── D4 calibration consumer (boot-time config) ────────────
-
-    async def _fetch_calibration_bundle(self) -> CalibrationBundle | None:
-        """active calibration snapshot 1회 조회. 미도달 = 무보정 운전 (graceful)."""
-        try:
-            return await self.runtime.call(
-                Calibration.Service.SNAPSHOT_BUNDLE,
-                SnapshotBundleRequest(robot_id=self.robot_id),
-                CalibrationBundle,
-                timeout=3.0,
-            )
-        except Exception as e:
-            logger.warning(
-                "calibration bundle 미확보 (%s: %s) — 무보정 FK/변환으로 운전. "
-                "분산이면 calibration host(PC) 먼저 부팅 후 motion 재시작 시 적용.",
-                type(e).__name__,
-                e,
-            )
-            return None
-
-    def _build_kinematics(self, bundle: CalibrationBundle | None) -> None:
-        """bundle 적용 kinematics 빌드 (blocking — start 의 to_thread 안).
-
-        link_offset → patched URDF, sag → SagCorrected decorator,
-        joint_offset → self._joint_off (units 변환 인자).
-        """
-        urdf = self._urdf_path
-        applied: list[str] = []
-
-        if bundle is not None and bundle.link_offset is not None:
-            by_name: dict[str, tuple[list[float], list[float]]] = {}
-            spec_by_id = {s.id: s for s in self._arm}
-            for entry in bundle.link_offset.result_data.offsets:
-                spec = spec_by_id.get(entry.joint_id)
-                if spec is None:
-                    logger.warning(
-                        "link_offset joint_id=%d 가 arm 에 없음 — skip", entry.joint_id
-                    )
-                    continue
-                by_name[spec.name] = (entry.trans_m, entry.rot_rad)
-            if by_name:
-                urdf = patch_urdf_link_offsets(self._urdf_path, self.robot_id, by_name)
-                applied.append("link_offset")
-
-        kin: Kinematics = self._kin_factory(urdf)
-
-        if bundle is not None and bundle.sag is not None:
-            k_map = bundle.sag.result_data.k_rad_per_m
-            arm_idx = {s.id: i for i, s in enumerate(self._arm)}
-            indices = [arm_idx[mid] for mid in k_map if mid in arm_idx]
-            k_stiff = [k_map[mid] for mid in k_map if mid in arm_idx]
-            if indices and any(abs(k) > 1e-12 for k in k_stiff):
-                chain = FkChain(urdf, [s.name for s in self._arm])
-                kin = SagCorrectedKinematics(kin, chain, k_stiff, indices)
-                applied.append("sag")
-
-        if bundle is not None and bundle.joint_offset is not None:
-            off_map = bundle.joint_offset.result_data.offsets
-            self._joint_off = [off_map.get(s.id, 0.0) for s in self._arm]
-            applied.append("joint_offset")
-
-        kin.initialize()
-        self._kin = kin
-        if applied:
-            logger.info(
-                "calibration 적용 (robot=%s): %s%s",
-                self.robot_id,
-                "+".join(applied),
-                f" urdf={urdf.name}" if "link_offset" in applied else "",
-            )
-        else:
-            logger.info("calibration 없음 (robot=%s) — 무보정 기구학", self.robot_id)
+        for retired in self._retired_kins:
+            try:
+                retired.close()
+            except Exception:
+                pass
+        self._retired_kins.clear()
 
     # ── motor state 구독 → arm rad cache ──────────────────────
 
@@ -388,13 +320,16 @@ class MotionModule:
                 logger.warning(
                     "JogTcp IK reject robot=%s frame=%s target_pos=%s linear=%s "
                     "reason=%s current_joints_deg=%s (count=%d in %.1fs)",
-                    self.robot_id, inp.frame,
+                    self.robot_id,
+                    inp.frame,
                     target_pos_tuple,
                     inp.linear,
                     reason,
                     cur_deg,
                     self._jog_tcp_reject_count,
-                    now - self._jog_tcp_reject_last_log if self._jog_tcp_reject_last_log else 0.0,
+                    now - self._jog_tcp_reject_last_log
+                    if self._jog_tcp_reject_last_log
+                    else 0.0,
                 )
                 self._jog_tcp_reject_last_log = now
                 self._jog_tcp_reject_count = 0
@@ -463,7 +398,71 @@ class MotionModule:
             self._runner.stop()
         return StopResponse(ok=True)
 
-    # ── move 완료 대기 (§6.1 완료 계약) ────────────────────────
+    # ── calibration 변경 감지 ────────────────────────
+
+    @calibration.on_change
+    async def _on_calibration_change(
+        self, old: CalibrationBundle | None, new: CalibrationBundle
+    ) -> None:
+        if self._kin is None:
+            return
+        if old is None:
+            logger.info(
+                "calibration 도착 (owner 늦은 부팅) — live 적용 robot=%s",
+                self.robot_id,
+            )
+            await self._apply_bundle(new)
+        elif new.signature() != old.signature():
+            self._calibration_stale = True
+            logger.warning(
+                "calibration 변경 감지 robot=%s — 적용은 재시작 필요 "
+                "(TcpState.calibration_stale=True)",
+                self.robot_id,
+            )
+
+    async def _apply_bundle(self, bundle: CalibrationBundle) -> None:
+        async with self._apply_lock:
+            if self._applied_signature == bundle.signature():
+                return
+            while self._runner is not None and self._runner.is_running:
+                await asyncio.sleep(0.2)
+            old_kin = self._kin
+            await asyncio.to_thread(self._build_kinematics, bundle)
+            assert self._kin is not None
+            self._joint_limits = self._kin.joint_limits()
+            self._calibration_stale = False
+            if old_kin is not None:
+                self._retired_kins.append(old_kin)
+            logger.info("calibration live 적용 완료 robot=%s", self.robot_id)
+
+    def _build_kinematics(self, bundle: CalibrationBundle | None) -> None:
+        """bundle 적용 kinematics 빌드 (blocking — start 의 to_thread 안).
+
+        구성 자체는 공유 빌더 (kinematics_builder — scan build 와 같은 의미 SSOT).
+        여기선 lifecycle(initialize) + 모듈 상태 필드 반영만. 재빌드 idempotent —
+        joint_off 는 빌더가 매번 새로 계산 (이전 빌드 잔존 차단, live 적용 경로).
+        """
+        built = build_calibrated_kinematics(
+            self._urdf_path, self.robot_id, self._arm, bundle, self._kin_factory
+        )
+        built.kinematics.initialize()
+        self._kin = built.kinematics
+        self._joint_off = built.joint_offsets
+        self._calibration_applied = bool(built.applied)
+        self._applied_signature = bundle.signature() if bundle is not None else None
+        if built.applied:
+            logger.info(
+                "calibration 적용 (robot=%s): %s%s",
+                self.robot_id,
+                "+".join(built.applied),
+                f" urdf={built.urdf_path.name}"
+                if "link_offset" in built.applied
+                else "",
+            )
+        else:
+            logger.info("calibration 없음 (robot=%s) — 무보정 기구학", self.robot_id)
+
+    # ── move 완료 대기 ────────────────────────
 
     def _begin_move(self) -> bool:
         """새 move 완료 future 준비. 이미 진행 중이면 False — runner 는 단일 trajectory
@@ -565,6 +564,8 @@ class MotionModule:
             quaternion=quat,
             joint_names=[s.name for s in self._arm],
             joints=list(joints),
+            calibration_applied=self._calibration_applied,
+            calibration_stale=self._calibration_stale,
         )
         self._tcp_seq += 1
         return state

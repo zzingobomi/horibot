@@ -9,8 +9,10 @@
 arm_specs)는 resolve 가 주입한 robots 투영으로 조회, runtime state 는 robot_id 키 dict.
 
 capture flow: scene3d SNAPSHOT(consensus) + latest raw motor → blob 저장.
-build flow: scans 로드 → raw→rad→FK→hand_eye 로 camera pose → TSDF (to_thread) →
-progress stream 발행 → .ply 저장.
+build flow: fresh calibration bundle → **보정 kinematics 구성** (joint/link/sag —
+motion 과 공유 빌더, "raw 저장 + build 시 현재 캘로 재계산" 불변의 FK 절반) →
+scans 로드 → raw→rad(+joint_offset)→FK→hand_eye 로 camera pose → TSDF (to_thread)
+→ progress stream 발행 → .ply 저장.
 
 다른 모듈 호출은 `async def` 핸들러 + `await self.runtime.call(...)` 하나로 통일
 (framework_async_call_contract.md). sync→async bridge 는 framework 가 흡수 —
@@ -25,6 +27,8 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import Callable, Sequence
 
 import numpy as np
 
@@ -40,6 +44,7 @@ from modules.calibration.contract import (
 )
 from modules.motion import units
 from modules.motion.kinematics import Kinematics
+from modules.motion.kinematics_builder import build_calibrated_kinematics
 from modules.motor.contract import JointState, Motor
 from modules.motor.layout import MotorSpec
 from modules.scene3d.contract import Scene3d, SnapshotRequest, SnapshotResponse
@@ -80,11 +85,17 @@ logger = logging.getLogger(__name__)
 class ScanRobotSpec:
     """robot 별 정적 config — resolve 가 robots.yaml/URDF 에서 투영해 주입.
 
-    wire contract 아님 (constructor dep). kinematics 인스턴스를 들고 있어
-    pydantic 아니라 dataclass (calibration 의 CalibrationRobotSpec 과 같은 role).
+    wire contract 아님 (constructor dep). callable 을 들고 있어 pydantic 아니라
+    dataclass (calibration 의 CalibrationRobotSpec 과 같은 role).
+
+    kinematics 는 인스턴스가 아니라 **factory** — build 시점의 fresh calibration
+    bundle 이 로드할 URDF(link_offset patch 여부)를 결정하므로 (motion D4 와
+    같은 이유). 보정 kinematics 는 build 마다 구성 (수백 ms — 5~30s build 에서
+    무시 가능, "현재 캘로 재계산" 불변 실현).
     """
 
-    kinematics: Kinematics
+    kinematics_factory: Callable[[Path], Kinematics]
+    urdf_path: Path
     arm_specs: list[MotorSpec]  # motors.yaml 순 (gripper 제외)
 
 
@@ -106,15 +117,12 @@ class ScanModule:
         self._progress_seq: dict[str, int] = {}
 
     # ── lifecycle ─────────────────────────────────────────────
+    # kinematics 는 상주 인스턴스 없음 — build 마다 fresh bundle 로 구성/폐기
+    # (ScanRobotSpec docstring). start/stop 에 PyBullet lifecycle 없음.
     async def start(self) -> None:
         logger.info("ScanModule start (host-level, robots=%s)", sorted(self._robots))
-        # PyBullet init 는 순차 (per-robot 독립 client 지만 thread 동시 init 회피)
-        for spec in self._robots.values():
-            await asyncio.to_thread(spec.kinematics.initialize)
 
     async def stop(self) -> None:
-        for spec in self._robots.values():
-            await asyncio.to_thread(spec.kinematics.close)
         logger.info("ScanModule stop (host-level)")
 
     @subscriber(Motor.Stream.RAW_STATE)
@@ -265,37 +273,58 @@ class ScanModule:
             bundle.hand_eye.result_data.t_cam2gripper, dtype=float
         ).reshape(3)
 
+        # FK 도 "현재 캘로 재계산" — fresh bundle 의 joint/link/sag 를 적용한
+        # 보정 kinematics 를 build 마다 구성 (motion 과 공유 빌더 = 같은 의미).
+        # 무보정 FK 면 anchor(reference_node=0) 절대 배치가 첫 scan FK 오차만큼
+        # 통째로 틀어짐 + ICP 초기값 품질 저하.
+        built = build_calibrated_kinematics(
+            spec.urdf_path, robot_id, spec.arm_specs, bundle, spec.kinematics_factory
+        )
+        if built.applied:
+            logger.info(
+                "scan build 캘 적용 (robot=%s): %s", robot_id, "+".join(built.applied)
+            )
+        else:
+            logger.info("scan build 캘 없음 (robot=%s) — 무보정 FK", robot_id)
+        await asyncio.to_thread(built.kinematics.initialize)  # PyBullet load
+
         inputs: list[recon.BuildScanInput] = []
-        for i, s in enumerate(scans):
-            self._publish_progress(
-                robot_id,
-                req.session_row_id,
-                "loading_scans",
-                (i + 1) / len(scans),
-                f"scan {i + 1}/{len(scans)} 로딩",
-            )
-            color, depth = scan_blob.decode(
-                self._blob.get(s.blob_key), s.width, s.height
-            )
-            arm_rad = self._arm_rad(spec, s.motor_positions, s.arm_motor_ids)
-            rot, pos = spec.kinematics.fk_to_matrix(arm_rad)
-            t_base_ee = np.eye(4)
-            t_base_ee[:3, :3] = np.array(rot, dtype=float)
-            t_base_ee[:3, 3] = np.array(pos, dtype=float)
-            inputs.append(
-                recon.BuildScanInput(
-                    color_bgr=color,
-                    depth_z16=depth,
-                    width=s.width,
-                    height=s.height,
-                    fx=s.fx,
-                    fy=s.fy,
-                    cx=s.cx,
-                    cy=s.cy,
-                    depth_scale=s.depth_scale,
-                    t_base_cam_init=t_base_ee @ t_ee_cam,
+        try:
+            for i, s in enumerate(scans):
+                self._publish_progress(
+                    robot_id,
+                    req.session_row_id,
+                    "loading_scans",
+                    (i + 1) / len(scans),
+                    f"scan {i + 1}/{len(scans)} 로딩",
                 )
-            )
+                color, depth = scan_blob.decode(
+                    self._blob.get(s.blob_key), s.width, s.height
+                )
+                arm_rad = self._arm_rad(
+                    spec, s.motor_positions, s.arm_motor_ids, built.joint_offsets
+                )
+                rot, pos = built.kinematics.fk_to_matrix(arm_rad)
+                t_base_ee = np.eye(4)
+                t_base_ee[:3, :3] = np.array(rot, dtype=float)
+                t_base_ee[:3, 3] = np.array(pos, dtype=float)
+                inputs.append(
+                    recon.BuildScanInput(
+                        color_bgr=color,
+                        depth_z16=depth,
+                        width=s.width,
+                        height=s.height,
+                        fx=s.fx,
+                        fy=s.fy,
+                        cx=s.cx,
+                        cy=s.cy,
+                        depth_scale=s.depth_scale,
+                        t_base_cam_init=t_base_ee @ t_ee_cam,
+                    )
+                )
+        finally:
+            # FK 는 여기서 끝 — build_mesh(수 초~수십 초) 동안 PyBullet 잡아두지 않음
+            await asyncio.to_thread(built.kinematics.close)
 
         kwargs: dict[str, float] = {}
         if req.voxel_size is not None:
@@ -377,11 +406,21 @@ class ScanModule:
     # ── internal ──────────────────────────────────────────────
     @staticmethod
     def _arm_rad(
-        spec: ScanRobotSpec, motor_positions: list[int], arm_motor_ids: list[int]
+        spec: ScanRobotSpec,
+        motor_positions: list[int],
+        arm_motor_ids: list[int],
+        joint_offsets: Sequence[float] | None = None,
     ) -> list[float]:
-        """raw motor → arm rad. 저장된 motor id 로 매핑 (order 무관 robust)."""
+        """raw motor → arm rad (+joint_offset). 저장된 motor id 로 매핑 (order 무관).
+
+        joint_offsets 는 arm_specs 순서 (kinematics_builder 산출) — motion 의
+        units.joints_raw_to_rad(offsets) 와 같은 의미 (measured = raw_to_rad + off).
+        """
         by_id = dict(zip(arm_motor_ids, motor_positions))
-        return [units.raw_to_rad(by_id[s.id], s) for s in spec.arm_specs]
+        rads = [units.raw_to_rad(by_id[s.id], s) for s in spec.arm_specs]
+        if joint_offsets is not None:
+            rads = [r + off for r, off in zip(rads, joint_offsets)]
+        return rads
 
     def _publish_progress(
         self,

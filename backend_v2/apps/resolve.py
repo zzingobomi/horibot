@@ -78,9 +78,10 @@ def resolve_host_deps(
 
         scan_specs = {
             r.id: ScanRobotSpec(
-                kinematics=PybulletKinematics(
-                    _ROBOT_DIR / r.type / "urdf" / f"{r.type}.urdf"
-                ),
+                # factory 주입 — build 시점 fresh bundle 의 link_offset 이 로드할
+                # URDF 를 결정 (motion D4 동일 이유). 보정 kin 은 build 마다 구성.
+                kinematics_factory=PybulletKinematics,
+                urdf_path=_ROBOT_DIR / r.type / "urdf" / f"{r.type}.urdf",
                 arm_specs=[m for m in r.motors if m.kind != MotorKind.GRIPPER],
             )
             for r in robots.values()
@@ -150,6 +151,7 @@ def resolve_host_deps(
             "robots": infos,
             "default_robot_id": default_robot.id if default_robot else None,
             "robot_dir": _ROBOT_DIR,
+            "port": deploy.bridge_port,
         }
         if runtime is not None:
             # contract는 요청 시점에 생성한다.

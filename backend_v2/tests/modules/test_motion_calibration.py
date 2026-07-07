@@ -20,7 +20,13 @@ import numpy as np
 import pytest
 
 from apps.config import load_robots
+from framework.contract.service import service
+from framework.runtime.api import ModuleRuntime
+from framework.runtime.app import Runtime
+from infra.transport.zenoh import ZenohTransport
 from modules.calibration.contract import (
+    Calibration,
+    CalibrationActivated,
     CalibrationBundle,
     JointOffsetResultData,
     JointOffsetResultRecord,
@@ -29,6 +35,7 @@ from modules.calibration.contract import (
     LinkOffsetResultRecord,
     SagOffsetResultData,
     SagOffsetResultRecord,
+    SnapshotBundleRequest,
 )
 from modules.motion import units
 from modules.motion.fk_chain import FkChain
@@ -125,7 +132,7 @@ class _RecordingKin:
 
     def fk_to_matrix(self, joint_angles):
         self.last_fk_input = list(joint_angles)
-        return [[1, 0, 0], [0, 1, 0], [0, 0, 1]], (0.0, 0.0, 0.0)
+        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], (0.0, 0.0, 0.0)
 
     def joint_limits(self, n=None):
         return [(-3.14, 3.14)] * 6
@@ -290,3 +297,127 @@ def test_joint_offset_round_trip_through_module(robot, arm, urdf_copy: Path):
     assert runtime.published  # type: ignore[union-attr]
     _, cmd = runtime.published[-1]  # type: ignore[union-attr]
     assert list(cmd.positions_raw) == raw_in[:6]  # type: ignore[attr-defined]
+
+
+# ─── 4. 부팅 순서 수렴 e2e — owner 늦은 부팅 (2026-07-07 근본 수정) ──
+
+
+def _make_bundle_with_ids(robot_id: str, arm, base_id: int) -> CalibrationBundle:
+    """signature 비교 가능한 bundle (result id 부여) — stale 감지 테스트용."""
+    def kw(offset: int) -> dict:
+        return {**_record_kw(robot_id), "id": base_id + offset}
+
+    return CalibrationBundle(
+        robot_id=robot_id,
+        joint_offset=JointOffsetResultRecord(
+            **kw(0),
+            result_data=JointOffsetResultData(
+                offsets={arm[2].id: 0.113, arm[4].id: -0.09}, method="test"
+            ),
+        ),
+        sag=SagOffsetResultRecord(
+            **kw(1),
+            result_data=SagOffsetResultData(
+                k_rad_per_m={arm[1].id: 0.116}, method="test"
+            ),
+        ),
+    )
+
+
+async def test_motion_converges_when_calibration_owner_boots_later(
+    robot, arm, urdf_copy: Path
+):
+    """THE 시나리오 — 분산에서 PC(calibration) 없이 motion 부팅:
+    ① 무보정으로 뜸 (calibration_applied=False, 조용히 X — 상태 표면화)
+    ② calibration owner 늦은 부팅 → liveliness → mirror → live 적용 (재시작 없이 수렴)
+    ③ 적용 후 캘 변경 (ACTIVATED) → 재빌드 X + calibration_stale=True (변경은 재부팅)
+    """
+    import asyncio
+    import time as _time
+
+    _cfg = {"mode": "peer", "scouting": {"multicast": {"enabled": False}}}
+    ep = "tcp/127.0.0.1:17564"
+
+    class _CalOwner:
+        def __init__(self, runtime: ModuleRuntime, bundle: CalibrationBundle):
+            self.runtime = runtime
+            self._bundle = bundle
+
+        @service(Calibration.Service.SNAPSHOT_BUNDLE)
+        def snapshot(self, req: SnapshotBundleRequest) -> CalibrationBundle:
+            return self._bundle
+
+        def change(self, bundle: CalibrationBundle) -> None:
+            self._bundle = bundle
+            self.runtime.publish(
+                Calibration.Event.ACTIVATED,
+                CalibrationActivated(
+                    robot_id=bundle.robot_id,
+                    result_id=999,
+                    kind="joint_offset",
+                ),
+            )
+
+    async def _wait(pred, timeout: float = 6.0) -> bool:
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            if pred():
+                return True
+            await asyncio.sleep(0.05)
+        return False
+
+    t_motion = ZenohTransport({**_cfg, "listen": [ep]})
+    rt_motion = Runtime(t_motion)
+    rt_motion.mirror_snapshot_timeout = 0.3
+    t_cal: ZenohTransport | None = None
+    rt_cal: Runtime | None = None
+
+    mod = rt_motion.add_module(
+        MotionModule,
+        robot_id=_SO101,
+        kinematics_factory=lambda p: _RecordingKin(),
+        urdf_path=urdf_copy,
+        arm_specs=arm,
+        joint_max_velocity=[1.0] * 6,
+        joint_max_acceleration=[1.0] * 6,
+        joint_max_jerk=[1.0] * 6,
+        cartesian_max_velocity=0.1,
+        cartesian_max_acceleration=0.5,
+        cartesian_max_jerk=1.0,
+    )
+    try:
+        # ① calibration owner 없이 부팅 — 무보정 + 상태 표면화
+        await rt_motion.start()
+        assert mod._calibration_applied is False
+        assert mod._joint_off is None
+        assert isinstance(mod._kin, _RecordingKin)  # decorator 없음
+
+        # ② owner 늦은 부팅 → event publish 없이 liveliness 만으로 수렴
+        bundle_v1 = _make_bundle_with_ids(_SO101, arm, base_id=1)
+        t_cal = ZenohTransport({**_cfg, "connect": [ep]})
+        rt_cal = Runtime(t_cal)
+        owner = rt_cal.add_module(_CalOwner, bundle=bundle_v1)
+        await rt_cal.start()
+
+        assert await _wait(lambda: mod._calibration_applied), (
+            "owner 늦은 부팅 후 calibration 미적용 — liveliness 수렴 경로 죽음"
+        )
+        assert mod._joint_off is not None
+        assert mod._joint_off[2] == pytest.approx(0.113)
+        assert isinstance(mod._kin, SagCorrectedKinematics)  # sag live 적용
+        assert mod._calibration_stale is False
+
+        # ③ 적용 후 캘 변경 → 재빌드 X + stale 표시 (변경은 재부팅 결정 유지)
+        kin_before = mod._kin
+        owner.change(_make_bundle_with_ids(_SO101, arm, base_id=100))
+        assert await _wait(lambda: mod._calibration_stale), (
+            "캘 변경 후 stale 미표시"
+        )
+        assert mod._kin is kin_before, "변경인데 live 재빌드됨 — 정책 위반"
+    finally:
+        await rt_motion.stop()
+        if rt_cal is not None:
+            await rt_cal.stop()
+        t_motion.close()
+        if t_cal is not None:
+            t_cal.close()

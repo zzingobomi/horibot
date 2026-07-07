@@ -29,7 +29,6 @@ from modules.camera.drivers.mock import MockCameraDriver
 from modules.camera.module import CameraDriverModule
 
 _LOCAL_CFG = {"mode": "peer", "scouting": {"multicast": {"enabled": False}}}
-_PORT = 8081
 _SO101 = "so101_6dof_0"
 
 
@@ -39,22 +38,25 @@ async def booted():
     runtime = Runtime(transport)
     robots = load_robots()
     deploy = DeploymentConfig(
-        driver_mode=DriverMode.MOCK, modules=[ModuleEntry(name="bridge")]
+        driver_mode=DriverMode.MOCK,
+        modules=[ModuleEntry(name="bridge")],
+        bridge_port=0,  # ephemeral — 다른 backend/테스트와 포트 충돌 원천 차단
     )
     deps = resolve_host_deps("bridge", robots, deploy)
-    runtime.add_module(BridgeModule, port=_PORT, host="127.0.0.1", **deps)
+    bridge = runtime.add_module(BridgeModule, host="127.0.0.1", **deps)
     runtime.add_module(
         CameraDriverModule, robot_id=_SO101, driver=MockCameraDriver(has_depth=True)
     )
     await runtime.start()
-    yield runtime
+    yield runtime, bridge.port
     await runtime.stop()  # 테스트가 이미 stop 했으면 no-op (_started guard)
     transport.close()
 
 
-async def test_stop_completes_with_open_ws_and_mjpeg(booted: Runtime):
-    ws_uri = f"ws://127.0.0.1:{_PORT}/ws"
-    mjpeg_url = f"http://127.0.0.1:{_PORT}/robots/{_SO101}/camera/stream"
+async def test_stop_completes_with_open_ws_and_mjpeg(booted: tuple[Runtime, int]):
+    runtime, port = booted
+    ws_uri = f"ws://127.0.0.1:{port}/ws"
+    mjpeg_url = f"http://127.0.0.1:{port}/robots/{_SO101}/camera/stream"
 
     client = httpx.AsyncClient(timeout=10.0)
     stream_ctx = client.stream("GET", mjpeg_url)
@@ -73,7 +75,7 @@ async def test_stop_completes_with_open_ws_and_mjpeg(booted: Runtime):
         # 핵심 assert — 열린 무한 연결에도 stop 이 bounded 완료.
         # (timeout_graceful_shutdown=2 → ~2.x s. fix 없으면 무한 대기.)
         t0 = time.monotonic()
-        await asyncio.wait_for(booted.stop(), timeout=15.0)
+        await asyncio.wait_for(runtime.stop(), timeout=15.0)
         elapsed = time.monotonic() - t0
         assert elapsed < 10.0, f"stop 이 너무 오래 걸림: {elapsed:.1f}s"
     finally:

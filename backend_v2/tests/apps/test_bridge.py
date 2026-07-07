@@ -11,7 +11,10 @@ mock.yaml 은 안 건드림 (motor/camera e2e 테스트를 uvicorn 포트에 안
 
 from __future__ import annotations
 
+import socket
+
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -21,12 +24,12 @@ from apps.main import build_runtime
 from apps.registry import load_module_class
 from apps.resolve import resolve_host_deps
 from framework.runtime.app import Runtime
+from framework.transport.protocol import RawTransport
 from infra.transport.zenoh import ZenohTransport
 from modules.bridge.module import BridgeModule
 
 _CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 _LOCAL_CFG = {"mode": "peer", "scouting": {"multicast": {"enabled": False}}}
-_TEST_PORT = 8077  # mock.yaml 의 8000 과 분리 — 포트 충돌/flakiness 회피
 
 
 def _robots() -> dict:
@@ -37,6 +40,7 @@ def _mock_bridge_deploy() -> DeploymentConfig:
     return DeploymentConfig(
         driver_mode=DriverMode.MOCK,
         modules=[ModuleEntry(name="bridge")],  # host-level (robots 비움)
+        bridge_port=0,  # ephemeral — 다른 backend/테스트와 포트 충돌 원천 차단
     )
 
 
@@ -81,6 +85,41 @@ def test_build_runtime_wires_host_level_bridge():
         transport.close()
 
 
+# ─── start — 포트 점유 시 fast-fail ──────────────────────────────
+
+
+class _UnusedTransport:
+    """RawTransport 스텁 — start 경로는 transport 를 안 건드림."""
+
+    def call(self, key: str, payload: bytes, timeout: float = 5.0) -> bytes:
+        raise NotImplementedError
+
+    def publish(self, key: str, payload: bytes) -> None:
+        raise NotImplementedError
+
+    def subscribe(self, key: str, callback) -> object:  # noqa: ANN001
+        raise NotImplementedError
+
+
+async def test_start_port_conflict_raises_clear_error():
+    """점유된 포트 → uvicorn 의 sys.exit(1) (SystemExit — 이벤트 루프째 무너뜨려
+    caller 의 rollback/teardown 전부 스킵, pytest hang) 이 아니라 명확한
+    RuntimeError 로 즉시 실패해야 함 (실 사고 2026-07-07: 유령 backend 의 :8000)."""
+    blocker = socket.create_server(("127.0.0.1", 0))
+    port = blocker.getsockname()[1]
+    bridge = BridgeModule(
+        transport=cast(RawTransport, _UnusedTransport()),
+        robots=[],
+        host="127.0.0.1",
+        port=port,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="bind 실패"):
+            await bridge.start()
+    finally:
+        blocker.close()
+
+
 # ─── e2e — 실 uvicorn + HTTP ─────────────────────────────────────
 
 
@@ -89,9 +128,9 @@ async def bridge_url():
     transport = ZenohTransport(_LOCAL_CFG)
     runtime = Runtime(transport)
     deps = resolve_host_deps("bridge", _robots(), _mock_bridge_deploy())
-    runtime.add_module(BridgeModule, port=_TEST_PORT, host="127.0.0.1", **deps)
-    await runtime.start()  # uvicorn 기동 + started 까지 대기
-    yield f"http://127.0.0.1:{_TEST_PORT}"
+    bridge = runtime.add_module(BridgeModule, host="127.0.0.1", **deps)
+    await runtime.start()  # uvicorn 기동 + started 까지 대기 (port=0 → 실 포트 갱신)
+    yield f"http://127.0.0.1:{bridge.port}"
     await runtime.stop()
     transport.close()
 

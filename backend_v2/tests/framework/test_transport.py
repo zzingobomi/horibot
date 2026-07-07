@@ -215,3 +215,66 @@ def test_publish_subscribe_cross_process(tmp_path: Path):
             except subprocess.TimeoutExpired:
                 proc.kill()
         parent.close()
+
+
+# ─── liveliness — presence 관측 (분산 부팅 순서 해방의 L1) ─────────
+
+def _wait_until(pred, timeout: float = 3.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pred():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_liveliness_presence_lifecycle():
+    """4 전이 검증 (2026-07-07 probe 회귀 잠금):
+    ① 구독 전 이미 살아있는 token → history 로 즉시 alive (부팅 순서 무관의 핵심)
+    ② undeclare → gone
+    ③ 재선언 → 다시 alive (owner 재시작 감지)
+    ④ owner 세션 close → gone (크래시 등가 — 커스텀 이벤트가 못 주는 것)
+    """
+    ep = "tcp/127.0.0.1:17561"
+    owner = ZenohTransport({**_LOCAL_CFG, "listen": [ep]})
+    consumer = ZenohTransport({**_LOCAL_CFG, "connect": [ep]})
+    events: list[tuple[str, bool]] = []
+    sub = None
+    try:
+        # ① 구독 "전에" token 선언 — history 수신 검증
+        token = owner.declare_liveliness("srv/test/live_svc")
+        time.sleep(0.3)  # peer 연결 안정
+
+        sub = consumer.subscribe_liveliness(
+            "srv/test/**", lambda k, alive: events.append((k, alive))
+        )
+        assert _wait_until(lambda: ("srv/test/live_svc", True) in events), (
+            f"사전 존재 token 의 history alive 미수신: {events}"
+        )
+
+        # ② undeclare → gone
+        token.undeclare()
+        assert _wait_until(lambda: ("srv/test/live_svc", False) in events), (
+            f"undeclare gone 미수신: {events}"
+        )
+
+        # ③ 재선언 → 다시 alive (owner 재시작 시나리오)
+        owner.declare_liveliness("srv/test/live_svc")
+        assert _wait_until(lambda: events.count(("srv/test/live_svc", True)) >= 2), (
+            f"재선언 alive 미수신: {events}"
+        )
+
+        # ④ owner 세션 close → gone (크래시 등가)
+        owner.close()
+        assert _wait_until(
+            lambda: events.count(("srv/test/live_svc", False)) >= 2, timeout=5.0
+        ), f"세션 close gone 미수신: {events}"
+    finally:
+        if sub is not None:
+            sub.undeclare()
+        consumer.close()
+        # owner 는 ④에서 이미 close — 재호출 오류 무시
+        try:
+            owner.close()
+        except Exception:
+            pass

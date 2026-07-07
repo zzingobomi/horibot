@@ -224,7 +224,11 @@ async def test_move_l_holds_orientation_along_tool_axis(stack):
     assert start is not None
     r_start = Rotation.from_quat(list(start.quaternion))
     adir = r_start.apply([1.0, 0.0, 0.0])  # 접근축 (그리퍼 pointing)
-    target = tuple(float(start.position[i] + 0.03 * adir[i]) for i in range(3))
+    target = (
+        float(start.position[0] + 0.03 * adir[0]),
+        float(start.position[1] + 0.03 * adir[1]),
+        float(start.position[2] + 0.03 * adir[2]),
+    )
 
     res = await runtime.module_runtime.call(
         Motion.Service.MOVE_L,
@@ -236,6 +240,8 @@ async def test_move_l_holds_orientation_along_tool_axis(stack):
     assert res.accepted, res.message
 
     ok = False
+    pos_err = float("inf")
+    dangle = float("inf")
     for _ in range(50):
         await asyncio.sleep(0.02)
         end = await _try_snapshot(runtime)

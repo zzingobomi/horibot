@@ -15,7 +15,7 @@ import { useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { DEFAULT_ROBOT_ID } from "@/constants";
-import { useMirror, useService } from "@/framework";
+import { useMirror, useService, useStream } from "@/framework";
 import { ServiceKey, Topic } from "@/api/generated/contract";
 import type { CalibrationBundle } from "@/api/generated/contract";
 import { useScanStore } from "@/stores/scanStore";
@@ -41,6 +41,12 @@ export function LivePointCloudPanel() {
     robotId,
   });
   const handEye = (bundle.value as CalibrationBundle | null)?.hand_eye ?? null;
+
+  // backend motion FK 캘 적용 상태 — cloud 배치의 나머지 절반 (tcp).
+  // hand_eye 가 맞아도 backend 가 무보정 FK 면 cloud 는 어긋난다 (사선/부양).
+  // motion 이 무보정으로 떠도 owner 등장 시 자동 수렴 (liveliness Mirror) —
+  // 이 배지는 그 수렴 여부를 사용자가 즉시 보게 하는 표면화.
+  const tcp = useStream(Topic.MOTION_TCP_STATE, { robotId });
 
   const liveEnabled = useScanStore((s) => s.liveEnabled);
   const setLiveEnabled = useScanStore((s) => s.setLiveEnabled);
@@ -109,6 +115,23 @@ export function LivePointCloudPanel() {
           ) : (
             <span className="text-red-400">
               hand-eye: 없음 — cloud 위치 부정확 (identity)
+            </span>
+          )}
+        </div>
+        {/* backend FK 캘 (joint/link/sag) — 무보정이면 tcp 자체가 틀어짐.
+            motion 이 무보정으로 떠도 캘 owner 등장 시 자동 수렴 (liveliness). */}
+        <div className="font-mono text-[10px]" data-testid="fk-calib-status">
+          {tcp.value == null ? (
+            <span className="text-zinc-500">robot FK: 대기 중…</span>
+          ) : tcp.value.calibration_stale ? (
+            <span className="text-amber-400">
+              robot FK: 캘 변경됨 — backend 재시작 필요
+            </span>
+          ) : tcp.value.calibration_applied ? (
+            <span className="text-emerald-500">robot FK: 캘 적용됨</span>
+          ) : (
+            <span className="text-red-400">
+              robot FK: 무보정 — cloud/TCP 부정확 (캘 host 대기)
             </span>
           )}
         </div>

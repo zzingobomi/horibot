@@ -91,6 +91,29 @@ class Transport(Protocol):
         """
         ...
 
+    def declare_liveliness(self, key: str) -> Handle:
+        """liveliness token 선언 — "이 key 를 제공 중" 이 관측 가능해진다.
+
+        token 은 undeclare 또는 세션 종료(크래시 포함) 시 자동 소멸.
+
+        Returns:
+            선언 해제에 사용할 Handle
+        """
+        ...
+
+    def subscribe_liveliness(
+        self, key_expr: str, callback: Callable[[str, bool], None]
+    ) -> Handle:
+        """liveliness 구독 — token 의 생존 전이를 (key, alive) 로 전달.
+
+        이미 살아있는 token 도 구독 직후 alive=True 로 전달된다 (history).
+        token 소멸(undeclare / owner 세션 종료) 시 alive=False.
+
+        Returns:
+            구독 해제에 사용할 Handle
+        """
+        ...
+
     def close(self) -> None:
         """Transport를 종료하고 모든 리소스를 정리한다."""
         ...

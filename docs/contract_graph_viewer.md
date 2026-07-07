@@ -190,6 +190,19 @@ frontend_v2/src/features/contract-viewer/    # feature 격리 (나중에 별도 
 
 ## 9. Open questions / 후속 (v1 에선 defer)
 
+- **[BACKLOG] liveliness live overlay — 선언 그래프 위 "지금 살아있는" 상태 색칠 (2026-07-07 제안, 설계 논의 후 구현)**
+
+  2026-07-07 liveliness 도입 ([backend_v2.md](backend_v2.md) anchor #23 — Runtime 이 service 등록마다 같은 key 로 token 자동 선언) 으로 **actual(runtime) 차원**을 그래프에 겹칠 수 있게 됨. 지금 그래프는 declared universe = **intent 만** (어떤 module/계약이 선언되어 있나). 그 위에 "지금 어느 서비스가 실제로 떠 있나"를 overlay 하면 분산 부팅 상태 (예: PC 만 뜨고 pi_motor 아직) 를 그래프에서 한눈에 — 어제 잡은 부팅 순서 사고를 **눈으로 보는** 도구.
+
+  **경계 (원칙 = [[project-config-vs-runtime-state]] intent/actual 분리):**
+  - overlay 는 **기존 declared-universe 렌더를 대체하지 않고 위에 얹기만**. 선언 그래프는 그대로 (호스트 안 떠도 전 module 렌더 = §0 불변).
+  - 데이터 소스: bridge 가 `srv/**` liveliness 구독 유지 → alive key set 을 별도 채널 (`GET /contract/live` 또는 WS topic — v1 gen/graph 는 HTTP snapshot 이므로 실시간이면 WS 가 자연) 로 내려줌. key→module 매핑은 bridge 가 이미 가진 선언 우주로 역산.
+  - robot-scoped 서비스는 token key 에 robot_id 박힘 (`srv/motion/so101_6dof_0/...`) → **robot 인스턴스 단위** 생존까지 표현 가능.
+
+  **contract.ts gen 에는 liveliness 쓰지 말 것 (결정 못박음).** gen 은 결정론 필수 — fleet 상태 종속 = 비결정 codegen (Pi 꺼지면 motion 타입 사라짐). gen 은 intent 소비자라 declared universe 만. (§8.1 gen 경계 + contract_gen_distribution.md 현행 유지 트리거와 무관.) → **liveliness 는 graph viewer 의 actual overlay 전용, gen 은 손대지 않음.**
+
+  **구현 전 논의할 것 (사용자와):** ① 무엇을 보여줄지 (노드 색만 vs robot 인스턴스별 dot vs "이 서비스 마지막 alive 시각") ② granularity (module 노드 alive vs service key 단위) ③ 실시간성 (WS push vs polling snapshot) ④ dead/stale 표현 (색 / 아이콘 / dim). **설계 확정 후 구현.**
+
 - **service caller 엣지** (§2 한계) — 정적으로 안 잡힘. 옵션: (a) v1 = owner-attached, caller 엣지 없음 (추천); (b) 후속: caller 를 어딘가 선언 (registry) 또는 runtime call 로그 수집. v1 은 (a).
 - **`@service(description=, tags=)` metadata** ([backend_v2.md §16.6](backend_v2.md)) — 현재 `@service` 는 key 만 받음 ([framework/contract/service.py](../backend_v2/framework/contract/service.py)). 뷰어에 human 설명/태그 달려면 이 확장 필요. **v1 defer** — key + payload 스키마 + wiring 만. metadata 는 v2 (framework `@service` 확장 + graph JSON 에 desc/tags 추가).
 - **노드 granularity** — v1 = module 노드 + topic 엣지 + service owner-attach. topic/service 를 별도 노드로 승격은 후속 (규모 커지면).

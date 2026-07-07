@@ -146,6 +146,30 @@ describe("BridgeClient — service shim + timeout + reconnect", () => {
     expect(res.data).toEqual({});
   });
 
+  it("ws CONNECTING 중 낸 service 호출 → drop 아니라 버퍼 → open 시 flush (재연결 창 명령 유실 방지)", async () => {
+    // spec frontend_v2.md §12.2 — invariant: OPEN 전 낸 RPC 프레임은 버려지지 않고
+    // open 시 flush 되어 정상 resolve. (2026-07-07 tasks e2e 회귀: 파싱 클릭이
+    // ws CONNECTING 창에 걸려 프레임 silent drop → 5s timeout. 근본 = 이 버퍼 부재.)
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const msg = JSON.parse(raw as string);
+        if (msg.op === WsOp.Service) {
+          const env = msgpackEncode({ timestamp: 1.0, data: { ok: true, v: 7 } });
+          socket.send(encodeFrame(FrameType.ServiceResponse, msg.request_id, env));
+        }
+      });
+    });
+    // open 을 await 하지 않고(=CONNECTING 상태) 즉시 service 호출 — drop 이면 timeout.
+    client.connect(() => {});
+    const res = await client.callService(
+      "srv/test/buffered",
+      { x: 1 },
+      { timeoutMs: 2000 },
+    );
+    expect(res.success).toBe(true);
+    expect(res.data).toEqual({ ok: true, v: 7 });
+  });
+
   it("timeout safety net — backend response 안 옴 → success:false 'timeout'", async () => {
     // spec frontend_v2.md §12.2 — invariant: setTimeout 가 backend silent 시 fail-resolve
     server.on("connection", (socket) => {

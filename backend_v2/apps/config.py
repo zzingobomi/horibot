@@ -195,6 +195,9 @@ class DeploymentConfig(BaseModel):
     rdb_uri: str | None = None
     # blob 저장 (calibration capture 등) — file:///path. DB owner host 만.
     object_uri: str | None = None
+    # bridge HTTP/WS 포트. 테스트는 0 (ephemeral) 으로 덮어써 실행 중인
+    # 실 backend(:8000) 와 포트 충돌 없이 공존한다.
+    bridge_port: int = 8000
 
 
 def load_deployment(path: Path | str) -> DeploymentConfig:

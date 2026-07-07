@@ -63,6 +63,52 @@ async def test_stop_isolates_module_failures(transport: ZenohTransport):
     assert flag["stopped"], "앞 모듈 stop 실패가 뒤 모듈 stop 을 막음 (격리 실패)"
 
 
+# ─── start() 중간 실패 — 이미 start 된 모듈 rollback ─────────
+
+
+async def test_start_failure_stops_already_started_modules(
+    transport: ZenohTransport,
+):
+    """boot 중간 실패 시 이미 start 된 모듈의 stop 이 불려야 함.
+
+    방치하면 앞 모듈의 worker thread/task 가 좀비로 남아 프로세스 종료를 막는다
+    (실 사고 2026-07-07: 유령 backend 의 port 점유 → bridge start 실패 →
+    rollback 없이 방치 → pytest 프로세스 hang)."""
+    events: list[str] = []
+
+    class _OkModule:
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+
+        def start(self) -> None:
+            events.append("ok:start")
+
+        def stop(self) -> None:
+            events.append("ok:stop")
+
+    class _BoomStart:
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+
+        def start(self) -> None:
+            raise RuntimeError("의도된 start 실패")
+
+        def stop(self) -> None:
+            # start 못 한 모듈의 stop 은 불리면 안 됨
+            events.append("boom:stop")
+
+    rt = Runtime(transport)
+    rt.add_module(_OkModule)
+    rt.add_module(_BoomStart)
+    with pytest.raises(RuntimeError, match="의도된 start 실패"):
+        await rt.start()
+    assert events == ["ok:start", "ok:stop"], (
+        f"start 실패 rollback 이 이미 start 된 모듈만 역순 stop 해야 함: {events}"
+    )
+    # rollback 후 재시작 가능해야 (started flag 원복)
+    await rt.stop()  # no-op (_started guard)
+
+
 # ─── Test fixtures — wire keys + domain class ────────────────
 
 

@@ -119,6 +119,9 @@ class TcpState(BaseModel):
     quaternion: tuple[float, float, float, float]
     joint_names: list[str]  # arm joint names, motors.yaml 순서
     joints: list[float]  # arm rad, joint_names 와 same index
+    # D4 캘 적용 상태 표면화 — "무보정으로 조용히 돈다" 차단 (frontend 배지).
+    calibration_applied: bool = False  # joint/link/sag 중 하나라도 적용됨
+    calibration_stale: bool = False  # 적용 후 캘 변경 감지 — 재시작 필요
 
 
 class TrajState(BaseModel):

@@ -45,6 +45,16 @@ def _built_runtime() -> tuple[Runtime, ZenohTransport]:
     return runtime, transport
 
 
+def _bridge_port(runtime: Runtime) -> int:
+    """start 후 실제 bind 된 bridge 포트 (ephemeral port=0 이 실 포트로 갱신됨)."""
+    bridge = next(
+        m
+        for m in runtime._modules  # noqa: SLF001 — test 전용 introspection
+        if isinstance(m, BridgeModule)
+    )
+    return bridge.port
+
+
 # ─── snapshot ───────────────────────────────────────────────────
 
 
@@ -149,9 +159,14 @@ async def contract_endpoint():
     """mock 전 module + bridge start (uvicorn). /contract.json HTTP 검증용."""
     transport = ZenohTransport(_LOCAL_CFG)
     deploy, robots = load_configs("mock", _CONFIG_DIR)
+    deploy.bridge_port = 0  # ephemeral — 실행 중인 실 backend(:8000) 와 공존
     runtime = build_runtime(deploy, robots, transport)
-    await runtime.start()
-    yield "http://127.0.0.1:8000/contract.json"
+    try:
+        await runtime.start()
+    except BaseException:
+        transport.close()
+        raise
+    yield f"http://127.0.0.1:{_bridge_port(runtime)}/contract.json"
     await runtime.stop()
     transport.close()
 
@@ -334,9 +349,14 @@ def test_graph_shows_declared_universe_not_running_fleet():
 async def graph_endpoint():
     transport = ZenohTransport(_LOCAL_CFG)
     deploy, robots = load_configs("mock", _CONFIG_DIR)
+    deploy.bridge_port = 0  # ephemeral — 실행 중인 실 backend(:8000) 와 공존
     runtime = build_runtime(deploy, robots, transport)
-    await runtime.start()
-    yield "http://127.0.0.1:8000/contract/graph"
+    try:
+        await runtime.start()
+    except BaseException:
+        transport.close()
+        raise
+    yield f"http://127.0.0.1:{_bridge_port(runtime)}/contract/graph"
     await runtime.stop()
     transport.close()
 

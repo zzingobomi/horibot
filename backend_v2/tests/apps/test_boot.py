@@ -163,8 +163,15 @@ async def booted():
     transport = ZenohTransport(_LOCAL_CFG)
     time.sleep(0.05)
     deploy, robots = load_configs("mock", _CONFIG_DIR)
+    deploy.bridge_port = 0  # ephemeral — 실행 중인 실 backend(:8000) 와 공존
     runtime: Runtime = build_runtime(deploy, robots, transport)
-    await runtime.start()
+    try:
+        await runtime.start()
+    except BaseException:
+        # start 실패 시 teardown(yield 이후) 이 안 돌므로 여기서 정리 —
+        # zenoh 세션이 열린 채 남으면 pytest 프로세스가 종료를 못 한다.
+        transport.close()
+        raise
     yield runtime
     await runtime.stop()
     transport.close()

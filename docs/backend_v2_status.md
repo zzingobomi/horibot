@@ -4,9 +4,31 @@
 > [backend_v2.md](backend_v2.md) (framework §1–§14 + Module catalog §16 + Task-first §17).
 > 본 문서 = "지금 어디까지 됐고 다음 뭐 할지" 만 — 설계 결정은 여기 안 둠.
 
-## 현재 상태 (2026-07-03)
+## 현재 상태 (2026-07-07)
 
 **framework + 10 Module 전부 가동 + robot-agnostic 스코프 리팩터 완료.**
+
+### 2026-07-07 — liveliness + Mirror 활성 (부팅 순서 종속성 근본 제거)
+
+분산에서 PC(calibration) 늦게 뜨면 motion 이 **무보정으로 조용히 영원히 운전**하던
+설계 구멍을 프레임워크 레벨에서 제거 (정본 = backend_v2.md §3.3 배너 + anchor #2/#9/#23):
+
+- **L1 Transport**: `declare_liveliness` / `subscribe_liveliness` (zenoh liveliness
+  token, history=True). 4전이 실검증 (사전존재/undeclare/재선언/세션 crash) →
+  `test_transport.py::test_liveliness_presence_lifecycle`
+- **L2 Runtime**: service 등록 시 같은 key 로 token **자동 선언** (Mirror 가 구독)
+  (모듈이 "나 떴어요" publish 하는 손 컨벤션 금지 — 부팅 순서 = distribution 문제 =
+  framework 책임)
+- **L3 Mirror 완성**: owner liveliness 구독 (늦은 부팅/재시작 자동 refetch 수렴) +
+  `@mirror.on_change(old,new)` 훅 (실제 값 변경 전이만 발화) + refetch 직렬화.
+  → `test_mirror.py::test_mirror_converges_when_owner_boots_later`
+- **L4 Motion = 첫 Mirror consumer**: start() blocking fetch 삭제 → mirror peek.
+  없음→값 = runner idle 때 **live 적용** / 값→값′ = `calibration_stale` 표시만
+  ("변경은 재부팅" 유지). `TcpState.calibration_applied/stale` 상시 표면화 +
+  frontend LivePointCloudPanel "robot FK" 배지.
+  → `test_motion_calibration.py::test_motion_converges_when_calibration_owner_boots_later`
+- 같은 날 오전: bridge WS **CONNECTING 창 service 프레임 silent drop** 수정 (버퍼→
+  open flush, `bridge.test.ts` 회귀 가드) — tasks e2e 파싱 실패의 근본 원인이었음.
 
 검증 (전부 실행 확인, 2026-07-03):
 
@@ -23,7 +45,7 @@
 
 | 영역 | 상태 |
 |---|---|
-| framework (contract/runtime/transport/persistence/storage/Mirror) | ✅ (Mirror 는 consumer 0 — deferred, spec §3.3) |
+| framework (contract/runtime/transport/persistence/storage/Mirror/liveliness) | ✅ (Mirror 활성 2026-07-07 — 첫 consumer Motion.calibration, spec §3.3 + anchor #23) |
 | infra (zenoh / sqlite·postgres / fs·minio) + 루트 alembic | ✅ |
 | motor (mock + 실 feetech) / camera (mock + realsense_d405) / camera_decoded | ✅ (실 feetech TCP jog 검증됨. realsense·PID/profile 미검증 — 아래) |
 | motion — D1 kinematics(dof=6) / D2 MoveJ+TCP state / D3 Jog / **MoveL v1 + await-complete 완료 계약** | ✅ (spec §17.3) |
@@ -37,12 +59,27 @@
 **검증 명령** (cwd 반드시 `backend_v2/`):
 ```bash
 cd backend_v2
-uv run --no-sync pytest -q                          # 212 passed
+uv run --no-sync pytest -q                          # 265 passed (~75s)
 uv run --no-sync ruff check . && uv run --no-sync pyright
 uv run --no-sync python -m apps.main --host mock    # 실 boot (:8000)
 # frontend: cd frontend_v2 && pnpm vitest run && pnpm lint
 # e2e: mock backend(CALIB_SIM_BOARD=1) + pnpm dev(:5174) 띄우고 pnpm test:e2e (headed)
 ```
+
+> **⚠️ 검증 게이트가 몇 분씩 hang 하면 → 유령 `apps.main` 확인** (2026-07-07 사고, [[project-verify-hang-stale-backend]]).
+> 이전 세션이 `--host mock` 으로 띄운 backend 를 kill 안 하고 남기면 그게 :8000 을
+> 계속 점유한다. 그 상태에서 pytest 를 돌리면 full-boot fixture 의 bridge 가 실패하고
+> **pytest 요약은 찍히지만 프로세스가 종료되지 않는다** (`| tail` 버퍼링이라 출력조차
+> 안 보임). 원인은 "테스트가 느림" 이 아니라 좀비 프로세스. 클린 상태 실측 = 전체
+> 게이트 ~86s.
+> - **구조 fix 완료** (재발해도 hang 대신 명확한 에러로 실패): bridge 소켓 pre-bind
+>   (uvicorn `sys.exit(1)`→`RuntimeError("bind 실패")`), `Runtime.start` 실패 시
+>   started 모듈 역순 rollback, 테스트 전부 `bridge_port=0` (ephemeral — 실 backend
+>   와 공존). 회귀 가드 = `test_runtime::test_start_failure_stops_already_started_modules`
+>   + `test_bridge::test_start_port_conflict_raises_clear_error`.
+> - **운영 수칙**: 검증/실행용으로 띄운 backend 는 그 세션 안에서 반드시 kill.
+>   장시간 무출력이면 프로세스 트리에 `apps.main`/`pytest` 잔존부터 확인
+>   (`Get-NetTCPConnection -LocalPort 8000 -State Listen`).
 
 ## 아키텍처 불변식 (절대 어기지 말 것 — 포팅 시 [[feedback-port-keep-v2-arch]])
 

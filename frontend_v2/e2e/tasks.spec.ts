@@ -39,6 +39,11 @@ test.describe("RobotTaskMode e2e (mock backend)", () => {
     await expect(page.getByTestId("prompt-panel")).toBeVisible({
       timeout: 5_000,
     });
+    // ws OPEN(online) 대기 후 조작 — CONNECTING 창 클릭 시 프레임 유실(버퍼로 복구는
+    // 되지만 e2e 결정성 위해 online 대기). 첫 테스트와 동일 gate.
+    await expect(page.getByText("online", { exact: true })).toBeVisible({
+      timeout: 5_000,
+    });
 
     await page.getByTestId("prompt-input").fill(COMMAND);
     await page.getByTestId("prompt-parse").click();
@@ -52,6 +57,9 @@ test.describe("RobotTaskMode e2e (mock backend)", () => {
   test("실행 → task tree(step) + status stream 반영", async ({ page }) => {
     await page.goto(TASKS_PATH);
     await expect(page.getByTestId("prompt-panel")).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(page.getByText("online", { exact: true })).toBeVisible({
       timeout: 5_000,
     });
 

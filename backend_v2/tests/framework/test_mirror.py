@@ -731,3 +731,147 @@ def test_mirror_cross_process(tmp_path: Path):
             proc.wait(timeout=5)
         # encode_event silence unused warning
         _ = encode_event
+
+
+# ─── liveliness 수렴 — 부팅 순서 해방 (2026-07-07 근본 수정) ─────
+
+
+async def test_mirror_converges_when_owner_boots_later():
+    """THE 회귀 테스트 — Reader 먼저 부팅 (owner 없음, NotReady) → Owner 가
+    **나중에** 부팅 → change event 하나 없이 liveliness alive 만으로 mirror 수렴.
+
+    이 테스트가 red 면 "PC 늦게 켜면 motion 이 무보정으로 영원히 돈다" 재발.
+    """
+    ep = "tcp/127.0.0.1:17562"
+    t_reader = ZenohTransport({**_LOCAL_CFG, "listen": [ep]})
+    t_owner: ZenohTransport | None = None
+    rt_owner: Runtime | None = None
+
+    class Reader:
+        cal: Mirror[CalibrationBundle] = Mirror(
+            snapshot_service=Calib.Service.SNAPSHOT_BUNDLE,
+            snapshot_req=lambda self: SnapshotRequest(),
+            change_topic=Calib.Event.ACTIVATED,
+            value_cls=CalibrationBundle,
+            change_event_cls=CalibrationActivated,
+        )
+
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+
+    class Owner:
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+            self._bundle = CalibrationBundle(
+                bundle_id=7, hand_eye=[7.0], joint_offsets=[0.7]
+            )
+
+        @service(Calib.Service.SNAPSHOT_BUNDLE)
+        def snapshot(self, req: SnapshotRequest) -> CalibrationBundle:
+            return self._bundle
+
+    rt_reader = Runtime(t_reader)
+    rt_reader.mirror_snapshot_timeout = 0.3  # 초기 fetch 빠른 실패
+    reader = rt_reader.add_module(Reader)
+    try:
+        await rt_reader.start()
+        assert reader.cal.is_ready is False, "owner 없는데 ready — 테스트 전제 붕괴"
+
+        # Owner 늦은 부팅 (별도 zenoh 세션 = 분산 프로세스 등가)
+        t_owner = ZenohTransport({**_LOCAL_CFG, "connect": [ep]})
+        rt_owner = Runtime(t_owner)
+        rt_owner.add_module(Owner)
+        await rt_owner.start()
+
+        # event publish 없음 — liveliness 만으로 수렴해야 함
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if reader.cal.is_ready:
+                break
+            await asyncio.sleep(0.05)
+
+        assert reader.cal.is_ready, "owner 늦은 부팅 후 mirror 미수렴 (liveliness 경로 죽음)"
+        assert reader.cal.value.bundle_id == 7
+    finally:
+        await rt_reader.stop()
+        if rt_owner is not None:
+            await rt_owner.stop()
+        t_reader.close()
+        if t_owner is not None:
+            t_owner.close()
+
+
+async def test_mirror_on_change_transition_contract(runtime: Runtime):
+    """on_change 발화 계약 3종:
+    ① 최초 도착 → (None, v) 1회
+    ② 값 변경 → (v, v') 1회
+    ③ 같은 값 refetch (event 만 발행, 값 무변) → 발화 X
+    """
+
+    class Owner:
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+            self._bundle = CalibrationBundle(
+                bundle_id=1, hand_eye=[1.0], joint_offsets=[]
+            )
+
+        @service(Calib.Service.SNAPSHOT_BUNDLE)
+        def snapshot(self, req: SnapshotRequest) -> CalibrationBundle:
+            return self._bundle
+
+        def change(self, new_id: int) -> None:
+            self._bundle = CalibrationBundle(
+                bundle_id=new_id, hand_eye=[float(new_id)], joint_offsets=[]
+            )
+            self.runtime.publish(
+                Calib.Event.ACTIVATED, CalibrationActivated(bundle_id=new_id)
+            )
+
+        def touch(self) -> None:
+            # 값 안 바꾸고 event 만 — refetch 는 일어나되 on_change 는 X
+            self.runtime.publish(
+                Calib.Event.ACTIVATED,
+                CalibrationActivated(bundle_id=self._bundle.bundle_id),
+            )
+
+    calls: list[tuple[int | None, int]] = []
+
+    class Reader:
+        cal: Mirror[CalibrationBundle] = Mirror(
+            snapshot_service=Calib.Service.SNAPSHOT_BUNDLE,
+            snapshot_req=lambda self: SnapshotRequest(),
+            change_topic=Calib.Event.ACTIVATED,
+            value_cls=CalibrationBundle,
+            change_event_cls=CalibrationActivated,
+        )
+
+        def __init__(self, runtime: ModuleRuntime):
+            self.runtime = runtime
+
+        @cal.on_change
+        async def _on_cal_change(
+            self, old: CalibrationBundle | None, new: CalibrationBundle
+        ) -> None:
+            calls.append((old.bundle_id if old else None, new.bundle_id))
+
+    owner = runtime.add_module(Owner)
+    runtime.add_module(Reader)
+    await runtime.start()
+
+    # ① 최초 도착 (initial snapshot)
+    assert calls == [(None, 1)], f"최초 도착 발화 어긋남: {calls}"
+
+    # ② 값 변경
+    owner.change(42)
+    deadline = time.time() + 2.0
+    while time.time() < deadline and (None, 1) == calls[-1]:
+        await asyncio.sleep(0.05)
+    deadline = time.time() + 2.0
+    while time.time() < deadline and len(calls) < 2:
+        await asyncio.sleep(0.05)
+    assert calls == [(None, 1), (1, 42)], f"값 변경 발화 어긋남: {calls}"
+
+    # ③ 같은 값 refetch — event 만 발행 → 발화 X
+    owner.touch()
+    await asyncio.sleep(0.5)  # refetch 여유
+    assert calls == [(None, 1), (1, 42)], f"동일값 refetch 가 발화함: {calls}"

@@ -64,10 +64,15 @@ class MoveJPoseRequest(BaseModel):
     orientation:
       - target_quaternion=None → position-only IK (자세는 IK 가 자유롭게 선택).
       - 지정 → 그 자세로 IK (도달 가능해야 함).
+
+    tool_offset: tcp 가 아니라 **tcp+tool_offset(tool frame) 지점**을 target 에 맞춘다.
+      grasp 에서 tcp≠파지점(단일 jaw 그리퍼) 보정용 — 그리퍼 상수(큐브 무관). None=tcp.
+      적용: IK(target)→자세 R → target - R·tool_offset 재-IK (자세는 근처라 1회 근사).
     """
 
     target_position: tuple[float, float, float]  # base frame, m
     target_quaternion: tuple[float, float, float, float] | None = None  # [x,y,z,w]
+    tool_offset: tuple[float, float, float] | None = None  # tool frame, m
 
 
 class MoveLRequest(BaseModel):

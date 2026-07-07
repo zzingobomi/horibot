@@ -50,6 +50,13 @@ PRE_GRASP_DZ = 0.06  # grasp 위 hover (m)
 LIFT_DZ = 0.08  # 파지 후 들어올림 (grasp 기준)
 PLACE_HOVER_DZ = 0.05  # place 위 hover
 HOME_WAYPOINT = "home"  # 종료 복귀 자세 (사용자 티칭 waypoint)
+# tcp≠파지점(단일 가동 jaw 그리퍼) 보정 — tool frame (x=접근축 / -y=고정 jaw 쪽, m).
+# 그리퍼 상수(큐브 무관). MoveToPose 가 tcp 대신 tcp+PINCH_OFFSET 을 target 에 맞춤
+# → 큐브가 파지 중심(고정 jaw 쪽)에 놓임.
+# ⚠ 값은 **rough URDF 추정** (AABB 기반, 접촉면 정밀도 부족) — 실물에서 미스 방향
+#   보고 튜닝할 것 (옆으로 밀리면 y 크기↑, 반대면 부호). 정밀히는 실측:
+#   큐브 문 자세(토크오프)에서 tcp pose vs 큐브 base → tool frame 차이.
+PINCH_OFFSET: tuple[float, float, float] | None = (0.0, -0.015, 0.0)
 
 
 # ─── 기하 prior (§17.5 ②) ────────────────────────────────────────────
@@ -285,7 +292,7 @@ def create_pick_and_place_task(
             offset=Position3(x=0.0, y=0.0, z=PRE_GRASP_DZ),
             label="pre_grasp",
         ),
-        MoveToPose(target=grasp.out, label="grasp"),
+        MoveToPose(target=grasp.out, tool_offset=PINCH_OFFSET, label="grasp"),
         Gripper(action="close", label="close_gripper"),
         VerifyGrasp(label="verify_grasp"),
         Wait(duration_sec=0.5, label="grip_settle"),
@@ -307,7 +314,7 @@ def create_pick_and_place_task(
                 offset=Position3(x=0.0, y=0.0, z=PLACE_HOVER_DZ),
                 label="pre_place",
             ),
-            MoveToPose(target=place_xyz.out, label="place"),
+            MoveToPose(target=place_xyz.out, tool_offset=PINCH_OFFSET, label="place"),
             VerifyGrasp(label="verify_before_release"),
             Gripper(action="open", label="release"),
             Wait(duration_sec=0.3, label="release_settle"),

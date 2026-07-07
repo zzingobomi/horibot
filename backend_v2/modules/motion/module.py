@@ -396,6 +396,16 @@ class MotionModule:
         target = self._kin.ik(req.target_position, req.target_quaternion, current)
         if target is None:
             return MoveJResponse(accepted=False, message="IK 실패 — pose 도달 불가")
+        if req.tool_offset is not None:
+            # tcp+tool_offset(tool frame) 을 target 에 맞춤 (grasp 파지점 보정).
+            # 첫 해의 자세로 offset 을 base 로 회전 → target 보정 후 재-IK (자세는
+            # 근처라 1회 근사로 충분). 재-IK 실패 시 offset 없는 원해로 진행.
+            rot, _ = self._kin.fk_to_matrix(target)
+            base_off = np.asarray(rot) @ np.asarray(req.tool_offset, dtype=float)
+            corrected = tuple(np.asarray(req.target_position) - base_off)
+            adjusted = self._kin.ik(corrected, req.target_quaternion, target)
+            if adjusted is not None:
+                target = adjusted
         if not self._begin_move():
             return MoveJResponse(accepted=False, message="이전 motion 진행 중")
         assert self._runner is not None and self._move_done is not None

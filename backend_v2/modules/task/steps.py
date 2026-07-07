@@ -166,6 +166,9 @@ class MoveToPose(Step[None]):
 
     target: SlotOr[Position3]
     offset: Position3 = field(default_factory=lambda: Position3(x=0.0, y=0.0, z=0.0))
+    # tcp≠파지점(단일 jaw) 보정 — tool frame 상수(그리퍼 속성, 큐브 무관). grasp/place
+    # 만 지정, 접근/승강은 None(tcp). None=tcp 를 target 에 맞춤.
+    tool_offset: tuple[float, float, float] | None = None
 
     async def execute(self, ctx: StepContext) -> None:
         base = ctx.resolve(self.target)
@@ -175,7 +178,9 @@ class MoveToPose(Step[None]):
         logger.info("MoveJPose → %.3f %.3f %.3f  [%s]", pos.x, pos.y, pos.z, self.label)
         res = await ctx.call(
             Motion.Service.MOVE_J_POSE,
-            MoveJPoseRequest(target_position=(pos.x, pos.y, pos.z)),
+            MoveJPoseRequest(
+                target_position=(pos.x, pos.y, pos.z), tool_offset=self.tool_offset
+            ),
             MoveJResponse,
             timeout=60.0,
         )

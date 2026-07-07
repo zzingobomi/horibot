@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 IK_MAX_ITER = 100
 IK_TOLERANCE = 1e-4
 IK_POS_ERROR_LIMIT = 0.01
+# seed 1회로 수렴 못 하면 random restart (PyBullet 은 seed 에서 출발하는 local
+# 솔버라 해가 존재해도 놓침 — "도달 가능한데 IK 실패" 방지). restart 중 seed 에
+# 가장 가까운 해 선택 → motion 연속성 유지.
+IK_RESTARTS = 24
 
 # 모든 robot type URDF 는 `tcp` 라는 link 를 가져야 함 (UR tool0 패턴, fail-fast).
 TCP_LINK_NAME = "tcp"
@@ -51,6 +55,8 @@ class PybulletKinematics:
         self._movable_ranges: list[float] = []
         # chain joint 의 movable result vector 내 위치
         self._chain_in_movable: list[int] = []
+        # IK random restart 용 (고정 seed → 재현 가능; seeded 1회 성공 시 안 씀)
+        self._rng = np.random.default_rng(0)
 
     def initialize(self) -> None:
         with self._lock:
@@ -133,49 +139,79 @@ class PybulletKinematics:
     ) -> list[float] | None:
         self._require_init()
         with self._lock:
-            rest = [0.0] * len(self._movable_indices)
-            if current_joint_angles is not None:
-                for k, angle in enumerate(current_joint_angles):
-                    rest[self._chain_in_movable[k]] = angle
-                self._set_chain(list(current_joint_angles))
-
-            kwargs: dict = dict(
-                bodyUniqueId=self._robot,
-                endEffectorLinkIndex=self._ee_index,
-                targetPosition=target_position,
-                lowerLimits=self._movable_lower,
-                upperLimits=self._movable_upper,
-                jointRanges=self._movable_ranges,
-                restPoses=rest,
-                maxNumIterations=IK_MAX_ITER,
-                residualThreshold=IK_TOLERANCE,
-                physicsClientId=self._client,
+            seed = (
+                list(current_joint_angles)
+                if current_joint_angles is not None
+                else [0.0] * len(self._chain_indices)
             )
-            if target_quaternion is not None:
-                kwargs["targetOrientation"] = target_quaternion
-
-            result = p.calculateInverseKinematics(**kwargs)
-            angles = [result[i] for i in self._chain_in_movable]
-
-            # 수렴 검증 — reject 자리 원인 분리 (reachability vs collision) 로 debug 가능
-            self._set_chain(angles)
-            actual_pos, _ = self._ee_state()
-            error = float(
-                np.linalg.norm(np.array(actual_pos) - np.array(target_position))
-            )
-            if error > IK_POS_ERROR_LIMIT:
+            # 1) seeded 1회 — 현재 자세 근처 해 (motion 연속성, 대부분 여기서 끝).
+            sol = self._ik_from_seed(target_position, target_quaternion, seed)
+            if sol is not None:
+                return sol
+            # 2) 실패 = local 솔버가 seed basin 에서 못 찾은 것일 수 있음 (해는 존재
+            #    가능). random restart 후 seed 에 가장 가까운 해 선택 (jump 최소화).
+            best: list[float] | None = None
+            best_dist = float("inf")
+            for _ in range(IK_RESTARTS):
+                rand = [
+                    float(self._rng.uniform(lo, hi))
+                    for lo, hi in zip(self._chain_lower, self._chain_upper)
+                ]
+                cand = self._ik_from_seed(target_position, target_quaternion, rand)
+                if cand is not None:
+                    dist = sum((a - b) ** 2 for a, b in zip(cand, seed))
+                    if dist < best_dist:
+                        best_dist, best = dist, cand
+            if best is None:
                 logger.debug(
-                    "IK reject (reachability) target=%s error=%.4fm limit=%.4fm",
-                    target_position, error, IK_POS_ERROR_LIMIT,
+                    "IK 실패 (seed + restart %d 모두) target=%s",
+                    IK_RESTARTS, target_position,
                 )
-                return None
-            if self._self_collision_unlocked():
-                logger.debug(
-                    "IK reject (self-collision) target=%s solution=%s",
-                    target_position, angles,
-                )
-                return None
-            return angles
+            return best
+
+    def _ik_from_seed(
+        self,
+        target_position: Position3,
+        target_quaternion: Quaternion | None,
+        seed_chain: list[float],
+    ) -> list[float] | None:
+        """chain-공간 seed 하나로 1회 IK + 수렴/충돌 검증 (호출자가 _lock 보유).
+
+        수렴 검증은 reachability vs self-collision 원인 분리 (debug 로그).
+        """
+        rest = [0.0] * len(self._movable_indices)
+        for k, angle in enumerate(seed_chain):
+            rest[self._chain_in_movable[k]] = angle
+        self._set_chain(seed_chain)
+
+        kwargs: dict = dict(
+            bodyUniqueId=self._robot,
+            endEffectorLinkIndex=self._ee_index,
+            targetPosition=target_position,
+            lowerLimits=self._movable_lower,
+            upperLimits=self._movable_upper,
+            jointRanges=self._movable_ranges,
+            restPoses=rest,
+            maxNumIterations=IK_MAX_ITER,
+            residualThreshold=IK_TOLERANCE,
+            physicsClientId=self._client,
+        )
+        if target_quaternion is not None:
+            kwargs["targetOrientation"] = target_quaternion
+
+        result = p.calculateInverseKinematics(**kwargs)
+        angles = [result[i] for i in self._chain_in_movable]
+
+        self._set_chain(angles)
+        actual_pos, _ = self._ee_state()
+        error = float(
+            np.linalg.norm(np.array(actual_pos) - np.array(target_position))
+        )
+        if error > IK_POS_ERROR_LIMIT:
+            return None
+        if self._self_collision_unlocked():
+            return None
+        return angles
 
     def fk_to_matrix(
         self, joint_angles: Sequence[float]

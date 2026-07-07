@@ -18,7 +18,13 @@ import { RobotSceneContainer } from "@/components/scene/Container";
 import { ModeDockview, type PanelSpec } from "@/components/shared/ModeDockview";
 
 const TASK_PANELS: PanelSpec[] = [
-  { id: "prompt", component: "prompt", title: "Command", width: 340, height: 260 },
+  {
+    id: "prompt",
+    component: "prompt",
+    title: "Command",
+    width: 340,
+    height: 260,
+  },
   {
     id: "task-progress",
     component: "taskProgress",

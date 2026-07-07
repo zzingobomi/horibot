@@ -41,7 +41,7 @@ export function PromptPanel() {
   const stopSvc = useService(ServiceKey.TASK_STOP, robotId);
 
   // 개발 중 반복 입력 절감 — 대표 시나리오를 기본값으로 (§17.5 tuning 단계).
-  const [text, setText] = useState("흰색 큐브를 파란 상자에 둬");
+  const [text, setText] = useState("흰색 작고 네모난 큐브를 파란 상자에 둬");
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -54,9 +54,11 @@ export function PromptPanel() {
     setParsed(null);
     const res = await parseSvc.call({ text: cmd });
     setBusy(false);
-    const d = res.data as
-      | { ok?: boolean; parsed?: Parsed | null; message?: string }
-      | null;
+    const d = res.data as {
+      ok?: boolean;
+      parsed?: Parsed | null;
+      message?: string;
+    } | null;
     if (d?.ok && d.parsed) {
       setParsed(d.parsed);
       // v1 플로우 — 파싱 즉시 preview 로 step tree publish (실행 X).
@@ -85,7 +87,11 @@ export function PromptPanel() {
       params: taskParams(parsed),
     });
     const d = res.data as { accepted?: boolean; message?: string } | null;
-    setMsg(d?.accepted ? "실행 시작 — 진행은 Task Progress" : `거부: ${d?.message ?? res.message}`);
+    setMsg(
+      d?.accepted
+        ? "실행 시작 — 진행은 Task Progress"
+        : `거부: ${d?.message ?? res.message}`,
+    );
   };
 
   const onStop = async () => {
@@ -105,7 +111,7 @@ export function PromptPanel() {
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder='예: "흰색 큐브를 파란 상자에 둬"'
+          placeholder='예: "흰색 작고 네모난 큐브를 파란 상자에 둬"'
           data-testid="prompt-input"
           rows={2}
           className="w-full resize-none rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono"

@@ -32,24 +32,26 @@ function respond(key: string): unknown {
 }
 
 function mockBridge() {
-  return vi
-    .spyOn(bridge, "callService")
-    // @ts-expect-error — 테스트 stub, 응답 shape 는 respond() 가 책임
-    .mockImplementation(async (key, _req, opts) => {
-      const wk = bridge.expand(
-        key,
-        (opts as { robotId?: string })?.robotId ?? ROBOT_ID,
-      );
-      const entry: ServiceEntry = {
-        success: true,
-        message: "",
-        data: respond(String(key)),
-        timestamp: Date.now(),
-        pending: false,
-      };
-      useFrameworkStore.getState().setServiceData(wk, entry);
-      return entry;
-    });
+  return (
+    vi
+      .spyOn(bridge, "callService")
+      // @ts-expect-error — 테스트 stub, 응답 shape 는 respond() 가 책임
+      .mockImplementation(async (key, _req, opts) => {
+        const wk = bridge.expand(
+          key,
+          (opts as { robotId?: string })?.robotId ?? ROBOT_ID,
+        );
+        const entry: ServiceEntry = {
+          success: true,
+          message: "",
+          data: respond(String(key)),
+          timestamp: Date.now(),
+          pending: false,
+        };
+        useFrameworkStore.getState().setServiceData(wk, entry);
+        return entry;
+      })
+  );
 }
 
 function renderPanel() {
@@ -88,7 +90,7 @@ describe("PromptPanel", () => {
 
     act(() => {
       fireEvent.change(getByTestId("prompt-input"), {
-        target: { value: "흰색 큐브를 파란 상자에 둬" },
+        target: { value: "흰색 작고 네모난 큐브를 파란 상자에 둬" },
       });
     });
     await act(async () => {
@@ -101,7 +103,7 @@ describe("PromptPanel", () => {
       );
       expect(calls.length).toBeGreaterThan(0);
       const req = calls[0][1] as { text: string };
-      expect(req.text).toBe("흰색 큐브를 파란 상자에 둬");
+      expect(req.text).toBe("흰색 작고 네모난 큐브를 파란 상자에 둬");
     });
     // 파싱 결과 (pick/place) 표시
     await waitFor(() => expect(getByTestId("prompt-parsed")).toBeTruthy());
@@ -122,7 +124,9 @@ describe("PromptPanel", () => {
       expect(req.task_name).toBe("pick_and_place");
       expect(req.params.pick_object).toBe("white cube");
       // run 은 아직 호출 안 됨 (preview ≠ 실행)
-      expect(spy.mock.calls.filter((c) => String(c[0]).endsWith("/run")).length).toBe(0);
+      expect(
+        spy.mock.calls.filter((c) => String(c[0]).endsWith("/run")).length,
+      ).toBe(0);
     });
   });
 
@@ -132,7 +136,7 @@ describe("PromptPanel", () => {
 
     act(() => {
       fireEvent.change(getByTestId("prompt-input"), {
-        target: { value: "흰색 큐브를 파란 상자에 둬" },
+        target: { value: "흰색 작고 네모난 큐브를 파란 상자에 둬" },
       });
     });
     await act(async () => {

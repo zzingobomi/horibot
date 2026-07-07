@@ -17,7 +17,7 @@
 import { expect, test } from "@playwright/test";
 
 const TASKS_PATH = "/tasks"; // 최상위 (host-level, robot-agnostic — 로봇 하위 아님)
-const COMMAND = "흰색 큐브를 파란 상자에 둬";
+const COMMAND = "흰색 작고 네모난 큐브를 파란 상자에 둬";
 
 test.describe("RobotTaskMode e2e (mock backend)", () => {
   test("WS 연결 + Prompt/TaskProgress 패널 렌더", async ({ page }) => {
@@ -49,9 +49,12 @@ test.describe("RobotTaskMode e2e (mock backend)", () => {
     await page.getByTestId("prompt-parse").click();
 
     // mock LLM 고정 파싱 → pick=white cube / place=blue box
-    await expect(page.getByTestId("prompt-parsed")).toContainText("white cube", {
-      timeout: 5_000,
-    });
+    await expect(page.getByTestId("prompt-parsed")).toContainText(
+      "white cube",
+      {
+        timeout: 5_000,
+      },
+    );
   });
 
   test("실행 → task tree(step) + status stream 반영", async ({ page }) => {
@@ -65,9 +68,12 @@ test.describe("RobotTaskMode e2e (mock backend)", () => {
 
     await page.getByTestId("prompt-input").fill(COMMAND);
     await page.getByTestId("prompt-parse").click();
-    await expect(page.getByTestId("prompt-parsed")).toContainText("white cube", {
-      timeout: 5_000,
-    });
+    await expect(page.getByTestId("prompt-parsed")).toContainText(
+      "white cube",
+      {
+        timeout: 5_000,
+      },
+    );
 
     await page.getByTestId("prompt-run").click();
 

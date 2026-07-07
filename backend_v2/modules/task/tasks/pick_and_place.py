@@ -27,16 +27,10 @@ from modules.detector.contract import (
     Detection,
     Detector,
 )
-from scipy.spatial.transform import Rotation
-
 from modules.motion.contract import (
     Motion,
     MoveJRequest,
     MoveJResponse,
-    MoveLRequest,
-    MoveLResponse,
-    TcpSnapshotRequest,
-    TcpState,
 )
 from modules.waypoint.contract import (
     ListGroupMembersRequest,
@@ -52,9 +46,9 @@ from ..steps import Gripper, MoveJ, MoveTCP, VerifyGrasp, Wait
 
 logger = logging.getLogger(__name__)
 
-APPROACH_STANDOFF = 0.06  # 접근축 뒤 standoff (m) — 옛 PRE_GRASP_DZ(수직 hover) 대체
+PRE_GRASP_DZ = 0.06  # grasp 위 hover (m)
 LIFT_DZ = 0.08  # 파지 후 들어올림 (grasp 기준)
-PLACE_STANDOFF = 0.05  # place 접근 standoff
+PLACE_HOVER_DZ = 0.05  # place 위 hover
 HOME_WAYPOINT = "home"  # 종료 복귀 자세 (사용자 티칭 waypoint)
 
 
@@ -235,84 +229,6 @@ class PlacePolicy(Step[Position3]):
         return out
 
 
-@dataclass(kw_only=True)
-class ApproachAlongTool(Step[None]):
-    """접근축(현재 tcp x = 그리퍼 pointing 방향)을 따라 standoff → target 진입.
-
-    수직 하강이 기울어진 그리퍼 몸통으로 큐브를 옆으로 밀던 실패(2026-07-07) fix —
-    손가락이 가리키는 선을 따라 미끄러져 들어가 정면 도달. 자세는 경로 내내 고정
-    (MoveL target_quaternion). **접근각 = 직전 자세(search 마지막 waypoint)** —
-    더 가파른 접근을 원하면 search 자세를 가파르게 티칭하면 됨.
-
-    수직 top-down 강제는 기각: SO-101 기구 한계로 접근축 수직은 z≤0.05m 에서만
-    reachable (FK 20만 샘플 조사, 2026-07-07) — hover 높이에선 물리적으로 불가."""
-
-    target: SlotOr[Position3]
-    standoff: float = APPROACH_STANDOFF
-
-    async def execute(self, ctx: StepContext) -> None:
-        tgt = ctx.resolve(self.target)
-        if not isinstance(tgt, Position3):
-            raise TypeError(
-                f"ApproachAlongTool.target: Position3 기대, {type(tgt).__name__}"
-            )
-        snap = await ctx.call(
-            Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState
-        )
-        quat = snap.quaternion
-        adir = Rotation.from_quat(list(quat)).apply([1.0, 0.0, 0.0])
-        pre = (
-            tgt.x - float(adir[0]) * self.standoff,
-            tgt.y - float(adir[1]) * self.standoff,
-            tgt.z - float(adir[2]) * self.standoff,
-        )
-        logger.info(
-            "ApproachAlongTool: standoff %.3f %.3f %.3f → target %.3f %.3f %.3f "
-            "(adir=%.2f %.2f %.2f)  [%s]",
-            *pre, tgt.x, tgt.y, tgt.z, *adir, self.label,
-        )
-        for phase, p in (("standoff", pre), ("target", (tgt.x, tgt.y, tgt.z))):
-            res = await ctx.call(
-                Motion.Service.MOVE_L,
-                MoveLRequest(target_position=p, target_quaternion=quat),
-                MoveLResponse,
-                timeout=60.0,
-            )
-            if not res.accepted:
-                raise RuntimeError(
-                    f"ApproachAlongTool {phase} MoveL 거부: {res.message} [{self.label}]"
-                )
-
-
-@dataclass(kw_only=True)
-class RetreatAlongTool(Step[None]):
-    """현재 접근축 반대 방향으로 standoff 후퇴 (자세 고정) — release 후 이탈용.
-
-    수직 상승은 기울어진 그리퍼가 상자 테두리를 칠 수 있음 — 들어온 선 그대로 후퇴."""
-
-    standoff: float = PLACE_STANDOFF
-
-    async def execute(self, ctx: StepContext) -> None:
-        snap = await ctx.call(
-            Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState
-        )
-        quat = snap.quaternion
-        adir = Rotation.from_quat(list(quat)).apply([1.0, 0.0, 0.0])
-        back = (
-            snap.position[0] - float(adir[0]) * self.standoff,
-            snap.position[1] - float(adir[1]) * self.standoff,
-            snap.position[2] - float(adir[2]) * self.standoff,
-        )
-        res = await ctx.call(
-            Motion.Service.MOVE_L,
-            MoveLRequest(target_position=back, target_quaternion=quat),
-            MoveLResponse,
-            timeout=60.0,
-        )
-        if not res.accepted:
-            raise RuntimeError(f"RetreatAlongTool MoveL 거부: {res.message} [{self.label}]")
-
-
 # ─── task factory ────────────────────────────────────────────────────
 
 
@@ -360,18 +276,22 @@ def create_pick_and_place_task(
 
     steps += [
         grasp,
-        # 접근축 진입 — 기울어진 그리퍼의 수직 하강이 큐브를 밀던 실패 fix.
-        ApproachAlongTool(
-            target=grasp.out, standoff=APPROACH_STANDOFF, label="approach_grasp"
+        # 접근/파지/이동 전부 position-only — grasp 에 필요한 건 위치뿐, 자세는
+        # 팔이 그 위치에서 닿는 대로 IK 가 자유롭게 잡음. 자세를 고정하면 도달
+        # 가능한 위치인데도 IK 가 실패함 (constant-orientation 이 높이마다 변하는
+        # reachable 자세를 못 덮음 — 2026-07-07 검증).
+        MoveTCP(
+            target=grasp.out,
+            offset=Position3(x=0.0, y=0.0, z=PRE_GRASP_DZ),
+            label="pre_grasp",
         ),
+        MoveTCP(target=grasp.out, label="grasp"),
         Gripper(action="close", label="close_gripper"),
         VerifyGrasp(label="verify_grasp"),
         Wait(duration_sec=0.5, label="grip_settle"),
-        # lift — 자세 고정(hold) 수직 상승 (파지 후 자세 흔들림 방지).
         MoveTCP(
             target=grasp.out,
             offset=Position3(x=0.0, y=0.0, z=LIFT_DZ),
-            orientation="hold",
             label="lift",
         ),
         VerifyGrasp(label="verify_after_lift"),
@@ -381,14 +301,20 @@ def create_pick_and_place_task(
         place_xyz = PlacePolicy(target=select_place.out, label="place_policy")
         steps += [
             place_xyz,
-            ApproachAlongTool(
-                target=place_xyz.out, standoff=PLACE_STANDOFF, label="approach_place"
+            MoveTCP(
+                target=place_xyz.out,
+                offset=Position3(x=0.0, y=0.0, z=PLACE_HOVER_DZ),
+                label="pre_place",
             ),
+            MoveTCP(target=place_xyz.out, label="place"),
             VerifyGrasp(label="verify_before_release"),
             Gripper(action="open", label="release"),
             Wait(duration_sec=0.3, label="release_settle"),
-            # 들어온 선 그대로 후퇴 — 수직 상승은 그리퍼가 상자 테두리를 칠 수 있음.
-            RetreatAlongTool(standoff=PLACE_STANDOFF, label="retreat_place"),
+            MoveTCP(
+                target=place_xyz.out,
+                offset=Position3(x=0.0, y=0.0, z=PLACE_HOVER_DZ),
+                label="post_place_retreat",
+            ),
         ]
 
     steps.append(MoveJ(waypoint=HOME_WAYPOINT, label="return_home"))

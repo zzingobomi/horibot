@@ -12,16 +12,16 @@ import { robotBaseMatrix } from "./transforms";
 import { useRobots } from "@/hooks/useRobots";
 
 interface RobotSceneContainerProps {
-  /** focus robot id. null = 모두 동등. undefined = default robot. */
+  /** focus robot id. null/undefined = 모두 동등 (특정 focus 없음). */
   focusId?: string | null;
 }
 
 export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) {
-  const { robots, defaultId } = useRobots();
-  const effectiveFocus: string | null =
-    focusId === undefined ? defaultId : focusId;
-  // scan(live cloud/mesh) 대상 robot — focus, focus=null(Tasks 등) 은 default.
-  const scanRobotId = effectiveFocus ?? defaultId ?? "";
+  const { robots } = useRobots();
+  const effectiveFocus: string | null = focusId ?? null;
+  // scan(live cloud/mesh) 대상 robot — focus 있으면 그 robot, focus 없는 overview
+  // (Tasks/World)면 첫 robot (기본 로봇 개념 폐기 — 단지 씬 배치용 첫 항목).
+  const scanRobotId = effectiveFocus ?? robots[0]?.id ?? "";
 
   // focus robot 의 base_pose 로 OrbitControls target.
   const cameraTarget = useMemo<[number, number, number]>(() => {

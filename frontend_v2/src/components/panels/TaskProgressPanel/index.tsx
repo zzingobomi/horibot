@@ -9,11 +9,13 @@
  *   - RUNNING 에서 [일시정지]
  * robot-scoped 스트림 (stream/task/{robot_id}/...) — useStream 이 robotId expand.
  */
-import { useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { DEFAULT_ROBOT_ID } from "@/constants";
 import { useService, useStream } from "@/framework";
+import { useTaskRobotId } from "@/hooks/useTasks";
 import { ServiceKey, TaskStatus, Topic } from "@/api/generated/contract";
+
+// 대상 robot 은 backend task 바인딩에서 (ambient default 아님). PromptPanel 과 동일 task.
+const TASK_NAME = "pick_and_place";
 
 const STATUS_COLOR: Record<string, string> = {
   [TaskStatus.RUNNING]: "text-sky-400",
@@ -38,8 +40,7 @@ interface StepNode {
 }
 
 export function TaskProgressPanel() {
-  const { id } = useParams<{ id: string }>();
-  const robotId = id ?? DEFAULT_ROBOT_ID;
+  const robotId = useTaskRobotId(TASK_NAME) ?? "";
   const state = useStream(Topic.TASK_STATE, { robotId });
   const tree = useStream(Topic.TASK_TREE, { robotId });
 

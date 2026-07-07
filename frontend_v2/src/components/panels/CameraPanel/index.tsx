@@ -5,13 +5,11 @@
  *
  * 패널 = router 의존(useParams) 자체 흡수 (registry 순수 유지, §4.1).
  */
-import { useParams } from "react-router-dom";
 import { CameraView } from "@/components/camera/CameraView";
-import { DEFAULT_ROBOT_ID } from "@/constants";
+import { useRobotId } from "@/hooks/useRobotId";
 
 export function CameraPanel() {
-  const { id } = useParams<{ id: string }>();
-  const robotId = id ?? DEFAULT_ROBOT_ID;
+  const robotId = useRobotId();
   return (
     <div className="h-full" data-testid="camera-panel">
       <CameraView robotId={robotId} />

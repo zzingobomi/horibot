@@ -10,10 +10,9 @@
  * docs/backend_v2.md §17.2.
  */
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DEFAULT_ROBOT_ID } from "@/constants";
+import { useRobotId } from "@/hooks/useRobotId";
 import { useBridgeConnected, useService, useStream } from "@/framework";
 import { ServiceKey, Topic } from "@/api/generated/contract";
 import type {
@@ -22,8 +21,7 @@ import type {
 } from "@/api/generated/contract";
 
 export function WaypointPanel() {
-  const { id } = useParams<{ id: string }>();
-  const robotId = id ?? DEFAULT_ROBOT_ID;
+  const robotId = useRobotId();
 
   const connected = useBridgeConnected();
 

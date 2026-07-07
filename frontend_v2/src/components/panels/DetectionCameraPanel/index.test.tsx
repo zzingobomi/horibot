@@ -11,6 +11,12 @@ import { DetectionCameraPanel } from "./index";
 const ROBOT_ID = "so101_6dof_0";
 const WIRE = `stream/detector/${ROBOT_ID}/detections`;
 
+// task 는 backend 바인딩(GET /tasks)으로 robot 을 정함 — unit 에선 so101 바인딩 mock.
+vi.mock("@/hooks/useTasks", () => ({
+  useTaskRobotId: () => "so101_6dof_0",
+  useTasks: () => ({ tasks: [], loading: false, error: null }),
+}));
+
 vi.mock("@/hooks/useRobots", () => ({
   useRobots: () => ({
     robots: [
@@ -22,7 +28,6 @@ vi.mock("@/hooks/useRobots", () => ({
         capabilities: [],
       },
     ],
-    defaultId: ROBOT_ID,
     loading: false,
     error: null,
   }),

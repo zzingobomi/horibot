@@ -11,10 +11,9 @@
  * 3D 렌더는 Canvas 의 Scene3DLayer — scanStore 로 결합 (dockview overlay ↔ Canvas).
  */
 import { useEffect } from "react";
-import { useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { DEFAULT_ROBOT_ID } from "@/constants";
+import { useRobotId } from "@/hooks/useRobotId";
 import { useMirror, useService, useStream } from "@/framework";
 import { ServiceKey, Topic } from "@/api/generated/contract";
 import type { CalibrationBundle } from "@/api/generated/contract";
@@ -27,8 +26,7 @@ const DENSITY_OPTIONS: { label: string; mm: number; hint: string }[] = [
 ];
 
 export function LivePointCloudPanel() {
-  const { id } = useParams<{ id: string }>();
-  const robotId = id ?? DEFAULT_ROBOT_ID;
+  const robotId = useRobotId();
 
   const setStream = useService(ServiceKey.SCENE3D_SET_STREAM, robotId);
 

@@ -1,6 +1,7 @@
 import { Suspense, lazy } from "react";
-import { Route, Routes, Navigate } from "react-router-dom";
+import { Route, Routes } from "react-router-dom";
 import { Sidebar } from "@/components/shared/Sidebar";
+import { Dashboard } from "@/pages/Dashboard";
 import { RobotsLayout } from "@/pages/RobotsLayout";
 import { RobotModeRedirect } from "@/pages/robotModes/RobotModeRedirect";
 import { RobotMoveMode } from "@/pages/robotModes/RobotMoveMode";
@@ -9,7 +10,6 @@ import { RobotScanMode } from "@/pages/robotModes/RobotScanMode";
 import { RobotAssetsMode } from "@/pages/robotModes/RobotAssetsMode";
 import { TasksPage } from "@/pages/TasksPage";
 import { useFrameworkBootstrap } from "@/framework";
-import { DEFAULT_ROBOT_ID } from "@/constants";
 
 // contract viewer = dev 도구 (§6.1) — lazy import 로 React Flow 번들 code-split
 // (control/simulator 경로에 안 섞이게).
@@ -27,10 +27,9 @@ export function App() {
       <Sidebar />
       <main className="flex-1 overflow-hidden">
         <Routes>
-          <Route
-            path="/"
-            element={<Navigate to={`/robots/${DEFAULT_ROBOT_ID}`} replace />}
-          />
+          {/* 착지점 = 대시보드 (robot-agnostic). 특정 robot 으로 리다이렉트하지
+              않음 — ambient default 로봇 개념 제거. */}
+          <Route path="/" element={<Dashboard />} />
           {/* /robots/:id = shared layout (R3F + meta), Outlet 에 mode 컴포넌트.
               mode 전환 시 R3F 는 unmount 안 됨. calibrate 등은 Step E+. */}
           <Route path="/robots/:id" element={<RobotsLayout />}>

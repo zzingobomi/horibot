@@ -10,8 +10,9 @@
  * 3D 씬 위에 뜨고 dockview 레이아웃이 localStorage 에 영속(§4.1) — RobotsLayout 과 같은
  * 검증된 메커니즘 재사용(SSOT), 별도 shell 안 만듦.
  *
- * 현재 N=1 → 패널이 useParams id 부재 시 DEFAULT_ROBOT_ID. multi-robot 로봇 선택 UI +
- * TaskResultLayer(검출 3D)는 후속 (frontend_v2.md §15 Step E+) — 이 씬에 slot-in.
+ * 대상 robot 은 task 가 선언 (backend GET /tasks 의 robot_ids) — task 패널이
+ * useTaskRobotId 로 조회. ambient default 로봇 없음. 협동(robot_ids 여러 개) task 의
+ * 다중 robot UI 는 후속.
  */
 import { RobotSceneContainer } from "@/components/scene/Container";
 import { ModeDockview, type PanelSpec } from "@/components/shared/ModeDockview";

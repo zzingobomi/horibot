@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from framework.transport.protocol import RawTransport
 
-from .contract import RobotInfo, RobotsResponse, SystemMetrics
+from .contract import RobotInfo, RobotsResponse, SystemMetrics, TaskInfo, TasksResponse
 from .mjpeg import BOUNDARY, mjpeg_stream
 from .ws import WsConnection
 
@@ -34,11 +34,11 @@ class BridgeModule:
         robot_dir: Path | None = None,
         contract_provider: Callable[[], dict] | None = None,
         graph_provider: Callable[[], dict] | None = None,
-        default_robot_id: str | None = None,
+        tasks: list[TaskInfo] | None = None,
     ) -> None:
         self._transport = transport
         self._robots = robots
-        self._default_robot_id = default_robot_id
+        self._tasks = tasks or []
         self._host = host
         self._port = port
         self._robot_dir = robot_dir
@@ -64,11 +64,13 @@ class BridgeModule:
 
         @app.get("/robots")
         def get_robots() -> RobotsResponse:
-            return RobotsResponse(
-                robots=self._robots,
-                default=self._default_robot_id
-                or (self._robots[0].id if self._robots else None),
-            )
+            return RobotsResponse(robots=self._robots)
+
+        @app.get("/tasks")
+        def get_tasks() -> TasksResponse:
+            # task 가 자기 실행 robot 을 선언 (§2.7 task-first) — frontend 는 이
+            # 목록으로 통신 robot 을 정한다 (ambient default 로봇 없음).
+            return TasksResponse(tasks=self._tasks)
 
         @app.get("/system")
         def get_system() -> SystemMetrics:

@@ -13,7 +13,6 @@
  *   - Motor.Service.SET_TORQUE — torque toggle
  *   - Motor.Service.GET_TOPOLOGY — arm joint count
  */
-import { useParams } from "react-router-dom";
 import {
   useService,
   useStream,
@@ -22,11 +21,10 @@ import {
 } from "@/framework";
 import { Button } from "@/components/ui/button";
 import { MotorKind, ServiceKey, Topic } from "@/api/generated/contract";
-import { DEFAULT_ROBOT_ID } from "@/constants";
+import { useRobotId } from "@/hooks/useRobotId";
 
 export function RobotStatePanel() {
-  const { id } = useParams<{ id: string }>();
-  const robotId = id ?? DEFAULT_ROBOT_ID;
+  const robotId = useRobotId();
 
   const connected = useBridgeConnected();
   const cap = useCapability(ServiceKey.MOTOR_GET_TOPOLOGY, { robotId });

@@ -10,9 +10,8 @@
  * RobotsLayout Canvas 의 Scene3DLayer/MeshLayer 가 scanStore/stream 으로 렌더.
  */
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { DEFAULT_ROBOT_ID } from "@/constants";
+import { useRobotId } from "@/hooks/useRobotId";
 import { useService, useStream } from "@/framework";
 import { ServiceKey, Topic } from "@/api/generated/contract";
 import type {
@@ -24,8 +23,7 @@ import type {
 import { useScanStore } from "@/stores/scanStore";
 
 export function ScanPanel() {
-  const { id } = useParams<{ id: string }>();
-  const robotId = id ?? DEFAULT_ROBOT_ID;
+  const robotId = useRobotId();
 
   const newSession = useService(ServiceKey.SCAN_NEW_SESSION, robotId);
   const listSessions = useService(ServiceKey.SCAN_LIST_SESSIONS, robotId);

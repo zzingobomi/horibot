@@ -123,15 +123,12 @@ def resolve_host_deps(
             )
         return {"robots": task_specs}
     if name == "bridge":
-        from modules.bridge.contract import BasePoseInfo, RobotInfo
+        from modules.bridge.contract import BasePoseInfo, RobotInfo, TaskInfo
+        from modules.task.tasks import task_infos
 
         # robots.yaml spec — enabled=false robot 은 런타임이 무시 (frontend 에
-        # 노출 X). default = `default: true` flag 우선, 생략 시 첫 enabled.
+        # 노출 X). "기본 로봇" 개념 없음 — robot 은 라우트/task 바인딩에서 명시.
         enabled_robots = [r for r in robots.values() if r.enabled]
-        default_robot = next(
-            (r for r in enabled_robots if r.default),
-            enabled_robots[0] if enabled_robots else None,
-        )
         infos = [
             RobotInfo(
                 id=r.id,
@@ -149,9 +146,13 @@ def resolve_host_deps(
         ]
         deps: dict[str, Any] = {
             "robots": infos,
-            "default_robot_id": default_robot.id if default_robot else None,
             "robot_dir": _ROBOT_DIR,
             "port": deploy.bridge_port,
+            # task 가 참여 robot 을 선언 (§2.7) — bridge 는 GET /tasks 로 relay 만.
+            "tasks": [
+                TaskInfo(name=name, robot_ids=robot_ids)
+                for name, robot_ids in task_infos()
+            ],
         }
         if runtime is not None:
             # contract는 요청 시점에 생성한다.

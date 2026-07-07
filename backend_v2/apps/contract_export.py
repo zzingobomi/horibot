@@ -18,7 +18,7 @@ from framework.runtime.snapshot import (
     build_module_contracts_from_classes,
     build_snapshot_from_classes,
 )
-from modules.bridge.contract import RobotsResponse, SystemMetrics
+from modules.bridge.contract import RobotsResponse, SystemMetrics, TasksResponse
 from modules.calibration.contract import Calibration
 from modules.detector.contract import Detector
 from modules.llm.contract import Llm
@@ -111,7 +111,7 @@ FRONTEND_EXPOSED: set[str] = {
 
 # HTTP endpoint 응답 모델.
 # Zenoh 키 기반 탐색으로는 찾을 수 없어 별도 seed로 등록한다.
-FRONTEND_EXPOSED_MODELS: set[type] = {RobotsResponse, SystemMetrics}
+FRONTEND_EXPOSED_MODELS: set[type] = {RobotsResponse, SystemMetrics, TasksResponse}
 
 
 # ─── Public ──────────────────────────────────────────────────────

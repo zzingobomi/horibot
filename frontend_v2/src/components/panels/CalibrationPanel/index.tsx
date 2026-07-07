@@ -11,9 +11,8 @@
  * capture-only 계약에 맞춰 rewrite (frontend_v2.md carry-over 원칙).
  */
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { DEFAULT_ROBOT_ID } from "@/constants";
+import { useRobotId } from "@/hooks/useRobotId";
 import { useService, useStream } from "@/framework";
 import { ServiceKey, Topic } from "@/api/generated/contract";
 import type {
@@ -28,8 +27,7 @@ const VERDICT_COLOR: Record<string, string> = {
 };
 
 export function CalibrationPanel() {
-  const { id } = useParams<{ id: string }>();
-  const robotId = id ?? DEFAULT_ROBOT_ID;
+  const robotId = useRobotId();
 
   const snapshot = useService(ServiceKey.CALIBRATION_SNAPSHOT_BUNDLE, robotId);
   const startRun = useService(ServiceKey.CALIBRATION_START_RUN, robotId);

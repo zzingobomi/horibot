@@ -62,7 +62,6 @@ class RobotConfig(BaseModel):
     id: str
     type: str
     enabled: bool = True
-    default: bool = False
     capabilities: list[str] = Field(default_factory=list)
     motor_backend: str  # vendor — feetech / dynamixel
     camera_backend: str | None = None  # realsense / opencv
@@ -154,7 +153,6 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
             id=rid,
             type=rtype,
             enabled=body.get("enabled", True),
-            default=body.get("default", False),
             capabilities=list(body.get("capabilities") or []),
             motor_backend=body["motor_backend"],
             camera_backend=body.get("camera_backend"),

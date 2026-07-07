@@ -49,12 +49,20 @@ export interface RobotInfo {
 
 export interface RobotsResponse {
   robots: RobotInfo[];
-  default?: string | null;
 }
 
 export interface SystemMetrics {
   cpu_percent: number;
   mem_percent: number;
+}
+
+export interface TaskInfo {
+  name: string;
+  robot_ids?: string[];
+}
+
+export interface TasksResponse {
+  tasks: TaskInfo[];
 }
 
 export interface ActivateResultRequest {

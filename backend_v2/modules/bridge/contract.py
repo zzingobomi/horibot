@@ -20,9 +20,21 @@ class RobotInfo(BaseModel):
 
 class RobotsResponse(BaseModel):
     robots: list[RobotInfo]
-    default: str | None = None
 
 
 class SystemMetrics(BaseModel):
     cpu_percent: float
     mem_percent: float
+
+
+class TaskInfo(BaseModel):
+    """task registry 원소 — 참여 robot 을 task 가 선언 (frontend 는 이 목록으로
+    통신 robot 을 정함. ambient default 로봇 없음). 단팔=1개, 협동=여러 개,
+    빈 리스트=robot 무관 task."""
+
+    name: str
+    robot_ids: list[str] = Field(default_factory=list)
+
+
+class TasksResponse(BaseModel):
+    tasks: list[TaskInfo]

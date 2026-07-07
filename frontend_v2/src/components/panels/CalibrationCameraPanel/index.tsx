@@ -8,18 +8,16 @@
  * CALIBRATION_PREVIEW(5Hz) — camera/stream(MJPEG) 과 별 채널이라 살짝 lag 하나 손
  * 자세 잡기엔 충분 (backend §CalibrationPreview).
  */
-import { useParams } from "react-router-dom";
 import { CameraView } from "@/components/camera/CameraView";
 import { ChArUcoOverlay } from "@/components/camera/ChArUcoOverlay";
 import { CaptureGuide } from "@/components/camera/CaptureGuide";
-import { DEFAULT_ROBOT_ID } from "@/constants";
+import { useRobotId } from "@/hooks/useRobotId";
 import { useStream } from "@/framework";
 import { Topic } from "@/api/generated/contract";
 import type { CalibrationPreview } from "@/api/generated/contract";
 
 export function CalibrationCameraPanel() {
-  const { id } = useParams<{ id: string }>();
-  const robotId = id ?? DEFAULT_ROBOT_ID;
+  const robotId = useRobotId();
 
   const preview = useStream(Topic.CALIBRATION_PREVIEW, { robotId, staleMs: 1000 });
   const pv = (preview.value as CalibrationPreview | null) ?? null;

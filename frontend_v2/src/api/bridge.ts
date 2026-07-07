@@ -6,7 +6,7 @@ import {
   WsOp,
 } from "@/types/bridge";
 import type { WsOutgoing } from "@/types/bridge";
-import { DEFAULT_ROBOT_ID, WS_URL } from "@/constants";
+import { WS_URL } from "@/constants";
 import type {
   ServiceMap,
   TopicPayloadMap,
@@ -16,13 +16,16 @@ import type {
 import { useFrameworkStore } from "@/framework/store";
 
 // robot-scoped template (`srv/.../{robot_id}/...` 등) auto-expand.
-function expandTopicKey(key: string, robotId: string): string {
-  return key.includes("{robot_id}")
-    ? key.replace(/\{robot_id\}/g, robotId)
-    : key;
+// robotId 미지정(또는 미로드 "") + scoped 키 = **미확장 그대로 반환** (fail-soft):
+// 기본 로봇으로 추측 라우팅하지 않는다 → 잘못하면 데이터 없음/no-op 일 뿐,
+// 엉뚱한 로봇으로 명령이 새지 않는다. (ambient default 로봇 폐기.)
+function expandTopicKey(key: string, robotId?: string): string {
+  if (!key.includes("{robot_id}")) return key;
+  if (!robotId) return key;
+  return key.replace(/\{robot_id\}/g, robotId);
 }
 
-export function topicFor(template: string, robotId: string = DEFAULT_ROBOT_ID): string {
+export function topicFor(template: string, robotId?: string): string {
   return expandTopicKey(template, robotId);
 }
 
@@ -88,32 +91,19 @@ export class BridgeClient {
   // (재연결 후 stale 명령 재생은 오히려 위험).
   private unsentServices: Array<{ id: string; frame: string }> = [];
   private onStatusChange?: (connected: boolean) => void;
-  private defaultRobotId: string = DEFAULT_ROBOT_ID;
-  private defaultRobotListeners = new Set<(robotId: string) => void>();
-
-  setDefaultRobotId(robotId: string): void {
-    if (this.defaultRobotId === robotId) return;
-    this.defaultRobotId = robotId;
-    for (const l of this.defaultRobotListeners) l(robotId);
-  }
-
-  onDefaultRobotIdChange(listener: (robotId: string) => void): () => void {
-    this.defaultRobotListeners.add(listener);
-    return () => {
-      this.defaultRobotListeners.delete(listener);
-    };
-  }
 
   /**
-   * 외부 (framework hooks) 에서 직접 expand. robotId 미지정 = 현재 defaultRobotId.
-   * placeholder 없으면 그대로.
+   * 외부 (framework hooks) 에서 직접 expand. robotId 미지정 + scoped 키 =
+   * 미확장 (fail-soft, 기본 로봇 추측 없음). placeholder 없으면 그대로.
    */
   expand(key: string, robotId?: string): string {
-    return expandTopicKey(key, robotId ?? this.defaultRobotId);
+    return expandTopicKey(key, robotId);
   }
 
   private _expand(key: string): string {
-    return expandTopicKey(key, this.defaultRobotId);
+    // subscribe/publish 호출부는 이미 확장된 키를 넘긴다 (bootstrap/hooks 가
+    // topicFor/expand 로 robotId 를 박아서). scoped 키가 미확장으로 오면 그대로 둔다.
+    return expandTopicKey(key);
   }
 
   connect(onStatusChange?: (connected: boolean) => void): void {

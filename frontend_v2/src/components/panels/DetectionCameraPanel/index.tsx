@@ -9,17 +9,17 @@
  * SVG viewBox = 검출 시점 이미지 크기, preserveAspectRatio 는 CameraView 의
  * object-contain 과 동일 정렬 (letterbox 여도 좌표 일치 — CameraView 설계 주석).
  */
-import { useParams } from "react-router-dom";
 import { CameraView } from "@/components/camera/CameraView";
-import { DEFAULT_ROBOT_ID } from "@/constants";
 import { useStream } from "@/framework";
+import { useTaskRobotId } from "@/hooks/useTasks";
 import { Topic } from "@/api/generated/contract";
 
 const STALE_MS = 8_000; // 검출 후 이 시간 지나면 오버레이 숨김 (팔 이동 대비)
+// 대상 robot 은 backend task 바인딩에서 (ambient default 아님).
+const TASK_NAME = "pick_and_place";
 
 export function DetectionCameraPanel() {
-  const { id } = useParams<{ id: string }>();
-  const robotId = id ?? DEFAULT_ROBOT_ID;
+  const robotId = useTaskRobotId(TASK_NAME) ?? "";
 
   const det = useStream(Topic.DETECTOR_DETECTIONS, { robotId, staleMs: STALE_MS });
   const v = det.value;

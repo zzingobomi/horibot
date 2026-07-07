@@ -11,6 +11,13 @@ import { PromptPanel } from "./index";
 
 const ROBOT_ID = "so101_6dof_0";
 
+// task 는 backend 바인딩(GET /tasks)으로 robot 을 정함 — unit 에선 pick_and_place →
+// so101 바인딩을 mock (패널의 계약 = "task 바인딩 robot 으로 wire/명령").
+vi.mock("@/hooks/useTasks", () => ({
+  useTaskRobotId: () => "so101_6dof_0",
+  useTasks: () => ({ tasks: [], loading: false, error: null }),
+}));
+
 function respond(key: string): unknown {
   if (key.includes("parse_command")) {
     return {

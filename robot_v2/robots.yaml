@@ -8,7 +8,7 @@
 # camera_backend     : realsense | opencv
 # kinematics_backend : pybullet
 # enabled            : false = 런타임이 무시 (bridge /robots 노출 X, 모듈 boot X)
-# default            : true = frontend default robot. 생략 시 첫 enabled robot.
+# ("기본 로봇" 개념 없음 — robot 은 UI 라우트/task 바인딩에서 명시적으로 온다.)
 
 robots:
   omx_f_0:
@@ -23,7 +23,6 @@ robots:
   so101_6dof_0:
     type: so101_6dof
     enabled: true
-    default: true # omx_f_0 재활성화(enabled) 시에도 default 유지 — 선언 순서 무관
     capabilities: [move, calibrate, gamepad, rgbd]
     motor_backend: feetech
     camera_backend: realsense

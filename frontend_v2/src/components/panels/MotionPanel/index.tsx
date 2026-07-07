@@ -8,15 +8,13 @@
  * 새 motion control 추가 = TabsTrigger + TabsContent 한 줄 (Move* 계층은 backend
  * MoveJ 외 미구현 = Step E+).
  */
-import { useParams } from "react-router-dom";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DEFAULT_ROBOT_ID } from "@/constants";
+import { useRobotId } from "@/hooks/useRobotId";
 import { JogJControl } from "./JogJControl";
 import { JogTcpControl } from "./JogTcpControl";
 
 export function MotionPanel() {
-  const { id } = useParams<{ id: string }>();
-  const robotId = id ?? DEFAULT_ROBOT_ID;
+  const robotId = useRobotId();
 
   return (
     <div className="h-full overflow-y-auto p-3">

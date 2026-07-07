@@ -10,11 +10,14 @@
  * robot_id (docs/backend_v2.md §2.7). 정확도(검출/파싱)는 실물 hardware tuning (§17.5).
  */
 import { useState } from "react";
-import { useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { DEFAULT_ROBOT_ID } from "@/constants";
 import { useService } from "@/framework";
+import { useTaskRobotId } from "@/hooks/useTasks";
 import { ServiceKey } from "@/api/generated/contract";
+
+// 이 패널이 다루는 task — 대상 robot 은 backend task 바인딩(useTaskRobotId)에서 옴
+// (ambient default 로봇 아님). 추후 task 메뉴 도입 시 라우트 param 으로 승격.
+const TASK_NAME = "pick_and_place";
 
 interface Parsed {
   pick_object: string;
@@ -29,8 +32,8 @@ function taskParams(p: Parsed): Record<string, string> {
 }
 
 export function PromptPanel() {
-  const { id } = useParams<{ id: string }>();
-  const robotId = id ?? DEFAULT_ROBOT_ID;
+  // 대상 robot = task 가 선언한 robot (backend GET /tasks). 미로드 시 "" — 버튼 gate.
+  const robotId = useTaskRobotId(TASK_NAME) ?? "";
 
   const parseSvc = useService(ServiceKey.LLM_PARSE_COMMAND);
   const previewSvc = useService(ServiceKey.TASK_PREVIEW, robotId);
@@ -60,7 +63,7 @@ export function PromptPanel() {
       // TaskProgressPanel 에 목록이 뜨고 거기서 브레이크포인트를 미리 박는다.
       const pv = await previewSvc.call({
         robot_id: robotId,
-        task_name: "pick_and_place",
+        task_name: TASK_NAME,
         params: taskParams(d.parsed),
       });
       const pd = pv.data as { ok?: boolean; message?: string } | null;
@@ -111,7 +114,7 @@ export function PromptPanel() {
           <Button
             size="sm"
             onClick={onParse}
-            disabled={busy || !text.trim()}
+            disabled={busy || !text.trim() || !robotId}
             data-testid="prompt-parse"
           >
             파싱

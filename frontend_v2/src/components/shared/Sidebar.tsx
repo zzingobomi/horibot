@@ -9,7 +9,14 @@
  */
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { Bot, ListTodo, PanelLeftClose, PanelLeftOpen, Share2 } from "lucide-react";
+import {
+  Bot,
+  LayoutDashboard,
+  ListTodo,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Share2,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRobots } from "@/hooks/useRobots";
 import { useBridgeConnected } from "@/framework";
@@ -82,10 +89,29 @@ export function Sidebar() {
         </button>
       </div>
 
-      {/* Robots 섹션 — robots.yaml SSOT 자동 enumeration */}
       <nav className="flex-1 py-4 space-y-1 px-2 overflow-y-auto">
+        {/* Dashboard — 착지점 (robot-agnostic 개요) */}
+        <NavLink
+          to="/"
+          end
+          title={collapsed ? "Dashboard" : undefined}
+          className={({ isActive }) =>
+            cn(
+              "flex items-center rounded-md py-2 text-sm transition-colors",
+              collapsed ? "justify-center px-2" : "gap-3 px-3",
+              isActive
+                ? "bg-zinc-800 text-zinc-100 font-medium"
+                : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
+            )
+          }
+        >
+          <LayoutDashboard className="h-4 w-4 shrink-0" />
+          {!collapsed && <span>Dashboard</span>}
+        </NavLink>
+
+        {/* Robots 섹션 — robots.yaml SSOT 자동 enumeration */}
         {!collapsed && (
-          <p className="px-3 pb-1 text-xs font-medium text-zinc-500 uppercase tracking-wider">
+          <p className="px-3 pt-3 pb-1 text-xs font-medium text-zinc-500 uppercase tracking-wider">
             Robots
           </p>
         )}

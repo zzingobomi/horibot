@@ -81,15 +81,25 @@ test.describe("RobotCalibrateMode e2e (mock backend)", () => {
     } catch {
       test.skip(true, "sim board OFF (mock camera 라벨 이미지) — CALIB_SIM_BOARD=1 로 backend 필요");
     }
-    // 검출됐으면 verdict 는 green/yellow (첫 자세 green)
-    const verdict = await page.getByTestId("preview-verdict").getAttribute("data-verdict");
-    expect(["green", "yellow"]).toContain(verdict);
+    // sim board 는 pose 를 ~0.5s 마다 cycle (mock.py) — tilt 부족한 pose 는 red
+    // verdict. 한 순간 샘플이 아니라 green/yellow pose 가 올 때까지 대기 (flaky 방지).
+    await expect
+      .poll(() => page.getByTestId("preview-verdict").getAttribute("data-verdict"), {
+        timeout: 8_000,
+      })
+      .toMatch(/green|yellow/);
 
-    // 세션 시작 → 캡처 → accepted
+    // 세션 시작
     await page.getByTestId("start-run").click();
     await expect(page.getByTestId("capture-msg")).toContainText("시작", { timeout: 5_000 });
-    await page.getByTestId("capture").click();
-    await expect(page.getByTestId("capture-msg")).toContainText("캡처됨", { timeout: 6_000 });
+    // 캡처는 good pose 순간에 accepted — pose cycling 으로 reject 될 수 있어 재시도
+    // (실 사용도 green 일 때 누름). "캡처됨" 뜨면 성공.
+    await expect(async () => {
+      await page.getByTestId("capture").click();
+      await expect(page.getByTestId("capture-msg")).toContainText("캡처됨", {
+        timeout: 2_000,
+      });
+    }).toPass({ timeout: 12_000 });
   });
 
   // 카메라 뷰 — so101(realsense)=has_camera → color MJPEG 뷰. preview ON 시 sim board
@@ -120,8 +130,9 @@ test.describe("RobotCalibrateMode e2e (mock backend)", () => {
     // 캡처 안내 HUD — 검출 시 green/yellow (첫 자세 green). 카메라 위 verdict 표시.
     const guide = page.getByTestId("capture-guide");
     await expect(guide).toBeVisible({ timeout: 6_000 });
-    expect(["green", "yellow"]).toContain(
-      await guide.getAttribute("data-verdict"),
-    );
+    // sim board pose cycling — green/yellow pose 올 때까지 대기 (한 순간 샘플 X).
+    await expect
+      .poll(() => guide.getAttribute("data-verdict"), { timeout: 8_000 })
+      .toMatch(/green|yellow/);
   });
 });

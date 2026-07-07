@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 describe("Vitest scaffold", () => {
   it("Vitest 동작 + @ alias import OK", async () => {
     const constants = await import("@/constants");
-    expect(constants.DEFAULT_ROBOT_ID).toBe("so101_6dof_0");
     expect(constants.WS_URL).toMatch(/^wss?:\/\//);
   });
 });

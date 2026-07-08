@@ -20,6 +20,10 @@ class Motion:
         MOVE_L = "srv/motion/{robot_id}/move_l"  # TCP 직선 (position-only v1)
         TCP_SNAPSHOT = "srv/motion/{robot_id}/tcp_snapshot"  # point-in-time TCP
         STOP = "srv/motion/{robot_id}/stop"
+        # 후보 pose 그룹 배치 IK 판정 (모션 0) — MoveIt goal-sampling 패턴의 미니판.
+        # task 가 후보마다 move 서비스로 원격 probe 하면 왕복×N + 실패 IK 풀비용이
+        # 지배 (2026-07-09 PnP 10s) → in-process 1회 호출 + seed 연쇄 + early-exit.
+        SELECT_REACHABLE = "srv/motion/{robot_id}/select_reachable"
 
     class Stream(StrEnum):
         TCP_STATE = "stream/motion/{robot_id}/tcp_state"  # 20Hz fk (output)
@@ -92,6 +96,29 @@ class MoveLRequest(BaseModel):
 
 class MoveLResponse(BaseModel):
     accepted: bool
+    message: str = ""
+
+
+class TcpPose(BaseModel):
+    """IK 판정용 TCP pose. quaternion=None → position-only."""
+
+    position: tuple[float, float, float]  # base frame, m
+    quaternion: tuple[float, float, float, float] | None = None  # [x,y,z,w]
+
+
+class SelectReachableRequest(BaseModel):
+    """후보 pose 그룹(순서 = 선호도) 중 '그룹 내 전 pose IK 가용'인 첫 그룹 판정.
+
+    그룹 예 = [pre_grasp, grasp] (같은 자세로 접근+파지 둘 다 풀려야 실행 가능).
+    IK 만 — 로봇은 안 움직임. 그룹 내 seed 연쇄 (앞 pose 해 → 다음 pose seed,
+    가까운 pose 는 1발 수렴) + 첫 가용 그룹에서 early-exit.
+    """
+
+    groups: list[list[TcpPose]]
+
+
+class SelectReachableResponse(BaseModel):
+    index: int  # 첫 가용 그룹 index, 가용 없으면 -1
     message: str = ""
 
 

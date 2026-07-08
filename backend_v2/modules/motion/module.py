@@ -35,6 +35,8 @@ from .contract import (
     MoveJResponse,
     MoveLRequest,
     MoveLResponse,
+    SelectReachableRequest,
+    SelectReachableResponse,
     StopRequest,
     StopResponse,
     TcpSnapshotRequest,
@@ -450,6 +452,39 @@ class MotionModule:
         self._runner.run_cartesian(path, list(current), req.target_quaternion)
         await self._require_done(fut, "MoveL")
         return MoveLResponse(accepted=True)
+
+    @service(Motion.Service.SELECT_REACHABLE)
+    async def select_reachable(
+        self, req: SelectReachableRequest
+    ) -> SelectReachableResponse:
+        """후보 그룹 배치 IK 판정 (모션 0) — 첫 '전 pose 가용' 그룹 index.
+
+        IK 는 blocking(pybullet) + 그룹 다수라 to_thread — jog/stream 등 이벤트
+        루프를 안 굶김. 그룹 내 seed 연쇄(앞 해 → 다음 seed) → 가까운 pose 는
+        1발 수렴, 실패 그룹만 restart 풀비용.
+        """
+        current = self._latest_arm_rad
+        if current is None:
+            return SelectReachableResponse(index=-1, message="motor state 아직 없음")
+        assert self._kin is not None  # start() 이후만 서비스 도달
+        kin = self._kin
+        groups = req.groups
+
+        def _scan() -> int:
+            for gi, group in enumerate(groups):
+                seed = list(current)
+                for pose in group:
+                    sol = kin.ik(pose.position, pose.quaternion, seed)
+                    if sol is None:
+                        break
+                    seed = list(sol)
+                else:
+                    return gi
+            return -1
+
+        idx = await asyncio.to_thread(_scan)
+        msg = "" if idx >= 0 else "가용 그룹 없음"
+        return SelectReachableResponse(index=idx, message=msg)
 
     @service(Motion.Service.TCP_SNAPSHOT)
     def tcp_snapshot(self, req: TcpSnapshotRequest) -> TcpState:

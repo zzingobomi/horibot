@@ -122,6 +122,11 @@ function SchemaPanel({
       <div className="flex items-start justify-between gap-2">
         <span className="break-all font-mono text-[11px] text-zinc-200">
           {wireKey}
+          {info?.draft && (
+            <span className="ml-1.5 rounded bg-amber-500/20 px-1 text-[9px] font-semibold text-amber-400">
+              DRAFT
+            </span>
+          )}
         </span>
         <button
           onClick={onClose}

@@ -22,11 +22,14 @@ export interface ServiceKeyInfo {
   category: "service";
   req: string;
   res: string;
+  // req/res 중 하나라도 DraftModel(탐색 단계 미확정 계약)이면 true — 숨기지 않고 표식.
+  draft: boolean;
 }
 
 export interface TopicKeyInfo {
   category: EdgeCategory;
   payload: string;
+  draft: boolean;
 }
 
 export type KeyInfo = ServiceKeyInfo | TopicKeyInfo;

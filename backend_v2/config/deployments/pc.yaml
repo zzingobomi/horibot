@@ -4,9 +4,11 @@
 
 driver_mode: real
 
-# 공유 물리 DB (파일). 경로는 집 배포 시 조정 가능 (cwd=backend_v2 기준 상대).
 rdb_uri: "sqlite:///horibot.db"
-object_uri: "storage_v2/blobs"  # calibration capture blob
+object_uri: "storage_v2/blobs"
+
+# 개발용 콘솔 (GET /dev) — 집 dev 배포에서 서비스 두드리기.
+dev_console: true
 
 zenoh:
   mode: peer
@@ -17,11 +19,12 @@ zenoh:
 modules:
   - name: camera_decoded
     robots: [so101_6dof_0]
-  - name: calibration # robot-agnostic (host당 1 — req.robot_id dispatch)
-  - name: scene3d # robot-agnostic 라이브 pointcloud + consensus snapshot (Open3D, PC)
-  - name: scan # robot-agnostic scan 세션/캡처/TSDF build (Open3D + DB owner, PC)
-  - name: waypoint # robot-agnostic Robot Asset Layer — 티칭 rad + group (DB owner, PC)
-  - name: detector # Detect Object (robot-agnostic, host당 1 — real GDINO, PC compute)
-  - name: llm # 자연어→pick/place 파서 (robot-agnostic, host당 1 — real Qwen, PC compute)
-  - name: task # Orchestration — task-first PnP (async runner + 디버거, PC compute)
-  - name: bridge # HTTP/WS gateway (frontend_v2 진입점, :8000)
+  - name: calibration
+  - name: scene3d
+  - name: scan
+  - name: waypoint
+  - name: detector
+  - name: llm
+  - name: task
+  - name: pick_and_place
+  - name: bridge

@@ -25,6 +25,7 @@ from apps.contract_export import (
     build_contract_graph,
     build_contract_json,
     check_exposed,
+    discover_module_dirs,
 )
 from apps.main import build_runtime, load_configs
 from apps.resolve import resolve_host_deps
@@ -102,6 +103,11 @@ def test_contract_json_shape():
     # payload 타입은 TS 문자열로 이미 해소 (서버가 실 Python type 을 아니까)
     jog = next(t for t in data["topics"] if t["key"].endswith("/jog_j"))
     assert jog["payload"] == "JogJInput"
+    # draft 메타 — 모든 topic/service/interface 에 bool 존재 (숨기지 않고 상태 표현).
+    # 현재 draft payload 없음 → 전부 False.
+    assert all(t["draft"] is False for t in data["topics"])
+    assert all(s["draft"] is False for s in data["services"])
+    assert all(i["draft"] is False for i in data["interfaces"])
 
 
 # ─── provider closure wiring (resolve/main) ──────────────────────
@@ -132,6 +138,21 @@ def test_bridge_without_runtime_has_no_provider():
 def test_check_exposed_rejects_stale_key():
     with pytest.raises(ValueError, match="discovered 되지 않은"):
         check_exposed({"srv/real/key"}, {"srv/typo/nonexistent"})
+
+
+def test_discover_module_dirs_handles_nested(tmp_path: Path):
+    """flat / nested module 디렉토리를 모두 재귀 탐색 — module 위치를 평면에 가두는
+    스캐너 한계 제거 (예: modules/tasks/pick_and_place). contract.py 유무가 판정 기준,
+    중간 디렉토리(contract.py 없음)는 module 아님."""
+    (tmp_path / "flat").mkdir()
+    (tmp_path / "flat" / "contract.py").write_text("")
+    (tmp_path / "group" / "nested").mkdir(parents=True)
+    (tmp_path / "group" / "nested" / "contract.py").write_text("")
+
+    dirs = discover_module_dirs(tmp_path)
+    assert "flat" in dirs
+    assert "group.nested" in dirs  # dotted 상대 경로 (load_contract import 형태)
+    assert "group" not in dirs
 
 
 def test_incomplete_host_raises_helpful_error():
@@ -277,6 +298,8 @@ def test_graph_is_unfiltered():
     move_j = "srv/motion/{robot_id}/move_j"
     assert graph["keys"][move_j]["category"] == "service"
     assert "req" in graph["keys"][move_j] and "res" in graph["keys"][move_j]
+    # draft 메타 — 모든 key 에 bool 존재 (그래프 배지용). 현재 draft 없음 → 전부 False.
+    assert all(k["draft"] is False for k in graph["keys"].values())
 
 
 def test_graph_name_conflict_resolution():

@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Horibot Dev Console</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; height: 100vh; display: flex; font-family: ui-monospace, monospace;
+      background: #0a0a0b; color: #e4e4e7; font-size: 13px;
+    }
+    #list {
+      width: 300px; overflow-y: auto; border-right: 1px solid #27272a; padding: 8px;
+      flex-shrink: 0;
+    }
+    #list h1 { font-size: 13px; color: #a1a1aa; margin: 4px 6px 10px; font-weight: 600; }
+    .mod { margin-bottom: 10px; }
+    .mod > .modname {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+      color: #71717a; padding: 2px 6px;
+    }
+    .svc {
+      padding: 4px 8px; border-radius: 4px; cursor: pointer; color: #d4d4d8;
+      display: flex; align-items: center; gap: 6px; word-break: break-all;
+    }
+    .svc:hover { background: #18181b; }
+    .svc.active { background: #1e293b; color: #fff; }
+    .draft {
+      font-size: 8px; font-weight: 700; color: #fbbf24; background: rgba(251,191,36,.15);
+      padding: 0 4px; border-radius: 3px; flex-shrink: 0;
+    }
+    #main { flex: 1; display: flex; flex-direction: column; padding: 14px; gap: 10px; min-width: 0; }
+    #key { font-size: 14px; color: #93c5fd; word-break: break-all; }
+    .row { display: flex; align-items: center; gap: 8px; }
+    label { color: #a1a1aa; font-size: 11px; }
+    select, textarea, button {
+      background: #18181b; color: #e4e4e7; border: 1px solid #3f3f46;
+      border-radius: 4px; font-family: inherit; font-size: 13px; padding: 6px 8px;
+    }
+    textarea { flex: 1; resize: none; min-height: 120px; tab-size: 2; }
+    button {
+      cursor: pointer; background: #2563eb; border-color: #2563eb; color: #fff;
+      font-weight: 600; padding: 7px 18px;
+    }
+    button:hover { background: #1d4ed8; }
+    button:disabled { opacity: .5; cursor: default; }
+    .panelhead { color: #71717a; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+    pre {
+      flex: 1; margin: 0; background: #09090b; border: 1px solid #27272a; border-radius: 4px;
+      padding: 10px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+    }
+    .err { color: #f87171; }
+    .ok { color: #4ade80; }
+    #empty { color: #52525b; margin: auto; }
+  </style>
+</head>
+<body>
+  <div id="list"><h1>Dev Console</h1></div>
+  <div id="main"><div id="empty">← 서비스를 선택하세요</div></div>
+
+  <script>
+    let GRAPH = null;
+    let ROBOTS = [];
+    let selected = null;
+
+    const sampleFor = (ts) => {
+      if (!ts) return null;
+      if (ts.endsWith("[]")) return [];
+      if (ts === "string") return "";
+      if (ts === "number") return 0;
+      if (ts === "boolean") return false;
+      if (ts.startsWith("Record")) return {};
+      return null;
+    };
+
+    // req 모델 필드로 요청 스켈레톤 시드. DraftModel(필드 0)/모델 없음 → {} 에서 시작.
+    const skeleton = (info) => {
+      if (!info || info.category !== "service") return {};
+      const model = GRAPH.models[info.req];
+      if (!model) return {};
+      const out = {};
+      for (const [f, ts] of Object.entries(model)) out[f] = sampleFor(ts);
+      return out;
+    };
+
+    async function load() {
+      const [g, r] = await Promise.all([
+        fetch("/contract/graph").then((x) => x.json()),
+        fetch("/robots").then((x) => x.json()).catch(() => ({ robots: [] })),
+      ]);
+      GRAPH = g;
+      ROBOTS = r.robots || [];
+      renderList();
+    }
+
+    function renderList() {
+      const el = document.getElementById("list");
+      el.innerHTML = "<h1>Dev Console</h1>";
+      for (const m of GRAPH.modules) {
+        const services = (m.services || []).slice().sort();
+        if (services.length === 0) continue;
+        const box = document.createElement("div");
+        box.className = "mod";
+        box.innerHTML = `<div class="modname">${m.id}</div>`;
+        for (const key of services) {
+          const info = GRAPH.keys[key] || {};
+          const item = document.createElement("div");
+          item.className = "svc";
+          item.dataset.key = key;
+          const leaf = key.split("/").pop();
+          item.innerHTML =
+            `<span>${leaf}</span>` + (info.draft ? `<span class="draft">DRAFT</span>` : "");
+          item.onclick = () => select(key);
+          box.appendChild(item);
+        }
+        el.appendChild(box);
+      }
+    }
+
+    function select(key) {
+      selected = key;
+      document.querySelectorAll(".svc").forEach((s) =>
+        s.classList.toggle("active", s.dataset.key === key),
+      );
+      const info = GRAPH.keys[key] || {};
+      const needsRobot = key.includes("{robot_id}");
+      const main = document.getElementById("main");
+      main.innerHTML = `
+        <div id="key">${key}${info.draft ? ' <span class="draft">DRAFT</span>' : ""}</div>
+        ${needsRobot ? `<div class="row"><label>robot_id</label>
+          <select id="robot">${ROBOTS.map((r) => `<option>${r.id}</option>`).join("")}</select></div>` : ""}
+        <div class="panelhead">Request (JSON)</div>
+        <textarea id="req" spellcheck="false"></textarea>
+        <div class="row"><button id="invoke">Invoke</button>
+          <span id="status" class="panelhead"></span></div>
+        <div class="panelhead">Response</div>
+        <pre id="res"></pre>`;
+      document.getElementById("req").value = JSON.stringify(skeleton(info), null, 2);
+      document.getElementById("invoke").onclick = invoke;
+    }
+
+    async function invoke() {
+      const btn = document.getElementById("invoke");
+      const status = document.getElementById("status");
+      const res = document.getElementById("res");
+      let data;
+      try {
+        data = JSON.parse(document.getElementById("req").value || "{}");
+      } catch (e) {
+        status.className = "panelhead err";
+        status.textContent = "Request JSON 파싱 실패: " + e.message;
+        return;
+      }
+      const robotEl = document.getElementById("robot");
+      btn.disabled = true;
+      status.className = "panelhead";
+      status.textContent = "호출 중…";
+      try {
+        const r = await fetch("/dev/invoke", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            key: selected,
+            robot_id: robotEl ? robotEl.value : null,
+            data,
+          }),
+        });
+        const body = await r.json();
+        if (body.ok) {
+          status.className = "panelhead ok";
+          status.textContent = "ok";
+          res.textContent = JSON.stringify(body.data, null, 2);
+        } else {
+          const err = body.error || { type: "HTTPError", message: r.status };
+          status.className = "panelhead err";
+          status.textContent = `${err.type}: ${err.message}`;
+          res.textContent = JSON.stringify(body, null, 2);
+        }
+      } catch (e) {
+        status.className = "panelhead err";
+        status.textContent = "요청 실패: " + e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    load().catch((e) => {
+      document.getElementById("list").innerHTML =
+        `<h1>Dev Console</h1><div class="err" style="padding:8px">로드 실패: ${e.message}<br>backend 를 --host mock 등으로 띄웠는지 확인.</div>`;
+    });
+  </script>
+</body>
+</html>

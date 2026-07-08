@@ -196,6 +196,9 @@ class DeploymentConfig(BaseModel):
     # bridge HTTP/WS 포트. 테스트는 0 (ephemeral) 으로 덮어써 실행 중인
     # 실 backend(:8000) 와 포트 충돌 없이 공존한다.
     bridge_port: int = 8000
+    # 개발용 콘솔 (GET /dev + POST /dev/invoke). 임의 서비스를 브라우저에서
+    # 두드리는 dev 도구 — dev/LAN 배포(mock/pc)만 on, 잠긴 배포에선 off.
+    dev_console: bool = False
 
 
 def load_deployment(path: Path | str) -> DeploymentConfig:

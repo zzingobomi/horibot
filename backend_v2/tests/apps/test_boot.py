@@ -72,6 +72,7 @@ def test_load_deployment_mock():
         "detector",
         "llm",
         "task",
+        "pick_and_place",
         "bridge",
     }
     assert deploy.rdb_uri == "sqlite:///:memory:"  # DB owner host

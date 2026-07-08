@@ -10,6 +10,7 @@ import type { GraphModule } from "../types";
 
 export interface ModuleNodeData {
   module: GraphModule;
+  draftKeys: Set<string>; // 탐색 단계 미확정 계약 wire — 해당 행에 [DRAFT] 배지.
   [key: string]: unknown;
 }
 export type ModuleNodeType = Node<ModuleNodeData, "module">;
@@ -28,9 +29,10 @@ interface RowsProps {
   title: string;
   items: string[];
   tone: string;
+  draftKeys: Set<string>;
 }
 
-function Section({ title, items, tone }: RowsProps) {
+function Section({ title, items, tone, draftKeys }: RowsProps) {
   if (items.length === 0) return null;
   return (
     <div className="px-2 py-1">
@@ -38,10 +40,15 @@ function Section({ title, items, tone }: RowsProps) {
       {items.map((k) => (
         <div
           key={k}
-          className={`truncate font-mono text-[10px] leading-[18px] ${tone}`}
+          className={`flex items-center gap-1 truncate font-mono text-[10px] leading-[18px] ${tone}`}
           title={k}
         >
-          {k.split("/").pop()}
+          <span className="truncate">{k.split("/").pop()}</span>
+          {draftKeys.has(k) && (
+            <span className="shrink-0 rounded bg-amber-500/20 px-1 text-[8px] font-semibold text-amber-400">
+              DRAFT
+            </span>
+          )}
         </div>
       ))}
     </div>
@@ -50,6 +57,7 @@ function Section({ title, items, tone }: RowsProps) {
 
 export function ModuleNode({ data }: NodeProps<ModuleNodeType>) {
   const m = data.module;
+  const draftKeys = data.draftKeys;
   return (
     <div
       className={`w-[240px] rounded-md border ${accent(
@@ -67,9 +75,24 @@ export function ModuleNode({ data }: NodeProps<ModuleNodeType>) {
           </span>
         </div>
       </div>
-      <Section title="services" items={m.services} tone="text-zinc-300" />
-      <Section title="publishes ▸" items={m.publishes} tone="text-sky-300" />
-      <Section title="◂ subscribes" items={m.subscribes} tone="text-violet-300" />
+      <Section
+        title="services"
+        items={m.services}
+        tone="text-zinc-300"
+        draftKeys={draftKeys}
+      />
+      <Section
+        title="publishes ▸"
+        items={m.publishes}
+        tone="text-sky-300"
+        draftKeys={draftKeys}
+      />
+      <Section
+        title="◂ subscribes"
+        items={m.subscribes}
+        tone="text-violet-300"
+        draftKeys={draftKeys}
+      />
       <Handle type="source" position={Position.Right} className="!bg-zinc-500" />
     </div>
   );

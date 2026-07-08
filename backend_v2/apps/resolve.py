@@ -122,6 +122,9 @@ def resolve_host_deps(
                 gripper_held_threshold_raw=held,
             )
         return {"robots": task_specs}
+    if name == "pick_and_place":
+        # 현재는 추가 dep 없음.
+        return {}
     if name == "bridge":
         from modules.bridge.contract import BasePoseInfo, RobotInfo, TaskInfo
         from modules.task.tasks import task_infos
@@ -148,6 +151,7 @@ def resolve_host_deps(
             "robots": infos,
             "robot_dir": _ROBOT_DIR,
             "port": deploy.bridge_port,
+            "dev_console": deploy.dev_console,
             # task 가 참여 robot 을 선언 (§2.7) — bridge 는 GET /tasks 로 relay 만.
             "tasks": [
                 TaskInfo(name=name, robot_ids=robot_ids)

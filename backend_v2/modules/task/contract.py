@@ -1,11 +1,3 @@
-"""Task domain — public contract surface (task-first PnP, backend_v2.md §17).
-
-Task = Orchestration layer (§16.1 Layer 3) — Day-1 primitive 를 async 함수로 엮는다.
-robot-agnostic (host당 1, §2.7) — task 가 대상 robot 을 포함 (run req.robot_id).
-디버거(pause/step/breakpoint/run_to) = dev 안전장치 (§17.1.4 "지금 짓는다") — 실
-하드웨어 burn 절감. 스트림 3종 = 옛 TASK_STATE/TREE/STEP_RESULT 포팅 (§17.4).
-"""
-
 from __future__ import annotations
 
 from enum import StrEnum

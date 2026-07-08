@@ -58,6 +58,10 @@ export function renderContractTs(data) {
 
   // ─── BaseModel interface ─────────────────────────────────────
   for (const iface of data.interfaces) {
+    // draft(DraftModel) = 탐색 단계 미확정 계약. 숨기지 않고 JSDoc 으로 표식만.
+    if (iface.draft) {
+      lines.push("/** @draft 탐색 단계 계약 — 타입 미확정 (필드 추가/변경 가능). */");
+    }
     lines.push(`export interface ${iface.name} {`);
     for (const f of iface.fields) {
       const sep = f.optional ? "?:" : ":";
@@ -100,6 +104,22 @@ export function renderContractTs(data) {
   }
   lines.push("};");
   lines.push("");
+
+  // ─── DRAFT_CONTRACTS (draft payload wire 집합) ───────────────
+  // draft 는 "미완성" 이지 "부재" 가 아니다 — 서비스/토픽은 그대로 생성하되, 아직
+  // 타입이 안 굳은 wire 를 런타임에서 식별 가능하게 set 으로 노출. draft 가 하나도
+  // 없으면 블록 자체를 emit 하지 않는다 (기존 contract.ts 재생성 불변 유지).
+  const draftKeys = [...data.topics, ...data.services]
+    .filter((x) => x.draft)
+    .map((x) => x.key);
+  if (draftKeys.length > 0) {
+    lines.push("export const DRAFT_CONTRACTS: ReadonlySet<string> = new Set([");
+    for (const key of draftKeys) {
+      lines.push(`  ${JSON.stringify(key)},`);
+    }
+    lines.push("]);");
+    lines.push("");
+  }
 
   return lines.join("\n");
 }

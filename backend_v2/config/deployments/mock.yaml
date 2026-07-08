@@ -4,9 +4,11 @@
 
 driver_mode: mock
 
-# mock = 하드웨어 없는 UX/wire 검증 — in-memory DB (재시작 시 휘발). 실 파일 DB 는 pc.yaml.
 rdb_uri: "sqlite:///:memory:"
-object_uri: ".calib_blobs_mock"  # ephemeral (gitignore) — capture blob 검증용
+object_uri: ".calib_blobs_mock"
+
+# 개발용 콘솔 (GET /dev) — 프론트 없이 서비스 두드리기.
+dev_console: true
 
 zenoh:
   mode: peer
@@ -23,11 +25,12 @@ modules:
     robots: [so101_6dof_0]
   - name: camera_decoded
     robots: [so101_6dof_0]
-  - name: calibration # robot-agnostic (host당 1 — req.robot_id dispatch)
-  - name: scene3d # robot-agnostic (rgbd robot 멤버십은 robots.yaml capability)
-  - name: scan # robot-agnostic (session row 의 robot_id 로 파생 dispatch)
-  - name: waypoint # robot-agnostic Robot Asset Layer — 티칭 joint 자세(rad) + group
-  - name: detector # Detect Object (robot-agnostic, host당 1 — mock backend)
-  - name: llm # 자연어→pick/place 파서 (robot-agnostic, host당 1 — mock backend)
-  - name: task # Orchestration — task-first PnP (async runner + 디버거)
+  - name: calibration
+  - name: scene3d
+  - name: scan
+  - name: waypoint
+  - name: detector
+  - name: llm
+  - name: task
+  - name: pick_and_place
   - name: bridge

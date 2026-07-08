@@ -40,6 +40,34 @@ describe("gen-contract render", () => {
     expect(ts).toContain("\"srv/y\": { req: Bar; res: Bar };");
   });
 
+  it("draft 계약은 @draft JSDoc + DRAFT_CONTRACTS set (draft 있을 때만)", () => {
+    const withDraft: string = renderContractTs({
+      enums: [],
+      interfaces: [{ name: "Loose", fields: [], draft: true }],
+      topics: [{ const: "T_X", key: "stream/x", payload: "Loose", draft: true }],
+      services: [
+        { const: "S_Y", key: "srv/y", req: "Loose", res: "Loose", draft: false },
+      ],
+    });
+    expect(withDraft).toContain("/** @draft");
+    expect(withDraft).toContain("export const DRAFT_CONTRACTS: ReadonlySet<string>");
+    // draft set 은 draft=true wire 만 — draft topic 포함, draft=false service 제외
+    const block = withDraft.slice(withDraft.indexOf("DRAFT_CONTRACTS"));
+    expect(block).toContain('"stream/x",');
+    expect(block).not.toContain('"srv/y"');
+  });
+
+  it("draft 없으면 @draft/DRAFT_CONTRACTS 미emit (재생성 불변)", () => {
+    const noDraft: string = renderContractTs({
+      enums: [],
+      interfaces: [{ name: "Solid", fields: [], draft: false }],
+      topics: [{ const: "T", key: "stream/z", payload: "Solid", draft: false }],
+      services: [],
+    });
+    expect(noDraft).not.toContain("@draft");
+    expect(noDraft).not.toContain("DRAFT_CONTRACTS");
+  });
+
   it("optional 필드는 ?: 로 emit", () => {
     const ts: string = renderContractTs({
       enums: [],

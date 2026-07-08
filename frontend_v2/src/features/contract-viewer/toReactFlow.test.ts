@@ -99,6 +99,46 @@ describe("toReactFlow", () => {
       edges.every((e) => (e.data as { key: string }).key.startsWith("stream/")),
     ).toBe(true);
   });
+
+  it("marks draft wires on edges + node data, leaves non-draft alone", () => {
+    const g: ContractGraph = {
+      ...GRAPH,
+      keys: {
+        "stream/motor/{robot_id}/raw_state": {
+          category: "stream",
+          payload: "RawState",
+          draft: true,
+        },
+        "stream/motor/{robot_id}/command": {
+          category: "stream",
+          payload: "Command",
+          draft: false,
+        },
+      },
+    };
+    const { nodes, edges } = toReactFlow(g);
+
+    const raw = edges.find((e) =>
+      (e.data as { key: string }).key.endsWith("/raw_state"),
+    )!;
+    expect((raw.data as { draft: boolean }).draft).toBe(true);
+    expect(raw.label).toContain("[DRAFT]");
+
+    const cmd = edges.find((e) =>
+      (e.data as { key: string }).key.endsWith("/command"),
+    )!;
+    expect((cmd.data as { draft: boolean }).draft).toBe(false);
+    expect(String(cmd.label)).not.toContain("[DRAFT]");
+
+    // 노드 data.draftKeys 로 행 배지 렌더 (draft wire 만 포함)
+    const motor = nodes.find((n) => n.id === "Motor")!;
+    expect(motor.data.draftKeys.has("stream/motor/{robot_id}/raw_state")).toBe(
+      true,
+    );
+    expect(motor.data.draftKeys.has("stream/motor/{robot_id}/command")).toBe(
+      false,
+    );
+  });
 });
 
 describe("shortKey", () => {

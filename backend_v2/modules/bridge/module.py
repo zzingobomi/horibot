@@ -4,22 +4,36 @@ import asyncio
 import contextlib
 import logging
 import socket
+import time
 
 from pathlib import Path
 from typing import Callable, Generator
 
+import msgspec
 import psutil
 import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from framework.transport.protocol import RawTransport
+from framework.transport.protocol import RawTransport, RemoteError
 
 from .contract import RobotInfo, RobotsResponse, SystemMetrics, TaskInfo, TasksResponse
 from .mjpeg import BOUNDARY, mjpeg_stream
 from .ws import WsConnection
+
+_DEV_CONSOLE_HTML = Path(__file__).parent / "dev_console.html"
+
+
+class DevInvokeRequest(BaseModel):
+    """개발용 콘솔의 서비스 호출 요청 — JSON in/out (DraftModel 친화)."""
+
+    key: str
+    robot_id: str | None = None
+    data: dict = {}
+    timeout_s: float = 10.0
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +49,7 @@ class BridgeModule:
         contract_provider: Callable[[], dict] | None = None,
         graph_provider: Callable[[], dict] | None = None,
         tasks: list[TaskInfo] | None = None,
+        dev_console: bool = False,
     ) -> None:
         self._transport = transport
         self._robots = robots
@@ -46,6 +61,7 @@ class BridgeModule:
         self._contract_cache: dict | None = None
         self._graph_provider = graph_provider
         self._graph_cache: dict | None = None
+        self._dev_console = dev_console
 
         self._app = self._build_app()
         self._server: uvicorn.Server | None = None
@@ -118,6 +134,9 @@ class BridgeModule:
                 media_type=f"multipart/x-mixed-replace; boundary={BOUNDARY}",
             )
 
+        if self._dev_console:
+            self._register_dev_console(app)
+
         if self._robot_dir is not None:
             app.mount(
                 "/robot",
@@ -126,6 +145,42 @@ class BridgeModule:
             )
 
         return app
+
+    def _register_dev_console(self, app: FastAPI) -> None:
+        """개발용 콘솔 — 자체완결 HTML(GET /dev) + 임의 서비스 호출(POST /dev/invoke).
+
+        프론트가 아직 없어도 브라우저로 서비스를 두드려보는 dev 작업대. 서비스 목록은
+        GET /contract/graph 에서 자동 채우고, invoke 는 request/reply 라 HTTP 로 매핑
+        (transport.call). robot-scoped 키는 robot_id 치환. gate = deployment.dev_console.
+        """
+
+        @app.get("/dev")
+        def dev_console_page() -> FileResponse:
+            return FileResponse(_DEV_CONSOLE_HTML, media_type="text/html")
+
+        @app.post("/dev/invoke")
+        async def dev_invoke(req: DevInvokeRequest) -> dict:
+            key = req.key
+            if "{robot_id}" in key:
+                if not req.robot_id:
+                    raise HTTPException(
+                        400, f"{key} 는 robot-scoped — robot_id 필요"
+                    )
+                key = key.format(robot_id=req.robot_id)
+            # ws.py 의 service 봉투와 동형: {timestamp, data} msgpack.
+            payload = msgspec.msgpack.encode(
+                {"timestamp": time.time(), "data": req.data}
+            )
+            timeout = max(0.1, min(600.0, req.timeout_s))
+            try:
+                res_bytes = await self._transport.call(key, payload, timeout=timeout)
+            except RemoteError as e:
+                return {"ok": False, "error": {"type": e.type_name, "message": e.message}}
+            except TimeoutError as e:
+                return {"ok": False, "error": {"type": "TimeoutError", "message": str(e)}}
+            decoded = msgspec.msgpack.decode(res_bytes)
+            data = decoded.get("data") if isinstance(decoded, dict) else decoded
+            return {"ok": True, "data": data}
 
     @property
     def app(self) -> FastAPI:

@@ -12,6 +12,7 @@ from typing import Any, Literal, Union, get_args, get_origin
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 
+from framework.contract.model import DraftModel
 from framework.runtime.snapshot import (
     ContractSnapshot,
     ModuleContract,
@@ -175,7 +176,9 @@ def build_contract_json(
                     "optional": optional,
                 }
             )
-        interfaces_out.append({"name": name, "fields": fields})
+        interfaces_out.append(
+            {"name": name, "fields": fields, "draft": _is_draft_model(cls)}
+        )
 
     topic_keys = sorted(
         (k for k in exposed_keys if k.category in ("stream", "event")),
@@ -186,6 +189,7 @@ def build_contract_json(
             "const": k.const_name,
             "key": k.key,
             "payload": _type_name(catalog, k.req_cls),
+            "draft": _key_is_draft(k),
         }
         for k in topic_keys
     ]
@@ -200,6 +204,7 @@ def build_contract_json(
             "key": k.key,
             "req": _type_name(catalog, k.req_cls),
             "res": _type_name(catalog, k.res_cls),
+            "draft": _key_is_draft(k),
         }
         for k in service_keys
     ]
@@ -258,11 +263,13 @@ def build_contract_graph(
                 "category": "service",
                 "req": _type_name(catalog, entry.req_cls),
                 "res": _type_name(catalog, entry.res_cls),
+                "draft": _key_is_draft(entry),
             }
         else:
             keys_out[wk] = {
                 "category": entry.category,
                 "payload": _type_name(catalog, entry.req_cls),
+                "draft": _key_is_draft(entry),
             }
 
     reachable = reachable_models(catalog.keys, catalog)
@@ -343,11 +350,17 @@ def pascal(name: str) -> str:
 
 
 def discover_module_dirs(modules_root: Path) -> list[str]:
+    """contract.py 를 가진 module 디렉토리를 재귀 탐색 → dotted 상대 경로.
+
+    flat(`modules/motor/`) 과 nested(`modules/tasks/pick_and_place/`) 를 모두 지원.
+    반환값은 `load_contract` 이 `modules.<dotted>.contract` 로 import 하는 형태
+    (예: `motor`, `tasks.pick_and_place`). 중간 디렉토리(contract.py 없음 — 예:
+    `modules/tasks/`)는 module 이 아니므로 자연히 제외된다."""
     out: list[str] = []
-    for child in sorted(modules_root.iterdir()):
-        if child.is_dir() and (child / "contract.py").is_file():
-            out.append(child.name)
-    return out
+    for contract_path in modules_root.rglob("contract.py"):
+        rel = contract_path.parent.relative_to(modules_root)
+        out.append(".".join(rel.parts))
+    return sorted(out)
 
 
 # ─── catalog dataclass ─────────────────────────────────────────────
@@ -669,7 +682,9 @@ def build_catalog(modules_root: Path = _MODULES_ROOT) -> Catalog:
     catalog = Catalog()
     for mod_name in discover_module_dirs(modules_root):
         contract_mod = load_contract(mod_name)
-        prefix = pascal(mod_name)
+        # outer class / const prefix 는 leaf 세그먼트 기준 (nested `tasks.pick_and_place`
+        # → `PickAndPlace`). catalog namespace key(f"{mod_name}.")는 dotted 그대로 유지.
+        prefix = pascal(mod_name.split(".")[-1])
         outer = find_outer_class(contract_mod, prefix)
         nested_names = {
             c for c in NESTED_CATEGORIES if outer is not None and hasattr(outer, c)
@@ -691,6 +706,21 @@ def _type_name(catalog: Catalog, cls: type[BaseModel] | None) -> str:
     if cls is None:
         return "unknown"
     return catalog.type_name.get(cls, cls.__name__)
+
+
+# ─── draft 마커 판정 (introspection 계층에서만 파생 — ServiceSpec/런타임 불변) ──
+
+
+def _is_draft_model(cls: type[BaseModel] | None) -> bool:
+    return cls is not None and isinstance(cls, type) and issubclass(cls, DraftModel)
+
+
+def _key_is_draft(entry: KeyEntry) -> bool:
+    """wire 가 나르는 payload(req/res/event) 중 하나라도 DraftModel 이면 draft.
+
+    draft 는 엔드포인트가 아니라 *타입* 에 붙는 마커라, 서비스는 req·res 둘 다,
+    토픽은 payload(req_cls) 를 본다."""
+    return _is_draft_model(entry.req_cls) or _is_draft_model(entry.res_cls)
 
 
 # ─── contract graph 전용 helper ───────────────────────────────────

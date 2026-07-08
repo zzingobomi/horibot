@@ -29,6 +29,13 @@ export interface FlowGraph {
 }
 
 export function toReactFlow(graph: ContractGraph): FlowGraph {
+  // draft(탐색 단계 미확정 계약) wire 집합 — 노드 행 배지 + 엣지 표식에 공유.
+  const draftKeys = new Set(
+    Object.entries(graph.keys)
+      .filter(([, info]) => info.draft)
+      .map(([key]) => key),
+  );
+
   // multigraph — 같은 (src,tgt) 사이 여러 wire (camera jpeg + depth_raw) 를 name 으로
   const g = new Dagre.graphlib.Graph({ multigraph: true }).setDefaultEdgeLabel(
     () => ({}),
@@ -53,25 +60,33 @@ export function toReactFlow(graph: ContractGraph): FlowGraph {
       id: m.id,
       type: "module",
       position: { x: pos.x - pos.width / 2, y: pos.y - pos.height / 2 },
-      data: { module: m },
+      data: { module: m, draftKeys },
     };
   });
 
   // 같은 (src,tgt) 사이 여러 wire (예: camera jpeg + depth_raw) — key 로 unique id
-  const edges: Edge[] = graph.edges.map((e) => ({
-    id: `${e.source}__${e.target}__${e.key}`,
-    source: e.source,
-    target: e.target,
-    label: shortKey(e.key),
-    data: { key: e.key, category: e.category },
-    animated: e.category === "stream",
-    style:
-      e.category === "event"
-        ? { strokeDasharray: "5 4", stroke: "#a78bfa" }
-        : { stroke: "#38bdf8" },
-    labelStyle: { fill: "#a1a1aa", fontSize: 10, fontFamily: "monospace" },
-    labelBgStyle: { fill: "#18181b" },
-  }));
+  const edges: Edge[] = graph.edges.map((e) => {
+    const draft = draftKeys.has(e.key);
+    return {
+      id: `${e.source}__${e.target}__${e.key}`,
+      source: e.source,
+      target: e.target,
+      label: draft ? `${shortKey(e.key)} [DRAFT]` : shortKey(e.key),
+      data: { key: e.key, category: e.category, draft },
+      animated: e.category === "stream",
+      style:
+        e.category === "event"
+          ? { strokeDasharray: "5 4", stroke: "#a78bfa" }
+          : { stroke: "#38bdf8" },
+      // draft 는 amber 라벨로 강조 (숨기지 않고 "미확정" 을 눈에 띄게).
+      labelStyle: {
+        fill: draft ? "#fbbf24" : "#a1a1aa",
+        fontSize: 10,
+        fontFamily: "monospace",
+      },
+      labelBgStyle: { fill: "#18181b" },
+    };
+  });
 
   return { nodes, edges };
 }

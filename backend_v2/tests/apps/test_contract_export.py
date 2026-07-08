@@ -91,8 +91,10 @@ def test_contract_json_shape():
     topic_keys = {t["key"] for t in data["topics"]}
     service_keys = {s["key"] for s in data["services"]}
     assert topic_keys | service_keys == FRONTEND_EXPOSED
-    assert len(data["topics"]) == 15  # +task STATE/TREE/STEP_RESULT +detector DETECTIONS
-    assert len(data["services"]) == 45  # +detector DETECT +llm PARSE +task 8
+    # +task STATE/TREE/STEP_RESULT +detector DETECTIONS +DETECTIONS_ORIENTED(draft)
+    assert len(data["topics"]) == 16
+    # +detector DETECT +DETECT_ORIENTED(draft) +llm PARSE +task 8
+    assert len(data["services"]) == 46
     # 내부 전용 payload 는 도달성으로 제외 — JointCommand 안 나옴
     iface_names = {i["name"] for i in data["interfaces"]}
     assert "JointCommand" not in iface_names
@@ -103,11 +105,14 @@ def test_contract_json_shape():
     # payload 타입은 TS 문자열로 이미 해소 (서버가 실 Python type 을 아니까)
     jog = next(t for t in data["topics"] if t["key"].endswith("/jog_j"))
     assert jog["payload"] == "JogJInput"
-    # draft 메타 — 모든 topic/service/interface 에 bool 존재 (숨기지 않고 상태 표현).
-    # 현재 draft payload 없음 → 전부 False.
-    assert all(t["draft"] is False for t in data["topics"])
-    assert all(s["draft"] is False for s in data["services"])
-    assert all(i["draft"] is False for i in data["interfaces"])
+    # draft 메타 — DraftModel 계약만 True (숨기지 않고 상태 표현). detector 회전 파지가
+    # 첫 노출 draft: DETECTIONS_ORIENTED 토픽 + DETECT_ORIENTED 서비스 + payload 인터페이스.
+    draft_topics = {t["key"] for t in data["topics"] if t["draft"]}
+    draft_services = {s["key"] for s in data["services"] if s["draft"]}
+    assert draft_topics == {"stream/detector/{robot_id}/detections_oriented"}
+    assert draft_services == {"srv/detector/detect_oriented"}
+    draft_ifaces = {i["name"] for i in data["interfaces"] if i["draft"]}
+    assert {"OrientedDetection", "OrientedDetectionsUpdate"} <= draft_ifaces
 
 
 # ─── provider closure wiring (resolve/main) ──────────────────────
@@ -199,8 +204,8 @@ async def test_contract_json_endpoint_serves(contract_endpoint: str):
     data = res.json()
     assert set(data) == {"enums", "interfaces", "topics", "services"}
     # HTTP 로 serve 된 JSON = in-process build_contract_json 과 동일 계약
-    assert len(data["topics"]) == 15  # +task STATE/TREE/STEP_RESULT +detector DETECTIONS
-    assert len(data["services"]) == 45  # +detector DETECT +llm PARSE +task 8
+    assert len(data["topics"]) == 16  # +DETECTIONS_ORIENTED(draft)
+    assert len(data["services"]) == 46  # +DETECT_ORIENTED(draft)
 
 
 # ─── build_contract_graph — unfiltered attribution + wiring (§5.2) ─
@@ -232,6 +237,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "DetectorModule",
         "LlmModule",
         "TaskModule",
+        "PickAndPlaceModule",  # task family (modules/tasks/pick_and_place), host-level
     }
     assert "BridgeModule" not in ids
     by_id = {m["id"]: m for m in graph["modules"]}
@@ -248,6 +254,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "WaypointModule",
         "LlmModule",
         "TaskModule",
+        "PickAndPlaceModule",  # task family — robot-agnostic (host당 1)
     }
     for mid in host_level:
         assert by_id[mid]["robot_scoped"] is False, mid
@@ -298,8 +305,13 @@ def test_graph_is_unfiltered():
     move_j = "srv/motion/{robot_id}/move_j"
     assert graph["keys"][move_j]["category"] == "service"
     assert "req" in graph["keys"][move_j] and "res" in graph["keys"][move_j]
-    # draft 메타 — 모든 key 에 bool 존재 (그래프 배지용). 현재 draft 없음 → 전부 False.
-    assert all(k["draft"] is False for k in graph["keys"].values())
+    # draft 메타 — 모든 key 에 bool 존재 (그래프 배지용). DraftModel 계약은 True.
+    assert all(isinstance(k["draft"], bool) for k in graph["keys"].values())
+    assert graph["keys"]["srv/detector/detect_oriented"]["draft"] is True
+    assert (
+        graph["keys"]["stream/detector/{robot_id}/detections_oriented"]["draft"]
+        is True
+    )
 
 
 def test_graph_name_conflict_resolution():
@@ -402,5 +414,6 @@ async def test_contract_graph_endpoint_serves(graph_endpoint: str):
         "DetectorModule",
         "LlmModule",
         "TaskModule",
+        "PickAndPlaceModule",  # task family (modules/tasks/pick_and_place), host-level
     }
     assert len(data["edges"]) >= 4

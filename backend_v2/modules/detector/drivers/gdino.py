@@ -1,10 +1,9 @@
-"""Grounding DINO open-vocabulary 검출 backend — DetectorBackend 구현.
+"""Grounding DINO open-vocabulary 검출 — text → box (2-stage Grounded-SAM 의 1단계).
 
-옛 backend/modules/detector/grounded_detector.py 를 v2 어댑터로 **재구성** (무지성
-복붙 아님):
-  - 계약 = DetectorBackend Protocol(detect / preload)만 만족. module/DSL 은 이 파일을
-    모른다 (모델 교체 seam — protocol.py §0).
-  - transformers/torch 는 module-top import → 이 파일은 resolve.py 의 real branch 에서만
+옛 backend/modules/detector/grounded_detector.py 를 v2 로 **재구성** (무지성 복붙 아님):
+  - **box 전용 내부 헬퍼** — DetectorBackend 구현체는 grounded_sam.GroundedSamBackend
+    (GDINO box + SAM2 mask). 이 파일은 그 1단계. module/DSL 은 둘 다 모른다 (seam).
+  - transformers/torch 는 module-top import → grounded_sam 이 resolve.py real branch 에서만
     lazy import 된다. mock/pi 배치엔 안 끌려온다 (role 격리, motor/camera 드라이버 동형).
   - 로드는 공유 transformers_load_lock(infra/ml/loader)으로 직렬화 — NL PnP 로 Qwen
     LLM 이 두 번째 transformers 소비자로 재등장해도 preload race 구조적 차단.
@@ -38,8 +37,8 @@ _DEFAULT_BOX_THRESHOLD = 0.3
 _DEFAULT_TEXT_THRESHOLD = 0.25
 
 
-class GroundingDinoBackend:
-    """Grounding DINO 단일 인스턴스. detect() 는 thread-safe 하지 않음 — module 이
+class GroundingDino:
+    """Grounding DINO 단일 인스턴스. detect_boxes() 는 thread-safe 하지 않음 — module 이
     host당 1 + 단일 서비스 핸들러로 직렬화하므로 외부 동시 호출 금지.
 
     model_id / threshold 는 GDINO 구현 detail (Protocol 이 숨김) — 어댑터가 소유한다.
@@ -85,13 +84,14 @@ class GroundingDinoBackend:
             )
             logger.info("Grounding DINO 로드 완료 (device=%s)", self._model.device)
 
-    def detect(
+    def detect_boxes(
         self, image_bgr: np.ndarray, prompt: str, top_k: int
     ) -> list[tuple[Bbox, float]]:
         """BGR 이미지 + 영어 prompt → score 내림차순 Top-K [(bbox, score)]. 미검출 [].
 
         image_bgr: HxWx3 uint8 BGR (OpenCV). Grounding DINO 는 마침표로 phrase 분리
         → 내부에서 마침표 보장. Top-K (§17.5) — 최종 선택은 소비자(task SelectTarget).
+        SAM2 는 이 box 를 prompt 로 mask 를 뽑는다 (grounded_sam).
         """
         self._ensure_loaded()
         assert self._processor is not None and self._model is not None

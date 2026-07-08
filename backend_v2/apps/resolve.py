@@ -244,9 +244,9 @@ def _detector_backend(deploy: DeploymentConfig) -> DetectorBackend:
 
         return MockDetectorBackend()
 
-    from modules.detector.drivers.gdino import GroundingDinoBackend
+    from modules.detector.drivers.grounded_sam import GroundedSamBackend
 
-    return GroundingDinoBackend()
+    return GroundedSamBackend()
 
 
 def _llm_backend(deploy: DeploymentConfig) -> LlmBackend:

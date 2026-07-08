@@ -306,6 +306,27 @@ export interface UndoLastCaptureResponse {
   ok: boolean;
 }
 
+/** @draft 탐색 단계 계약 — 타입 미확정 (필드 추가/변경 가능). */
+export interface OrientedDetection {
+  prompt: string;
+  position: [number, number, number];
+  score: number;
+  base_z: number;
+  height: number;
+  grasp_yaw: number;
+  footprint: [number, number];
+  bbox_2d?: [number, number, number, number] | null;
+  obb_2d?: [number, number][] | null;
+  mask_contour?: [number, number][] | null;
+}
+
+/** @draft 탐색 단계 계약 — 타입 미확정 (필드 추가/변경 가능). */
+export interface DetectOrientedResponse {
+  found: boolean;
+  candidates?: OrientedDetection[];
+  message?: string;
+}
+
 export interface DetectRequest {
   robot_id: string;
   prompt: string;
@@ -335,6 +356,17 @@ export interface DetectionsUpdate {
   image_width: number;
   image_height: number;
   candidates?: Detection[];
+}
+
+/** @draft 탐색 단계 계약 — 타입 미확정 (필드 추가/변경 가능). */
+export interface OrientedDetectionsUpdate {
+  robot_id: string;
+  seq: number;
+  timestamp_unix: number;
+  prompt: string;
+  image_width: number;
+  image_height: number;
+  candidates?: OrientedDetection[];
 }
 
 export interface ParseCommandRequest {
@@ -607,13 +639,13 @@ export interface PreviewResponse {
   message?: string;
 }
 
-export interface RunRequest {
+export interface TaskRunRequest {
   robot_id: string;
   task_name: string;
   params?: Record<string, string>;
 }
 
-export interface RunResponse {
+export interface TaskRunResponse {
   accepted: boolean;
   message?: string;
 }
@@ -790,6 +822,7 @@ export const Topic = {
   CALIBRATION_COMMITTED: "event/calibration/{robot_id}/committed",
   CALIBRATION_PREVIEW: "stream/calibration/{robot_id}/preview",
   DETECTOR_DETECTIONS: "stream/detector/{robot_id}/detections",
+  DETECTOR_DETECTIONS_ORIENTED: "stream/detector/{robot_id}/detections_oriented",
   MOTION_JOG_J: "stream/motion/{robot_id}/jog_j",
   MOTION_JOG_TCP: "stream/motion/{robot_id}/jog_tcp",
   MOTION_TCP_STATE: "stream/motion/{robot_id}/tcp_state",
@@ -809,6 +842,7 @@ export type TopicPayloadMap = {
   "event/calibration/{robot_id}/committed": CalibrationCommitted;
   "stream/calibration/{robot_id}/preview": CalibrationPreview;
   "stream/detector/{robot_id}/detections": DetectionsUpdate;
+  "stream/detector/{robot_id}/detections_oriented": OrientedDetectionsUpdate;
   "stream/motion/{robot_id}/jog_j": JogJInput;
   "stream/motion/{robot_id}/jog_tcp": JogTcpInput;
   "stream/motion/{robot_id}/tcp_state": TcpState;
@@ -834,6 +868,7 @@ export const ServiceKey = {
   CALIBRATION_START_RUN: "srv/calibration/start_run",
   CALIBRATION_UNDO_LAST_CAPTURE: "srv/calibration/undo_last_capture",
   DETECTOR_DETECT: "srv/detector/detect",
+  DETECTOR_DETECT_ORIENTED: "srv/detector/detect_oriented",
   LLM_PARSE_COMMAND: "srv/llm/parse_command",
   MOTION_MOVE_J: "srv/motion/{robot_id}/move_j",
   MOTOR_CAPABILITIES: "srv/motor/{robot_id}/capabilities",
@@ -883,6 +918,7 @@ export type ServiceMap = {
   "srv/calibration/start_run": { req: StartRunRequest; res: StartRunResponse };
   "srv/calibration/undo_last_capture": { req: UndoLastCaptureRequest; res: UndoLastCaptureResponse };
   "srv/detector/detect": { req: DetectRequest; res: DetectResponse };
+  "srv/detector/detect_oriented": { req: DetectRequest; res: DetectOrientedResponse };
   "srv/llm/parse_command": { req: ParseCommandRequest; res: ParseCommandResponse };
   "srv/motion/{robot_id}/move_j": { req: MoveJRequest; res: MoveJResponse };
   "srv/motor/{robot_id}/capabilities": { req: MotorCapabilitiesRequest; res: MotorCapabilities };
@@ -901,7 +937,7 @@ export type ServiceMap = {
   "srv/task/pause": { req: TaskControlRequest; res: TaskControlResponse };
   "srv/task/preview": { req: PreviewRequest; res: PreviewResponse };
   "srv/task/resume": { req: TaskControlRequest; res: TaskControlResponse };
-  "srv/task/run": { req: RunRequest; res: RunResponse };
+  "srv/task/run": { req: TaskRunRequest; res: TaskRunResponse };
   "srv/task/run_to": { req: RunToRequest; res: TaskControlResponse };
   "srv/task/step_once": { req: TaskControlRequest; res: TaskControlResponse };
   "srv/task/stop": { req: TaskControlRequest; res: TaskControlResponse };
@@ -918,3 +954,8 @@ export type ServiceMap = {
   "srv/waypoint/reorder_group": { req: ReorderGroupRequest; res: ReorderGroupResponse };
   "srv/waypoint/teach": { req: TeachRequest; res: TeachResponse };
 };
+
+export const DRAFT_CONTRACTS: ReadonlySet<string> = new Set([
+  "stream/detector/{robot_id}/detections_oriented",
+  "srv/detector/detect_oriented",
+]);

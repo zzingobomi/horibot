@@ -27,6 +27,7 @@ const MODULE_IDS = [
   "DetectorModule",
   "LlmModule",
   "TaskModule",
+  "PickAndPlaceModule", // task family (modules/tasks/pick_and_place), host-level
 ];
 
 test.describe("Contract graph viewer e2e (mock backend)", () => {

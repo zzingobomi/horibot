@@ -2,7 +2,7 @@ import logging
 
 from framework.contract.service import service
 from framework.runtime.api import ModuleRuntime
-from modules.detector.contract import Detector, DetectRequest, DetectResponse
+from modules.detector.contract import Detector, DetectRequest, DetectOrientedResponse
 
 
 from .contract import PickAndPlace, RunRequest, RunResponse
@@ -25,9 +25,10 @@ class PickAndPlaceModule:
 
         # detect 모듈에게 결과 받기
         result = await self.runtime.call(
-            Detector.Service.DETECT,
-            DetectRequest(robot_id="so101_6dof_0", prompt="white box", top_k=5),
-            DetectResponse,
+            Detector.Service.DETECT_ORIENTED,
+            DetectRequest(robot_id="so101_6dof_0",
+                          prompt="white box", top_k=5),
+            DetectOrientedResponse,
         )
         logger.info("found=%s n=%d", result.found, len(result.candidates))
 

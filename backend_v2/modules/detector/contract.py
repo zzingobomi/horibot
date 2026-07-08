@@ -16,6 +16,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
+from framework.contract.model import DraftModel
+
 
 class Detection(BaseModel):
     """검출 후보 — base frame 3D 위치 + 기하 prior 속성 (§17.5, v1 GroundedDetection 포팅).
@@ -60,11 +62,18 @@ class Detector:
         # robot-agnostic (host 당 1, backend_v2.md §2.7) — robot_id 는 req field.
         # 무거운 모델(GDINO)은 1회 로드, 매 요청이 robot_id 로 그 로봇의 camera/캘/TCP 조회.
         DETECT = "srv/detector/detect"  # prompt + robot_id → base 3D 후보 Top-K
+        # [DRAFT] OBB(grasp yaw + footprint) 탐색용 — SAM mask → base 점군 → minAreaRect.
+        # /dev 로 shape(deg/rad, footprint 정확도) 굳으면 Detection 에 필드 승격 후 DETECT
+        # 로 흡수 (DraftModel → StrictModel). §17.5 회전 파지.
+        DETECT_ORIENTED = "srv/detector/detect_oriented"
 
     class Stream(StrEnum):
         # robot-scoped 키 — payload robot_id 로 framework 라우팅 (host-level 발행,
         # scan BUILD_PROGRESS 동형).
         DETECTIONS = "stream/detector/{robot_id}/detections"
+        # [DRAFT] DETECT_ORIENTED 오버레이 — bbox + obb_2d + mask_contour. shape 굳으면
+        # DETECTIONS 로 흡수 (OrientedDetectionsUpdate payload = DraftModel).
+        DETECTIONS_ORIENTED = "stream/detector/{robot_id}/detections_oriented"
 
 
 class DetectRequest(BaseModel):
@@ -79,3 +88,48 @@ class DetectResponse(BaseModel):
     found: bool
     candidates: list[Detection] = []
     message: str = ""
+
+
+class OrientedDetection(DraftModel):
+    """[DRAFT] Detection + OBB(grasp yaw / footprint). 아직 shape 미확정 (extra=allow).
+
+    Detection 의 모든 필드 + base frame 회전 파지 정보. /dev 로 검증할 열린 질문:
+      grasp_yaw: base Z 회전 rad([-π/2,π/2)) — deg/rad·부호 규약 실물 확인 대상.
+      footprint: (long, short) m — mask 윗면 band vs 전체 점군 어느 쪽이 정확한지 tuning.
+    굳으면 Detection 에 필드 승격 + base 를 StrictModel 로 교체 (빠뜨린 필드 fail-fast).
+    """
+
+    prompt: str
+    position: tuple[float, float, float]
+    score: float
+    base_z: float
+    height: float
+    grasp_yaw: float
+    footprint: tuple[float, float]
+    bbox_2d: tuple[float, float, float, float] | None = None
+    # 카메라 패널 오버레이(image-space px). obb_2d = base OBB 코너 4개를 픽셀로 reproject
+    # (회전 사각형). mask_contour = SAM mask 윤곽 폴리곤 (실루엣). mask bitmap 은 wire 에
+    # 안 실음 — 폴리곤(점 수십 개)만 (backend_v2.md 결정). depth 부족 등으로 없으면 None.
+    obb_2d: list[tuple[float, float]] | None = None
+    mask_contour: list[tuple[float, float]] | None = None
+
+
+class DetectOrientedResponse(DraftModel):
+    """[DRAFT] detect_oriented 결과 — DETECT_ORIENTED. shape 굳으면 DetectResponse 로 흡수."""
+
+    found: bool
+    candidates: list[OrientedDetection] = []
+    message: str = ""
+
+
+class OrientedDetectionsUpdate(DraftModel):
+    """[DRAFT] DETECT_ORIENTED 1회의 오버레이 스냅샷 — 카메라 패널 (DetectionsUpdate 의
+    oriented 판). bbox + obb_2d(회전 사각형) + mask_contour(실루엣). on-demand publish."""
+
+    robot_id: str
+    seq: int
+    timestamp_unix: float
+    prompt: str
+    image_width: int
+    image_height: int
+    candidates: list[OrientedDetection] = []

@@ -137,13 +137,13 @@ def test_resolve_robot_deps_real_realsense_constructs():
 
 
 def test_resolve_host_deps_real_detector_constructs():
-    # real → GroundingDinoBackend 생성 (모델 로드 X — preload/detect 안 부름). 배선만.
-    from modules.detector.drivers.gdino import GroundingDinoBackend
+    # real → GroundedSamBackend 생성 (GDINO+SAM2, 모델 로드 X — preload/detect 안 부름).
+    from modules.detector.drivers.grounded_sam import GroundedSamBackend
 
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "pc.yaml")  # real
     robots = load_robots()
     backend = resolve_host_deps("detector", robots, deploy)["backend"]
-    assert isinstance(backend, GroundingDinoBackend)
+    assert isinstance(backend, GroundedSamBackend)
 
 
 def test_resolve_robot_deps_camera_mock_depth_from_rgbd_capability():

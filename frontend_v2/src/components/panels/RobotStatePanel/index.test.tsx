@@ -8,6 +8,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { bridge } from "@/api/bridge";
 import { _resetCapabilityCache } from "@/framework/capability";
 import { useFrameworkStore } from "@/framework/store";
+import { RobotProvider } from "@/components/shared/robotOwnership";
 import { RobotStatePanel } from "./index";
 
 const ROBOT_ID = "so101_6dof_0";
@@ -16,7 +17,14 @@ function renderPanel() {
   return render(
     <MemoryRouter initialEntries={[`/robots/${ROBOT_ID}`]}>
       <Routes>
-        <Route path="/robots/:id" element={<RobotStatePanel />} />
+        <Route
+          path="/robots/:id"
+          element={
+            <RobotProvider robotId={ROBOT_ID}>
+              <RobotStatePanel />
+            </RobotProvider>
+          }
+        />
       </Routes>
     </MemoryRouter>,
   );

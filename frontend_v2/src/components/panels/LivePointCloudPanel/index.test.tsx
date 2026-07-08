@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { useFrameworkStore } from "@/framework/store";
+import { RobotProvider } from "@/components/shared/robotOwnership";
 import { LivePointCloudPanel } from "./index";
 
 const ROBOT_ID = "so101_6dof_0";
@@ -38,7 +39,14 @@ function renderPanel() {
   return render(
     <MemoryRouter initialEntries={[`/robots/${ROBOT_ID}`]}>
       <Routes>
-        <Route path="/robots/:id" element={<LivePointCloudPanel />} />
+        <Route
+          path="/robots/:id"
+          element={
+            <RobotProvider robotId={ROBOT_ID}>
+              <LivePointCloudPanel />
+            </RobotProvider>
+          }
+        />
       </Routes>
     </MemoryRouter>,
   );

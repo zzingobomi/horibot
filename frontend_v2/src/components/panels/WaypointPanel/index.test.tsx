@@ -8,6 +8,7 @@ import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { bridge } from "@/api/bridge";
 import { useFrameworkStore, type ServiceEntry } from "@/framework/store";
+import { RobotProvider } from "@/components/shared/robotOwnership";
 import { WaypointPanel } from "./index";
 
 const ROBOT_ID = "so101_6dof_0";
@@ -63,7 +64,14 @@ function renderPanel() {
   return render(
     <MemoryRouter initialEntries={[`/robots/${ROBOT_ID}`]}>
       <Routes>
-        <Route path="/robots/:id" element={<WaypointPanel />} />
+        <Route
+          path="/robots/:id"
+          element={
+            <RobotProvider robotId={ROBOT_ID}>
+              <WaypointPanel />
+            </RobotProvider>
+          }
+        />
       </Routes>
     </MemoryRouter>,
   );

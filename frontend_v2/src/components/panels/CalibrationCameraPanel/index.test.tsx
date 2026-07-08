@@ -6,6 +6,7 @@ import { act, render, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { _resetResourceCache } from "@/framework/resource";
 import { useFrameworkStore } from "@/framework/store";
+import { RobotProvider } from "@/components/shared/robotOwnership";
 import { CalibrationCameraPanel } from "./index";
 
 const ROBOT_ID = "so101_6dof_0";
@@ -32,7 +33,14 @@ function renderPanel() {
   return render(
     <MemoryRouter initialEntries={[`/robots/${ROBOT_ID}`]}>
       <Routes>
-        <Route path="/robots/:id" element={<CalibrationCameraPanel />} />
+        <Route
+          path="/robots/:id"
+          element={
+            <RobotProvider robotId={ROBOT_ID}>
+              <CalibrationCameraPanel />
+            </RobotProvider>
+          }
+        />
       </Routes>
     </MemoryRouter>,
   );

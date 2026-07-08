@@ -22,9 +22,12 @@ import {
 } from "dockview";
 import { RotateCcw } from "lucide-react";
 import {
-  PANEL_COMPONENTS,
+  DOCKVIEW_PANEL_COMPONENTS,
+  ROBOT_OWNED_PANELS,
   type PanelComponentKey,
 } from "@/components/panels/registry";
+import { RobotTab } from "@/components/shared/robotOwnership";
+import { useRobots } from "@/hooks/useRobots";
 import {
   loadLayout,
   resetWorkspaceLayout,
@@ -54,9 +57,19 @@ function LockedTab(props: IDockviewPanelHeaderProps) {
 
 export function ModeDockview({ mode, panels }: ModeDockviewProps) {
   const { id = "" } = useParams<{ id: string }>();
+  const { robots } = useRobots();
   const containerRef = useRef<HTMLDivElement | null>(null);
   // id 없는 최상위 페이지(tasks)는 "global" — robot mode 는 robot 별 배치 기억.
   const layoutKey = `workspace3d.${id || "global"}.${mode}`;
+
+  // 패널 **생성 시 초기값** ([[robot_ownership_model]] §4). route 가 robot 을 주면
+  // 그것을, 아니면 후보가 정확히 1개일 때만 그 robot 을, 그 외엔 null(→ Select
+  // Robot). 생성 순간 1회 계산해 params 에 박고, 이후 패널은 자기 params 만 본다.
+  const initialRobotId = useCallback((): string | null => {
+    if (id) return id;
+    if (robots.length === 1) return robots[0].id;
+    return null;
+  }, [id, robots]);
 
   const addDefaultLayout = useCallback(
     (event: DockviewReadyEvent) => {
@@ -76,18 +89,21 @@ export function ModeDockview({ mode, panels }: ModeDockviewProps) {
           y += rowHeight + GAP_Y;
           rowHeight = 0;
         }
+        const owned = ROBOT_OWNED_PANELS.has(p.component);
         event.api.addPanel({
           id: p.id,
           component: p.component,
           title: p.title,
           floating: { x, y, width: p.width, height: p.height },
-          params: {},
+          // robot-owned 패널만 robot params + robot 셀렉터 탭. task 패널은 carve-out.
+          params: owned ? { robotId: initialRobotId() } : {},
+          tabComponent: owned ? "robot" : undefined,
         });
         x += p.width + GAP_X;
         rowHeight = Math.max(rowHeight, p.height);
       }
     },
-    [panels],
+    [panels, initialRobotId],
   );
 
   const onReady = useCallback(
@@ -127,7 +143,8 @@ export function ModeDockview({ mode, panels }: ModeDockviewProps) {
       >
         <DockviewReact
           className="dockview-theme-dark"
-          components={PANEL_COMPONENTS}
+          components={DOCKVIEW_PANEL_COMPONENTS}
+          tabComponents={{ robot: RobotTab }}
           defaultTabComponent={LockedTab}
           onReady={onReady}
         />

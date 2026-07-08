@@ -28,7 +28,10 @@ IK_POS_ERROR_LIMIT = 0.01
 # seed 1회로 수렴 못 하면 random restart (PyBullet 은 seed 에서 출발하는 local
 # 솔버라 해가 존재해도 놓침 — "도달 가능한데 IK 실패" 방지). restart 중 seed 에
 # 가장 가까운 해 선택 → motion 연속성 유지.
-IK_RESTARTS = 24
+# 200 근거 (2026-07-09 SO-101 손 시연 자세 실측): orientation 붙은 top-down 파지
+# 자세는 basin 이 좁아 균등 재시작 성공까지 median 8 / max 40회 — 옛 24 는 복권
+# (같은 자세가 rng 이력 따라 됐다 안 됐다). 800회 ≈ 0.1s (DIRECT) 라 200 은 공짜.
+IK_RESTARTS = 200
 
 # 모든 robot type URDF 는 `tcp` 라는 link 를 가져야 함 (UR tool0 패턴, fail-fast).
 TCP_LINK_NAME = "tcp"
@@ -55,8 +58,6 @@ class PybulletKinematics:
         self._movable_ranges: list[float] = []
         # chain joint 의 movable result vector 내 위치
         self._chain_in_movable: list[int] = []
-        # IK random restart 용 (고정 seed → 재현 가능; seeded 1회 성공 시 안 씀)
-        self._rng = np.random.default_rng(0)
 
     def initialize(self) -> None:
         with self._lock:
@@ -150,11 +151,14 @@ class PybulletKinematics:
                 return sol
             # 2) 실패 = local 솔버가 seed basin 에서 못 찾은 것일 수 있음 (해는 존재
             #    가능). random restart 후 seed 에 가장 가까운 해 선택 (jump 최소화).
+            #    rng 는 호출마다 fresh — 프로세스 전역 rng 는 호출 이력에 따라 같은
+            #    요청이 됐다 안 됐다 하는 복권이 됨 (2026-07-09 PnP 후보 전멸 원인).
+            rng = np.random.default_rng(0)
             best: list[float] | None = None
             best_dist = float("inf")
             for _ in range(IK_RESTARTS):
                 rand = [
-                    float(self._rng.uniform(lo, hi))
+                    float(rng.uniform(lo, hi))
                     for lo, hi in zip(self._chain_lower, self._chain_upper)
                 ]
                 cand = self._ik_from_seed(target_position, target_quaternion, rand)

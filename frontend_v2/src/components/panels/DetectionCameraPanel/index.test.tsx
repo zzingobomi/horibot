@@ -159,9 +159,11 @@ describe("DetectionCameraPanel", () => {
     const obb = getByTestId("detection-obb");
     expect(obb.getAttribute("stroke")).toBe("#f59e0b");
     expect(obb.getAttribute("points")).toBe("110,210 290,230 280,390 100,370");
-    // mask contour (하늘) 실루엣
+    // mask contour (fuchsia) — best 후보는 반투명 채움 (세그멘테이션 영역 확인)
     const contour = getByTestId("detection-contour");
-    expect(contour.getAttribute("stroke")).toBe("#38bdf8");
+    expect(contour.getAttribute("stroke")).toBe("#d946ef");
+    expect(contour.getAttribute("fill")).toBe("#d946ef");
+    expect(contour.getAttribute("fill-opacity")).toBe("0.3");
     // grasp yaw 라벨 = 30°
     const text = getAllByTestId("detection-bbox")[0].querySelector("text")!;
     expect(text.textContent).toContain("∠30°");

@@ -18,7 +18,9 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
+import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -53,6 +55,10 @@ from .contract import (
 from .drivers.protocol import Bbox, DetectorBackend
 
 logger = logging.getLogger(__name__)
+
+# detect_oriented 디버그 덤프 — SAM mask 원본 픽셀 알파 오버레이 PNG (draft 단계).
+# 패널 오버레이는 contour 폴리곤 근사라 세그멘테이션 정밀 확인은 이 파일로.
+_DEBUG_DIR = Path("debug")
 
 
 @dataclass(slots=True)
@@ -98,6 +104,7 @@ class _DetectResult:
     color_h: int
     message: str
     proj: _Proj | None = None
+    img: np.ndarray | None = None  # color BGR — detect_oriented 디버그 덤프용
 
 
 @publishes(
@@ -228,7 +235,9 @@ class DetectorModule:
             )
         msg = "" if cands else "후보 bbox depth 전부 무효"
         proj = _Proj(fx, fy, cx, cy, r_be, t_be, r_ce, t_ce)
-        return _DetectResult(cands, color.width, color.height, msg, proj=proj)
+        return _DetectResult(
+            cands, color.width, color.height, msg, proj=proj, img=img
+        )
 
     @service(Detector.Service.DETECT)
     async def detect(self, req: DetectRequest) -> DetectResponse:
@@ -271,8 +280,13 @@ class DetectorModule:
             return DetectOrientedResponse(found=False, message="prompt 필요")
         result = await self._detect_candidates(req.robot_id, prompt, req.top_k)
         oriented: list[OrientedDetection] = []
+        debug_rows: list[tuple[np.ndarray, list[tuple[float, float]] | None]] = []
         for c in result.cands:
-            obb = geometry.obb_from_base_points(c.base_points)
+            # 윗면 band 만 — mask 전체는 옆면/배경 bleed 로 footprint 부풀림 + yaw 비틂
+            # (geometry.top_face_points 주석, 2026-07-09 실물 확인).
+            obb = geometry.obb_from_base_points(
+                geometry.top_face_points(c.base_points)
+            )
             if obb is None:
                 continue
             obb_2d: list[tuple[float, float]] | None = None
@@ -290,6 +304,7 @@ class DetectorModule:
                 if contour is not None
                 else None
             )
+            debug_rows.append((c.mask, obb_2d))
             oriented.append(
                 OrientedDetection(
                     prompt=prompt,
@@ -309,11 +324,54 @@ class DetectorModule:
             self._publish_oriented(
                 req.robot_id, prompt, result.color_w, result.color_h, oriented
             )
+        # 디버그 PNG 덤프 — 원본 mask 픽셀 알파 오버레이 (실패해도 서비스는 무사).
+        if result.img is not None and debug_rows:
+            try:
+                self._dump_debug_image(result.img, oriented, debug_rows)
+            except Exception:
+                logger.exception("detect_oriented 디버그 덤프 실패 (서비스 영향 없음)")
         if not oriented:
             return DetectOrientedResponse(
                 found=False, message=result.message or "OBB 산출 실패"
             )
         return DetectOrientedResponse(found=True, candidates=oriented)
+
+    def _dump_debug_image(
+        self,
+        img_bgr: np.ndarray,
+        oriented: list[OrientedDetection],
+        rows: list[tuple[np.ndarray, list[tuple[float, float]] | None]],
+    ) -> None:
+        """SAM mask 알파 오버레이(원본 픽셀) + bbox + OBB + yaw 를 그린 PNG 저장.
+
+        패널 오버레이는 contour 폴리곤 근사 — 세그멘테이션이 실제로 어떻게 됐는지
+        픽셀 단위 확인은 이 파일 (draft 디버그). 마지막 호출 1장 overwrite.
+        """
+        canvas = img_bgr.copy()
+        for det, (mask, obb_2d) in zip(oriented, rows, strict=True):
+            tint = canvas.copy()
+            tint[mask] = (239, 70, 217)  # fuchsia (BGR) — 패널 contour 색과 통일
+            canvas = cv2.addWeighted(tint, 0.35, canvas, 0.65, 0)
+            if det.bbox_2d is not None:
+                x1, y1, x2, y2 = (int(round(v)) for v in det.bbox_2d)
+                cv2.rectangle(canvas, (x1, y1), (x2, y2), (153, 211, 52), 2)
+            if obb_2d is not None:
+                pts = np.array(obb_2d, dtype=np.int32).reshape(-1, 1, 2)
+                cv2.polylines(canvas, [pts], True, (11, 158, 245), 3)
+                cv2.putText(
+                    canvas,
+                    f"yaw {np.degrees(det.grasp_yaw):.0f}deg "
+                    f"{det.footprint[0] * 1000:.0f}x{det.footprint[1] * 1000:.0f}mm",
+                    (int(obb_2d[0][0]), max(int(obb_2d[0][1]) - 8, 16)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (11, 158, 245),
+                    2,
+                )
+        _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        out = _DEBUG_DIR / "detect_oriented_last.png"
+        cv2.imwrite(str(out), canvas)
+        logger.info("detect_oriented 디버그 덤프: %s", out.resolve())
 
     def _publish_detections(
         self,

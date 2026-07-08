@@ -471,18 +471,29 @@ class MotionModule:
         groups = req.groups
 
         def _scan() -> int:
-            for gi, group in enumerate(groups):
-                seed = list(current)
-                for pose in group:
-                    sol = kin.ik(pose.position, pose.quaternion, seed)
-                    if sol is None:
-                        break
-                    seed = list(sol)
-                else:
-                    return gi
+            # iterative deepening — 불가 그룹 기각 비용 = restart 예산에 비례
+            # (실패만 풀비용). 가용 자세는 median 8회에 걸림 (2026-07-09 실측)
+            # → 예산 10 의 1차 패스가 대부분 해결, 못 찾으면 예산 올려 재스캔.
+            # trade-off: 1차에서 뒤 그룹이 먼저 잡히면 (앞 그룹이 40회짜리 난해
+            # 해였을 때) 선호 순서가 미세하게 양보됨 — 속도와 맞바꾼 것.
+            for budget in (10, 40, None):  # None = IK_RESTARTS (실행용 풀예산)
+                for gi, group in enumerate(groups):
+                    seed = list(current)
+                    for pose in group:
+                        sol = kin.ik(pose.position, pose.quaternion, seed, budget)
+                        if sol is None:
+                            break
+                        seed = list(sol)
+                    else:
+                        return gi
             return -1
 
+        t0 = time.perf_counter()
         idx = await asyncio.to_thread(_scan)
+        logger.info(
+            "select_reachable: groups=%d → index=%d (%.2fs)",
+            len(groups), idx, time.perf_counter() - t0,
+        )
         msg = "" if idx >= 0 else "가용 그룹 없음"
         return SelectReachableResponse(index=idx, message=msg)
 

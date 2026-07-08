@@ -21,7 +21,10 @@ const TASK_NAME = "pick_and_place";
 const BEST = "#34d399"; // 최고 후보 bbox (초록)
 const REST = "#a1a1aa"; // 나머지 bbox (회색)
 const OBB = "#f59e0b"; // 회전 파지 사각형 (호박)
-const CONTOUR = "#38bdf8"; // SAM mask 실루엣 (하늘)
+// SAM mask 실루엣 — 초록(bbox)과 확실히 다른 색 (옛 하늘색 #38bdf8 은 작은 화면에서
+// 초록과 혼동 — 2026-07-09 "AABB 가 회전됐다" 오독). 반투명 채움 = 세그멘테이션
+// 영역 실시간 확인 (best 후보만 채움 — 겹침 후보 알파 중첩 방지).
+const CONTOUR = "#d946ef"; // fuchsia
 
 function points(pts: [number, number][]): string {
   return pts.map(([x, y]) => `${x},${y}`).join(" ");
@@ -76,10 +79,11 @@ export function DetectionCameraPanel() {
                     <polygon
                       data-testid="detection-contour"
                       points={points(contour)}
-                      fill="none"
+                      fill={i === 0 ? CONTOUR : "none"}
+                      fillOpacity={0.3}
                       stroke={CONTOUR}
-                      strokeWidth={1.5}
-                      strokeOpacity={0.7}
+                      strokeWidth={2}
+                      strokeOpacity={0.9}
                     />
                   )}
                   {obb && (
@@ -102,7 +106,9 @@ export function DetectionCameraPanel() {
                       strokeWidth={i === 0 ? 4 : 2}
                     />
                   )}
-                  {b && (
+                  {/* 라벨은 best 후보만 — top_k 후보가 같은 물체에 겹치면 같은 자리
+                      텍스트가 뭉개져 깨짐 (2026-07-09 실물 확인). */}
+                  {b && i === 0 && (
                     <text
                       x={b[0]}
                       y={Math.max(b[1] - 6, 14)}

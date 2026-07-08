@@ -27,6 +27,9 @@ from modules.motion.contract import (
     MoveJResponse,
     MoveLRequest,
     MoveLResponse,
+    SelectReachableRequest,
+    SelectReachableResponse,
+    TcpPose,
     TcpSnapshotRequest,
     TcpState,
 )
@@ -457,6 +460,40 @@ async def test_jog_tcp_with_angular_uses_6dof_ik(stack):
         "angular jog 인데 quaternion 넘긴 IK 호출이 0건 — "
         "6DOF exact solve 계약 위반"
     )
+
+
+async def test_select_reachable_orders_and_rejects(stack):
+    """배치 IK 판정 계약 — (a) 불가 그룹(멀리) 건너뛰고 첫 가용 그룹 index,
+    (b) 전부 불가면 -1, (c) 모션 0 (motor 명령 안 나감). 뒤집으면: early-exit
+    순서를 무시하거나 불가를 가용으로 판정하면 즉시 깨짐."""
+    runtime, driver, _robot = stack
+    snap = None
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        snap = await _try_snapshot(runtime)
+        if snap is not None:
+            break
+    assert snap is not None
+    # 현재 TCP(가용 확실) vs workspace 밖(불가 확실 — reach ~0.4m 대비 1.5m)
+    here = TcpPose(position=snap.position)
+    far = TcpPose(position=(1.5, 0.0, 0.5))
+    res = await runtime.module_runtime.call(
+        Motion.Service.SELECT_REACHABLE,
+        SelectReachableRequest(groups=[[far], [far, here], [here, here], [here]]),
+        SelectReachableResponse,
+        robot_id=_SO101,
+        timeout=60.0,
+    )
+    # group0: far 불가 / group1: far 불가 (그룹 내 전 pose 필요) / group2: 첫 가용
+    assert res.index == 2, res
+    res_none = await runtime.module_runtime.call(
+        Motion.Service.SELECT_REACHABLE,
+        SelectReachableRequest(groups=[[far], [far]]),
+        SelectReachableResponse,
+        robot_id=_SO101,
+        timeout=60.0,
+    )
+    assert res_none.index == -1
 
 
 async def _try_snapshot(runtime) -> TcpState | None:

@@ -68,6 +68,9 @@ pc = [
     # (tool.uv.sources 참고). transitive 로 끌려오면 source 매핑이 안 먹어
     # CPU wheel 로 떨어지므로 명시적 pin (옛 backend 와 동일 판).
     "torch==2.11.0",
+    # SAM2 의 Sam2ImageProcessor(fast) 가 torchvision 을 요구. torch 2.11.0 의 짝 =
+    # 0.26.0 (torch 와 같은 cu130 index, tool.uv.sources). GDINO 는 안 썼음.
+    "torchvision==0.26.0",
 ]
 # 단일 머신 풀스택 (dev) — 세 role 합집합.
 all = [
@@ -95,6 +98,7 @@ override-dependencies = ["embreex; sys_platform == 'never'"]
 # cu130: CUDA 13 빌드. host nvidia driver 와 매치 (옛 backend 와 동일).
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu130" }]
+torchvision = [{ index = "pytorch-cu130" }]
 
 [[tool.uv.index]]
 name = "pytorch-cu130"

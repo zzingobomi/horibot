@@ -68,7 +68,7 @@ class _FakeKinematics:
     def fk(self, joint_angles):  # noqa: ANN001, ANN201
         return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)
 
-    def ik(self, target_position, target_quaternion, current_joint_angles=None):  # noqa: ANN001, ANN201
+    def ik(self, target_position, target_quaternion, current_joint_angles=None, restarts=None):  # noqa: ANN001, ANN201
         return None
 
     def fk_to_matrix(self, joint_angles):  # noqa: ANN001, ANN201
@@ -246,7 +246,7 @@ class _RecordingKin:
     def fk(self, joint_angles):  # noqa: ANN001, ANN201
         return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)
 
-    def ik(self, target_position, target_quaternion, current_joint_angles=None):  # noqa: ANN001, ANN201
+    def ik(self, target_position, target_quaternion, current_joint_angles=None, restarts=None):  # noqa: ANN001, ANN201
         return None
 
     def fk_to_matrix(self, joint_angles):  # noqa: ANN001, ANN201

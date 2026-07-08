@@ -137,6 +137,7 @@ class PybulletKinematics:
         target_position: Position3,
         target_quaternion: Quaternion | None,
         current_joint_angles: Sequence[float] | None = None,
+        restarts: int | None = None,
     ) -> list[float] | None:
         self._require_init()
         with self._lock:
@@ -153,10 +154,11 @@ class PybulletKinematics:
             #    가능). random restart 후 seed 에 가장 가까운 해 선택 (jump 최소화).
             #    rng 는 호출마다 fresh — 프로세스 전역 rng 는 호출 이력에 따라 같은
             #    요청이 됐다 안 됐다 하는 복권이 됨 (2026-07-09 PnP 후보 전멸 원인).
+            #    restarts 지정 = 작은 예산 probe (deepening — 실패 기각 비용 절감).
             rng = np.random.default_rng(0)
             best: list[float] | None = None
             best_dist = float("inf")
-            for _ in range(IK_RESTARTS):
+            for _ in range(restarts if restarts is not None else IK_RESTARTS):
                 rand = [
                     float(rng.uniform(lo, hi))
                     for lo, hi in zip(self._chain_lower, self._chain_upper)

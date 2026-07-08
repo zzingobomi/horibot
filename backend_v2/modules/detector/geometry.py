@@ -22,6 +22,32 @@ import cv2
 import numpy as np
 
 
+# 윗면 band 선택 규약 — projection.object_top_center_base 와 동일 (base_z 상위
+# percentile 기준 band). OBB 는 파지 접근면(윗면) 단면이 의미: mask 픽셀 전부를 쓰면
+# 비스듬한 시점에서 옆면 + mask 경계의 배경(테이블) bleed + boundary depth 노이즈가
+# base XY 에 깔려 footprint 를 부풀리고 yaw 를 비튼다 (2026-07-09 실물 확인 — 근접
+# 사선 샷 OBB 크게 skew / 탑다운 샷 정상 = 윗면 아래 오염 증거).
+_TOP_PERCENTILE = 25.0
+_TOP_BAND_M = 0.010
+
+
+def top_face_points(
+    pts_base: np.ndarray | None,
+    band_m: float = _TOP_BAND_M,
+    percentile: float = _TOP_PERCENTILE,
+) -> np.ndarray | None:
+    """base 점군 → 윗면 band 점만 (z 상위 percentile 기준 band_m 아래까지).
+
+    (N,3) 전제 — z 열 없으면(2열) 그대로 통과. 필터 후 빈 결과면 None.
+    """
+    if pts_base is None or pts_base.ndim != 2 or pts_base.shape[1] < 3:
+        return pts_base
+    z = pts_base[:, 2]
+    top_ref = float(np.percentile(z, 100.0 - percentile))
+    top = pts_base[z >= top_ref - band_m]
+    return top if len(top) else None
+
+
 @dataclass(frozen=True, slots=True)
 class Obb:
     """base XY 회전 사각형. center_xy: base (x,y) m. footprint: (long, short) m.

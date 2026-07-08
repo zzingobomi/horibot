@@ -6,3 +6,5 @@ autogen_tmp.db
 # calibration blob object stores (deployment object_uri)
 .calib_blobs_mock/
 storage_v2/
+# detect_oriented 디버그 덤프 (modules/detector/module.py _DEBUG_DIR)
+debug/

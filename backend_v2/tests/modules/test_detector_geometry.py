@@ -16,6 +16,7 @@ from modules.detector.geometry import (
     mask_contour,
     obb_corners,
     obb_from_base_points,
+    top_face_points,
 )
 
 
@@ -64,6 +65,38 @@ def test_obb_yaw_wraps_into_symmetric_range():
 def test_obb_too_few_points_returns_none():
     assert obb_from_base_points(None) is None
     assert obb_from_base_points(np.zeros((2, 2))) is None
+
+
+def test_top_face_band_rejects_side_contamination():
+    """윗면 band 필터 = OBB 오염 제거 회귀 (2026-07-09 실물 — 사선 샷 OBB skew).
+
+    윗면(z=0.10, 30° 회전 사각형) + 옆면/배경 bleed 시뮬(z≈0, 한쪽으로 삐져나간
+    점들). 전체 점군 OBB 는 footprint 부풀고 yaw 비틀림 — top_face_points 거치면
+    윗면 진짜 footprint/yaw 복원. 필터를 빼면 dirty assert 로 즉시 잡힘.
+    """
+    yaw = math.radians(30)
+    top_xy = _rect_points(0.0, 0.0, 0.10, 0.05, yaw)
+    top = np.column_stack([top_xy, np.full(len(top_xy), 0.10)])
+    # 테이블 높이(z=0) bleed — 물체 옆으로 삐져나간 오염
+    side_xy = _rect_points(0.08, -0.06, 0.08, 0.04, 0.0)
+    side = np.column_stack([side_xy, np.zeros(len(side_xy))])
+    pts = np.vstack([top, side])
+
+    dirty = obb_from_base_points(pts)  # 필터 없이 = 오염된 OBB
+    assert dirty is not None
+    assert dirty.footprint[0] > 0.12, dirty.footprint
+
+    clean = obb_from_base_points(top_face_points(pts))
+    assert clean is not None
+    assert abs(clean.yaw_rad - yaw) < math.radians(2), clean.yaw_rad
+    assert abs(clean.footprint[0] - 0.10) < 3e-3, clean.footprint
+    assert abs(clean.footprint[1] - 0.05) < 3e-3, clean.footprint
+
+
+def test_top_face_points_passthrough_and_none():
+    assert top_face_points(None) is None
+    xy = np.zeros((5, 2))  # z 열 없음 → 그대로 통과
+    assert top_face_points(xy) is xy
 
 
 def test_obb_corners_axis_aligned():

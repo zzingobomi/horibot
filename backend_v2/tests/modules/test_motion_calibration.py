@@ -127,7 +127,7 @@ class _RecordingKin:
         self.last_fk_input = list(joint_angles)
         return (0.1, 0.0, 0.2), (0.0, 0.0, 0.0, 1.0)
 
-    def ik(self, target_position, target_quaternion, current_joint_angles=None):
+    def ik(self, target_position, target_quaternion, current_joint_angles=None, restarts=None):
         return list(self.ik_result)
 
     def fk_to_matrix(self, joint_angles):

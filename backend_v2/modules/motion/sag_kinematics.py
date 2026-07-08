@@ -77,10 +77,11 @@ class SagCorrectedKinematics:
         target_position: Position3,
         target_quaternion: Quaternion | None,
         current_joint_angles: Sequence[float] | None = None,
+        restarts: int | None = None,
     ) -> list[float] | None:
         # seed 는 근사면 충분 (측정각 ≈ 실제각, sag ~수° — IK 수렴 seed 용도)
         actual = self._inner.ik(
-            target_position, target_quaternion, current_joint_angles
+            target_position, target_quaternion, current_joint_angles, restarts
         )
         if actual is None:
             return None

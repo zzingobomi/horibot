@@ -9,23 +9,27 @@
  * layoutKey 는 mode 별 분리 (`workspace3d.<id>.<mode>`) — 한 robot 안에서도
  * mode 별 panel 배치를 독립적으로 기억.
  *
+ * 패널 관리 UI = AutoHideHeader ([docs/workspace_autohide_header.md]) — 패널 닫기
+ * (탭 X) 와 `+ 패널 추가` 가 세트라 실수 복구 가능 (옛 hideClose + Reset 플로팅
+ * 버튼 조합 대체. Reset 은 ⋯ 메뉴의 비상용으로 강등).
+ *
  * 옛 frontend ModeDockview carry over (frontend_v2.md §2.3). 기능 추가 =
  * PANEL_COMPONENTS 등록 + mode 파일 PANELS 한 줄.
  */
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
-  DockviewDefaultTab,
   DockviewReact,
+  type DockviewApi,
   type DockviewReadyEvent,
-  type IDockviewPanelHeaderProps,
 } from "dockview";
-import { RotateCcw } from "lucide-react";
 import {
   DOCKVIEW_PANEL_COMPONENTS,
+  PANEL_CATALOG,
   ROBOT_OWNED_PANELS,
   type PanelComponentKey,
 } from "@/components/panels/registry";
+import { AutoHideHeader } from "@/components/shared/AutoHideHeader";
 import { RobotTab } from "@/components/shared/robotOwnership";
 import { useRobots } from "@/hooks/useRobots";
 import {
@@ -47,18 +51,28 @@ interface ModeDockviewProps {
   panels: PanelSpec[];
 }
 
-/**
- * Tab close 버튼 hide — panel close 후 다시 살리는 UI 가 없어서 (Reset layout
- * 버튼이 fallback). 사용자 실수로 panel 잃지 않게 hideClose.
- */
-function LockedTab(props: IDockviewPanelHeaderProps) {
-  return <DockviewDefaultTab {...props} hideClose />;
-}
+// `+ 패널 추가` 모집단 = 전체 카탈로그 (mode PANELS 는 default 세트일 뿐 — 사용자는
+// 어느 페이지에서든 모든 종류를 추가 가능). id 는 `add-` prefix — mode default 의
+// id("camera" 등, mode 마다 다른 component 를 가리킴)와 충돌 안 하게. 배치 여부
+// 판정은 id 가 아니라 component 기준 (AutoHideHeader).
+const CATALOG_SPECS: PanelSpec[] = (
+  Object.entries(PANEL_CATALOG) as [
+    PanelComponentKey,
+    (typeof PANEL_CATALOG)[PanelComponentKey],
+  ][]
+).map(([key, meta]) => ({
+  id: `add-${key}`,
+  component: key,
+  title: meta.title,
+  width: meta.width,
+  height: meta.height,
+}));
 
 export function ModeDockview({ mode, panels }: ModeDockviewProps) {
   const { id = "" } = useParams<{ id: string }>();
   const { robots } = useRobots();
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [api, setApi] = useState<DockviewApi | null>(null);
   // id 없는 최상위 페이지(tasks)는 "global" — robot mode 는 robot 별 배치 기억.
   const layoutKey = `workspace3d.${id || "global"}.${mode}`;
 
@@ -108,6 +122,7 @@ export function ModeDockview({ mode, panels }: ModeDockviewProps) {
 
   const onReady = useCallback(
     (event: DockviewReadyEvent) => {
+      setApi(event.api);
       const saved = loadLayout(layoutKey);
       if (saved) {
         try {
@@ -135,30 +150,55 @@ export function ModeDockview({ mode, panels }: ModeDockviewProps) {
     window.location.reload();
   }, [layoutKey]);
 
+  // AutoHideHeader `+ 패널 추가` — 닫힌 패널을 다시 배치 (addDefaultLayout 의
+  // 단건 버전 + 기존 패널 수 기반 cascade 로 겹침 완화).
+  const handleAddPanel = useCallback(
+    (p: PanelSpec) => {
+      if (!api) return;
+      const owned = ROBOT_OWNED_PANELS.has(p.component);
+      const n = api.panels.length;
+      api.addPanel({
+        id: p.id,
+        component: p.component,
+        title: p.title,
+        floating: {
+          x: 24 + (n % 5) * 28,
+          y: 48 + (n % 5) * 20,
+          width: p.width,
+          height: p.height,
+        },
+        params: owned ? { robotId: initialRobotId() } : {},
+        tabComponent: owned ? "robot" : undefined,
+      });
+    },
+    [api, initialRobotId],
+  );
+
   return (
     <>
       <div
         ref={containerRef}
         className="absolute inset-0 z-10 pointer-events-none workspace-dockview"
       >
+        {/* key=layoutKey — robot 간 이동(:id param 변경)은 mode 전환과 달리 이
+            컴포넌트를 remount 하지 않으므로, dockview 가 이전 robot 의 패널/바인딩을
+            그대로 들고 감 (cross-page 공유처럼 보임). layout 키가 바뀌면 dockview 를
+            remount 해 그 키의 저장 layout 을 새로 로드. */}
         <DockviewReact
+          key={layoutKey}
           className="dockview-theme-dark"
           components={DOCKVIEW_PANEL_COMPONENTS}
           tabComponents={{ robot: RobotTab }}
-          defaultTabComponent={LockedTab}
           onReady={onReady}
         />
       </div>
 
-      {/* mode 별 layout reset — meta box 옆 자리 */}
-      <button
-        onClick={handleReset}
-        title="이 모드 패널 레이아웃 초기화"
-        className="absolute top-3 right-[180px] z-20 flex items-center gap-1.5 px-2 py-1 rounded bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-700/60 text-zinc-400 hover:text-zinc-100 text-[10px] font-mono pointer-events-auto transition-colors"
-      >
-        <RotateCcw className="w-3 h-3" />
-        Reset layout
-      </button>
+      <AutoHideHeader
+        api={api}
+        candidates={CATALOG_SPECS}
+        onAddPanel={handleAddPanel}
+        onResetLayout={handleReset}
+      />
     </>
   );
 }

@@ -39,6 +39,29 @@ export const PANEL_COMPONENTS = {
 export type PanelComponentKey = keyof typeof PANEL_COMPONENTS;
 
 /**
+ * 패널 카탈로그 — auto-hide 헤더 `+ 패널 추가` 의 모집단 (전 종류).
+ * mode 파일의 PANELS 는 그 페이지의 **default 세트**일 뿐이고, 사용자는 어떤
+ * 페이지에서든 여기 등록된 모든 패널을 추가할 수 있다 (추가분은 dockview layout
+ * localStorage 영속으로 다음 방문에도 유지). title/size 는 추가 시 초기값.
+ */
+export const PANEL_CATALOG: Record<
+  PanelComponentKey,
+  { title: string; width: number; height: number }
+> = {
+  robotState: { title: "Robot State", width: 260, height: 300 },
+  motion: { title: "Motion", width: 320, height: 380 },
+  calibration: { title: "Calibration", width: 360, height: 520 },
+  camera: { title: "Camera", width: 420, height: 340 },
+  detectionCamera: { title: "Camera (Detection)", width: 440, height: 330 },
+  calibrationCamera: { title: "Camera (Calibration)", width: 420, height: 340 },
+  scan: { title: "Scan", width: 320, height: 460 },
+  livePointCloud: { title: "Live PointCloud", width: 300, height: 320 },
+  waypoints: { title: "Waypoints", width: 340, height: 560 },
+  prompt: { title: "Command", width: 340, height: 260 },
+  taskProgress: { title: "Task Progress", width: 340, height: 420 },
+};
+
+/**
  * robot 을 소유하는(useRobotId 계열) 패널 key 집합 ([[robot_ownership_model]]).
  * 여기 든 패널만 robot 셀렉터 탭 + robot params + Select Robot 빈 상태를 갖는다.
  * task 바인딩(useTaskRobotId) 패널(detectionCamera/prompt/taskProgress)은 carve-out

@@ -40,9 +40,14 @@ function paintMaterial(
   opacity: number,
   tint: string | null | undefined,
 ) {
-  m.transparent = opacity < 1.0;
+  const transparent = opacity < 1.0;
+  // transparent 토글은 shader program 재컴파일 필요 — needsUpdate 없이는 이미
+  // 렌더된 material 에 안 먹힘 (fresh load 는 첫 렌더 전에 칠해져서 무증상,
+  // robot 간 네비게이션의 focus 전환에서만 드러나던 잠복 버그 — 2026-07-09).
+  if (m.transparent !== transparent) m.needsUpdate = true;
+  m.transparent = transparent;
   m.opacity = opacity;
-  m.depthWrite = opacity >= 1.0;
+  m.depthWrite = !transparent;
   const colored = m as THREE.Material & { color?: THREE.Color };
   if (tint && colored.color) colored.color.set(tint);
 }

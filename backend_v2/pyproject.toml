@@ -89,6 +89,11 @@ default-groups = ["dev", "all"]
 # 따라서 never-true marker로 이 의존성을 모든 플랫폼에서 제외한다.
 override-dependencies = ["embreex; sys_platform == 'never'"]
 
+# Ruckig 0.17.3은 source 빌드만 지원한다.
+# deprecated `cmake.targets` 때문에 scikit-build-core 1.0.0부터 빌드가 실패하므로,
+# Ruckig가 수정될 때까지 scikit-build-core를 <1로 고정한다.
+build-constraint-dependencies = ["scikit-build-core<1"]
+
 # 기본 PyPI가 CPU 빌드를 선택하지 않도록 PyTorch CUDA wheel index를 명시한다.
 # Pi 머신은 torch를 사용하지 않아 이 설정의 영향을 받지 않는다.
 # cu130은 host NVIDIA 드라이버와 맞춘 CUDA 13 빌드이다.

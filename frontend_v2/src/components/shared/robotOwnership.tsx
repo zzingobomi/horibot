@@ -73,9 +73,10 @@ export function withRobotOwnership(
 }
 
 /**
- * robot-scoped 패널의 탭 — 제목(+닫기 숨김) + robot 셀렉터.
+ * robot-scoped 패널의 탭 — 제목 + robot 셀렉터 + 닫기.
  * robot 이 하나뿐이면 셀렉터를 숨긴다(선택지 하나짜리 picker = 노이즈, §6).
- * 닫기(hideClose)는 현행 유지 — 패널 추가/삭제 UI(auto-hide 헤더)는 별도 feature.
+ * 닫기는 auto-hide 헤더의 `+ 패널 추가` 와 세트라 활성
+ * ([docs/workspace_autohide_header.md] §2.3 — 닫아도 다시 추가 가능해야 실수 복구).
  */
 export function RobotTab(props: IDockviewPanelHeaderProps) {
   const { robots } = useRobots();
@@ -84,7 +85,7 @@ export function RobotTab(props: IDockviewPanelHeaderProps) {
 
   return (
     <div className="flex items-center gap-1.5 pr-1">
-      <DockviewDefaultTab {...props} hideClose />
+      <DockviewDefaultTab {...props} />
       {showSelector && (
         <RobotSelect
           value={robotId}

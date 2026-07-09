@@ -1,5 +1,5 @@
 /**
- * /robots/:id/* 의 공통 layout — R3F Canvas + 우상단 meta + Outlet.
+ * /robots/:id/* 의 공통 layout — R3F Canvas + Outlet.
  *
  * RobotsLayout 은 mode 전환 시 unmount 되지 않음 → R3F (URDF, robot mesh) 는
  * 한 번만 로드되고 mode 갈아탈 때 reuse. 각 mode 컴포넌트 (RobotMoveMode 등)
@@ -45,14 +45,8 @@ export function RobotsLayout() {
       </div>
 
       <Outlet />
-
-      {/* 우상단 meta — mode 전환과 무관하게 robot identity 항상 표시 */}
-      <div className="absolute top-3 right-3 z-20 flex items-center gap-2 pointer-events-none">
-        <div className="px-3 py-2 rounded bg-zinc-900/80 border border-zinc-700/60 text-zinc-300 text-xs font-mono">
-          <div className="text-zinc-100 font-semibold">{found.id}</div>
-          <div className="text-zinc-500">type: {found.type}</div>
-        </div>
-      </div>
+      {/* 우상단 robot id/type 박스는 제거 — 사이드바와 순수 중복
+          ([docs/workspace_autohide_header.md] §2.2) */}
     </div>
   );
 }

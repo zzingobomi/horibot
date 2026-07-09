@@ -1,8 +1,10 @@
 # workspace_autohide_header.md
 
 frontend_v2 워크스페이스(3D 씬 + dockview 플로팅 패널)의 **패널 관리 UI를
-auto-hide 헤더로 재설계** — 설계 확정, 구현 대기. 다른 세션에서 이 문서만 보고
-바로 구현 가능하게 정리. (2026-07-07 논의, 구현 미착수)
+auto-hide 헤더로 재설계** — **구현 완료 (2026-07-09)**. §2/§3 설계 그대로
+`AutoHideHeader.tsx` + ModeDockview/robotOwnership/RobotsLayout 반영, Playwright
+headed 로 reveal→닫기→추가 검증. §6 튜닝값(threshold/delay/힌트)은 기본값으로
+박음 — 실사용하며 손끝 조정 자리. (2026-07-07 논의 → 07-09 구현)
 
 > 진입 톤: "reset layout 버튼 거슬림" / "패널 추가·삭제 안 됨" / "robot id 박스
 > 거슬림" / "auto-hide 헤더" / "패널 관리 UI" / "몰입 캔버스" 나오면 본 문서.

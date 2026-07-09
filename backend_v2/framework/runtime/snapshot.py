@@ -118,7 +118,7 @@ def build_module_contracts(modules: list[Any]) -> list[ModuleContract]:
 # ─── class-only variant — 분산 배치 자리 contract graph viewer 를 위한 자리 ─
 #
 # build_module_contracts(instances) 는 이 프로세스에 로드된 Module 인스턴스만 봄.
-# 분산 배치 (예: PC 는 camera_decoded + bridge, pi_motor 는 motor + motion) 자리
+# 분산 배치 (예: PC 는 camera_decoded + bridge, pi_hori1 는 motor + motion) 자리
 # bridge 의 `/contract/graph` 는 fleet 전체 아키텍처를 보여야 개발자 뷰어로서
 # 의미 있음. class 자체는 decorator spec (_service_spec / _subscriber_spec /
 # _publishes_spec) 을 attribute 로 들고 있어 instantiate 없이 introspect 가능.

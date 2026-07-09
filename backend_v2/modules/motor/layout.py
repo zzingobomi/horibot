@@ -16,6 +16,12 @@ class MotorSpec(BaseModel):
     reverse: bool = False
     velocity_dps: float
     acceleration_dpss: float
+    # Position PID (motors.yaml `pid` 블록). Dynamixel = RAM 이라 driver 가
+    # connect 마다 재적용 (전원 cycle 시 소실). Feetech STS = EEPROM 이라
+    # 비워둠 (Wizard 로 한 번 굽고 끝 — so101 motors.yaml 주석 참조).
+    pid_p: int | None = None
+    pid_i: int | None = None
+    pid_d: int | None = None
 
     @property
     def initial_raw(self) -> int:

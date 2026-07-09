@@ -226,6 +226,9 @@ class CalibrationModule:
         대상 robot = run 소유자 (run_id 에서 파생 — req robot_id 중복 채널 X).
         gate: 미검출 / reproj RMS > reject 임계 시 accepted=False (capture 안 들임 —
         trauma source 입구 차단, thresholds §HANDEYE_PNP).
+
+        kind 분기: intrinsic run 은 detect-only (PnP 불가 — intrinsic 이 아직 없음,
+        닭-달걀). USB UVC 처럼 factory intrinsic 없는 카메라의 사용자 캘 경로.
         """
         run = self._repo.get_run(req.run_id)
         if run is None:
@@ -235,6 +238,9 @@ class CalibrationModule:
         frame = self._latest_frame.get(robot_id)
         if frame is None:
             return CaptureResponse(accepted=False, message="카메라 프레임 없음")
+
+        if run.kind == "intrinsic":
+            return self._capture_intrinsic(req, robot_id, frame)
 
         intrinsic = self._repo.get_active(robot_id, "intrinsic")
         if not isinstance(intrinsic, IntrinsicResultRecord):
@@ -277,26 +283,7 @@ class CalibrationModule:
             tilt_deg=det.tilt_deg,
         )
         capture_id = self._repo.append_capture(req.run_id, capture)
-
-        # color blob (JPEG). depth/primary 는 후속 (mock color-only).
-        ok, buf = cv2.imencode(".jpg", frame)
-        if ok:
-            key = (
-                f"calib_captures/{robot_id}/{req.run_id}/"
-                f"{req.pose_index:03d}_color.jpg"
-            )
-            self._blob.put(key, buf.tobytes())
-            self._repo.save_artifact(
-                capture_id,
-                CalibrationCaptureArtifactRecord(
-                    capture_id=capture_id,
-                    kind="color",
-                    blob_key=key,
-                    size_bytes=len(buf.tobytes()),
-                    content_type="image/jpeg",
-                    created_at=datetime.now(UTC),
-                ),
-            )
+        self._save_color_artifact(robot_id, req, capture_id, frame)
 
         return CaptureResponse(
             accepted=True,
@@ -308,17 +295,203 @@ class CalibrationModule:
             ),
         )
 
+    def _save_color_artifact(
+        self,
+        robot_id: str,
+        req: CaptureRequest,
+        capture_id: int,
+        frame: np.ndarray,
+    ) -> None:
+        """capture color blob (JPEG) 저장. depth/primary 는 후속 (mock color-only)."""
+        ok, buf = cv2.imencode(".jpg", frame)
+        if not ok:
+            return
+        key = (
+            f"calib_captures/{robot_id}/{req.run_id}/"
+            f"{req.pose_index:03d}_color.jpg"
+        )
+        self._blob.put(key, buf.tobytes())
+        self._repo.save_artifact(
+            capture_id,
+            CalibrationCaptureArtifactRecord(
+                capture_id=capture_id,
+                kind="color",
+                blob_key=key,
+                size_bytes=len(buf.tobytes()),
+                content_type="image/jpeg",
+                created_at=datetime.now(UTC),
+            ),
+        )
+
+    def _capture_intrinsic(
+        self, req: CaptureRequest, robot_id: str, frame: np.ndarray
+    ) -> CaptureResponse:
+        """intrinsic detect-only capture — corners 저장, PnP 없음 (닭-달걀 회피).
+
+        gate = ChArUco MIN_CORNERS (board.detect 내장). 품질 판정 = 3×3 grid
+        coverage (distortion 모델의 image plane 전 영역 generalize — 옛 backend
+        intrinsic.py 정공법). compute 는 finalize_run 에서 (calibrateCamera).
+        """
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        ok, ch_corners, ch_ids = calib_board.detect(gray)
+        if not ok or ch_corners is None or ch_ids is None:
+            return CaptureResponse(
+                accepted=False,
+                quality=CaptureQualityPayload(
+                    verdict="red", reasons=["보드 미검출 (또는 코너 부족)"]
+                ),
+                message="ChArUco 보드 미검출/코너 부족",
+            )
+
+        h, w = int(frame.shape[0]), int(frame.shape[1])
+        existing = self._repo.list_captures(req.run_id)
+        covered = {
+            capture_quality.intrinsic_coverage_cell(
+                np.array(c.corners_2d, dtype=np.float64), w, h
+            )
+            for c in existing
+            if c.corners_2d
+        }
+        cell = capture_quality.intrinsic_coverage_cell(ch_corners, w, h)
+        quality = capture_quality.evaluate_intrinsic_capture(
+            cell=cell, covered_cells=covered, n_existing=len(existing)
+        )
+
+        capture = CalibrationCaptureRecord(
+            run_id=req.run_id,
+            pose_index=req.pose_index,
+            corners_2d=ch_corners.reshape(-1, 2).astype(float).tolist(),
+            corner_ids=ch_ids.reshape(-1).astype(int).tolist(),
+        )
+        capture_id = self._repo.append_capture(req.run_id, capture)
+        self._save_color_artifact(robot_id, req, capture_id, frame)
+        return CaptureResponse(
+            accepted=True,
+            capture_id=capture_id,
+            quality=CaptureQualityPayload(
+                verdict=quality.verdict, reasons=quality.reasons
+            ),
+        )
+
     @service(Calibration.Service.FINALIZE_RUN)
     def finalize_run(self, req: FinalizeRunRequest) -> FinalizeRunResponse:
         run = self._repo.get_run(req.run_id)
         if run is None:
             raise KeyError(f"run {req.run_id} 없음")
+        if run.kind == "intrinsic":
+            # intrinsic 은 finalize 에서 compute 까지 — calibrateCamera 는 빠르고
+            # 결정적 (offline 분리는 hand_eye BA trauma 이유였음, v1 save 동형).
+            return self._finalize_intrinsic(req.run_id, run.robot_id)
         self._repo.finalize_run(req.run_id, "ready_for_analysis")
         self.runtime.publish(
             Calibration.Event.COMMITTED,
             CalibrationCommitted(robot_id=run.robot_id, run_id=req.run_id),
         )
         return FinalizeRunResponse(ok=True)
+
+    def _finalize_intrinsic(self, run_id: int, robot_id: str) -> FinalizeRunResponse:
+        """intrinsic run finalize = cv2.calibrateCamera + result 저장 + activate.
+
+        캡처 부족이면 run 을 살려둔 채 ok=False (사용자가 더 캡처 후 재시도).
+        """
+        captures = [
+            c
+            for c in self._repo.list_captures(run_id)
+            if c.corners_2d and c.corner_ids
+        ]
+        if len(captures) < thr.INTRINSIC_MIN_CAPTURES:
+            return FinalizeRunResponse(
+                ok=False,
+                message=(
+                    f"캡처 부족 ({len(captures)}장 < 최소 "
+                    f"{thr.INTRINSIC_MIN_CAPTURES}장) — 더 캡처 후 재시도"
+                ),
+            )
+
+        # image size — 저장된 color blob 에서 (capture record 에 크기 필드 없음)
+        image_size = self._intrinsic_image_size(captures)
+        if image_size is None:
+            return FinalizeRunResponse(
+                ok=False, message="color blob 에서 image size 복원 실패"
+            )
+
+        obj_list: list[np.ndarray] = []
+        img_list: list[np.ndarray] = []
+        for c in captures:
+            assert c.corners_2d is not None and c.corner_ids is not None
+            corners = np.array(c.corners_2d, dtype=np.float32).reshape(-1, 1, 2)
+            ids = np.array(c.corner_ids, dtype=np.int32).reshape(-1, 1)
+            obj_pts, img_pts = calib_board.match_object_points(corners, ids)
+            if obj_pts is None or img_pts is None or len(obj_pts) < 4:
+                continue
+            obj_list.append(obj_pts)
+            img_list.append(img_pts)
+        if len(obj_list) < thr.INTRINSIC_MIN_CAPTURES:
+            return FinalizeRunResponse(
+                ok=False,
+                message=f"유효 캡처 부족 ({len(obj_list)}장) — 더 캡처 후 재시도",
+            )
+
+        # cv2.calibrateCamera — 가변 길이 obj/img list 그대로 받음 (v1 동형).
+        rms, cm, dist, _rvecs, _tvecs = cv2.calibrateCamera(
+            obj_list, img_list, image_size, None, None  # type: ignore[arg-type,call-overload]
+        )
+
+        result_id = self._repo.save_result(
+            run_id,
+            IntrinsicResultRecord(
+                run_id=run_id,
+                robot_id=robot_id,
+                created_at=datetime.now(UTC),
+                result_data=IntrinsicResultData(
+                    camera_matrix=np.asarray(cm, dtype=float).tolist(),
+                    dist_coeffs=np.asarray(dist, dtype=float)
+                    .reshape(1, -1)
+                    .tolist(),
+                    image_size=[image_size[0], image_size[1]],
+                    rms_px=float(rms),
+                ),
+            ),
+        )
+        self._repo.finalize_run(run_id, "success")
+        rec = self._repo.activate_result(result_id)
+        self.runtime.publish(
+            Calibration.Event.COMMITTED,
+            CalibrationCommitted(robot_id=robot_id, run_id=run_id),
+        )
+        self.runtime.publish(
+            Calibration.Event.ACTIVATED,
+            CalibrationActivated(
+                robot_id=robot_id, result_id=result_id, kind=rec.kind
+            ),
+        )
+        logger.info(
+            "intrinsic 캘 완료 robot=%s run=%d: RMS=%.4fpx (%d장, %dx%d)",
+            robot_id, run_id, rms, len(obj_list), image_size[0], image_size[1],
+        )
+        return FinalizeRunResponse(
+            ok=True,
+            message=f"RMS {rms:.3f}px ({len(obj_list)}장) — 저장 + 활성화 완료",
+        )
+
+    def _intrinsic_image_size(
+        self, captures: list[CalibrationCaptureRecord]
+    ) -> tuple[int, int] | None:
+        """(w, h) — 첫 캡처의 color blob JPEG 디코드로 복원."""
+        for c in captures:
+            art = c.find_artifact("color")
+            if art is None:
+                continue
+            try:
+                data = self._blob.get(art.blob_key)
+            except Exception:
+                continue
+            arr = cv2.imdecode(
+                np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR
+            )
+            if arr is not None:
+                return int(arr.shape[1]), int(arr.shape[0])
+        return None
 
     @service(Calibration.Service.ACTIVATE_RESULT)
     def activate_result(self, req: ActivateResultRequest) -> ActivateResultResponse:
@@ -416,9 +589,35 @@ class CalibrationModule:
             corner_count = 0 if ids is None else len(ids)
             if ok and ch_corners is not None:
                 corners_2d = ch_corners.reshape(-1, 2).astype(float).tolist()
-            verdict = "red"
-            reasons = ["보드 미검출"] if not ok else ["자세 추정 불가 (intrinsic 확인)"]
             tilt = None
+            intr_run = self._repo.get_in_progress_run(robot_id, "intrinsic")
+            if intr_run is not None and intr_run.id is not None:
+                # intrinsic 세션 진행 중 — coverage 기반 판정 (detect-only 정상 경로)
+                if ok and ch_corners is not None:
+                    img_h_, img_w_ = int(frame.shape[0]), int(frame.shape[1])
+                    covered = {
+                        capture_quality.intrinsic_coverage_cell(
+                            np.array(c.corners_2d, dtype=np.float64), img_w_, img_h_
+                        )
+                        for c in self._repo.list_captures(intr_run.id)
+                        if c.corners_2d
+                    }
+                    cell = capture_quality.intrinsic_coverage_cell(
+                        ch_corners, img_w_, img_h_
+                    )
+                    q = capture_quality.evaluate_intrinsic_capture(
+                        cell=cell,
+                        covered_cells=covered,
+                        n_existing=len(covered),
+                    )
+                    verdict, reasons = q.verdict, q.reasons
+                else:
+                    verdict, reasons = "red", ["보드 미검출"]
+            else:
+                verdict = "red"
+                reasons = (
+                    ["보드 미검출"] if not ok else ["자세 추정 불가 (intrinsic 확인)"]
+                )
         seq = self._preview_seq.get(robot_id, 0)
         self.runtime.publish(
             Calibration.Stream.PREVIEW,

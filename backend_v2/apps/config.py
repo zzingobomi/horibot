@@ -69,6 +69,8 @@ class RobotConfig(BaseModel):
     # instance-level (instances/<id>/instance.yaml, platform 별 port 해소)
     motor_port: str | None = None
     motor_baudrate: int | None = None
+    # instance-level — UVC 카메라 cv2.VideoCapture 인덱스 (opencv backend 만 사용)
+    camera_device_index: int | None = None
     # type-level (<type>/motors.yaml)
     motors: list[MotorSpec] = Field(default_factory=list)
     # type-level (<type>/motion.yaml) — joint name 별 Ruckig 한계 + cartesian
@@ -95,6 +97,7 @@ def _load_motors(robot_type: str, robot_dir: Path) -> list[MotorSpec]:
     for m in raw.get("motors") or []:
         limit = m.get("limit") or {}
         profile = m.get("profile") or {}
+        pid = m.get("pid") or {}
         kind = MotorKind(m["kind"]) if m.get("kind") else MotorKind.JOINT
         specs.append(
             MotorSpec(
@@ -108,6 +111,11 @@ def _load_motors(robot_type: str, robot_dir: Path) -> list[MotorSpec]:
                 reverse=m.get("reverse", False),
                 velocity_dps=profile.get("velocity_dps", 0.0),
                 acceleration_dpss=profile.get("acceleration_dpss", 0.0),
+                # pid 블록 없으면 None — Dynamixel(RAM) 만 driver 가 재적용,
+                # Feetech(EEPROM) 는 yaml 자체가 pid 를 안 적음 (Wizard 1회).
+                pid_p=pid.get("p"),
+                pid_i=pid.get("i"),
+                pid_d=pid.get("d"),
             )
         )
     return specs
@@ -143,10 +151,12 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
     for rid, body in (raw.get("robots") or {}).items():
         rtype = body["type"]
         port, baud = None, None
+        camera_device_index = None
         inst_path = robot_dir / "instances" / rid / "instance.yaml"
         if inst_path.exists():
             inst_raw = yaml.safe_load(inst_path.read_text(encoding="utf-8"))
             port, baud = _resolve_port(inst_raw)
+            camera_device_index = (inst_raw.get("camera") or {}).get("device_index")
         motion_joints, cartesian = _load_motion(rtype, robot_dir)
         bp = body.get("base_pose") or {}
         robots[rid] = RobotConfig(
@@ -159,6 +169,7 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
             base_pose=BasePose(**bp),
             motor_port=port,
             motor_baudrate=baud,
+            camera_device_index=camera_device_index,
             motors=_load_motors(rtype, robot_dir),
             motion_joint_limits=motion_joints,
             cartesian_limits=cartesian,

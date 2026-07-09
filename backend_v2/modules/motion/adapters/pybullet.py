@@ -77,8 +77,10 @@ class PybulletKinematics:
 
             num = p.getNumJoints(self._robot, physicsClientId=self._client)
             movable: list[tuple[int, float, float]] = []
+            link_names: dict[int, str] = {-1: "base"}
             for i in range(num):
                 info = p.getJointInfo(self._robot, i, physicsClientId=self._client)
+                link_names[i] = info[12].decode()
                 if info[2] == p.JOINT_REVOLUTE:
                     lower, upper = float(info[8]), float(info[9])
                     if lower >= upper:
@@ -88,6 +90,8 @@ class PybulletKinematics:
                     self._ee_index = i
             if self._ee_index == -1:
                 raise RuntimeError(f"{TCP_LINK_NAME} link not found in URDF")
+
+            self._exclude_zero_pose_collisions(link_names)
 
             self._movable_indices = [m[0] for m in movable]
             self._movable_lower = [m[1] for m in movable]
@@ -246,6 +250,40 @@ class PybulletKinematics:
             p.disconnect(self._client)
 
     # ── 내부 ──
+
+    def _exclude_zero_pose_collisions(self, link_names: dict[int, str]) -> None:
+        """URDF zero pose 에서 이미 침투한 link 쌍을 collision filter 에서 제외.
+
+        MoveIt SRDF generator 의 "default collision matrix" 표준 패턴 — zero(=home)
+        자세에서 침투한 쌍은 mesh 모델링 artifact 다 (실 로봇은 home 에 물리적으로
+        존재하므로). 그대로 두면 그 쌍이 _모든_ 자세에서 self-collision 판정을
+        오염시켜 IK 전부 reject (실례: OMX gripper 손가락 link6↔link7 -3.8mm 침투
+        → home 포함 전 자세 IK 불가). 해당 쌍만 제외하고 나머지 쌍은 검사 유지.
+        """
+        p.performCollisionDetection(physicsClientId=self._client)
+        contacts = p.getContactPoints(
+            bodyA=self._robot, bodyB=self._robot, physicsClientId=self._client
+        )
+        excluded: set[tuple[int, int]] = set()
+        for c in contacts:
+            if c[8] >= 0.0:  # 침투(음수 거리)만 — 근접 접촉은 유지
+                continue
+            pair = (min(c[3], c[4]), max(c[3], c[4]))
+            if pair in excluded:
+                continue
+            excluded.add(pair)
+            p.setCollisionFilterPair(
+                self._robot, self._robot, pair[0], pair[1], 0,
+                physicsClientId=self._client,
+            )
+            logger.warning(
+                "URDF zero-pose 침투 쌍 collision 제외: %s <-> %s (%.2fmm) — "
+                "mesh artifact (urdf=%s)",
+                link_names.get(pair[0], pair[0]),
+                link_names.get(pair[1], pair[1]),
+                c[8] * 1000.0,
+                self._urdf_path.name,
+            )
 
     def _require_init(self) -> None:
         if not self._initialized:

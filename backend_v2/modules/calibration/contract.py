@@ -48,6 +48,8 @@ class IntrinsicResultData(StrictModel):
     camera_matrix: list[list[float]]  # (3, 3)
     dist_coeffs: list[list[float]]  # (1, N)
     image_size: list[int] | None = None
+    # cv2.calibrateCamera reprojection RMS (px). factory seed 는 None.
+    rms_px: float | None = None
 
 
 class HandEyeResultData(StrictModel):
@@ -273,6 +275,9 @@ class FinalizeRunRequest(BaseModel):
 
 class FinalizeRunResponse(BaseModel):
     ok: bool
+    # intrinsic finalize 는 compute 까지 수행 — 결과 요약 (RMS/coverage) 또는
+    # 부족 사유 (캡처 수 미달 등). hand_eye 는 빈 문자열.
+    message: str = ""
 
 
 class UndoLastCaptureRequest(BaseModel):

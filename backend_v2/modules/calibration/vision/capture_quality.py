@@ -113,3 +113,42 @@ def evaluate_capture_quality(
 
     # 6. GREEN
     return CaptureQuality("green", ["캡처 권장 — 새 자세 + 새 시야"], **diag)
+
+
+# ─── intrinsic capture quality (coverage 기반) ──────────────────────
+# intrinsic 은 PnP/robot pose 무관 — distortion 모델이 image plane 전 영역에서
+# generalize 하려면 3×3 grid 9 cell coverage 가 정공법 (옛 backend intrinsic.py).
+
+
+def intrinsic_coverage_cell(
+    corners_2d: np.ndarray, width: int, height: int
+) -> tuple[int, int]:
+    """보드 중심(코너 평균)이 3×3 grid 어느 cell 인가. (gx, gy) ∈ {0,1,2}²."""
+    pts = np.asarray(corners_2d, dtype=np.float64).reshape(-1, 2)
+    cx, cy = float(pts[:, 0].mean()), float(pts[:, 1].mean())
+    gx = min(max(int(cx / max(width, 1) * 3), 0), 2)
+    gy = min(max(int(cy / max(height, 1) * 3), 0), 2)
+    return gx, gy
+
+
+def evaluate_intrinsic_capture(
+    *,
+    cell: tuple[int, int],
+    covered_cells: set[tuple[int, int]],
+    n_existing: int,
+) -> CaptureQuality:
+    """intrinsic capture 판정 — coverage 신규성 + 권장 장수."""
+    new_cell = cell not in covered_cells
+    n_after = len(covered_cells | {cell})
+    if new_cell:
+        return CaptureQuality(
+            "green", [f"새 영역 커버 ({n_after}/9 cells, {n_existing + 1}장)"]
+        )
+    if n_existing + 1 < T.INTRINSIC_RECOMMENDED_CAPTURES:
+        return CaptureQuality(
+            "yellow",
+            [f"이미 커버한 영역 — 보드를 다른 위치로 ({n_after}/9 cells)"],
+        )
+    return CaptureQuality(
+        "green", [f"충분 ({n_existing + 1}장, {n_after}/9 cells) — 종료 가능"]
+    )

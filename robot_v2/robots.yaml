@@ -13,7 +13,7 @@
 robots:
   omx_f_0:
     type: omx_f
-    enabled: false
+    enabled: true
     capabilities: [move, calibrate]
     motor_backend: dynamixel
     camera_backend: opencv

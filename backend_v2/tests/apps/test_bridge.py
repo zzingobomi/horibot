@@ -54,20 +54,22 @@ def test_registry_has_bridge():
 def test_resolve_host_deps_bridge_returns_robot_info():
     deps = resolve_host_deps("bridge", _robots(), _mock_bridge_deploy())
     infos = {r.id: r for r in deps["robots"]}
-    # robots.yaml spec — enabled=false robot (omx_f_0) 은 런타임이 무시.
-    assert set(infos) == {"so101_6dof_0"}
+    # 2026-07-09 omx_f_0 재활성화 — 두 robot 동등 열거 (기본 로봇 개념 없음).
+    assert set(infos) == {"so101_6dof_0", "omx_f_0"}
     assert infos["so101_6dof_0"].type == "so101_6dof"
     assert "rgbd" in infos["so101_6dof_0"].capabilities
     assert infos["so101_6dof_0"].base_pose.x == 0.4  # RobotConfig → RobotInfo 변환
+    assert infos["omx_f_0"].type == "omx_f"
+    assert "rgbd" not in infos["omx_f_0"].capabilities  # UVC color-only
 
 
-def test_resolve_bridge_exposes_only_enabled_robots():
-    # omx_f_0 재활성화 시 N=2 노출 (기본 로봇 개념 없음 — 둘 다 동등하게 열거).
+def test_resolve_bridge_excludes_disabled_robots():
+    # robots.yaml spec — enabled=false robot 은 런타임이 무시 (노출 X).
     robots = load_robots()
-    robots["omx_f_0"] = robots["omx_f_0"].model_copy(update={"enabled": True})
+    robots["omx_f_0"] = robots["omx_f_0"].model_copy(update={"enabled": False})
     deps = resolve_host_deps("bridge", robots, _mock_bridge_deploy())
     ids = {r.id for r in deps["robots"]}
-    assert ids == {"omx_f_0", "so101_6dof_0"}
+    assert ids == {"so101_6dof_0"}
 
 
 def test_build_runtime_wires_host_level_bridge():
@@ -136,8 +138,8 @@ async def test_get_robots(bridge_url: str):
     assert res.status_code == 200
     body = res.json()
     ids = {r["id"] for r in body["robots"]}
-    # enabled=false (omx_f_0) 제외 — 죽은 robot 은 노출 안 함 (기본 로봇 개념 없음).
-    assert ids == {"so101_6dof_0"}
+    # enabled robot 전부 노출 (2026-07-09 omx_f_0 재활성화 — N=2).
+    assert ids == {"so101_6dof_0", "omx_f_0"}
 
 
 async def test_static_robot_mount_serves_urdf(bridge_url: str):

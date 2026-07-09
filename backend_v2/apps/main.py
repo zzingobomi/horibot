@@ -109,7 +109,7 @@ def main() -> None:
     parser.add_argument(
         "--host",
         required=True,
-        help="deployment yaml 이름 (mock / pc / pi_motor / ...)",
+        help="deployment yaml 이름 (mock / pc / pi_hori1 / ...)",
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)

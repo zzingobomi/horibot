@@ -49,6 +49,12 @@ def test_load_robots_parses_entries():
     assert robots[_SO101].motor_backend == "feetech"
     assert len(robots[_SO101].motors) == 7  # motors.yaml: 6 joint + gripper
     assert robots["omx_f_0"].camera_backend == "opencv"
+    assert robots["omx_f_0"].camera_device_index == 0  # instance.yaml camera
+    assert len(robots["omx_f_0"].motors) == 6  # 5 joint + gripper
+    # motors.yaml `pid` 파싱 — omx J2 shoulder P=1500 (RAM 재적용 대상),
+    # so101 은 pid 블록 없음 (STS EEPROM — Wizard 1회).
+    assert robots["omx_f_0"].motors[1].pid_p == 1500
+    assert robots[_SO101].motors[0].pid_p is None
 
 
 def test_load_robots_reads_physical_sag_joints():
@@ -92,7 +98,7 @@ def test_resolve_robot_deps_mock_motor_picks_mock_backend():
 
 def test_registry_role_isolated_no_heavy_imports():
     # lazy registry invariant — motor/motion load 가 fastapi(bridge)/pyrealsense2·cv2
-    # (camera) 를 끌어오면 안 됨 (pi_motor 가 그 deps 없이 boot 가능해야).
+    # (camera) 를 끌어오면 안 됨 (pi_hori1 가 그 deps 없이 boot 가능해야).
     # clean subprocess 로 검증 (같은 프로세스는 다른 test 가 이미 import 했을 수 있음).
     import subprocess
     import sys
@@ -102,7 +108,7 @@ def test_registry_role_isolated_no_heavy_imports():
         "from apps.registry import load_module_class\n"
         "load_module_class('motor'); load_module_class('motion')\n"
         "heavy = [m for m in ('fastapi', 'pyrealsense2', 'cv2') if m in sys.modules]\n"
-        "assert not heavy, f'pi_motor import 에 끌려온 무거운 모듈: {heavy}'\n"
+        "assert not heavy, f'pi_hori1 import 에 끌려온 무거운 모듈: {heavy}'\n"
         "print('isolated-ok')\n"
     )
     root = Path(__file__).resolve().parents[2]  # backend_v2
@@ -117,7 +123,7 @@ def test_resolve_robot_deps_real_feetech_constructs():
     # real + feetech → FeetechBackend 생성 (하드웨어 없이 self-declare 만 검증, open X)
     from modules.motor.drivers.feetech import FeetechBackend
 
-    deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_motor.yaml")  # real
+    deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_hori1.yaml")  # real
     robots = load_robots()
     driver = resolve_robot_deps("motor", robots[_SO101], deploy)["driver"]
     assert isinstance(driver, FeetechBackend)
@@ -129,11 +135,39 @@ def test_resolve_robot_deps_real_realsense_constructs():
     # real + realsense → RealSenseD405Driver 생성 (하드웨어 없이 self-declare 만, open X)
     from modules.camera.drivers.realsense_d405 import RealSenseD405Driver
 
-    deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_camera.yaml")  # real
+    deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_hori2.yaml")  # real
     robots = load_robots()
     driver = resolve_robot_deps("camera", robots[_SO101], deploy)["driver"]
     assert isinstance(driver, RealSenseD405Driver)
     assert CameraCapability.DEPTH in driver.capabilities().flags
+
+
+def test_resolve_robot_deps_real_dynamixel_constructs():
+    # real + dynamixel → DynamixelBackend 생성 (하드웨어 없이 self-declare 만, open X)
+    from modules.motor.drivers.dynamixel import DynamixelBackend
+
+    deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_hori3.yaml")  # real
+    robots = load_robots()
+    driver = resolve_robot_deps("motor", robots["omx_f_0"], deploy)["driver"]
+    assert isinstance(driver, DynamixelBackend)
+    assert len(driver.topology().motors) == 6  # motors.yaml SSOT: 5 joint + gripper
+    flags = driver.capabilities().flags
+    assert MotorCapability.TORQUE_TOGGLE in flags
+    assert MotorCapability.REBOOT in flags  # XL = software reboot (STS 와 차이)
+
+
+def test_resolve_robot_deps_real_opencv_uvc_constructs():
+    # real + opencv → OpenCVUvcDriver 생성 (color-only, open X)
+    from modules.camera.drivers.opencv_uvc import OpenCVUvcDriver
+
+    deploy = load_deployment(_CONFIG_DIR / "deployments" / "pi_hori3.yaml")  # real
+    robots = load_robots()
+    driver = resolve_robot_deps("camera", robots["omx_f_0"], deploy)["driver"]
+    assert isinstance(driver, OpenCVUvcDriver)
+    flags = driver.capabilities().flags
+    assert CameraCapability.RGB in flags
+    assert CameraCapability.DEPTH not in flags  # UVC color-only
+    assert driver.get_factory_intrinsics() is None  # 사용자 intrinsic 캘 필요
 
 
 def test_resolve_host_deps_real_detector_constructs():
@@ -196,6 +230,25 @@ async def test_boot_camera_capabilities_reachable(booted: Runtime):
         robot_id=_SO101,
     )
     assert CameraCapability.DEPTH in res.flags  # rgbd robot
+
+
+async def test_boot_omx_motor_and_camera_reachable(booted: Runtime):
+    # 2-robot mock boot (2026-07-09 omx 재활성화) — omx robot-scoped module 도
+    # 같은 process 에 mount, robot_id 라우팅으로 도달.
+    res = await booted.module_runtime.call(
+        Motor.Service.CAPABILITIES,
+        MotorCapsRequest(),
+        MotorCapabilities,
+        robot_id="omx_f_0",
+    )
+    assert len(res.flags) > 0
+    cam = await booted.module_runtime.call(
+        Camera.Service.CAPABILITIES,
+        CameraCapsRequest(),
+        CameraCapabilities,
+        robot_id="omx_f_0",
+    )
+    assert CameraCapability.DEPTH not in cam.flags  # UVC color-only
 
 
 async def test_boot_calibration_snapshot_bundle_reachable(booted: Runtime):

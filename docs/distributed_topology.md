@@ -90,22 +90,22 @@ Phase 2 에선 머신 4대 + 로봇 2대 + 카메라 2종 + 모터 backend 2종 
 | 머신 | 노드 | 부담 |
 |---|---|---|
 | PC (hori0?) | detector / task / pointcloud / calibration / bridge (+ gamepad) | YOLO inference / Open3D / TSDF — heavy compute |
-| **hori1** | omx_f motor + motion + omx_f camera (UVC) | dynamixel + IK 100Hz + UVC JPEG (가벼움) |
+| **hori1** | so101 motor + motion | feetech + IK 100Hz |
 | **hori2** | so101 D405 카메라 | D405 capture + zstd depth 무손실 압축 (heavy I/O) |
-| **hori3** | so101 motor + motion | feetech + IK 100Hz |
+| **hori3** | omx_f motor + motion + omx_f camera (UVC) | dynamixel + IK 100Hz + UVC JPEG (가벼움) |
 
 ### 3.3 근거
 
-1. **so101 자원 분산** (hori2 + hori3) → 한 머신 부담 분산. 현재 omx_f 가 pi_motor + pi_camera 에 흩어진 패턴과 일관
+1. **so101 자원 분산** (hori1 + hori2) → 한 머신 부담 분산. 현재 omx_f 가 pi_motor + pi_camera 에 흩어진 패턴과 일관
 2. **D405 zstd 압축 전담** (hori2) — depth 무손실 압축이 cpu heavy. 다른 부담과 묶지 않음
-3. **omx 풀스택** (hori1) — UVC 가 가벼우니 dynamixel + IK 와 한 머신에 묶어 자원 균형
+3. **omx 풀스택** (hori3) — UVC 가 가벼우니 dynamixel + IK 와 한 머신에 묶어 자원 균형
 4. **architecture 원칙 보존** — motor+motion 같은 머신, 카메라 USB 같은 머신, PC heavy compute 모두 만족
 
 ### 3.4 검증해야 할 것 (실측)
 
 - hori2 의 D405 zstd 압축 + Zenoh publish 가 Pi 4 단독 부담으로 OK 인지
-- hori3 의 so101 6DOF IK 100Hz + feetech 모터 통신 동시 부담
-- so101 자원이 hori2/hori3 에 흩어진 상태에서 ICP / TSDF (PC) 의 motor state 동기화 latency
+- hori1 의 so101 6DOF IK 100Hz + feetech 모터 통신 동시 부담
+- so101 자원이 hori1/hori2 에 흩어진 상태에서 ICP / TSDF (PC) 의 motor state 동기화 latency
 
 ## 4. robots.yaml `host` 필드 — 제거 결정
 
@@ -147,14 +147,14 @@ robot 정체성 (calibration / base_pose) 은 새 robot 추가 시에만 바뀜 
 **host config 의 `nodes:` 리스트가 deployment SSOT**. Phase 2 multi-robot 분산 시 host config 의 nodes entry 가 robot_id 까지 명시:
 
 ```yaml
-# host_hori3.yaml
-host_name: hori3
+# host_hori1.yaml
+host_name: hori1
 nodes:
   - {type: motor, robot_id: so101_6dof_0}
   - {type: motion, robot_id: so101_6dof_0}
 
-# host_hori1.yaml
-host_name: hori1
+# host_hori3.yaml
+host_name: hori3
 nodes:
   - {type: motor, robot_id: omx_f_0}
   - {type: motion, robot_id: omx_f_0}

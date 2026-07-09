@@ -18,13 +18,13 @@ zenoh:
 
 modules:
   - name: motor
-    robots: [so101_6dof_0]
+    robots: [so101_6dof_0, omx_f_0]
   - name: motion
-    robots: [so101_6dof_0]
+    robots: [so101_6dof_0, omx_f_0]
   - name: camera
-    robots: [so101_6dof_0]
+    robots: [so101_6dof_0, omx_f_0]
   - name: camera_decoded
-    robots: [so101_6dof_0]
+    robots: [so101_6dof_0, omx_f_0]
   - name: calibration
   - name: scene3d
   - name: scan

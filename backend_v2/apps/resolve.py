@@ -233,9 +233,19 @@ def _motor_driver(robot: RobotConfig, deploy: DeploymentConfig) -> MotorBackend:
             port=robot.motor_port,
             baudrate=robot.motor_baudrate or 1_000_000,
         )
-    raise NotImplementedError(
-        f"real motor driver {robot.motor_backend!r} 미구현 (dynamixel 등 후속)."
-    )
+    if robot.motor_backend == "dynamixel":
+        from modules.motor.drivers.dynamixel import DynamixelBackend
+
+        if robot.motor_port is None:
+            raise ValueError(
+                f"robot {robot.id} 에 motor_port 없음 (instance.yaml platform port)"
+            )
+        return DynamixelBackend(
+            motors=robot.motors,
+            port=robot.motor_port,
+            baudrate=robot.motor_baudrate or 1_000_000,
+        )
+    raise NotImplementedError(f"real motor driver {robot.motor_backend!r} 미구현.")
 
 
 def _detector_backend(deploy: DeploymentConfig) -> DetectorBackend:
@@ -271,9 +281,11 @@ def _camera_driver(robot: RobotConfig, deploy: DeploymentConfig) -> CameraDriver
         from modules.camera.drivers.realsense_d405 import RealSenseD405Driver
 
         return RealSenseD405Driver()
-    raise NotImplementedError(
-        f"real camera driver {robot.camera_backend!r} 미구현 (opencv 등 후속)."
-    )
+    if robot.camera_backend == "opencv":
+        from modules.camera.drivers.opencv_uvc import OpenCVUvcDriver
+
+        return OpenCVUvcDriver(device_index=robot.camera_device_index or 0)
+    raise NotImplementedError(f"real camera driver {robot.camera_backend!r} 미구현.")
 
 
 def _motion_deps(robot: RobotConfig) -> dict[str, Any]:

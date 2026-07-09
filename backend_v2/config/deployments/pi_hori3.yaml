@@ -1,0 +1,19 @@
+# 실행:
+#   uv sync --no-default-groups --group pi-hori3
+#   uv run --no-sync python -m apps.main --host pi_hori3
+
+driver_mode: real
+
+zenoh:
+  mode: peer
+  scouting:
+    multicast:
+      enabled: true
+
+modules:
+  - name: motor
+    robots: [omx_f_0]
+  - name: motion
+    robots: [omx_f_0]
+  - name: camera
+    robots: [omx_f_0]

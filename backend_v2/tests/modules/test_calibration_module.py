@@ -500,3 +500,67 @@ async def test_preview_silent_when_disabled(tmp_path: Path):
     finally:
         await mod.stop()
     assert not [e for k, e in rt.events if k == Calibration.Stream.PREVIEW]
+
+
+# ─────────────────────── intrinsic 사용자 캘 (UVC 닭-달걀 회피) ──────────────
+
+
+def test_intrinsic_user_cal_capture_and_finalize(tmp_path: Path):
+    """active intrinsic 0 에서 detect-only capture → finalize 가 calibrateCamera
+    + 저장 + activate 까지 (USB UVC 사용자 캘 경로). 렌더 fx=900 근사 복원 검증
+    — 뒤집으면(코너 매칭/이미지 크기 복원 회귀) fx 가 튀어 잡힘."""
+    mod, rt, repo = _module(tmp_path)
+    run = repo.create_run(_OMX, "intrinsic", "user_charuco")
+    assert run.id is not None
+
+    # 보드를 image plane 여러 영역(3×3 cell) + 다양한 tilt 로 — intrinsic diversity
+    poses = [
+        ([0.30, 0.15, 0.0], [0.00, 0.00, 0.35]),
+        ([0.35, -0.2, 0.1], [-0.12, -0.06, 0.40]),
+        ([-0.3, 0.30, 0.0], [0.12, -0.06, 0.40]),
+        ([0.25, 0.35, -0.1], [-0.12, 0.06, 0.45]),
+        ([0.40, 0.10, 0.1], [0.12, 0.06, 0.45]),
+        ([-0.2, -0.3, 0.0], [0.00, 0.08, 0.50]),
+    ]
+    for i, (rvec, tvec) in enumerate(poses):
+        _feed(
+            mod, _board_frame(rvec, tvec, robot_id=_OMX), [2048] * 5, robot_id=_OMX
+        )
+        res = mod.capture(CaptureRequest(run_id=run.id, pose_index=i))
+        assert res.accepted, f"pose {i}: {res.message}"
+        assert res.reproj_rms_px is None  # detect-only — PnP 안 함
+        assert res.quality is not None and res.quality.verdict in ("green", "yellow")
+
+    fin = mod.finalize_run(FinalizeRunRequest(run_id=run.id))
+    assert fin.ok, fin.message
+
+    active = repo.get_active(_OMX, "intrinsic")
+    assert isinstance(active, IntrinsicResultRecord)
+    rd = active.result_data
+    assert rd.image_size == [_W, _H]
+    assert rd.rms_px is not None and rd.rms_px < 1.0
+    # 렌더 카메라 fx=fy=900 근사 복원 (planar 6 views — 5% 이내)
+    assert abs(rd.camera_matrix[0][0] - 900.0) / 900.0 < 0.05
+    assert abs(rd.camera_matrix[1][1] - 900.0) / 900.0 < 0.05
+    assert repo.get_run(run.id).status == "success"  # type: ignore[union-attr]
+    keys = [k for k, _ in rt.events]
+    assert Calibration.Event.COMMITTED in keys
+    assert Calibration.Event.ACTIVATED in keys
+
+
+def test_intrinsic_finalize_insufficient_captures_keeps_run_alive(tmp_path: Path):
+    # 최소 장수 미달 finalize → run 을 죽이지 않고 ok=False (더 캡처 후 재시도).
+    mod, _, repo = _module(tmp_path)
+    run = repo.create_run(_OMX, "intrinsic", "user_charuco")
+    assert run.id is not None
+    _feed(
+        mod,
+        _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35], robot_id=_OMX),
+        [2048] * 5,
+        robot_id=_OMX,
+    )
+    assert mod.capture(CaptureRequest(run_id=run.id, pose_index=0)).accepted
+
+    fin = mod.finalize_run(FinalizeRunRequest(run_id=run.id))
+    assert not fin.ok and "캡처 부족" in fin.message
+    assert repo.get_run(run.id).status == "in_progress"  # type: ignore[union-attr]

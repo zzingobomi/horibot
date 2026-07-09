@@ -49,7 +49,7 @@ def robot():
 
 @pytest.fixture
 async def stack(robot):
-    """motor(mock) + motion 한 runtime — pi_motor 동거 등가."""
+    """motor(mock) + motion 한 runtime — pi_hori1 동거 등가."""
     transport = ZenohTransport(_LOCAL_CFG)
     time.sleep(0.05)
     runtime = Runtime(transport)

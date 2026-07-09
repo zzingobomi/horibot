@@ -17,11 +17,11 @@ motors:
     mode: "position"
     home: 2048
     limit:
-      min: 0     # -180°
-      max: 4095  # +180°
+      min: 0 # -180°
+      max: 4095 # +180°
     reverse: false
     profile:
-      velocity_dps: 80.0      # 부드러운 baseline (base yaw)
+      velocity_dps: 80.0 # 부드러운 baseline (base yaw)
       acceleration_dpss: 400.0
     pid: # base, 중력 무관
       p: 640
@@ -34,11 +34,11 @@ motors:
     mode: "position"
     home: 2048
     limit:
-      min: 1024  # -90°
-      max: 3072  # +90°
+      min: 1024 # -90°
+      max: 3072 # +90°
     reverse: false
     profile:
-      velocity_dps: 60.0      # shoulder — 중력 부하 큼, 살짝 보수적
+      velocity_dps: 60.0 # shoulder — 중력 부하 큼, 살짝 보수적
       acceleration_dpss: 300.0
     pid: # shoulder, 중력 부하 큼
       p: 1500
@@ -51,11 +51,11 @@ motors:
     mode: "position"
     home: 2048
     limit:
-      min: 1024  # -90°
-      max: 3072  # +90°
+      min: 1024 # -90°
+      max: 3072 # +90°
     reverse: false
     profile:
-      velocity_dps: 70.0      # elbow
+      velocity_dps: 70.0 # elbow
       acceleration_dpss: 350.0
     pid: # elbow, 중력 부하 큼
       p: 1500
@@ -72,7 +72,7 @@ motors:
       max: 3072
     reverse: false
     profile:
-      velocity_dps: 100.0     # wrist pitch — 작은 모터, 빠르게 OK
+      velocity_dps: 100.0 # wrist pitch — 작은 모터, 빠르게 OK
       acceleration_dpss: 500.0
     pid: # wrist
       p: 800
@@ -89,12 +89,12 @@ motors:
       max: 4095
     reverse: false
     profile:
-      velocity_dps: 100.0     # wrist roll — D405 cantilever, 너무 빠르면 진동
-      acceleration_dpss: 500.0
-    pid: # wrist roll, D405 cantilevered 부하 댐핑 위해 D 추가
+      velocity_dps: 150.0 # wrist roll
+      acceleration_dpss: 700.0
+    pid:
       p: 800
       i: 0
-      d: 300
+      d: 0
 
   - id: 6
     name: "gripper_joint_1"
@@ -107,7 +107,7 @@ motors:
       max: 2600
     reverse: false
     profile:
-      velocity_dps: 90.0      # gripper — finger slam 방지 (이전 raw 80 = 110°/s 보다 조금 더 부드러움)
+      velocity_dps: 90.0 # gripper — finger slam 방지 (이전 raw 80 = 110°/s 보다 조금 더 부드러움)
       acceleration_dpss: 400.0
     pid:
       p: 800

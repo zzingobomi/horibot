@@ -1,0 +1,17 @@
+# 실행:
+#   uv sync --no-default-groups --group pi-hori1
+#   uv run --no-sync python -m apps.main --host pi_hori1
+
+driver_mode: real
+
+zenoh:
+  mode: peer
+  scouting:
+    multicast:
+      enabled: true
+
+modules:
+  - name: motor
+    robots: [so101_6dof_0]
+  - name: motion
+    robots: [so101_6dof_0]

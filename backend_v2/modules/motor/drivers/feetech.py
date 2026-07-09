@@ -8,6 +8,14 @@ Register map (LeRobot tables.py 검증): Goal_Position=42(2B), Present_Position=
 Goal_Velocity=46(2B), Acceleration=41(1B), Torque_Enable=40, Present_Speed=58(2B signed),
 Present_Load=60(2B signed). PROTOCOL_VERSION=0.
 
+profile 정책 (dynamixel.py 와 동일 정책, 레지스터/단위만 STS):
+- **arm = 0 (무제한)** — v2 arm 명령은 전부 100Hz 스트리밍(Ruckig/Jog 소유).
+  servo 내부 speed cap 이 있으면 추종 지연으로 싸움 → open 시 0 명시 (잔존값 방어).
+- **gripper = motors.yaml `profile` dps** — SET_GRIPPER 는 단발 goal 이라 servo
+  보간(Goal_Velocity/Acceleration)이 유일한 slam-guard.
+PID 는 안 건드림 — STS PID 는 EEPROM (Wizard 1회 굽기, 매 부팅 write = 마모.
+so101 motors.yaml 주석 "STS PID 는 EEPROM 영역이라 한 번 굽고 끝" 결정).
+
 검증: 작성/import/type 은 회사, 실 모터 동작은 집 SO-101.
 """
 
@@ -45,6 +53,12 @@ LEN_PRESENT_POSITION = 2
 LEN_PRESENT_LOAD = 2
 
 PROTOCOL_VERSION = 0
+
+# ─── Profile dps ↔ raw 변환 (STS3215/3250, v1 검증값) ──────────
+#   Goal_Velocity unit = step/s, 1 step = 360°/4096 ≈ 0.088 °/s per raw
+#   Acceleration unit = 100 step/s² ≈ 8.79 °/s² per raw (1 byte, 0..255)
+_VEL_DPS_PER_RAW = 0.0879
+_ACC_DPSS_PER_RAW = 8.79
 
 
 class FeetechBackend:
@@ -105,6 +119,8 @@ class FeetechBackend:
         for mid in self._motor_ids:
             self._sync_read_position.addParam(mid)
             self._sync_read_load.addParam(mid)
+
+        self._apply_profiles()
         logger.info("Feetech 연결: %s @ %d", self._port, self._baudrate)
 
     def close(self) -> None:
@@ -208,6 +224,23 @@ class FeetechBackend:
             self._sync_write_goal.clearParam()
         if result != COMM_SUCCESS:
             logger.warning("Feetech SyncWrite(goal) 실패")
+
+    # ── profile 적용 (open 시 1회) ──
+
+    def _apply_profiles(self) -> None:
+        """profile 정책 — arm=0 (Ruckig 100Hz 소유, servo speed cap 차단) /
+        gripper=motors.yaml dps (SET_GRIPPER 단발 goal 의 slam-guard)."""
+        for m in self._motors:
+            if m.kind == MotorKind.GRIPPER:
+                vel = max(0, round(m.velocity_dps / _VEL_DPS_PER_RAW))
+                acc = max(0, min(255, round(m.acceleration_dpss / _ACC_DPSS_PER_RAW)))
+            else:
+                vel, acc = 0, 0  # 0 = cap 없음 (즉시 추종)
+            self._write1(m.id, ADDR_ACCELERATION, acc)
+            self._write2(m.id, ADDR_GOAL_VELOCITY, vel)
+        logger.info(
+            "Feetech profile 적용: arm=0(스트리밍 소유) / gripper=yaml dps"
+        )
 
     # ── util ──
 

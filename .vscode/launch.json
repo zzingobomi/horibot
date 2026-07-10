@@ -7,8 +7,8 @@
       "request": "launch",
       "module": "apps.main",
       "args": ["--host", "mock"],
-      "cwd": "${workspaceFolder}/backend_v2",
-      "python": "${workspaceFolder}/backend_v2/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}/backend",
+      "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
       "console": "internalConsole",
       "env": {
         "CALIB_SIM_BOARD": "1"
@@ -20,8 +20,8 @@
       "request": "launch",
       "module": "apps.main",
       "args": ["--host", "pc"],
-      "cwd": "${workspaceFolder}/backend_v2",
-      "python": "${workspaceFolder}/backend_v2/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}/backend",
+      "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
       "console": "internalConsole"
     },
     {
@@ -29,7 +29,7 @@
       "type": "chrome",
       "request": "launch",
       "url": "http://localhost:5174",
-      "webRoot": "${workspaceFolder}/frontend_v2",
+      "webRoot": "${workspaceFolder}/frontend",
       "preLaunchTask": "frontend: vite dev"
     },
     {
@@ -43,8 +43,8 @@
       },
       "pathMappings": [
         {
-          "localRoot": "${workspaceFolder}/backend_v2",
-          "remoteRoot": "/home/pi/horibot/backend_v2"
+          "localRoot": "${workspaceFolder}/backend",
+          "remoteRoot": "/home/pi/horibot/backend"
         }
       ]
     }

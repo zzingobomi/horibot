@@ -11,28 +11,34 @@ joint_limits:
   # SpeedTcp 자리는 motors.yaml default profile 유지 (release_profile 안 호출).
   # 모터 trapezoidal profile 이 Ruckig output 부드럽게 추종 → joint jerk 적당히.
   # MoveJ/L/C/P 는 release_profile 그대로라 joint Ruckig 만 제약.
+  #
+  # 2026-07-09: max_velocity 1.5→1.0 rad/s (≈57°/s). 1.5(≈86°/s) 는 motors.yaml
+  # 서보 profile (shoulder 60°/s, elbow 70°/s) 보다 빨라 — 궤적 峰속도 구간에서
+  # 서보가 뒤처지다 감속 구간에 몰아서 따라잡는 서지("팍" 체감, PnP 접근/리프트).
+  # Ruckig 상한을 가장 느린 profile(60) 아래로 → jerk-limited 곡선이 서보에서
+  # 그대로 재현. 빠르게 가려면 profile 을 올리는 쪽 (motors.yaml, 후속 튜닝).
   joint1:
-    max_velocity: 1.5
+    max_velocity: 1.0
     max_acceleration: 3.0
     max_jerk: 15.0
   joint2:
-    max_velocity: 1.5
+    max_velocity: 1.0
     max_acceleration: 3.0
     max_jerk: 15.0
   joint3:
-    max_velocity: 1.5
+    max_velocity: 1.0
     max_acceleration: 3.0
     max_jerk: 15.0
   joint4:
-    max_velocity: 1.5
+    max_velocity: 1.0
     max_acceleration: 3.0
     max_jerk: 15.0
   joint5:
-    max_velocity: 1.5
+    max_velocity: 1.0
     max_acceleration: 3.0
     max_jerk: 15.0
   joint6:
-    max_velocity: 1.5
+    max_velocity: 1.0
     max_acceleration: 3.0
     max_jerk: 15.0
 

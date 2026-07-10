@@ -1,46 +1,62 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { Suspense, lazy } from "react";
+import { Route, Routes } from "react-router-dom";
 import { Sidebar } from "@/components/shared/Sidebar";
-import { useFrameworkBootstrap } from "@/framework";
-import "@/domain/handlers"; // 토픽 비즈니스 등록 — module-top side-effect
 import { Dashboard } from "@/pages/Dashboard";
-import { Settings } from "@/pages/Settings";
 import { RobotsLayout } from "@/pages/RobotsLayout";
 import { RobotModeRedirect } from "@/pages/robotModes/RobotModeRedirect";
 import { RobotMoveMode } from "@/pages/robotModes/RobotMoveMode";
 import { RobotCalibrateMode } from "@/pages/robotModes/RobotCalibrateMode";
-import { WorldPage } from "@/pages/WorldPage";
+import { RobotScanMode } from "@/pages/robotModes/RobotScanMode";
+import { RobotAssetsMode } from "@/pages/robotModes/RobotAssetsMode";
 import { TasksPage } from "@/pages/TasksPage";
+import { useFrameworkBootstrap } from "@/framework";
 
-function AppContent() {
+// contract viewer = dev 도구 (§6.1) — lazy import 로 React Flow 번들 code-split
+// (control/simulator 경로에 안 섞이게).
+const ContractGraphPage = lazy(() =>
+  import("@/features/contract-viewer/ContractGraphPage").then((m) => ({
+    default: m.ContractGraphPage,
+  })),
+);
+
+export function App() {
   useFrameworkBootstrap();
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
+    <div className="flex h-screen overflow-hidden bg-zinc-950">
       <Sidebar />
       <main className="flex-1 overflow-hidden">
         <Routes>
+          {/* 착지점 = 대시보드 (robot-agnostic). 특정 robot 으로 리다이렉트하지
+              않음 — ambient default 로봇 개념 제거. */}
           <Route path="/" element={<Dashboard />} />
-          {/* /robots/:id 가 shared layout (R3F + meta), 그 안 Outlet 에 mode
-              컴포넌트가 렌더 — mode 전환 시 R3F 는 unmount 안 됨.
-              capabilities (robots.yaml) 가 sidebar sub-item / route 활성화 결정. */}
+          {/* /robots/:id = shared layout (R3F + meta), Outlet 에 mode 컴포넌트.
+              mode 전환 시 R3F 는 unmount 안 됨. calibrate 등은 Step E+. */}
           <Route path="/robots/:id" element={<RobotsLayout />}>
             <Route index element={<RobotModeRedirect />} />
             <Route path="move" element={<RobotMoveMode />} />
             <Route path="calibrate" element={<RobotCalibrateMode />} />
+            <Route path="scan" element={<RobotScanMode />} />
+            <Route path="assets" element={<RobotAssetsMode />} />
           </Route>
-          <Route path="/world" element={<WorldPage />} />
-          <Route path="/tasks/:name" element={<TasksPage />} />
-          <Route path="/settings" element={<Settings />} />
+          {/* tasks = 최상위 (host-level, robot-agnostic — 로봇 하위 mode 아님) */}
+          <Route path="/tasks" element={<TasksPage />} />
+          <Route
+            path="/contract"
+            element={
+              <Suspense
+                fallback={
+                  <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+                    contract viewer 로딩 중…
+                  </div>
+                }
+              >
+                <ContractGraphPage />
+              </Suspense>
+            }
+          />
         </Routes>
       </main>
     </div>
-  );
-}
-
-export default function App() {
-  return (
-    <BrowserRouter>
-      <AppContent />
-    </BrowserRouter>
   );
 }

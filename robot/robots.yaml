@@ -1,109 +1,30 @@
-# ─── 필드 spec ──────────────────────────────────────────────────────
+# v2 robot registry (lean) — identity / placement / vendor / capability 만.
+# 모터 레이아웃 = <type>/motors.yaml, instance(port/baud) = instances/<id>/instance.yaml.
+# calibration 파라미터(pose_recommend_strategy / wrist_roll_motor_id /
+# sag_joint_motor_ids)는 Calibration Module (Step E) 자리 — registry 에서 제외.
 #
-# type
-#   Robot 타입 폴더명.
-#   robot/<type>/ 디렉터리가 존재해야 한다.
-#
-# enabled
-#   true | false.
-#   false 이면 런타임에서 해당 robot 을 무시한다.
-#
-# default
-#   true | false.
-#   기본적으로 정확히 1개의 robot 만 지정하는 것을 권장한다.
-#   생략 시 첫 번째 enabled robot 이 기본값으로 선택된다.
-#
-# capabilities
-#   Robot 이 지원하는 기능 집합 (부분집합 형태).
-#
-#     move
-#       UI 의 Move 모드 제공.
-#
-#     calibrate
-#       UI 의 Calibrate 모드 제공.
-#
-#     rgbd
-#       RGBD 카메라 보유.
-#       Point Cloud 생성 및 Scan 기능 사용 가능.
-#
-#     gamepad
-#       게임패드 기반 Cartesian Jog 지원.
-#       일반적으로 6DOF 제어가 자연스러운 robot 에만 사용.
-#
-# motor_backend
-#   모터 SDK / 통신 프로토콜 선택.
-#   값: dynamixel | feetech
-#
-# kinematics_backend
-#   Forward / Inverse Kinematics 계산 엔진.
-#   값: pybullet
-#
-# camera_backend
-#   카메라 캡처 구현체.
-#   값: realsense | opencv
-#
-# pose_recommend_strategy
-#   Hand-Eye 캘리브레이션용 추천 자세 생성 전략.
-#
-#     geometry
-#       6DOF robot 용.
-#       보드 주변 sphere-shell anchor 를 생성하고
-#       IK 를 사용해 추천 자세를 계산한다.
-#
-#     joint_perturbation
-#       5DOF robot 용.
-#       현재 자세 주변에서 joint perturbation 을 수행하고
-#       FK 기반으로 추천 자세를 생성한다.
-#
-# wrist_roll_motor_id
-#   Hand-Eye 캘리브레이션 시 wrist-roll 동작에 사용할 모터 ID.
-#   관측성(observability) 계산에도 사용된다.
-#   1-based ID 이며 실제 모터 라벨과 동일하다.
-#
-# sag_joint_motor_ids
-#   자세 의존 중력 sag 모델에 포함할 모터 ID 목록.
-#   일반적으로 shoulder / elbow 등 중력 부하가 큰 관절만 지정한다.
-#   1-based ID 이며 실제 모터 라벨과 동일하다.
-#
-# base_pose
-#   World frame 기준 robot base 위치와 방향.
-#   x, y, z 는 meter, yaw_deg 는 degree 단위를 사용한다.
-#   여러 robot 을 동시에 배치할 때 상대 위치를 정의한다.
+# capabilities       : move | calibrate | rgbd | gamepad
+# motor_backend      : feetech | dynamixel
+# camera_backend     : realsense | opencv
+# kinematics_backend : pybullet
+# enabled            : false = 런타임이 무시 (bridge /robots 노출 X, 모듈 boot X)
+# ("기본 로봇" 개념 없음 — robot 은 UI 라우트/task 바인딩에서 명시적으로 온다.)
 
 robots:
   omx_f_0:
     type: omx_f
-    enabled: false
+    enabled: true
     capabilities: [move, calibrate]
     motor_backend: dynamixel
-    kinematics_backend: pybullet
     camera_backend: opencv
-    pose_recommend_strategy: joint_perturbation
-    wrist_roll_motor_id: 5
-    sag_joint_motor_ids: [2, 3]
-    base_pose:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-      yaw_deg: 0.0
+    kinematics_backend: pybullet
+    base_pose: { x: 0.0, y: 0.0, z: 0.0, yaw_deg: 0.0 }
 
   so101_6dof_0:
     type: so101_6dof
     enabled: true
     capabilities: [move, calibrate, gamepad, rgbd]
     motor_backend: feetech
-    kinematics_backend: pybullet
     camera_backend: realsense
-    pose_recommend_strategy: geometry
-    wrist_roll_motor_id: 6
-    sag_joint_motor_ids: [2, 3]
-    base_pose:
-      x: 0.4
-      y: 0.0
-      z: 0.0
-      yaw_deg: 0.0
-
-# Phase 2+ — Cooperation 영역.
-# cooperation:
-#   pairs:
-#     - [omx_f_0, so101_6dof_0]   # robot-to-robot extrinsic 적용 pair
+    kinematics_backend: pybullet
+    base_pose: { x: 0.4, y: 0.0, z: 0.0, yaw_deg: 0.0 }

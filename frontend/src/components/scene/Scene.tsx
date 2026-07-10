@@ -1,94 +1,46 @@
+/**
+ * R3F Canvas — 씬의 조립 지점 (소유권 모델, [docs/scene_contribution_architecture.md]).
+ *
+ * - Core chrome  : 조명/grid/BASE 축/OrbitControls — 씬 그 자체.
+ * - Scene object : 세계에 있는 것들 — Robot / Camera / ScanMesh. 각 객체가 자기
+ *                  시각 요소를 자기 안에서 그림 (패널은 속성 토글만). 새 객체
+ *                  종류 추가 = 드문 아키텍처 사건 — 여기 한 줄이 정직함.
+ * - Feature overlay: 기능이 보여주는 것 — TaskResultsOverlay(topic 수명) +
+ *                  ScenePartHost(패널 수명). **기능/패널 기여로는 이 파일 diff 0.**
+ *
+ * robot 상태(joint/TCP frame)는 Robots 가 robot 마다 자기 stream 구독
+ * (per-robot — N=2 협동 자리).
+ */
 import { useCallback, useMemo } from "react";
-import type { CalibrationResults } from "@/types/calibration";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Grid, Environment } from "@react-three/drei";
 import * as THREE from "three";
-import { RobotLayer } from "./RobotLayer";
-import { RobotPreviewLayer } from "./RobotPreviewLayer";
-import type { RobotInfo } from "@/types/robot";
-import { AxisFrame } from "./AxisFrame";
-import { CameraFrustum } from "./CameraFrustum";
-import { Scene3DLayer } from "./Scene3DLayer";
-import { DetectionLayer } from "./DetectionLayer";
-import { TaskResultLayer } from "./TaskResultLayer";
-
-export interface SceneOptions {
-  showRobot: boolean;
-  showBaseFrame: boolean;
-  showTCPFrame: boolean;
-  showCameraFrame: boolean;
-  showGrid: boolean;
-}
+import { Robots } from "./objects/Robots";
+import { Cameras } from "./objects/Cameras";
+import { ScanMesh } from "./objects/ScanMesh";
+import { AxisFrame } from "./shared/AxisFrame";
+import { TaskResultsOverlay } from "./overlays/TaskResultsOverlay";
+import { ScenePartHost } from "./overlays/ScenePartHost";
+import { DEFAULT_SCENE_OPTIONS, type SceneOptions } from "./sceneOptions";
+import type { RobotInfo } from "@/api/generated/contract";
 
 interface RobotSceneProps {
-  jointAngles: number[];
-  calibration: CalibrationResults | null;
-  options: SceneOptions;
+  options?: SceneOptions;
   linkVisibility?: Record<string, boolean>;
   onLinksLoaded?: (names: string[]) => void;
-  /** focus robot 의 corrected TCP pose (R3F y-up world frame). null = 아직 수신 X.
-   *  source = Container 의 `MOTION_STATE_TCP` topic subscribe (backend SSOT). */
-  tcpMatrix?: THREE.Matrix4 | null;
-  /** robots.yaml enumeration. 비어있으면 (legacy) default 단일 omx_f. */
-  robots?: RobotInfo[];
-  /** focus robot id — null = WorldPage (모두 동등). */
+  robots: RobotInfo[];
   focusId?: string | null;
-  /** 카메라 default position — 페이지별 preset 의 자리. */
   cameraPosition?: [number, number, number];
-  /** OrbitControls target. focus robot 의 base 위치로 잡으면 lookAt 효과. */
   cameraTarget?: [number, number, number];
 }
 
-function buildMatrix4(R: number[][], t: number[][]): THREE.Matrix4 {
-  const flat_t = t.flat();
-  // prettier-ignore
-  return new THREE.Matrix4().set(
-    R[0][0], R[0][1], R[0][2], flat_t[0],
-    R[1][0], R[1][1], R[1][2], flat_t[1],
-    R[2][0], R[2][1], R[2][2], flat_t[2],
-    0,       0,       0,       1
-  );
-}
-
-// robots 비어있을 때의 legacy fallback — 기존 N=1 화면 (omx_f 단일) 유지.
-const LEGACY_ROBOTS: RobotInfo[] = [
-  {
-    id: "omx_f_0",
-    type: "omx_f",
-    enabled: true,
-    capabilities: ["move", "calibrate", "rgbd"],
-    base_pose: { x: 0, y: 0, z: 0, yaw_deg: 0 },
-    urdf_url: "/robot/omx_f/urdf/omx_f.urdf",
-  },
-];
-
 function SceneContent({
-  jointAngles,
-  calibration,
-  options,
-  linkVisibility,
+  options = DEFAULT_SCENE_OPTIONS,
   onLinksLoaded,
-  tcpMatrix = null,
   robots,
   focusId,
   cameraTarget,
 }: RobotSceneProps) {
-  // tcpMatrix 는 Container 에서 MOTION_STATE_TCP topic 으로 받음 (backend SSOT).
-  // 자체 URDF FK 로 다시 계산하지 X — sag/link_offset 누락 회귀 차단.
-
-  // tool flange(wrist) 기준과 tool tip 기준(gripper 끝)이 있음
-  // 현재 방식은 gripper tip 기준
-  const handEyeMatrix = useMemo(() => {
-    if (!calibration?.hand_eye?.R || !calibration?.hand_eye?.t) return null;
-    return buildMatrix4(calibration.hand_eye.R, calibration.hand_eye.t);
-  }, [calibration]);
-
-  // TCP → Camera 변환 행렬
-  const cameraMatrix = useMemo(() => {
-    if (!tcpMatrix || !handEyeMatrix) return null;
-    return tcpMatrix.clone().multiply(handEyeMatrix);
-  }, [tcpMatrix, handEyeMatrix]);
-
   return (
     <>
       <ambientLight intensity={0.4} color="#b0c8e0" />
@@ -122,77 +74,28 @@ function SceneContent({
         />
       )}
 
-      {/* group 에서 z-up을 y-up으로 변환 */}
+      {/* z-up → y-up 변환 */}
       {options.showBaseFrame && (
         <group rotation={[-Math.PI / 2, 0, 0]}>
           <AxisFrame size={0.06} label="BASE" labelColor="#ffffff" />
         </group>
       )}
 
-      {/* RobotLayer 가 N robot 동시 마운트. focus 모드는 others dim.
-          onTCPMatrix 콜백 폐지 — TCP pose 는 Container 가 backend topic 으로 받음. */}
-      <RobotLayer
-        robots={robots && robots.length > 0 ? robots : LEGACY_ROBOTS}
+      {/* ── Scene objects — 세계에 있는 것들 (자기가 자기를 그림) ── */}
+      <Robots
+        robots={robots}
         focusId={focusId ?? null}
-        jointAngles={jointAngles}
         onLinksLoaded={onLinksLoaded}
         showRobot={options.showRobot}
+        showTcpFrame={options.showTCPFrame}
       />
-      {/* Ghost preview (캘 추천 자세 hover 등) — 공통 primitive, store null 이면 미렌더. */}
-      <RobotPreviewLayer robots={robots && robots.length > 0 ? robots : LEGACY_ROBOTS} />
+      {/* rgbd robot 파생 카메라 — frustum(cameraStore)/live cloud(scanStore) gate */}
+      <Cameras robots={robots} focusId={focusId ?? null} />
+      <ScanMesh robots={robots} focusId={focusId ?? null} />
 
-      {/* linkVisibility 는 focus robot 한정 — Slice C 의 robot 별 store dict
-          화 시 RobotLayer 내부로 이동. 현재 N=1 호환 자리. */}
-      {linkVisibility ? null : null}
-
-      {/* TCP 프레임은 RobotModel에서 계산되므로 변환하지 않음 */}
-      {options.showTCPFrame && tcpMatrix && (
-        <AxisFrame
-          matrix={tcpMatrix}
-          size={0.04}
-          label="TCP"
-          labelColor="#ffcc44"
-        />
-      )}
-
-      {/* 이미지 픽셀 좌표가 u (x축, 오른쪽으로 증가), (y축, 아래로 증가) */}
-      {/* OpenCV 개발자들이 생각한 건 이미지 좌표가 오른쪽 +x, 아래 +y인데, 3D 카메라 좌표계도 똑같이 맞추면 편하지 않을까? */}
-      {/* OpenCV로 캘하면 → +Z forward, +X right, +Y down 기준의 R, t가 나옴 */}
-      {/* TCP 좌표계를 기준으로 한 상대값이라 y-up 변환 불필요 */}
-      {options.showCameraFrame && cameraMatrix && (
-        <>
-          <AxisFrame
-            matrix={cameraMatrix}
-            size={0.04}
-            label="CAMERA"
-            labelColor="#00e5ff"
-          />
-          {calibration?.intrinsic && (
-            <group
-              position={new THREE.Vector3()
-                .setFromMatrixPosition(cameraMatrix)
-                .toArray()}
-              quaternion={new THREE.Quaternion().setFromRotationMatrix(
-                cameraMatrix
-              )}
-            >
-              <CameraFrustum intrinsic={calibration.intrinsic} />
-            </group>
-          )}
-        </>
-      )}
-
-      <Scene3DLayer cameraMatrix={cameraMatrix} />
-
-      {/* Reconstruction mesh layer 자리 — 묶음 B-6 자리에서 storage 의 .ply blob
-          자리 fetch + render 신설 (또는 별도 ReconstructionLayer). */}
-      <group rotation={[-Math.PI / 2, 0, 0]}>
-        {/* Grounded detection 타겟 (base 프레임). store null이면 자동 미렌더. */}
-        <DetectionLayer />
-        {/* Task step 결과 (Detection / Position3 / ...) base 프레임 자동 렌더.
-            새 task tree 도착 시 store 클리어 → 다른 페이지/idle 무영향. */}
-        <TaskResultLayer />
-      </group>
+      {/* ── Feature overlays — 기능이 보여주는 것 ── */}
+      <TaskResultsOverlay robots={robots} focusId={focusId ?? null} />
+      <ScenePartHost />
 
       <OrbitControls
         makeDefault
@@ -206,15 +109,12 @@ function SceneContent({
   );
 }
 
-// Canvas 의 prop 객체 자리 매 render 자리 새 ref 면 R3F reconciler 가 commit
-// 안에서 setState (camera/gl reset) → "Maximum update depth exceeded" cycle.
-// 모두 stable ref 필수 — focus 별 camera position 만 props 변화로 받음.
+// stable refs — Canvas 의 prop 객체가 매 render 새 ref 면 R3F reconciler cycle.
 const GL_OPTS = { antialias: true, alpha: false };
 const STYLE = { background: "#080c12" };
 const NEAR_FAR = { fov: 45, near: 0.001, far: 10 };
 
 export function RobotScene(props: RobotSceneProps) {
-  // 카메라 default — focus 모드는 가까이, world overview 는 멀리.
   const camPos = useMemo<[number, number, number]>(
     () =>
       props.cameraPosition ??

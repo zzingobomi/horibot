@@ -1,38 +1,40 @@
-export const WsMsgType = {
-  // Frontend → Bridge
+// backend_v2 WS wire (frontend_v2.md §3 + backend_v2.md §16.6 의 relay).
+// browser → bridge : JSON text {op, ...}
+// bridge → browser : binary frame [u8 ver=1][u8 type][u16 BE key_len][key utf8][payload]
+//   type=1 topic_data       : key=topic,      payload=msgpack
+//   type=2 service_response : key=request_id, payload=msgpack {timestamp, data}
+//   type=3 service_error    : key=request_id, payload=msgpack {type, message}
+
+export const WsOp = {
   Subscribe: "subscribe",
   Unsubscribe: "unsubscribe",
   Publish: "publish",
   Service: "service",
-  // Bridge → Frontend
-  TopicData: "topic_data",
-  ServiceResponse: "service_response",
-  Error: "error",
 } as const;
 
-export type WsMsgType = (typeof WsMsgType)[keyof typeof WsMsgType];
+export type WsOp = (typeof WsOp)[keyof typeof WsOp];
 
-// ─── Frontend → Bridge ────────────────────────────────────────
 export type WsOutgoing =
-  | { type: typeof WsMsgType.Subscribe; topic: string }
-  | { type: typeof WsMsgType.Unsubscribe; topic: string }
-  | { type: typeof WsMsgType.Publish; topic: string; data: Record<string, unknown> }
+  | { op: typeof WsOp.Subscribe; topic: string }
+  | { op: typeof WsOp.Unsubscribe; topic: string }
+  | { op: typeof WsOp.Publish; topic: string; data: Record<string, unknown> }
   | {
-      type: typeof WsMsgType.Service;
+      op: typeof WsOp.Service;
       key: string;
       request_id: string;
       data: Record<string, unknown>;
-      timeout?: number; // 초 단위. 미지정 시 백엔드 기본값(5초)
+      /** bridge→zenoh call timeout (초). 미지정 = bridge 기본(5s).
+       *  장시간 서비스(TSDF build 등)는 호출자가 명시 — frontend 자체 대기
+       *  (timeoutMs) 와 같은 값으로 전파. */
+      timeout_s?: number;
     };
 
-// ─── Bridge → Frontend ────────────────────────────────────────
-export type WsIncoming =
-  | { type: typeof WsMsgType.TopicData; topic: string; data: Record<string, unknown> }
-  | {
-      type: typeof WsMsgType.ServiceResponse;
-      request_id: string;
-      success: boolean;
-      message: string;
-      data: Record<string, unknown>;
-    }
-  | { type: typeof WsMsgType.Error; message: string };
+export const FrameType = {
+  TopicData: 1,
+  ServiceResponse: 2,
+  ServiceError: 3,
+} as const;
+
+export type FrameType = (typeof FrameType)[keyof typeof FrameType];
+
+export const FRAME_VERSION = 1;

@@ -1,17 +1,15 @@
 [project]
-name = "horibot-backend"
+name = "horibot-backend-v2"
 version = "0.1.0"
-description = "Horibot Backend"
+description = "Horibot Backend v2 — framework (Runtime / Contract / Mirror / Transport)"
 requires-python = ">=3.11"
 
 dependencies = [
     "eclipse-zenoh>=1.0.0",
-    "numpy>=1.26.0",
     "pydantic>=2.9.0",
-    "pyyaml>=6.0.0",
-    "python-dotenv>=1.0.0",
-    # bridge `/system` endpoint — CPU / Mem 메트릭 (Dashboard overview).
-    "psutil>=5.9.0",
+    "msgspec>=0.18.0",
+    "numpy>=1.26.0",
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]
@@ -19,80 +17,86 @@ dev = [
     "ruff",
     "pyright",
     "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
 ]
 
-pi-motor = [
-    "dynamixel-sdk>=3.7.31",
-    # SO-101 (Feetech STS3215/3250). LeRobot 와 동일 pin.
-    # 패키지 이름 ≠ import 이름: `import scservo_sdk`.
+# hori1 — so101 motor + motion
+pi-hori1 = [
     "feetech-servo-sdk>=1.0.0,<2.0.0",
-    "pybullet>=3.2.0",
-    "ruckig>=0.17.3",
-    "scipy>=1.17.1",
-    # URDF parse — sag_corrected 의 FkChain (BA hot path 자체 numpy chain build,
-    # parse 만 위임). camera Pi 는 fk_chain 사용 X 라 그룹 분리.
-    "yourdfpy>=0.0.60",
+    "pybullet>=3.2",
+    "ruckig>=0.9",
+    "scipy>=1.11",
+    "yourdfpy>=0.0.56",
 ]
 
-pi-camera = [
-    "pyrealsense2>=2.55.1",
-    "opencv-python>=4.9.0",
+# hori2 — so101 D405 카메라
+pi-hori2 = [
+    "opencv-python-headless>=4.10.0",
+    "zstandard>=0.22.0",
+    "pyrealsense2>=2.54",
+]
+
+# hori3 — omx_f (motor + motion + UVC 카메라)
+pi-hori3 = [
+    "dynamixel-sdk>=3.7.31",
+    "pybullet>=3.2",
+    "ruckig>=0.9",
+    "scipy>=1.11",
+    "yourdfpy>=0.0.56",
+    "opencv-python-headless>=4.10.0",
     "zstandard>=0.22.0",
 ]
 
+# PC
 pc = [
-    "opencv-python>=4.9.0",
-    "fastapi>=0.111.0",
+    "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
-    "websockets>=12.0",
-    "pybullet>=3.2.0",
-    "scipy>=1.17.1",
-    "ultralytics>=8.4.45",
-    "open3d>=0.18.0",
-    "pygame>=2.6.1",
+    "websockets>=13.0",
+    "psutil>=6.0.0",
+    "opencv-python-headless>=4.10.0",
     "zstandard>=0.22.0",
-    # Storage (storage_node — PC 전용). SQLAlchemy 2.x typed `Mapped[T]` + Alembic
-    # migration. backend swap (sqlite → postgres) 시 URI 만 변경 (docs/storage_layer.md).
-    # advanced-alchemy = SQLAlchemySyncRepository (도메인 repo CRUD baseline).
     "sqlalchemy>=2.0.0",
     "alembic>=1.13.0",
     "advanced-alchemy>=1.11.0",
-    # Grounding DINO Swin-B (open-vocabulary detection).
-    # v5 는 AutoModelForZeroShotObjectDetection 제거 → 4.x 로 핀.
-    # 4.57.x 는 dispatch_model 경로에서 meta tensor + .to(device) 가 깨짐
-    # (NotImplementedError: Cannot copy out of meta tensor) — Qwen2.5 LLM 로드 실패.
-    "transformers>=4.45.0,<4.57",
+    "open3d>=0.18",    
+    "transformers>=5.0.0,<6",
     "accelerate>=0.34.0",
-    "pillow>=10.0.0",
-    # URDF parse — BA 의 FkChain (calibration_node).
-    "yourdfpy>=0.0.60",
-    # CUDA 13 빌드 — host nvidia driver(13.2)와 매치. cu130 index 에서 받음
-    # (tool.uv.sources 참고). transitive 의존성으로 끌려오면 source 매핑이
-    # 안 먹어 CPU wheel 로 떨어지므로 명시적 pin.
-    "torch==2.11.0",
+    "pillow>=10.0.0",    
+    "torch==2.11.0",    
     "torchvision==0.26.0",
 ]
 
 all = [
-    {include-group = "pi-motor"},
-    {include-group = "pi-camera"},
-    {include-group = "pc"},
+    { include-group = "pi-hori1" },
+    { include-group = "pi-hori2" },
+    { include-group = "pi-hori3" },
+    { include-group = "pc" },
+]
+infra-postgres = [
+    "psycopg[binary]>=3.2.0",
+]
+infra-minio = [
+    "boto3>=1.34.0",
 ]
 
 [tool.uv]
 default-groups = ["dev", "all"]
 
-# yourdfpy 0.0.60 가 trimesh[easy] 를 강제로 끌어오면서 embreex 가 transitive 로
-# 들어옴. embreex 는 aarch64 wheel/sdist 가 없어 Pi (pi-motor 그룹) 에서 resolve
-# 실패. embreex 자체는 trimesh 의 Embree ray-cast 가속이고 yourdfpy 는 URDF parse
-# 용도라 안 깔려도 무해 → x86_64/AMD64 에서만 요구하도록 marker override.
-override-dependencies = [
-    "embreex ; platform_machine == 'x86_64' or platform_machine == 'AMD64'",
-]
+# yourdfpy가 optional ray-tracing 의존성을 함께 설치하려고 한다.
+# Pi(aarch64)에서는 wheel이 없어 sync가 실패하지만,
+# FkChain은 load_meshes=False라 해당 기능을 사용하지 않는다.
+# 따라서 never-true marker로 이 의존성을 모든 플랫폼에서 제외한다.
+override-dependencies = ["embreex; sys_platform == 'never'"]
 
-# PyTorch CUDA wheel — PyPI default 가 CPU 빌드를 주는 걸 피하려고 명시적 index.
-# Pi 머신(pi-motor/pi-camera 그룹)은 torch 의존이 없어 이 source 영향 없음.
-# cu130: CUDA 13 빌드. host 의 nvidia driver(13.2) 와 매치. RTX 3060 OK.
+# Ruckig 0.17.3은 source 빌드만 지원한다.
+# deprecated `cmake.targets` 때문에 scikit-build-core 1.0.0부터 빌드가 실패하므로,
+# Ruckig가 수정될 때까지 scikit-build-core를 <1로 고정한다.
+build-constraint-dependencies = ["scikit-build-core<1"]
+
+# 기본 PyPI가 CPU 빌드를 선택하지 않도록 PyTorch CUDA wheel index를 명시한다.
+# Pi 머신은 torch를 사용하지 않아 이 설정의 영향을 받지 않는다.
+# cu130은 host NVIDIA 드라이버와 맞춘 CUDA 13 빌드이다.
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu130" }]
 torchvision = [{ index = "pytorch-cu130" }]
@@ -109,3 +113,11 @@ target-version = "py311"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+asyncio_mode = "auto"
+markers = [
+    "sim: Runtime/PyBullet/URDF boot 필요 — 수 초/test, 집 fast loop 에서 skip",
+]
+
+[tool.pyright]
+include = ["framework", "infra", "modules", "apps", "tests"]
+pythonVersion = "3.11"

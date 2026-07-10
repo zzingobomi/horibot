@@ -1,600 +1,238 @@
-"""Step primitives — typed Slot DSL.
+"""Task step primitives — Day-1 primitive (§17.1) 만.
 
-이전 [step_types.py](step_types.py) 의 dataclass 정의 + [step_executor.py]
-(step_executor.py) 의 핸들러를 한 클래스로 흡수. 각 step 이 자기 `execute(ctx)`
-를 보유 → polymorphic dispatch (lego test #3).
+옛 backend/modules/task/steps.py 재구성. 각 step 이 `async def execute(ctx)` 보유 →
+runner 가 polymorphic await (match/case 없음). 입력 SlotOr[T] (literal / 이전 step.out),
+출력 Step[T_out].
 
-입력은 `SlotOr[T]` — literal 값 또는 다른 step 의 `out` 둘 다 받음:
-    grasp = GraspPolicy(target=pick.out, grasp_ratio=0.5)
-    MoveTCP(target=grasp.out, offset=Position3(0, 0, 0.06))
+포함 = Day-1 (표준 산업 로봇 공통 출하, §17.1 표): MoveJ(waypoint=<ref>) [D8] /
+MoveTCP→MOVE_L / Gripper + VerifyGrasp. 이름/매핑 §17.5.
 
-출력은 Step[T_out] 의 T_out — `step.out` 으로 다음 step 에 넘김. 사이드이펙트만
-있는 step (MoveTCP/Gripper/...) 은 `Step[None]` — out 은 사용 안 함.
-
-Control flow (ForEach / BreakIf / Try):
-- 별도 `ControlFlowStep` base 두지 않음. 일반 Step 과 동일하게 `execute(ctx)`
-  구현하되 내부에서 `ctx.run_child(child)` 호출 → 디버거 게이트 / status 갱신 /
-  step result publish 가 자식 step 에도 자동 적용 (lego test #3).
-- BT 의 Selector / Try / Decorator 어휘를 차용하되 BT 의 tick/blackboard 는 X.
+의도적 미포함 (재발 방지 — 문서 대조):
+  - Orchestration (ForEach/BreakIf/Try = Loop/Retry) — §17.1 "rule of three (task 2개가
+    요구할 때)". task #1(PnP) 하나뿐 → defer. PnP 의 Waypoint Group 순회는 §17.1③
+    "거의 DSL 없이 평범한 async 함수" 로 (generic loop primitive X). BreakIf 는 §17.5
+    recipe 에서 명시적 제거.
+  - 검출 의존 step (GroundedDetect/GraspPolicy/PlacePolicy/SelectTarget) — Detection
+    Top-K + 기하 prior 확장(§17.5) 후 milestone ④.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import time
-import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal
+from typing import Literal
 
-from core.common import GRIPPER_SETTLE
-from core.transport.messages.base import EmptyData
-from core.transport.messages.detector import (
-    GroundedDetectReq,
-    GroundedDetectionResult,
+from modules.motion.contract import (
+    Motion,
+    MoveJPoseRequest,
+    MoveJRequest,
+    MoveJResponse,
+    MoveLRequest,
+    MoveLResponse,
+    TcpSnapshotRequest,
+    TcpState,
 )
-from core.transport.messages.motion import JointDegree, MoveJReq, MoveLReq
-from core.transport.messages.motor import MotorGripperReq
-from core.transport.messages.reconstruction import (
-    ReconstructionBuildReq,
-    ReconstructionBuildRes,
+from modules.motor.contract import Motor, SetGripperRequest, SetGripperResponse
+from modules.waypoint.contract import (
+    ListWaypointsRequest,
+    ListWaypointsResponse,
+    Waypoint,
 )
-from core.transport.messages.scene3d import (
-    Scene3DSnapshotReq,
-    Scene3DSnapshotRes,
-)
-from core.transport.messages.storage import (
-    CreateScanSessionReq,
-    CreateScanSessionRes,
-    PutScanReq,
-    PutScanRes,
-)
-from core.robot.robot_poses import load_pose
-from core.transport.topic_map import Service
-from modules.scan_workflow import blob as scan_blob
-from modules.task.schema import Detection, Position3, Slot, SlotOr
-from modules.task.step import Step, StepContext
+
+from .schema import Position3, SlotOr
+from .step import Step, StepContext
 
 logger = logging.getLogger(__name__)
 
 
-# ─── Constants — step_executor 에서 그대로 옮겨옴 ──────────────────────
-
-
-# close 후 gripper Present_Position 이 이 값 미만이면 빈손으로 판정.
-GRIPPER_HELD_THRESHOLD = 1900
-
-# 단발 샘플링은 큐브 모서리 임시 catch 를 빈손과 못 구분. 0.3s settle 후 재측정.
-GRIPPER_HELD_RECHECK_DELAY = 0.3
-GRIPPER_HELD_SLIP_DELTA = 30
-
-
-# ─── Control flow internals ─────────────────────────────────────────
-
-
-class _BreakLoop(Exception):
-    """BreakIf 가 raise — 가장 가까운 ForEach 가 catch."""
-
-
-# ─── Wait / MoveJByName — 단순 primitive ─────────────────────────────
+# ─── 단순 primitive ──────────────────────────────────────────────────
 
 
 @dataclass(kw_only=True)
 class Wait(Step[None]):
+    """지정 시간 대기 (settle 등). async — event loop 안 막음."""
+
     duration_sec: float = 0.5
 
-    def execute(self, ctx: StepContext) -> None:
+    async def execute(self, ctx: StepContext) -> None:
         logger.info("Wait %.2fs  [%s]", self.duration_sec, self.label)
-        time.sleep(self.duration_sec)
+        await asyncio.sleep(self.duration_sec)
 
 
 @dataclass(kw_only=True)
-class MoveJByName(Step[None]):
-    """robot_poses.yaml 의 자세를 이름으로 MoveJ.
+class NoOp(Step[None]):
+    """아무것도 안 함 — 도메인 step 0개 trivial task (runner/디버거 e2e, §17.4)."""
 
-    pose_name: literal str (예: "home") 또는 Slot[str] (ForEach iteration 변수).
-    이전 Home step 의 일반화 — Home 은 recipe 함수 home() 로 대체.
+    async def execute(self, ctx: StepContext) -> None:
+        return None
+
+
+# ─── Move — waypoint / base-frame ────────────────────────────────────
+
+
+@dataclass(kw_only=True)
+class MoveJ(Step[None]):
+    """waypoint 이름 → 그 joint 자세로 MoveJ (§17.2 D8 "MoveJ(waypoint=<ref>)").
+
+    식별(이름) 은 DSL, resolve 는 runtime — Waypoint 는 robot-agnostic 이라 LIST(
+    robot_id) 로 이름 조회 후 joint_values(rad) 로 Motion.MOVE_J. await = 완료(§17.3).
     """
 
-    pose_name: SlotOr[str]
+    waypoint: SlotOr[str]
 
-    def execute(self, ctx: StepContext) -> None:
-        name = ctx.resolve(self.pose_name)
+    async def execute(self, ctx: StepContext) -> None:
+        name = ctx.resolve(self.waypoint)
         if not isinstance(name, str):
-            raise TypeError(
-                f"MoveJByName.pose_name: str 기대, {type(name).__name__}"
+            raise TypeError(f"MoveJ.waypoint: str 기대, {type(name).__name__}")
+        # waypoint 는 robot-agnostic (robot_id=req 필드, §2.7) → runtime 직접 호출.
+        wps = await ctx.runtime.call(
+            Waypoint.Service.LIST,
+            ListWaypointsRequest(robot_id=ctx.robot_id),
+            ListWaypointsResponse,
+        )
+        match = next((w for w in wps.waypoints if w.name == name), None)
+        if match is None:
+            raise RuntimeError(
+                f"MoveJ: waypoint '{name}' 없음 (robot={ctx.robot_id})"
             )
-        try:
-            joints = load_pose(name)
-        except KeyError as exc:
-            raise RuntimeError(f"MoveJByName: 자세 '{name}' 없음") from exc
-
-        logger.info("MoveJ '%s'  [%s]", name, self.label)
-        joints_typed = [
-            JointDegree(id=j["id"], degree=j["degree"]) for j in joints
-        ]
-        if not ctx.call_motion(
-            Service.MOTION_MOVE_J, MoveJReq(joints=joints_typed)
-        ):
-            raise RuntimeError(f"MoveJ '{name}' 실패")
-
-
-# ─── MoveTCP — base-frame Position3 로 MoveL ──────────────────────────
+        logger.info("MoveJ waypoint '%s'  [%s]", name, self.label)
+        res = await ctx.call(
+            Motion.Service.MOVE_J,
+            MoveJRequest(target_joints=match.joint_values),
+            MoveJResponse,
+            timeout=60.0,
+        )
+        if not res.accepted:
+            raise RuntimeError(f"MoveJ '{name}' 거부: {res.message}")
 
 
 @dataclass(kw_only=True)
 class MoveTCP(Step[None]):
-    """베이스 프레임 (x, y, z) 위치로 MoveL.
+    """base frame (x,y,z) 로 MoveL (§17.5). target = Position3
+    (Detection→Position3 변환은 GraspPolicy/PlacePolicy 담당 → 계층 분리).
 
-    target: Position3 literal 또는 다른 step (Detection/Position3 출력) 의 Slot.
-            Detection 슬롯도 받음 — 내부에서 .position 으로 추출.
-    offset: target 에 더할 오프셋 (pre-grasp/lift 등).
+    orientation:
+      - "keep" : position-only IK — 자세는 현재에 딸려감 (v1 동작).
+      - "hold" : 현재 자세를 경로 내내 고정 (constant-orientation MoveL).
+        물건 든 채 이동/승강 등 자세가 흔들리면 안 되는 구간용.
+        (수직 top-down 강제는 SO-101 기구 한계로 기각 — hover 높이에서
+        접근축 수직은 unreachable, 2026-07-07 FK 20만 샘플 조사.)
     """
 
-    target: SlotOr[Position3 | Detection]
-    offset: Position3 = Position3(x=0.0, y=0.0, z=0.0)
+    target: SlotOr[Position3]
+    offset: Position3 = field(default_factory=lambda: Position3(x=0.0, y=0.0, z=0.0))
+    orientation: Literal["keep", "hold"] = "keep"
 
-    def execute(self, ctx: StepContext) -> None:
-        resolved = ctx.resolve(self.target)
-        if isinstance(resolved, Detection):
-            base = resolved.position
-        elif isinstance(resolved, Position3):
-            base = resolved
-        else:
-            raise TypeError(
-                f"MoveTCP.target: Position3/Detection 기대, "
-                f"{type(resolved).__name__} 받음"
+    async def execute(self, ctx: StepContext) -> None:
+        base = ctx.resolve(self.target)
+        if not isinstance(base, Position3):
+            raise TypeError(f"MoveTCP.target: Position3 기대, {type(base).__name__}")
+        pos = base + self.offset
+
+        quat: tuple[float, float, float, float] | None = None
+        if self.orientation == "hold":
+            snap = await ctx.call(
+                Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState
             )
+            quat = snap.quaternion
 
-        position = base + self.offset
         logger.info(
-            "MoveL → %.3f, %.3f, %.3f  [%s]",
-            position.x, position.y, position.z, self.label,
+            "MoveL → %.3f %.3f %.3f (orientation=%s)  [%s]",
+            pos.x, pos.y, pos.z, self.orientation, self.label,
         )
-        if not ctx.call_motion(
-            Service.MOTION_MOVE_L,
-            MoveLReq(position=position.to_list()),
-        ):
-            raise RuntimeError(f"MoveL 실패 [{self.label}]")
+        res = await ctx.call(
+            Motion.Service.MOVE_L,
+            MoveLRequest(
+                target_position=(pos.x, pos.y, pos.z), target_quaternion=quat
+            ),
+            MoveLResponse,
+            timeout=60.0,
+        )
+        if not res.accepted:
+            raise RuntimeError(f"MoveL 거부: {res.message} [{self.label}]")
 
 
-# ─── Gripper — open / close (+ optional verify) ───────────────────────
+@dataclass(kw_only=True)
+class MoveToPose(Step[None]):
+    """base frame (x,y,z) 로 pose→IK→**관절 공간** 이동 (MOVE_J_POSE, Cartesian 직선 아님).
+
+    pick 접근/파지/승강용. MoveL(자세 고정 직선)이 SO-101 workspace 에서 높이-의존 IK
+    실패를 내던 것(2026-07-07)의 대체 — 관절 보간이라 자세가 경로 따라 자유롭게 변해
+    "특정 자세 유지한 채 이동/승강" 제약이 없음. 도달만 하면 됨(위치는 어디든 도달).
+    승강(lift)도 월드 Z 명령이 아니라 "든 자세 config 로 복귀" = 자연 상승.
+    orientation 은 position-only(IK 자유) — jaw 정렬(큐브 yaw)/pinch offset 은 후속.
+    """
+
+    target: SlotOr[Position3]
+    offset: Position3 = field(default_factory=lambda: Position3(x=0.0, y=0.0, z=0.0))
+    # tcp≠파지점(단일 jaw) 보정 — tool frame 상수(그리퍼 속성, 큐브 무관). grasp/place
+    # 만 지정, 접근/승강은 None(tcp). None=tcp 를 target 에 맞춤.
+    tool_offset: tuple[float, float, float] | None = None
+
+    async def execute(self, ctx: StepContext) -> None:
+        base = ctx.resolve(self.target)
+        if not isinstance(base, Position3):
+            raise TypeError(f"MoveToPose.target: Position3 기대, {type(base).__name__}")
+        pos = base + self.offset
+        logger.info("MoveJPose → %.3f %.3f %.3f  [%s]", pos.x, pos.y, pos.z, self.label)
+        res = await ctx.call(
+            Motion.Service.MOVE_J_POSE,
+            MoveJPoseRequest(
+                target_position=(pos.x, pos.y, pos.z), tool_offset=self.tool_offset
+            ),
+            MoveJResponse,
+            timeout=60.0,
+        )
+        if not res.accepted:
+            raise RuntimeError(f"MoveJPose 거부: {res.message} [{self.label}]")
+
+
+# ─── Gripper ─────────────────────────────────────────────────────────
 
 
 @dataclass(kw_only=True)
 class Gripper(Step[None]):
-    """Gripper open/close. close 시 verify_grasp 로 즉시 검증 가능.
+    """open/close — SET_GRIPPER(position_raw). raw = TaskRobotSpec (motors.yaml, 추측 X).
 
-    중간 검증 (lift 후 등) 은 별도 `VerifyGrasp` 사용 — lego 정신상 두 개
-    primitive 로 분리. close + 즉시 검증은 동작상 한 블록에 묶는 게 단순해서
-    flag 로 유지.
-    """
+    v2 SET_GRIPPER 은 position 기반 (v1 의 force/current 아님) — STS position servo 가
+    물체에 막히면 그 위치서 토크 유지 = 파지. 검증은 별도 VerifyGrasp (lego 분리)."""
 
     action: Literal["open", "close"] = "open"
-    current: int = 200  # mA, 파지력
-    verify_grasp: bool = False
 
-    def execute(self, ctx: StepContext) -> None:
-        logger.info(
-            "Gripper %s  current=%d  verify=%s  [%s]",
-            self.action, self.current, self.verify_grasp, self.label,
+    async def execute(self, ctx: StepContext) -> None:
+        spec = ctx.require_spec()
+        pos = (
+            spec.gripper_open_raw
+            if self.action == "open"
+            else spec.gripper_close_raw
         )
-        res = ctx.call_service(
-            Service.MOTOR_GRIPPER,
-            MotorGripperReq(action=self.action, current=self.current),
-            EmptyData,
+        logger.info("Gripper %s → raw %d  [%s]", self.action, pos, self.label)
+        res = await ctx.call(
+            Motor.Service.SET_GRIPPER,
+            SetGripperRequest(position_raw=pos),
+            SetGripperResponse,
         )
-        if not res.success:
-            raise RuntimeError(
-                f"Gripper 서비스 실패: {res.message} [{self.label}]"
-            )
-
-        time.sleep(GRIPPER_SETTLE)
-
-        if self.action == "close" and self.verify_grasp:
-            if not _verify_gripper_held(ctx, self.label or "close_gripper"):
-                raise RuntimeError(
-                    f"Gripper verify 실패 — 빈손 [{self.label}]"
-                )
+        if not res.ok:
+            raise RuntimeError(f"Gripper {self.action} 실패 [{self.label}]")
 
 
 @dataclass(kw_only=True)
 class VerifyGrasp(Step[None]):
-    """현재 그리퍼 Present_Position 으로 잡힘 검증 (mid-task)."""
+    """gripper 현재 raw 로 잡힘 검증 — held_threshold 미만이면 빈손 (raise).
 
-    def execute(self, ctx: StepContext) -> None:
-        if not _verify_gripper_held(ctx, self.label or "verify_grasp"):
-            raise RuntimeError(f"VerifyGrasp 실패 — 빈손 [{self.label}]")
+    잡힌 물체가 fingers 를 fully-close 위로 벌림 → raw > threshold (so101: open=high).
+    threshold = TaskRobotSpec (하드웨어 tuning, §17.5). gripper raw = Motor.RAW_STATE
+    캐시 (module subscribe)."""
 
-
-def _verify_gripper_held(ctx: StepContext, label: str) -> bool:
-    """두 단계 측정으로 빈손/slip 검출.
-
-    GRIPPER_HELD_RECHECK_DELAY 간격으로 두 번 측정 → threshold 미만 또는
-    SLIP_DELTA 이상 감소 시 빈손 판정.
-    """
-    pos1 = ctx.joint_cache.get_raw(ctx.gripper_cfg.id)
-    if pos1 is None:
-        logger.error("Gripper verify: Present_Position 없음  [%s]", label)
-        return False
-    if pos1 < GRIPPER_HELD_THRESHOLD:
-        logger.error(
-            "Gripper verify 실패: 빈손 (pos=%d < %d)  [%s]",
-            pos1, GRIPPER_HELD_THRESHOLD, label,
-        )
-        return False
-
-    time.sleep(GRIPPER_HELD_RECHECK_DELAY)
-    pos2 = ctx.joint_cache.get_raw(ctx.gripper_cfg.id)
-    if pos2 is None:
-        logger.error("Gripper verify (recheck): Present_Position 없음  [%s]", label)
-        return False
-    if pos2 < GRIPPER_HELD_THRESHOLD:
-        logger.error(
-            "Gripper verify 실패: 재측정 시 빈손 (pos %d → %d < %d)  [%s]",
-            pos1, pos2, GRIPPER_HELD_THRESHOLD, label,
-        )
-        return False
-    if pos1 - pos2 > GRIPPER_HELD_SLIP_DELTA:
-        logger.error(
-            "Gripper verify 실패: slip 중 (pos %d → %d, Δ=%d > %d)  [%s]",
-            pos1, pos2, pos1 - pos2, GRIPPER_HELD_SLIP_DELTA, label,
-        )
-        return False
-    logger.info("Gripper verify OK: pos %d → %d  [%s]", pos1, pos2, label)
-    return True
-
-
-# ─── Detection ───────────────────────────────────────────────────────
-
-
-@dataclass(kw_only=True)
-class GroundedDetect(Step[Detection]):
-    """현재 자세에서 Grounding DINO 로 prompt 객체 1회 검출.
-
-    출력 Detection 은 {position, height, base_z, confidence, prompt} 한 객체로
-    묶여 다음 step 에 넘어감 — 이전의 `output_key + "_meta"` suffix 패턴 추방.
-
-    실패 시 raise (task fail). search_and_detect recipe 는 `Try(GroundedDetect)`
-    로 감싸서 한 자세 실패가 다음 자세로 continue 되게 함.
-    """
-
-    prompt: SlotOr[str] = ""
-
-    def execute(self, ctx: StepContext) -> Detection:
-        prompt = ctx.resolve(self.prompt).strip()
-        if not prompt:
-            raise ValueError(f"GroundedDetect: prompt 비어있음 [{self.label}]")
-
-        logger.info("GroundedDetect '%s'  [%s]", prompt, self.label)
-        res = ctx.call_service(
-            Service.PERCEPTION_GROUNDED_DETECT,
-            GroundedDetectReq(prompt=prompt),
-            GroundedDetectionResult,
-            timeout=60.0,
-        )
-        if not res.success or res.data is None:
+    async def execute(self, ctx: StepContext) -> None:
+        spec = ctx.require_spec()
+        raw = ctx.gripper_raw()
+        if raw is None:
+            raise RuntimeError(f"VerifyGrasp: gripper 상태 미수신 [{self.label}]")
+        if raw < spec.gripper_held_threshold_raw:
             raise RuntimeError(
-                f"GroundedDetect 실패: {res.message} [{self.label}]"
+                f"VerifyGrasp: 빈손 (raw {raw} < threshold "
+                f"{spec.gripper_held_threshold_raw}) [{self.label}]"
             )
-
-        detection = Detection(
-            position=Position3.from_iter(res.data.position),
-            height=res.data.height,
-            base_z=res.data.base_z,
-            confidence=res.data.confidence,
-            prompt=prompt,
-        )
-        logger.info(
-            "GroundedDetect 성공: conf=%.2f base=(%.3f, %.3f, %.3f)",
-            detection.confidence,
-            detection.position.x, detection.position.y, detection.position.z,
-        )
-        return detection
-
-
-# ─── Policy steps — Detection → Position3 derive ──────────────────────
-
-
-@dataclass(kw_only=True)
-class GraspPolicy(Step[Position3]):
-    """객체 height 기반 grasp z 결정 — 옆면 그립.
-
-    grasp_z = base_z + height * grasp_ratio (책상 + 일정 비율).
-    출력 Position3 는 MoveTCP.target 으로 그대로 들어감.
-    """
-
-    target: SlotOr[Detection]
-    grasp_ratio: float = 0.5
-
-    def execute(self, ctx: StepContext) -> Position3:
-        det = ctx.resolve(self.target)
-        if not isinstance(det, Detection):
-            raise TypeError(
-                f"GraspPolicy.target: Detection 기대, {type(det).__name__} 받음"
-            )
-
-        grasp_z = det.base_z + det.height * self.grasp_ratio
-        out = Position3(x=det.position.x, y=det.position.y, z=grasp_z)
-        logger.info(
-            "GraspPolicy base_z=%.3f height=%.3f → grasp_z=%.3f  [%s]",
-            det.base_z, det.height, grasp_z, self.label,
-        )
-        return out
-
-
-@dataclass(kw_only=True)
-class PlacePolicy(Step[Position3]):
-    """place 객체 윗면 + drop_clearance — 공중에서 안 떨구게."""
-
-    target: SlotOr[Detection]
-    drop_clearance: float = 0.010
-
-    def execute(self, ctx: StepContext) -> Position3:
-        det = ctx.resolve(self.target)
-        if not isinstance(det, Detection):
-            raise TypeError(
-                f"PlacePolicy.target: Detection 기대, {type(det).__name__} 받음"
-            )
-
-        top_z = det.position.z
-        place_z = top_z + self.drop_clearance
-        out = Position3(x=det.position.x, y=det.position.y, z=place_z)
-        logger.info(
-            "PlacePolicy: top_z=%.3f → place_z=%.3f (clearance=%.3f)  [%s]",
-            top_z, place_z, self.drop_clearance, self.label,
-        )
-        return out
-
-
-# ─── Control flow steps — ForEach / BreakIf / Try ────────────────────
-
-
-def _new_iter_id() -> str:
-    return f"iter-{uuid.uuid4().hex[:8]}"
-
-
-@dataclass(kw_only=True)
-class ForEach(Step[None]):
-    """items 의 각 element 에 대해 children 시퀀스 실행.
-
-    iter_step_id: factory 가 만든 IterSlot 의 step_id. children 안에서
-    `Slot(iter_step_id)` 로 현재 element 참조. 실행 중 ctx.results 에
-    {iter_step_id: current_item} 박았다 iteration 끝나면 제거.
-
-    BreakLoop (BreakIf 가 raise) 가 children 안에서 발생하면 즉시 종료.
-
-    BT 의 Sequence + Selector + 일반 iteration 의 통합 형태:
-        - mode 분기 없음 — children 안에 BreakIf 두면 Selector 의미
-        - BreakIf 없으면 모든 iteration 실행 (일반 iteration)
-    """
-
-    items: SlotOr[list]
-    children: list[Step] = field(default_factory=list)
-    iter_step_id: str = field(default_factory=_new_iter_id)
-
-    def execute(self, ctx: StepContext) -> None:
-        items = ctx.resolve(self.items)
-        if not isinstance(items, (list, tuple)):
-            raise TypeError(
-                f"ForEach.items: list/tuple 기대, {type(items).__name__}"
-            )
-
-        for item in items:
-            ctx.results[self.iter_step_id] = item
-            try:
-                for child in self.children:
-                    ctx.run_child(child)
-            except _BreakLoop:
-                logger.debug("ForEach break [%s]", self.label)
-                return
-        # 정상 종료 시 iter slot cleanup — 다음 task 에 누출 방지
-        ctx.results.pop(self.iter_step_id, None)
-
-    @classmethod
-    def over(
-        cls,
-        items: SlotOr[list],
-        body: Callable[[Slot[Any]], list[Step]],
-        *,
-        label: str = "",
-    ) -> ForEach:
-        """factory — iteration variable Slot 만들고 body lambda 에 넘김.
-
-        사용:
-            ForEach.over(poses, lambda pose: [
-                MoveJByName(pose_name=pose),
-                detect,
-                BreakIf(condition=detect.out),
-            ])
-        """
-        iter_id = _new_iter_id()
-        iter_slot: Slot[Any] = Slot(step_id=iter_id)
-        return cls(
-            items=items,
-            children=body(iter_slot),
-            iter_step_id=iter_id,
-            label=label,
-        )
-
-
-@dataclass(kw_only=True)
-class BreakIf(Step[None]):
-    """condition 이 truthy 면 가장 가까운 ForEach 에서 탈출.
-
-    Python truthy 검사 — None / 빈 list / 0 / False 는 false, 나머지 truthy.
-    `BreakIf(condition=detect.out)` 처럼 Slot[Detection] 박으면 detect 가
-    성공했을 때 (None 아닐 때) break.
-    """
-
-    condition: SlotOr[Any]
-
-    def execute(self, ctx: StepContext) -> None:
-        if ctx.resolve(self.condition):
-            logger.debug("BreakIf truthy → break [%s]", self.label)
-            raise _BreakLoop()
-
-
-# ─── Scan workflow steps — NewSession / CaptureScan / BuildReconstruction ─
-
-
-@dataclass(kw_only=True)
-class NewSession(Step[int]):
-    """STORAGE_NEW_SCAN_SESSION 호출 → session_row_id 반환.
-
-    out: Slot[int] = session_row_id. CaptureScan / BuildReconstruction 의 session
-    인자에 전달. ScanTask 의 첫 step.
-
-    session_label: storage 의 ScanSessionRecord.label (사용자 친화). Step 의
-    base label 과 별개 (base label = frontend tree display).
-    """
-
-    session_label: str | None = None
-
-    def execute(self, ctx: StepContext) -> int:
-        from core.robot.robot_registry import RobotRegistry
-
-        robot_id = ctx.node.robot_id or RobotRegistry().default_robot_id()
-        res = ctx.call_service(
-            Service.STORAGE_NEW_SCAN_SESSION,
-            CreateScanSessionReq(robot_id=robot_id, label=self.session_label),
-            CreateScanSessionRes,
-        )
-        if not res.success or res.data is None:
-            raise RuntimeError(f"NEW_SCAN_SESSION 실패: {res.message}")
-        sid = res.data.session.id
-        assert sid is not None
-        logger.info(
-            "NewSession id=%d (robot=%s)  [%s]", sid, robot_id, self.label
-        )
-        return sid
-
-
-@dataclass(kw_only=True)
-class CaptureScan(Step[int]):
-    """SCENE3D_SNAPSHOT → blob encode → STORAGE_PUT_SCAN. out: scan_row_id.
-
-    session: NewSession 의 out (session_row_id). ForEach body 안에서 outer
-    NewSession 의 slot 자리 자연 — ctx.results 가 같은 dict.
-    """
-
-    session: Slot[int]
-    num_frames: int = 10
-
-    def execute(self, ctx: StepContext) -> int:
-        session_row_id = ctx.resolve(self.session)
-        if not isinstance(session_row_id, int):
-            raise TypeError(
-                f"CaptureScan.session: int 기대, "
-                f"{type(session_row_id).__name__}"
-            )
-
-        snap_res = ctx.call_service(
-            Service.SCENE3D_SNAPSHOT,
-            Scene3DSnapshotReq(num_frames=self.num_frames),
-            Scene3DSnapshotRes,
-            timeout=15.0,
-        )
-        if not snap_res.success or snap_res.data is None:
-            raise RuntimeError(f"SCENE3D_SNAPSHOT 실패: {snap_res.message}")
-        snap = snap_res.data
-
-        # Pydantic Base64Bytes 자리 input 자리 base64-encoded string 자리 자리.
-        # raw bytes 자리 넘기면 silent corruption (~99% byte 손실).
-        import base64
-        blob_bytes = scan_blob.encode(snap.color_bgr_jpeg, snap.depth_z16_zstd)
-        blob_b64 = base64.b64encode(blob_bytes).decode("ascii")
-        put_res = ctx.call_service(
-            Service.STORAGE_PUT_SCAN,
-            PutScanReq(
-                session_row_id=session_row_id,
-                blob_bytes=blob_b64,  # type: ignore[arg-type]
-                num_frames=snap.num_frames,
-                width=snap.intrinsic.width,
-                height=snap.intrinsic.height,
-                fx=snap.intrinsic.fx,
-                fy=snap.intrinsic.fy,
-                cx=snap.intrinsic.cx,
-                cy=snap.intrinsic.cy,
-                depth_scale=snap.intrinsic.depth_scale,
-                motor_positions=snap.motor_positions,
-                arm_motor_ids=snap.arm_motor_ids,
-            ),
-            PutScanRes,
-            timeout=15.0,
-        )
-        if not put_res.success or put_res.data is None:
-            raise RuntimeError(f"STORAGE_PUT_SCAN 실패: {put_res.message}")
-        scan_row_id = put_res.data.scan.id
-        assert scan_row_id is not None
-        logger.info(
-            "CaptureScan: session=%d, scan_id=%d, row_id=%d  [%s]",
-            session_row_id, put_res.data.scan.scan_id, scan_row_id, self.label,
-        )
-        return scan_row_id
-
-
-@dataclass(kw_only=True)
-class BuildReconstruction(Step[int]):
-    """RECONSTRUCTION_BUILD — multi-view ICP + PoseGraph + TSDF + mesh extract.
-
-    long compute (5-30s) — timeout 90s. progress 자리 RECONSTRUCTION_PROGRESS
-    topic publish (frontend BuildReconstruction step 자리 progress bar 자리).
-    """
-
-    session: Slot[int]
-    voxel_size: float | None = None
-
-    def execute(self, ctx: StepContext) -> int:
-        session_row_id = ctx.resolve(self.session)
-        if not isinstance(session_row_id, int):
-            raise TypeError(
-                f"BuildReconstruction.session: int 기대, "
-                f"{type(session_row_id).__name__}"
-            )
-        res = ctx.call_service(
-            Service.RECONSTRUCTION_BUILD,
-            ReconstructionBuildReq(
-                session_row_id=session_row_id,
-                voxel_size=self.voxel_size,
-            ),
-            ReconstructionBuildRes,
-            timeout=90.0,
-        )
-        if not res.success or res.data is None:
-            raise RuntimeError(f"RECONSTRUCTION_BUILD 실패: {res.message}")
-        recon_row_id = res.data.reconstruction.id
-        assert recon_row_id is not None
-        logger.info(
-            "BuildReconstruction: session=%d, recon=%d, verts=%d  [%s]",
-            session_row_id, recon_row_id, res.data.reconstruction.vertex_count,
-            self.label,
-        )
-        return recon_row_id
-
-
-@dataclass(kw_only=True)
-class Try(Step[Any]):
-    """child step 실행 — raise 면 None 반환, 성공이면 child 결과.
-
-    BT 의 fault-tolerant decorator. search_and_detect recipe 에서 한 자세의
-    GroundedDetect 실패가 다음 자세로 continue 되게 하는 핵심 원리.
-
-    출력 type 은 일반화상 child 의 출력 type — pyright 가 narrow 어려우니
-    `Any`. 사용자는 `Try(MyStep()).out` 이 None 이 될 수 있다고 가정.
-    """
-
-    child: Step[Any]
-
-    def execute(self, ctx: StepContext) -> Any:
-        try:
-            return ctx.run_child(self.child)
-        except _BreakLoop:
-            # BreakIf 는 그대로 위로 — Try 의 책임 아님
-            raise
-        except Exception as exc:
-            logger.info(
-                "Try: child '%s' 실패 (%s: %s) — None 반환",
-                self.child.label or self.child.type_name,
-                type(exc).__name__, exc,
-            )
-            return None
+        logger.info("VerifyGrasp OK: raw=%d  [%s]", raw, self.label)

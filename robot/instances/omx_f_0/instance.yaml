@@ -7,3 +7,9 @@ motor:
     windows: "COM6"
     linux: /dev/ttyACM0
   baudrate: 1000000
+
+# USB UVC 카메라 (D405 는 so101 양도 — distributed_topology.md §1).
+# device_index = cv2.VideoCapture 인덱스. hori3 에 카메라 1대라 0 고정,
+# /dev/video 번호 흔들리면 여기서 조정.
+camera:
+  device_index: 0

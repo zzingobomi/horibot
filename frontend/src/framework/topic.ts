@@ -1,16 +1,19 @@
 /**
  * `useTopic` (declarative read) + `onTopic` (비즈니스 등록).
  *
- *   const joints = useTopic(Topic.MOTOR_STATE_JOINT)?.joints ?? [];
+ *   const tcp = useTopic(Topic.MOTION_TCP_STATE);
  *
  *   onTopic(Topic.SYSTEM_LOG, (log) => {
  *     useSystemStore.getState().addLog(log);
  *   });
  *
- * 둘 다 generated `TopicPayloadMap[K]` 로 자동 typed.
+ * generated `TopicPayloadMap[K]` 로 자동 typed.
+ *
+ * frontend_v2.md §3.2 — generic latest-cache. Stream invariant (seq / lag) 검사는
+ * `useStream` 자리. event 의 *event-driven refetch* 는 `useMirror` 자리.
  */
 import { useFrameworkStore } from "./store";
-import { bridge, topicFor } from "@/api/bridge";
+import { topicFor } from "@/api/bridge";
 import type { TopicPayloadMap } from "@/api/generated/contract";
 
 type GenericHandler = (msg: unknown, robotId: string | null) => void;

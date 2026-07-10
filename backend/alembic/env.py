@@ -1,104 +1,100 @@
-"""Alembic env — Base.metadata 위에서 동작.
+"""Project-wide Alembic env — single DB, single migration history.
 
-dialect-portable — env.py 자체는 SQLite / Postgres 무관. `engine_from_config`
-가 `sqlalchemy.url` 의 dialect prefix 자리 보고 알맞은 engine 자리 자동 생성.
-NAS Postgres 진입 자리 = host yaml 의 rdb_uri 만 `postgresql://...` 로 교체,
-본 파일 변경 X.
+모듈은 자기 테이블/ORM 만 소유 (modules/<name>/orm.py). 이 루트 env 가 **모든 DB 모듈
+ORM 을 import** 해서 공유 `Base.metadata` 에 등록 → autogenerate 가 전 스키마를 한
+history 로 관리. 새 DB 모듈 추가 시 아래 REGISTER 블록에 import 한 줄.
 
-두 entry 지원 (Alembic 정석):
-
-1) Programmatic — StorageRegistry 가 부팅 시 `config.attributes['connection']`
-   으로 live SQLAlchemy connection 주입. host yaml 의 rdb_uri 가 engine 생성
-   SSOT. 실 운영 (`upgrade head`) 자리.
-
-2) CLI standalone — `alembic revision --autogenerate -m "..."` /
-   `alembic upgrade head` 등 CLI 실행 자리. connection 자리 주입자 없으면
-   scratch SQLite (`.alembic_autogen.db`, gitignored) 자리 fallback — ORM
-   metadata 와 schema diff 떠서 새 revision emit 용. *운영 DB 아님*.
-
-   ※ Postgres 특화 기능 (JSONB / UUID / GIN index / partial expression /
-   ENUM type) 자리 쓰기 시작하면 scratch SQLite 자리는 metadata 자리 부족 자리
-   부정확한 diff 자리 emit 할 수 있음. 그때는 CLI 자리도 실 Postgres 에 붙는
-   방식 자리 (예: `ALEMBIC_DB_URL=postgresql://... alembic revision ...`)
-   필요. 지금은 ORM 이 dialect-portable types 만 쓰므로 scratch SQLite 자리
-   충분.
-
-context 옵션:
-- `render_as_batch` — SQLite ALTER TABLE 제약 회피 (table 재생성 패턴).
-  *dialect 자리 SQLite 인 경우만* True. Postgres 자리는 native ALTER 자리
-  지원 → batch wrapping 자체 자리 verbose 자리 (한 column 추가 자리도 `with
-  batch_alter_table` 블록 자리 emit). dialect-aware 자리 분기로 SQLite=batch,
-  Postgres=native.
-- `compare_type` / `compare_server_default` — autogenerate 가 column type /
-  default 변경도 잡게 함 (기본 OFF, 정석 자리는 True). 양쪽 dialect 자리 모두
-  portable.
+URL 우선순위: runtime connection (config.attributes["connection"]) > CLI `-x db_url=`
+> env HORIBOT_DB_URL > alembic.ini sqlalchemy.url.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
-from sqlalchemy.engine import Connection
+from sqlalchemy import create_engine, pool
 
-# backend/ 가 sys.path 에 들어와야 modules.* 가 import 가능. 보통 main.py /
-# pytest 가 이미 처리하지만, alembic CLI 단독 실행 자리 안전망.
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
+# backend_v2 root 를 path 에.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from modules.storage.rdb.base import Base  # noqa: E402
+from infra.database.base import Base  # noqa: E402
+from infra.database.types import UtcDateTime  # noqa: E402
 
-# ORM 모델 import — Base.metadata 가 모든 테이블 수집하게 트리거.
-# entity 추가 시 본 파일에 import 한 줄 추가.
-import modules.calibration.orm  # noqa: E402, F401
-import modules.scan_workflow.orm  # noqa: E402, F401
+# ── REGISTER: DB 모듈 ORM import (테이블을 Base.metadata 에 등록) ──
+# 새 DB 모듈 추가 시 여기 한 줄. import 만으로 mapper 등록됨.
+import modules.calibration.persistence.orm  # noqa: E402,F401
+import modules.scan.persistence.orm  # noqa: E402,F401
+import modules.waypoint.persistence.orm  # noqa: E402,F401
 
+# ─────────────────────────────────────────────────────────────────
 
 config = context.config
-
-# Logging 은 host 가 소유 — alembic.ini 의 [loggers] 섹션 자체를 비웠음.
-# 정석 (Alembic embedding pattern): logging.basicConfig 는 main.py (programmatic
-# 자리) 또는 사용자 환경 (CLI 자리) SSOT, env.py 는 손 X.
-
 target_metadata = Base.metadata
 
 
-def _run_with_connection(connection: Connection) -> None:
-    # SQLite 만 batch (ALTER TABLE 제약 회피). Postgres 등은 native ALTER.
-    is_sqlite = connection.dialect.name == "sqlite"
+def _resolve_url() -> str:
+    x = context.get_x_argument(as_dictionary=True)
+    return (
+        x.get("db_url")
+        or os.environ.get("HORIBOT_DB_URL")
+        or config.get_main_option("sqlalchemy.url")
+        or "sqlite:///horibot.db"
+    )
+
+
+def _render_item(type_, obj, autogen_context):  # noqa: ANN001, ANN202
+    """migration 을 app TypeDecorator 에 결합 X — UtcDateTime 은 DDL 상 그냥
+    timezone-aware DATETIME 이므로 `sa.DateTime(timezone=True)` 로 스냅샷.
+    (기본 autogen 은 `infra.database.types.UtcDateTime(...)` 로 렌더하는데 import 를
+    안 넣어 NameError.)"""
+    # script.py.mako 가 이미 `import sqlalchemy as sa` 를 넣으므로 imports 추가 X (중복 방지).
+    if type_ == "type" and isinstance(obj, UtcDateTime):
+        return "sa.DateTime(timezone=True)"
+    return False
+
+
+def run_migrations_offline() -> None:
     context.configure(
-        connection=connection,
+        url=_resolve_url(),
         target_metadata=target_metadata,
-        render_as_batch=is_sqlite,
-        compare_type=True,
-        compare_server_default=True,
+        literal_binds=True,
+        render_as_batch=True,
+        render_item=_render_item,
+        dialect_opts={"paramstyle": "named"},
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def run_migrations_online() -> None:
-    """Programmatic (StorageRegistry) 우선, fallback 으로 CLI standalone."""
-    connection = config.attributes.get("connection", None)
-    if connection is not None:
-        _run_with_connection(connection)
+    connectable = config.attributes.get("connection", None)
+    if connectable is not None:
+        context.configure(
+            connection=connectable,
+            target_metadata=target_metadata,
+            render_as_batch=True,
+            render_item=_render_item,
+        )
+        with context.begin_transaction():
+            context.run_migrations()
         return
 
-    # CLI standalone — scratch SQLite 자리. cwd 무관하게 BACKEND_ROOT 기준
-    # 절대 경로 override (alembic.ini::sqlalchemy.url 의 placeholder 덮어쓰기).
-    cfg_section = config.get_section(config.config_ini_section, {}) or {}
-    scratch_db = BACKEND_ROOT / ".alembic_autogen.db"
-    cfg_section["sqlalchemy.url"] = f"sqlite:///{scratch_db.as_posix()}"
-    engine = engine_from_config(
-        cfg_section,
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-    with engine.connect() as conn:
-        _run_with_connection(conn)
+    engine = create_engine(_resolve_url(), poolclass=pool.NullPool, future=True)
+    with engine.connect() as connection:
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            render_as_batch=True,
+            render_item=_render_item,
+        )
+        with context.begin_transaction():
+            context.run_migrations()
 
 
-run_migrations_online()
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()

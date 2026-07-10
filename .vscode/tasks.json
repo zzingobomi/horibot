@@ -6,7 +6,7 @@
       "type": "shell",
       "command": "pnpm dev",
       "options": {
-        "cwd": "${workspaceFolder}/frontend_v2",
+        "cwd": "${workspaceFolder}/frontend",
         "shell": {
           "executable": "powershell.exe",
           "args": ["-NoProfile", "-Command"]

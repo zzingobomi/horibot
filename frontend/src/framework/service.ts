@@ -2,13 +2,17 @@
  * `useService` — typed call + 응답 자동 cache.
  *
  *   const moveJ = useService(ServiceKey.MOTION_MOVE_J);
- *   await moveJ.call({ joints });
+ *   await moveJ.call({ target_joints });
  *
- *   const config = useService(ServiceKey.MOTOR_GET_CONFIG);
- *   const torque = config.data?.torque_enabled ?? false;  // cross-component cache
+ *   const cap = useService(ServiceKey.MOTOR_CAPABILITIES);
+ *   const torqueToggle = cap.data?.flags.includes("torque_toggle");
  *
- * `bridge.callService` 가 본 store 에 pending → response 갱신 (transport 자리),
- * 본 hook 은 *reactive view* 만 제공.
+ * `bridge.callService` 가 본 store 에 pending → response 갱신, 본 hook 은
+ * *reactive view* 만 제공.
+ *
+ * frontend_v2.md §3.1 — backend_v2 의 exception model 은 bridge.ts shim
+ * (type=2 → success:true / type=3 → success:false) 로 옛 `{success, message, data}`
+ * shape 유지.
  */
 import { useCallback } from "react";
 import { useFrameworkStore, type ServiceEntry } from "./store";
@@ -44,12 +48,11 @@ export function useService<K extends keyof ServiceMap>(
       req: ServiceMap[K]["req"],
       opts?: { timeoutMs?: number; robotId?: string },
     ) => {
-      const res = await bridge.callService<K>(key, req, {
+      await bridge.callService<K>(key, req, {
         timeoutMs: opts?.timeoutMs,
         robotId: opts?.robotId ?? robotId,
       });
       const wk = bridge.expand(key, opts?.robotId ?? robotId);
-      // bridge 가 이미 cache 갱신 — getState() 로 최신 entry read.
       return useFrameworkStore.getState().serviceData[wk] as ServiceEntry<
         ServiceMap[K]["res"]
       >;

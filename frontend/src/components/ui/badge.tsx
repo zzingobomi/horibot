@@ -14,6 +14,12 @@ const badgeVariants = cva(
           "bg-secondary text-secondary-foreground [a]:hover:bg-secondary/80",
         destructive:
           "bg-destructive/10 text-destructive focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:bg-destructive/20",
+        // traffic-light 상태 (verdict green/yellow) — destructive(red) 와 한 세트.
+        // 테마에 --success/--warning 토큰이 없어 명시 green/yellow (기존 신호등과 동일 색).
+        success:
+          "bg-green-500/15 text-green-600 dark:bg-green-500/20 dark:text-green-400",
+        warning:
+          "bg-yellow-500/15 text-yellow-700 dark:bg-yellow-500/20 dark:text-yellow-400",
         outline:
           "border-border text-foreground [a]:hover:bg-muted [a]:hover:text-muted-foreground",
         ghost:

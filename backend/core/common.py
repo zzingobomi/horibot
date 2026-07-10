@@ -1,1 +1,0 @@
-GRIPPER_SETTLE = 0.8

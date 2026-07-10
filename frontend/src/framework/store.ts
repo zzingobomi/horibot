@@ -1,9 +1,8 @@
 /**
  * Framework internal cache — 토픽 latest + 서비스 응답 + bridge 연결 상태.
  *
- * 모든 사용처는 `useTopic` / `useService` / `useBridgeConnected` 를 거치고,
- * 본 store 는 *내부 구현*. `bridge.ts` 만 callService 응답 자동 cache 위해
- * 직접 import.
+ * 사용처는 `useTopic` / `useService` / `useBridgeConnected` 통과. 본 store 는
+ * 내부 구현. `bridge.ts` 만 callService 응답 auto-cache 위해 직접 import.
  */
 import { create } from "zustand";
 

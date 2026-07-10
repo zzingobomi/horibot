@@ -1,29 +1,37 @@
+import { decode as msgpackDecode } from "@msgpack/msgpack";
 import ReconnectingWebSocket from "reconnecting-websocket";
-import { WsMsgType } from "@/types/bridge";
-import type { WsIncoming, WsOutgoing } from "@/types/bridge";
-import { DEFAULT_ROBOT_ID, WS_URL } from "@/constants";
+import {
+  FRAME_VERSION,
+  FrameType,
+  WsOp,
+} from "@/types/bridge";
+import type { WsOutgoing } from "@/types/bridge";
+import { WS_URL } from "@/constants";
 import type {
   ServiceMap,
   TopicPayloadMap,
 } from "@/api/generated/contract";
-// 응답 자동 cache 위해 framework store 직접 import (transport ↔ framework
+// 응답 auto-cache 위해 framework store 직접 import (transport ↔ framework
 // circular: top-level 사용 X, callService 런타임 안에서만 호출 → safe).
 import { useFrameworkStore } from "@/framework/store";
 
-// robot-scoped template (`horibot/{robot_id}/...`) 자동 expand. multi_robot_
-// phase2_frontend.md §4 결정 3 — N=1 호환 코드. Slice C 에서 focus robot
-// 명시화 시 caller 가 robotId 인자 받게 변경 (reversible).
-function expandTopicKey(key: string, robotId: string): string {
-  return key.includes("{robot_id}")
-    ? key.replace(/\{robot_id\}/g, robotId)
-    : key;
+// robot-scoped template (`srv/.../{robot_id}/...` 등) auto-expand.
+// robotId 미지정(또는 미로드 "") + scoped 키 = **미확장 그대로 반환** (fail-soft):
+// 기본 로봇으로 추측 라우팅하지 않는다 → 잘못하면 데이터 없음/no-op 일 뿐,
+// 엉뚱한 로봇으로 명령이 새지 않는다. (ambient default 로봇 폐기.)
+function expandTopicKey(key: string, robotId?: string): string {
+  if (!key.includes("{robot_id}")) return key;
+  if (!robotId) return key;
+  return key.replace(/\{robot_id\}/g, robotId);
 }
 
-export function topicFor(template: string, robotId: string = DEFAULT_ROBOT_ID): string {
+export function topicFor(template: string, robotId?: string): string {
   return expandTopicKey(template, robotId);
 }
 
 type TopicCallback = (data: Record<string, unknown>) => void;
+// backend_v2 wire 에선 topic payload 도 msgpack 통과. binary callback 은 그 msgpack-encoded
+// raw bytes 받음 (decode 는 consumer 책임 — bytes field 추출 등).
 type BinaryTopicCallback = (payload: ArrayBuffer) => void;
 type ServiceResolver = (res: {
   success: boolean;
@@ -37,10 +45,6 @@ export type ServiceResponse<T> = {
   data: T;
 };
 
-// 바이너리 프레임: [u8 v=1][u8 type=1][u16 BE topic_len][topic UTF-8][payload]
-const BIN_VERSION = 1;
-const BIN_TYPE_TOPIC_DATA = 1;
-
 function makeRequestId(): string {
   if (
     typeof crypto !== "undefined" &&
@@ -53,57 +57,53 @@ function makeRequestId(): string {
     .slice(2, 10)}`;
 }
 
-function decodeBinaryTopic(
-  buf: ArrayBuffer
-): { topic: string; payload: ArrayBuffer } | null {
-  if (buf.byteLength < 4) return null;
-  const view = new DataView(buf);
-  if (view.getUint8(0) !== BIN_VERSION) return null;
-  if (view.getUint8(1) !== BIN_TYPE_TOPIC_DATA) return null;
-  const topicLen = view.getUint16(2, false);
-  const headerLen = 4 + topicLen;
-  if (buf.byteLength < headerLen) return null;
-  const topic = new TextDecoder().decode(buf.slice(4, headerLen));
-  return { topic, payload: buf.slice(headerLen) };
+interface DecodedFrame {
+  type: number;
+  key: string;
+  payload: ArrayBuffer;
 }
 
-class BridgeClient {
+export function decodeFrame(buf: ArrayBuffer): DecodedFrame | null {
+  if (buf.byteLength < 4) return null;
+  const view = new DataView(buf);
+  if (view.getUint8(0) !== FRAME_VERSION) return null;
+  const type = view.getUint8(1);
+  const keyLen = view.getUint16(2, false);
+  const headerLen = 4 + keyLen;
+  if (buf.byteLength < headerLen) return null;
+  const key = new TextDecoder().decode(buf.slice(4, headerLen));
+  return { type, key, payload: buf.slice(headerLen) };
+}
+
+export function decodeMsgpackRecord(payload: ArrayBuffer): Record<string, unknown> {
+  const decoded = msgpackDecode(new Uint8Array(payload));
+  return (decoded ?? {}) as Record<string, unknown>;
+}
+
+export class BridgeClient {
   private ws: ReconnectingWebSocket | null = null;
   private topicListeners = new Map<string, Set<TopicCallback>>();
   private binaryTopicListeners = new Map<string, Set<BinaryTopicCallback>>();
   private pendingServices = new Map<string, ServiceResolver>();
+  // ws 가 아직 OPEN 아닐 때(초기 연결/재연결 창) 낸 service RPC 프레임 — 버리지 않고
+  // 버퍼했다가 open 시 flush. 재연결 창에서 로봇 명령(moveJ/gripper/task run 등)이
+  // 조용히 유실되던 결함 방지. publish(jog 50Hz 등)는 latest-wins 라 버퍼 X
+  // (재연결 후 stale 명령 재생은 오히려 위험).
+  private unsentServices: Array<{ id: string; frame: string }> = [];
   private onStatusChange?: (connected: boolean) => void;
-  private defaultRobotId: string = DEFAULT_ROBOT_ID;
-  // defaultRobotId 변경 시 호출되는 listener — useRobots fetch 가 완료된 후
-  // bootstrap 의 robot-scoped sub 갱신 외에 *binary 토픽* (bootstrap skip 대상)
-  // 자리도 새 robotId 로 re-attach 가능하게 한다. 안 두면 _attach 가 처음 connect
-  // 시점의 옛 default (omx_f_0) 로 영구 sub → 실제 robot (so101) publish 자리
-  // 자체 자리 frontend 미수신 (PointCloud 안 보임 회귀).
-  private defaultRobotListeners = new Set<(robotId: string) => void>();
-
-  setDefaultRobotId(robotId: string): void {
-    if (this.defaultRobotId === robotId) return;
-    this.defaultRobotId = robotId;
-    for (const l of this.defaultRobotListeners) l(robotId);
-  }
-
-  onDefaultRobotIdChange(listener: (robotId: string) => void): () => void {
-    this.defaultRobotListeners.add(listener);
-    return () => {
-      this.defaultRobotListeners.delete(listener);
-    };
-  }
 
   /**
-   * 외부 자리 (framework hooks) 에서 직접 expand 가 필요할 때. robotId 미지정
-   * = 현재 defaultRobotId. global key ({robot_id} placeholder 없음) 은 그대로.
+   * 외부 (framework hooks) 에서 직접 expand. robotId 미지정 + scoped 키 =
+   * 미확장 (fail-soft, 기본 로봇 추측 없음). placeholder 없으면 그대로.
    */
   expand(key: string, robotId?: string): string {
-    return expandTopicKey(key, robotId ?? this.defaultRobotId);
+    return expandTopicKey(key, robotId);
   }
 
   private _expand(key: string): string {
-    return expandTopicKey(key, this.defaultRobotId);
+    // subscribe/publish 호출부는 이미 확장된 키를 넘긴다 (bootstrap/hooks 가
+    // topicFor/expand 로 robotId 를 박아서). scoped 키가 미확장으로 오면 그대로 둔다.
+    return expandTopicKey(key);
   }
 
   connect(onStatusChange?: (connected: boolean) => void): void {
@@ -123,18 +123,15 @@ class BridgeClient {
       console.log("[Bridge] 연결됨");
       this.onStatusChange?.(true);
       this._resubscribeAll();
+      this._flushUnsentServices();
     });
 
     this.ws.addEventListener("message", (ev) => {
-      if (typeof ev.data === "string") {
-        try {
-          const msg = JSON.parse(ev.data) as WsIncoming;
-          this._handleIncoming(msg);
-        } catch (e) {
-          console.error("[Bridge] 메시지 파싱 오류", e);
-        }
-      } else if (ev.data instanceof ArrayBuffer) {
+      // backend_v2 → browser : binary frame only. JSON text 안 옴.
+      if (ev.data instanceof ArrayBuffer) {
         this._handleBinary(ev.data);
+      } else {
+        console.warn("[Bridge] 예상치 못한 text 메시지", ev.data);
       }
     });
 
@@ -148,39 +145,81 @@ class BridgeClient {
     });
   }
 
-  private _handleIncoming(msg: WsIncoming): void {
-    if (msg.type === WsMsgType.TopicData) {
-      const cbs = this.topicListeners.get(msg.topic);
-      cbs?.forEach((cb) => cb(msg.data));
-    } else if (msg.type === WsMsgType.ServiceResponse) {
-      const resolve = this.pendingServices.get(msg.request_id);
-      if (resolve) {
-        resolve({ success: msg.success, message: msg.message, data: msg.data });
-        this.pendingServices.delete(msg.request_id);
-      }
-    } else if (msg.type === WsMsgType.Error) {
-      console.error("[Bridge] 서버 오류:", msg.message);
-    }
-  }
-
   private _handleBinary(buf: ArrayBuffer): void {
-    const decoded = decodeBinaryTopic(buf);
-    if (!decoded) {
+    const frame = decodeFrame(buf);
+    if (!frame) {
       console.warn("[Bridge] 바이너리 헤더 파싱 실패");
       return;
     }
-    const cbs = this.binaryTopicListeners.get(decoded.topic);
-    cbs?.forEach((cb) => cb(decoded.payload));
+
+    if (frame.type === FrameType.TopicData) {
+      const rawCbs = this.binaryTopicListeners.get(frame.key);
+      rawCbs?.forEach((cb) => cb(frame.payload));
+
+      const jsonCbs = this.topicListeners.get(frame.key);
+      if (jsonCbs && jsonCbs.size > 0) {
+        try {
+          const decoded = decodeMsgpackRecord(frame.payload);
+          jsonCbs.forEach((cb) => cb(decoded));
+        } catch (e) {
+          console.error("[Bridge] topic msgpack decode 실패", frame.key, e);
+        }
+      }
+      return;
+    }
+
+    if (frame.type === FrameType.ServiceResponse) {
+      const resolver = this.pendingServices.get(frame.key);
+      if (!resolver) return;
+      this.pendingServices.delete(frame.key);
+      try {
+        const env = decodeMsgpackRecord(frame.payload);
+        const data = (env.data ?? {}) as Record<string, unknown>;
+        resolver({ success: true, message: "", data });
+      } catch (e) {
+        resolver({
+          success: false,
+          message: `service response decode 실패: ${String(e)}`,
+          data: {},
+        });
+      }
+      return;
+    }
+
+    if (frame.type === FrameType.ServiceError) {
+      const resolver = this.pendingServices.get(frame.key);
+      if (!resolver) return;
+      this.pendingServices.delete(frame.key);
+      try {
+        const err = decodeMsgpackRecord(frame.payload) as {
+          type?: string;
+          message?: string;
+        };
+        const message = err.type
+          ? `${err.type}: ${err.message ?? ""}`
+          : err.message ?? "서비스 오류";
+        resolver({ success: false, message, data: {} });
+      } catch (e) {
+        resolver({
+          success: false,
+          message: `service error decode 실패: ${String(e)}`,
+          data: {},
+        });
+      }
+      return;
+    }
+
+    console.warn("[Bridge] 알 수 없는 frame type", frame.type, frame.key);
   }
 
   private _resubscribeAll(): void {
     console.log("[Bridge] 모든 토픽 재구독");
 
     for (const topic of this.topicListeners.keys()) {
-      this._send({ type: WsMsgType.Subscribe, topic });
+      this._send({ op: WsOp.Subscribe, topic });
     }
     for (const topic of this.binaryTopicListeners.keys()) {
-      this._send({ type: WsMsgType.Subscribe, topic });
+      this._send({ op: WsOp.Subscribe, topic });
     }
   }
 
@@ -191,7 +230,6 @@ class BridgeClient {
   subscribe(topic: string, callback: TopicCallback): () => void;
   subscribe(topic: string, callback: TopicCallback): () => void {
     const expanded = this._expand(topic);
-    console.log(`[Bridge] 구독 요청: ${expanded}`);
 
     if (!this.topicListeners.has(expanded)) {
       this.topicListeners.set(expanded, new Set());
@@ -200,10 +238,7 @@ class BridgeClient {
     this.topicListeners.get(expanded)!.add(callback);
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this._send({
-        type: WsMsgType.Subscribe,
-        topic: expanded,
-      });
+      this._send({ op: WsOp.Subscribe, topic: expanded });
     }
 
     return () => {
@@ -214,12 +249,9 @@ class BridgeClient {
 
       if (cbs.size === 0) {
         this.topicListeners.delete(expanded);
-
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this._send({
-            type: WsMsgType.Unsubscribe,
-            topic: expanded,
-          });
+        const hasBinary = this.binaryTopicListeners.has(expanded);
+        if (!hasBinary && this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this._send({ op: WsOp.Unsubscribe, topic: expanded });
         }
       }
     };
@@ -227,7 +259,6 @@ class BridgeClient {
 
   subscribeBinary(topic: string, callback: BinaryTopicCallback): () => void {
     const expanded = this._expand(topic);
-    console.log(`[Bridge] 바이너리 구독 요청: ${expanded}`);
 
     if (!this.binaryTopicListeners.has(expanded)) {
       this.binaryTopicListeners.set(expanded, new Set());
@@ -236,7 +267,7 @@ class BridgeClient {
     this.binaryTopicListeners.get(expanded)!.add(callback);
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this._send({ type: WsMsgType.Subscribe, topic: expanded });
+      this._send({ op: WsOp.Subscribe, topic: expanded });
     }
 
     return () => {
@@ -247,9 +278,9 @@ class BridgeClient {
 
       if (cbs.size === 0) {
         this.binaryTopicListeners.delete(expanded);
-
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this._send({ type: WsMsgType.Unsubscribe, topic: expanded });
+        const hasJson = this.topicListeners.has(expanded);
+        if (!hasJson && this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this._send({ op: WsOp.Unsubscribe, topic: expanded });
         }
       }
     };
@@ -263,7 +294,7 @@ class BridgeClient {
   publish(topic: string, data: Record<string, unknown>, robotId?: string): void;
   publish(topic: string, data: unknown, robotId?: string): void {
     this._send({
-      type: WsMsgType.Publish,
+      op: WsOp.Publish,
       topic: this.expand(topic, robotId),
       data: data as Record<string, unknown>,
     });
@@ -286,7 +317,6 @@ class BridgeClient {
   ): Promise<ServiceResponse<unknown>> {
     const timeoutMs = options?.timeoutMs ?? 5000;
     const expanded = this.expand(key, options?.robotId);
-    // pending mark — 사용처 useService(key).pending 즉시 reactive
     const prev = useFrameworkStore.getState().serviceData[expanded];
     useFrameworkStore.getState().setServiceData(expanded, {
       success: prev?.success ?? false,
@@ -308,14 +338,24 @@ class BridgeClient {
         resolve(res);
       };
       this.pendingServices.set(request_id, cacheAndResolve);
-      this._send({
-        type: WsMsgType.Service,
+      // Bridge = 순수 transport — 키 확장(라우팅)만. robot-agnostic 서비스의
+      // robot_id 는 req 필드 (호출자가 data 에 넣음, 타입이 강제) — 여기서 주입 X.
+      // timeout 은 wire 로 전파 — bridge 의 zenoh call 이 같은 상한을 쓰게
+      // (장시간 서비스가 bridge 기본 5s 에 잘리던 회귀 방지).
+      const frame: WsOutgoing = {
+        op: WsOp.Service,
         key: expanded,
         request_id,
         data: data as Record<string, unknown>,
-        timeout: timeoutMs / 1000,
-      });
+        timeout_s: timeoutMs / 1000,
+      };
+      // ws 가 CONNECTING(초기/재연결) 이면 _send 가 drop → RPC 프레임을 버퍼했다가
+      // open 시 flush. (frame 을 직렬화해 stash — open 시점에 재직렬화 불필요)
+      if (!this._send(frame)) {
+        this.unsentServices.push({ id: request_id, frame: JSON.stringify(frame) });
+      }
 
+      // backend 도 5s default timeout — frontend 가 safety net
       setTimeout(() => {
         if (this.pendingServices.has(request_id)) {
           this.pendingServices.delete(request_id);
@@ -329,9 +369,26 @@ class BridgeClient {
     });
   }
 
-  private _send(msg: WsOutgoing): void {
+  /** ws 가 OPEN 이면 전송하고 true, 아니면(연결 전/재연결 중) 전송 안 하고 false. */
+  private _send(msg: WsOutgoing): boolean {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
+      return true;
+    }
+    return false;
+  }
+
+  /** open 시 호출 — 연결 창에 쌓인 service RPC 프레임 flush. 이미 timeout/resolve 된
+   *  요청(pendingServices 에 없음)은 재전송 X — 중복 side-effect 방지. */
+  private _flushUnsentServices(): void {
+    if (this.unsentServices.length === 0) return;
+    const items = this.unsentServices;
+    this.unsentServices = [];
+    for (const it of items) {
+      if (!this.pendingServices.has(it.id)) continue;
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(it.frame);
+      }
     }
   }
 

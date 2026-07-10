@@ -1,48 +1,50 @@
+/**
+ * Sidebar — robot enumeration + mode navigation.
+ *
+ * 옛 frontend Sidebar carry over (frontend_v2.md §2.3), v2 로 적응:
+ *   - robots.yaml SSOT 자동 enumeration (useRobots) — capabilities 로 mode 링크.
+ *   - Dashboard / World / Settings / Tasks 섹션은 해당 page/backend 부재로 제거
+ *     (Step E+ 박히면 nav 추가). SIDEBAR_MODES 는 현재 ["move"].
+ *   - 옛 shadcn theme token (bg-background 등) 대신 v2 raw zinc 색.
+ */
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
-  Gamepad2,
-  Settings,
+  Bot,
+  LayoutDashboard,
+  ListTodo,
   PanelLeftClose,
   PanelLeftOpen,
-  Bot,
-  Globe,
-  ListChecks,
+  Share2,
 } from "lucide-react";
-import { ConnectionStatus } from "@/components/shared/ConnectionStatus";
 import { cn } from "@/lib/utils";
 import { useRobots } from "@/hooks/useRobots";
-import { useTasks } from "@/hooks/useTasks";
-import type { RobotCapability } from "@/types/robot";
+import { useBridgeConnected } from "@/framework";
 
-const navItems = [
-  { to: "/", label: "Dashboard", icon: Gamepad2 },
-  { to: "/world", label: "World", icon: Globe },
-  { to: "/settings", label: "Settings", icon: Settings },
-];
-
-// Sidebar mode sub-route 자리 — UI page mode 만. backend RobotCapability 의
-// 부분집합 (gamepad / rgbd 같은 도구성/sensor capability 는 sidebar mode 아님
-// — point cloud 토글은 Scene Controls 의 mode-무관 자리, scan workflow 는
-// TasksPage 의 scan task 자리).
-type SidebarMode = Extract<RobotCapability, "move" | "calibrate">;
-const SIDEBAR_MODES: ReadonlySet<RobotCapability> = new Set([
-  "move",
-  "calibrate",
-]);
-const CAPABILITY_LABELS: Record<SidebarMode, string> = {
+// Sidebar mode sub-route 자리 — capability 이름과 1:1 인 UI page mode.
+const SIDEBAR_MODES: ReadonlySet<string> = new Set(["move", "calibrate"]);
+const MODE_LABELS: Record<string, string> = {
   move: "Move",
   calibrate: "Calibrate",
+  scan: "Scan",
+  assets: "Assets",
 };
+
+/** robot capabilities → sidebar mode 링크 list. rgbd → scan mode (capability 이름과
+ *  mode 이름이 다른 유일 케이스). assets(Waypoint) 는 capability 아니라 움직이는
+ *  robot 공통 자산 계층 → 항상 노출. */
+function sidebarModes(caps: string[]): string[] {
+  const modes = caps.filter((c) => SIDEBAR_MODES.has(c));
+  if (caps.includes("rgbd")) modes.push("scan");
+  modes.push("assets");
+  return modes;
+}
 
 const COLLAPSED_KEY = "omx.sidebar.collapsed";
 
 export function Sidebar() {
-  // Sidebar 는 navigation only. home / rest / torque 등 robot control 은
-  // robot 페이지의 RobotStatePanel 이 SSOT — URL `/robots/:id` 가 robot
-  // context 를 명시하므로 모호함 없음.
   const { robots } = useRobots();
-  const { tasks } = useTasks();
+  const connected = useBridgeConnected();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(COLLAPSED_KEY) === "1";
@@ -55,27 +57,29 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "flex h-screen flex-col border-r bg-background transition-[width] duration-200",
+        "flex h-screen flex-col border-r border-zinc-800 bg-zinc-950 transition-[width] duration-200",
         collapsed ? "w-14" : "w-52",
       )}
     >
       {/* 로고 + 토글 */}
       <div
         className={cn(
-          "flex items-center border-b",
+          "flex items-center border-b border-zinc-800",
           collapsed ? "justify-center px-2 py-5" : "justify-between px-4 py-5",
         )}
       >
         {!collapsed && (
           <div className="min-w-0">
-            <h1 className="text-lg font-semibold tracking-tight">Horibot</h1>
-            <p className="text-xs text-muted-foreground">Robot Arm Controller</p>
+            <h1 className="text-lg font-semibold tracking-tight text-zinc-100">
+              Horibot
+            </h1>
+            <p className="text-xs text-zinc-500">Robot Arm Controller</p>
           </div>
         )}
         <button
           onClick={() => setCollapsed((c) => !c)}
           title={collapsed ? "사이드바 펼치기" : "사이드바 접기"}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
         >
           {collapsed ? (
             <PanelLeftOpen className="h-4 w-4" />
@@ -85,131 +89,141 @@ export function Sidebar() {
         </button>
       </div>
 
-      {/* 네비게이션 */}
       <nav className="flex-1 py-4 space-y-1 px-2 overflow-y-auto">
-        {navItems.map(({ to, label, icon: Icon }) => (
+        {/* Dashboard — 착지점 (robot-agnostic 개요) */}
+        <NavLink
+          to="/"
+          end
+          title={collapsed ? "Dashboard" : undefined}
+          className={({ isActive }) =>
+            cn(
+              "flex items-center rounded-md py-2 text-sm transition-colors",
+              collapsed ? "justify-center px-2" : "gap-3 px-3",
+              isActive
+                ? "bg-zinc-800 text-zinc-100 font-medium"
+                : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
+            )
+          }
+        >
+          <LayoutDashboard className="h-4 w-4 shrink-0" />
+          {!collapsed && <span>Dashboard</span>}
+        </NavLink>
+
+        {/* Robots 섹션 — robots.yaml SSOT 자동 enumeration */}
+        {!collapsed && (
+          <p className="px-3 pt-3 pb-1 text-xs font-medium text-zinc-500 uppercase tracking-wider">
+            Robots
+          </p>
+        )}
+        {robots.map((r) =>
+          collapsed ? (
+            <NavLink
+              key={r.id}
+              to={`/robots/${r.id}`}
+              title={r.id}
+              className={({ isActive }) =>
+                cn(
+                  "flex items-center justify-center px-2 rounded-md py-2 text-sm transition-colors",
+                  isActive
+                    ? "bg-zinc-800 text-zinc-100 font-medium"
+                    : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
+                )
+              }
+            >
+              <Bot className="h-4 w-4 shrink-0" />
+            </NavLink>
+          ) : (
+            <div key={r.id} className="mb-1">
+              <div className="flex items-center gap-3 px-3 py-1.5 text-xs text-zinc-400">
+                <Bot className="h-4 w-4 shrink-0" />
+                <span className="flex-1 truncate">{r.id}</span>
+              </div>
+              {sidebarModes(r.capabilities ?? ["move"])
+                .map((cap) => (
+                  <NavLink
+                    key={cap}
+                    to={`/robots/${r.id}/${cap}`}
+                    className={({ isActive }) =>
+                      cn(
+                        "flex items-center gap-2 ml-7 mr-2 px-3 py-1.5 rounded-md text-sm transition-colors",
+                        isActive
+                          ? "bg-zinc-800 text-zinc-100 font-medium"
+                          : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
+                      )
+                    }
+                  >
+                    <span>{MODE_LABELS[cap] ?? cap}</span>
+                  </NavLink>
+                ))}
+            </div>
+          ),
+        )}
+
+        {/* Tasks 섹션 — host-level(robot-agnostic, §2.7). robots 목록 아래 (v1 배치). */}
+        <div className="pt-3">
+          {!collapsed && (
+            <p className="px-3 pb-1 text-xs font-medium text-zinc-500 uppercase tracking-wider">
+              Tasks
+            </p>
+          )}
           <NavLink
-            key={to}
-            to={to}
-            end={to === "/"}
-            title={collapsed ? label : undefined}
+            to="/tasks"
+            title={collapsed ? "Tasks" : undefined}
             className={({ isActive }) =>
               cn(
                 "flex items-center rounded-md py-2 text-sm transition-colors",
                 collapsed ? "justify-center px-2" : "gap-3 px-3",
                 isActive
-                  ? "bg-accent text-accent-foreground font-medium"
-                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                  ? "bg-zinc-800 text-zinc-100 font-medium"
+                  : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
               )
             }
           >
-            <Icon className="h-4 w-4 shrink-0" />
-            {!collapsed && <span>{label}</span>}
+            <ListTodo className="h-4 w-4 shrink-0" />
+            {!collapsed && <span>Tasks</span>}
           </NavLink>
-        ))}
-
-        {/* Robots 섹션 — robots.yaml SSOT 자동 enumeration. */}
-        {robots.length > 0 && (
-          <div className="pt-3">
-            {!collapsed && (
-              <p className="px-3 pb-1 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                Robots
-              </p>
-            )}
-            {robots.map((r) =>
-              collapsed ? (
-                <NavLink
-                  key={r.id}
-                  to={`/robots/${r.id}`}
-                  title={r.id}
-                  className={({ isActive }) =>
-                    cn(
-                      "flex items-center justify-center px-2 rounded-md py-2 text-sm transition-colors",
-                      isActive
-                        ? "bg-accent text-accent-foreground font-medium"
-                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                    )
-                  }
-                >
-                  <Bot
-                    className={cn("h-4 w-4 shrink-0", !r.enabled && "opacity-40")}
-                  />
-                </NavLink>
-              ) : (
-                <div key={r.id} className="mb-1">
-                  <div className="flex items-center gap-3 px-3 py-1.5 text-xs text-muted-foreground">
-                    <Bot
-                      className={cn("h-4 w-4 shrink-0", !r.enabled && "opacity-40")}
-                    />
-                    <span className={cn("flex-1 truncate", !r.enabled && "opacity-60")}>
-                      {r.id}
-                    </span>
-                    {!r.enabled && (
-                      <span className="text-[10px] text-yellow-500/60">viz</span>
-                    )}
-                  </div>
-                  {r.capabilities
-                    .filter((cap): cap is SidebarMode => SIDEBAR_MODES.has(cap))
-                    .map((cap) => (
-                      <NavLink
-                        key={cap}
-                        to={`/robots/${r.id}/${cap}`}
-                        className={({ isActive }) =>
-                          cn(
-                            "flex items-center gap-2 ml-7 mr-2 px-3 py-1.5 rounded-md text-sm transition-colors",
-                            isActive
-                              ? "bg-accent text-accent-foreground font-medium"
-                              : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                          )
-                        }
-                      >
-                        <span>{CAPABILITY_LABELS[cap]}</span>
-                      </NavLink>
-                    ))}
-                </div>
-              ),
-            )}
-          </div>
-        )}
-
-        {/* Tasks 섹션 — backend `/tasks` 자동 enumeration. */}
-        {tasks.length > 0 && (
-          <div className="pt-3">
-            {!collapsed && (
-              <p className="px-3 pb-1 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                Tasks
-              </p>
-            )}
-            {tasks.map((task) => (
-              <NavLink
-                key={task.name}
-                to={`/tasks/${task.name}`}
-                title={collapsed ? task.name : undefined}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center rounded-md py-2 text-sm transition-colors",
-                    collapsed ? "justify-center px-2" : "gap-3 px-3",
-                    isActive
-                      ? "bg-accent text-accent-foreground font-medium"
-                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                  )
-                }
-              >
-                <ListChecks className="h-4 w-4 shrink-0" />
-                {!collapsed && <span>{task.name}</span>}
-              </NavLink>
-            ))}
-          </div>
-        )}
+        </div>
       </nav>
+
+      {/* Dev 도구 — contract graph viewer (§6.1). 앱 기능 아니라 개발자 도구. */}
+      <div className="border-t border-zinc-800 px-2 py-2">
+        {!collapsed && (
+          <p className="px-3 pb-1 text-xs font-medium text-zinc-500 uppercase tracking-wider">
+            Dev
+          </p>
+        )}
+        <NavLink
+          to="/contract"
+          title="Contract graph"
+          className={({ isActive }) =>
+            cn(
+              "flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors",
+              collapsed && "justify-center px-2",
+              isActive
+                ? "bg-zinc-800 text-zinc-100 font-medium"
+                : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
+            )
+          }
+        >
+          <Share2 className="h-4 w-4 shrink-0" />
+          {!collapsed && <span>Contract graph</span>}
+        </NavLink>
+      </div>
 
       {/* 연결 상태 */}
       {!collapsed && (
-        <div className="border-t">
-          <p className="px-3 pt-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-            Status
-          </p>
-          <ConnectionStatus />
+        <div className="border-t border-zinc-800 px-3 py-3">
+          <div className="flex items-center gap-2 text-xs font-mono">
+            <span
+              className={cn(
+                "h-2 w-2 rounded-full",
+                connected ? "bg-emerald-400" : "bg-red-400",
+              )}
+            />
+            <span className="text-zinc-400">
+              {connected ? "online" : "offline"}
+            </span>
+          </div>
         </div>
       )}
     </aside>

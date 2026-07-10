@@ -1,3 +1,17 @@
+"""RGBD "primary" blob codec — combined color JPEG + zstd depth + intrinsic header.
+
+Calibration capture / Scan 이 한 자세의 RGBD 를 한 blob 으로 묶는 포맷 (ObjectStore
+`primary` artifact). offline BA 의 Stage E (depth 3D residual) 가 이 blob 을 decode.
+
+포맷 (little-endian):
+  [u32 header_len][JSON header][u32 jpeg_len][color JPEG][zstd Z16 depth]
+  header: timestamp / width / height / depth_scale / fx fy cx cy
+          / depth_uncompressed_bytes (검증용)
+
+옛 backend/modules/camera/depth_frame.py 이월 (self-contained codec, repo 의존 0).
+v2 CameraDepthRawFrame(스트리밍 wire) 와는 다른 concern — 이건 영속 blob codec.
+"""
+
 from __future__ import annotations
 
 import json

@@ -1,58 +1,19 @@
-import { useEffect } from "react";
-import { useParams } from "react-router-dom";
+import { ModeDockview, type PanelSpec } from "@/components/shared/ModeDockview";
 
-import { useCalibrationStore } from "@/domain/stores/calibration";
-
-import { ModeDockview, type PanelSpec } from "./ModeDockview";
-
+/**
+ * Calibrate mode panel set. RobotState(torque/home/jog 흡수) + Calibration
+ * (preview traffic light + capture 세션 + active bundle + history/rollback) +
+ * Camera(color 뷰 + ChArUco 마커 오버레이 — 토크오프 자세 잡기 시 보드 조준 확인).
+ *
+ * Hand-Eye / Intrinsic 세부 패널은 후속 (capture 세션이 코어 — intrinsic 은 D405
+ * factory / USB 캘 자리). 새 패널 = registry 한 줄 + 여기 PANELS 한 줄.
+ */
 const PANELS: PanelSpec[] = [
-  {
-    id: "robot-state",
-    component: "robotState",
-    title: "Robot State",
-    width: 260,
-    height: 270,
-  },
-  {
-    id: "calibration",
-    component: "calibration",
-    title: "Calibration",
-    width: 300,
-    height: 480,
-  },
-  {
-    id: "calibration-camera",
-    component: "calibrationCamera",
-    title: "Calibration Camera",
-    width: 520,
-    height: 420,
-  },
-  {
-    id: "intrinsic",
-    component: "intrinsic",
-    title: "Intrinsic",
-    width: 280,
-    height: 420,
-  },
-  {
-    id: "motion",
-    component: "motion",
-    title: "Motion",
-    width: 320,
-    height: 360,
-  },
+  { id: "robot-state", component: "robotState", title: "Robot State", width: 260, height: 300 },
+  { id: "calibration", component: "calibration", title: "Calibration", width: 360, height: 520 },
+  { id: "camera", component: "calibrationCamera", title: "Camera", width: 420, height: 340 },
 ];
 
 export function RobotCalibrateMode() {
-  const { id: robotId } = useParams<{ id: string }>();
-  // calibrationStore 라이프사이클 — mode 진입 시 subscribe + initial fetch,
-  // 이탈 시 unsubscribe + state clear. 각 panel 의 mount/unmount 와 분리
-  // (panel 들이 close 되어도 mode 가 살아있으면 store 유지).
-  useEffect(() => {
-    if (!robotId) return;
-    useCalibrationStore.getState().bootstrap(robotId);
-    return () => useCalibrationStore.getState().dispose();
-  }, [robotId]);
-
   return <ModeDockview mode="calibrate" panels={PANELS} />;
 }

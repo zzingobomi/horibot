@@ -1,20 +1,14 @@
 /**
- * `useResource` — backend HTTP endpoint 의 declarative fetch + module cache.
+ * `useResource` — backend HTTP endpoint declarative fetch + module cache.
  *
- *   const { robots, defaultId } = useResource<RobotsListResponse>("/robots").data ?? {};
- *
- *   const offsets = useResource<CalibrationResults, Record<number, number>>(
- *     "/calibration/results",
- *     { select: (d) => Object.fromEntries(d.joint_offsets.map((e) => [e.motor_id, e.offset_rad])) },
- *   ).data ?? {};
+ *   const { robots } = useResource<RobotsResponse>("/robots").data ?? {};
  *
  *   const { data: metrics } = useResource<SystemMetrics>("/system", { poll: 5000 });
  *
- * 핵심:
- * - module-scoped cache — 동일 path 호출 자리는 자동 sync (cross-component).
- * - select 로 derived 변환 (memo 불필요).
- * - poll option — 주기 갱신 (Dashboard host metric 같은 자리).
- * - refetch() — 명시적 갱신 (COMMIT 후 calibration refresh 등).
+ * - module-scoped cache — 동일 path 호출 자동 sync (cross-component)
+ * - select 로 derived 변환 (memo 불필요)
+ * - poll option — 주기 갱신
+ * - refetch() — 명시적 갱신
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BASE_URL } from "@/constants";
@@ -86,9 +80,7 @@ export interface UseResourceReturn<S> {
 }
 
 export interface ResourceOptions<T, S = T> {
-  /** poll interval ms. omit = no polling. */
   poll?: number;
-  /** raw → derived 변환. 결과가 `.data`. */
   select?: (raw: T) => S;
 }
 
@@ -133,4 +125,9 @@ export function useResource<T, S = T>(
     error: entry.error,
     refetch,
   };
+}
+
+// test 자리 cross-test isolation — cache map 비우는 자리.
+export function _resetResourceCache(): void {
+  cache.clear();
 }

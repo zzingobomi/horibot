@@ -9,6 +9,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { bridge } from "@/api/bridge";
 import { useFrameworkStore, type ServiceEntry } from "@/framework/store";
 import { RobotProvider } from "@/components/shared/robotOwnership";
+import { useWaypointStore } from "@/stores/waypointStore";
 import { WaypointPanel } from "./index";
 
 const ROBOT_ID = "so101_6dof_0";
@@ -79,6 +80,7 @@ function renderPanel() {
 
 beforeEach(() => {
   listWaypoints = [];
+  useWaypointStore.setState({ previews: {} });
   useFrameworkStore.setState({
     topicData: {},
     serviceData: {},
@@ -179,4 +181,60 @@ describe("WaypointPanel", () => {
   // group 생성/멤버/reorder 인터랙션(radix Tabs 전환 포함)은 실 chromium 에서
   // 검증 — e2e/waypoint.spec.ts. happy-dom + fireEvent 는 radix tab 전환을
   // 재현 못 함(user-event 미설치). 여기선 패널 렌더 + teach/goto/rename wire 까지.
+
+  // ghost [보기] — 명시적 버튼 토글 → waypointStore (렌더 계약은 scenePart.test)
+  it("[보기] 클릭 → store 에 그 waypoint joints, 재클릭 → 끔", async () => {
+    listWaypoints = [
+      {
+        id: 3,
+        robot_id: ROBOT_ID,
+        name: "search_left",
+        joint_values: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        joint_names: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"],
+        created_at: "",
+      },
+    ];
+    mockBridge();
+    const { getByTestId } = renderPanel();
+
+    await waitFor(() => expect(getByTestId("wp-preview")).toBeTruthy());
+    act(() => {
+      fireEvent.click(getByTestId("wp-preview"));
+    });
+    const preview = useWaypointStore.getState().previews[ROBOT_ID];
+    expect(preview?.waypointId).toBe(3);
+    expect(preview?.jointAngles).toEqual([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
+    expect(preview?.jointNames).toEqual([
+      "joint1", "joint2", "joint3", "joint4", "joint5", "joint6",
+    ]);
+
+    act(() => {
+      fireEvent.click(getByTestId("wp-preview")); // 토글 오프
+    });
+    expect(useWaypointStore.getState().previews[ROBOT_ID]).toBeUndefined();
+  });
+
+  it("패널 unmount → ghost 자동 정리 (주인 없는 표시 방지)", async () => {
+    listWaypoints = [
+      {
+        id: 3,
+        robot_id: ROBOT_ID,
+        name: "search_left",
+        joint_values: [0.1],
+        joint_names: ["joint1"],
+        created_at: "",
+      },
+    ];
+    mockBridge();
+    const { getByTestId, unmount } = renderPanel();
+
+    await waitFor(() => expect(getByTestId("wp-preview")).toBeTruthy());
+    act(() => {
+      fireEvent.click(getByTestId("wp-preview"));
+    });
+    expect(useWaypointStore.getState().previews[ROBOT_ID]).toBeTruthy();
+
+    unmount();
+    expect(useWaypointStore.getState().previews[ROBOT_ID]).toBeUndefined();
+  });
 });

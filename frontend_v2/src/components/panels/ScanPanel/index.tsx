@@ -3,11 +3,11 @@
  *
  * Task DSL 없이 서비스 직접 호출 (실용 슬라이스):
  *   세션(new/list) → 캡처 반복(CAPTURE) → 빌드(BUILD, 진행 스트림) →
- *   mesh 보기(GET_MESH → scanStore → MeshLayer).
+ *   mesh 보기(GET_MESH → scanStore → ScanMesh).
  *
  * 라이브 PC 토글/Density/Point Size 는 LivePointCloudPanel (컨트롤 SSOT 1곳).
  * 자세 잡기는 수동(토크오프) — 이 패널은 캡처/빌드 트리거만. 3D 뷰(라이브 PC/mesh)는
- * RobotsLayout Canvas 의 Scene3DLayer/MeshLayer 가 scanStore/stream 으로 렌더.
+ * RobotsLayout Canvas 의 Camera 씬 객체(cloud)/ScanMesh 가 scanStore/stream 으로 렌더.
  */
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";

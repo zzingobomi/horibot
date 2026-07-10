@@ -13,7 +13,8 @@
  */
 import { useEffect, useRef, useState } from "react";
 import type { DockviewApi } from "dockview";
-import { MoreHorizontal, Plus, RotateCcw } from "lucide-react";
+import { Lock, MoreHorizontal, Plus, RotateCcw } from "lucide-react";
+import { describeMissing, missingCapabilities } from "@/lib/capabilities";
 import type { PanelSpec } from "./ModeDockview";
 
 // 튜닝값 (§6) — 프로토타입 손끝 조정 대상. 기본값으로 시작.
@@ -23,8 +24,13 @@ const IN_DELAY_MS = 120; // 히스테리시스 — 상단을 스쳐 지나갈 �
 
 interface AutoHideHeaderProps {
   api: DockviewApi | null;
-  /** 현재 mode 의 패널 후보 전체 (PANELS 선언) — 미배치 필터의 모집단 */
+  /** 전체 카탈로그 — 미배치 필터의 모집단 */
   candidates: PanelSpec[];
+  /**
+   * ambient robot(route :id)의 capability. null = 대상 robot 없음(global/tasks) →
+   * 아무것도 disable 하지 않음. capability 부족 항목은 disabled + 사유로 표시.
+   */
+  ambientCapabilities: string[] | null;
   onAddPanel: (spec: PanelSpec) => void;
   onResetLayout: () => void;
 }
@@ -32,6 +38,7 @@ interface AutoHideHeaderProps {
 export function AutoHideHeader({
   api,
   candidates,
+  ambientCapabilities,
   onAddPanel,
   onResetLayout,
 }: AutoHideHeaderProps) {
@@ -162,18 +169,44 @@ export function AutoHideHeader({
             </button>
             {addOpen && (
               <div className="absolute right-0 top-full mt-1 min-w-45 rounded border border-zinc-700/60 bg-zinc-900/95 backdrop-blur py-1 shadow-lg">
-                {missing.map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => {
-                      onAddPanel(m);
-                      setAddOpen(false);
-                    }}
-                    className="block w-full text-left px-3 py-1.5 text-[10px] font-mono text-zinc-300 hover:bg-zinc-700/60 hover:text-zinc-100"
-                  >
-                    {m.title}
-                  </button>
-                ))}
+                {missing.map((m) => {
+                  // ambient robot 이 있을 때만 capability 판정 (null=대상 robot 없음).
+                  const unmet = ambientCapabilities
+                    ? missingCapabilities(m.requiredCapabilities, ambientCapabilities)
+                    : [];
+                  const disabled = unmet.length > 0;
+                  const reason = disabled
+                    ? describeMissing(unmet, m.unavailableReason)
+                    : undefined;
+                  return (
+                    <button
+                      key={m.id}
+                      disabled={disabled}
+                      title={reason}
+                      onClick={() => {
+                        if (disabled) return;
+                        onAddPanel(m);
+                        setAddOpen(false);
+                      }}
+                      data-testid={
+                        disabled ? "add-panel-disabled" : "add-panel-item"
+                      }
+                      className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-[10px] font-mono ${
+                        disabled
+                          ? "cursor-not-allowed text-zinc-600"
+                          : "text-zinc-300 hover:bg-zinc-700/60 hover:text-zinc-100"
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {disabled && <Lock className="h-2.5 w-2.5" />}
+                        {m.title}
+                      </span>
+                      {reason && (
+                        <span className="text-[9px] text-zinc-500">{reason}</span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>

@@ -44,6 +44,8 @@ export type PanelSpec = {
   title: string;
   width: number;
   height: number;
+  requiredCapabilities?: string[];
+  unavailableReason?: string;
 };
 
 interface ModeDockviewProps {
@@ -51,10 +53,11 @@ interface ModeDockviewProps {
   panels: PanelSpec[];
 }
 
-// `+ 패널 추가` 모집단 = 전체 카탈로그 (mode PANELS 는 default 세트일 뿐 — 사용자는
-// 어느 페이지에서든 모든 종류를 추가 가능). id 는 `add-` prefix — mode default 의
-// id("camera" 등, mode 마다 다른 component 를 가리킴)와 충돌 안 하게. 배치 여부
-// 판정은 id 가 아니라 component 기준 (AutoHideHeader).
+// `+ 패널 추가` 모집단 = 전체 카탈로그이며, 현재 robot 의 capability 에 따라 일부
+// 항목은 disabled 로 표시될 수 있다 (선택 가능 여부만 robot context 가 결정 — "전체
+// 카탈로그" 철학은 유지, [docs/workspace_autohide_header.md]). mode PANELS 는 그
+// 페이지 default 세트일 뿐. id 는 `add-` prefix — mode default id("camera" 등)와
+// 충돌 방지. 배치 여부 판정은 id 가 아니라 component 기준 (AutoHideHeader).
 const CATALOG_SPECS: PanelSpec[] = (
   Object.entries(PANEL_CATALOG) as [
     PanelComponentKey,
@@ -66,11 +69,21 @@ const CATALOG_SPECS: PanelSpec[] = (
   title: meta.title,
   width: meta.width,
   height: meta.height,
+  requiredCapabilities: meta.requiredCapabilities,
+  unavailableReason: meta.unavailableReason,
 }));
 
 export function ModeDockview({ mode, panels }: ModeDockviewProps) {
   const { id = "" } = useParams<{ id: string }>();
   const { robots } = useRobots();
+
+  // ambient robot = route 의 :id (robot-mode 에서만 존재). 이 robot 의 capability 로
+  // 추가-메뉴 disabled 를 판정한다. global/tasks/world(id 없음)는 대상 robot 이 아직
+  // 없으므로 null → 헤더는 아무것도 disable 하지 않고, 실제 방어는 패널이 robot 에
+  // 바인딩된 뒤 withRobotOwnership 이 담당 ([[robot_ownership_model]]).
+  const ambientCapabilities = id
+    ? (robots.find((r) => r.id === id)?.capabilities ?? [])
+    : null;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [api, setApi] = useState<DockviewApi | null>(null);
   // id 없는 최상위 페이지(tasks)는 "global" — robot mode 는 robot 별 배치 기억.
@@ -196,6 +209,7 @@ export function ModeDockview({ mode, panels }: ModeDockviewProps) {
       <AutoHideHeader
         api={api}
         candidates={CATALOG_SPECS}
+        ambientCapabilities={ambientCapabilities}
         onAddPanel={handleAddPanel}
         onResetLayout={handleReset}
       />

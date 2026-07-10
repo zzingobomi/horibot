@@ -10,13 +10,14 @@
  */
 import { useMemo } from "react";
 import { RobotModel } from "./RobotModel";
-import { AxisFrame } from "./AxisFrame";
-import { robotBaseMatrix, poseToWorldMatrix } from "./transforms";
+import { AxisFrame } from "../shared/AxisFrame";
+import { robotBaseMatrix, poseToWorldMatrix } from "../shared/transforms";
+import { VizColor } from "../theme/visualizationColors";
 import { useStream } from "@/framework";
 import { Topic } from "@/api/generated/contract";
 import type { RobotInfo } from "@/api/generated/contract";
 
-export interface RobotLayerProps {
+export interface RobotsProps {
   robots: RobotInfo[];
   /** focus robot id — null = 모두 동등. */
   focusId?: string | null;
@@ -82,20 +83,20 @@ function RobotItem({
         onLinksLoaded={onLinksLoaded}
       />
       {showTcpFrame && tcpMatrix && (
-        <AxisFrame matrix={tcpMatrix} size={0.04} label="TCP" labelColor="#ffcc44" />
+        <AxisFrame matrix={tcpMatrix} size={0.04} label="TCP" labelColor={VizColor.TCP} />
       )}
     </>
   );
 }
 
-export function RobotLayer({
+export function Robots({
   robots,
   focusId = null,
   onLinksLoaded,
   dimOpacity = 0.25,
   showRobot = true,
   showTcpFrame = true,
-}: RobotLayerProps) {
+}: RobotsProps) {
   return (
     <>
       {robots.map((r) => {

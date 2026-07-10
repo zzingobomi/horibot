@@ -1,14 +1,14 @@
 /**
  * 3D scene container — robots 열거 + focus/카메라 계산.
  *
- * robot 상태(joint/TCP frame)는 RobotLayer, 라이브 cloud 는 Scene3DLayer 가
- * robot 마다 자체 구독 — 여기엔 "특정 robot 의 stream" 개념이 없다 (per-robot,
- * N=2 협동 자리). 남은 책임: robots 목록 / focus / OrbitControls target /
- * scan mesh 배치용 focus base matrix.
+ * robot 상태(joint/TCP frame)는 Robots, 카메라/mesh 는 각 씬 객체 자체가
+ * 데이터·대상 robot 을 결정 — 여기엔 "특정 robot 의 stream" 개념이 없다.
+ * 남은 책임: robots 목록 / focus / OrbitControls target.
+ * (옛 scanRobotId/scanBaseMatrix per-layer plumbing 은 객체 안으로 이동 —
+ * [docs/scene_contribution_architecture.md].)
  */
 import { useMemo } from "react";
 import { RobotScene } from "./Scene";
-import { robotBaseMatrix } from "./transforms";
 import { useRobots } from "@/hooks/useRobots";
 
 interface RobotSceneContainerProps {
@@ -19,9 +19,6 @@ interface RobotSceneContainerProps {
 export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) {
   const { robots } = useRobots();
   const effectiveFocus: string | null = focusId ?? null;
-  // scan(live cloud/mesh) 대상 robot — focus 있으면 그 robot, focus 없는 overview
-  // (Tasks/World)면 첫 robot (기본 로봇 개념 폐기 — 단지 씬 배치용 첫 항목).
-  const scanRobotId = effectiveFocus ?? robots[0]?.id ?? "";
 
   // focus robot 의 base_pose 로 OrbitControls target.
   const cameraTarget = useMemo<[number, number, number]>(() => {
@@ -45,19 +42,11 @@ export function RobotSceneContainer({ focusId }: RobotSceneContainerProps = {}) 
     return [acc.x / n, acc.y / n, acc.z / n + 0.1];
   }, [robots, effectiveFocus]);
 
-  // scan mesh 배치용 — mesh 정점이 robot base frame 이라 base transform 필요.
-  const scanBaseMatrix = useMemo(() => {
-    const r = robots.find((x) => x.id === scanRobotId);
-    return r ? robotBaseMatrix(r.base_pose) : null;
-  }, [robots, scanRobotId]);
-
   return (
     <RobotScene
       robots={robots}
       focusId={effectiveFocus}
       cameraTarget={cameraTarget}
-      robotBaseMatrix={scanBaseMatrix}
-      robotId={scanRobotId}
     />
   );
 }

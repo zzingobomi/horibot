@@ -19,6 +19,7 @@ import type {
   WaypointGroupRecord,
   WaypointRecord,
 } from "@/api/generated/contract";
+import { useWaypointStore } from "@/stores/waypointStore";
 
 export function WaypointPanel() {
   const robotId = useRobotId();
@@ -115,6 +116,28 @@ export function WaypointPanel() {
     const d = res.data as { accepted?: boolean } | null;
     setMsg(d?.accepted ? `이동: ${wp.name}` : `이동 실패: ${res.message}`);
   };
+
+  // ── ghost 미리보기 (3D, WaypointScenePart) ─────────────────
+  // 명시적 [보기] 토글 — hover X. 렌더는 scenePart, 여기는 store 만.
+  const ghostPreview = useWaypointStore((s) => s.previews[robotId]);
+  const setPreview = useWaypointStore((s) => s.setPreview);
+  const onTogglePreview = (wp: WaypointRecord) => {
+    if (wp.id == null) return;
+    if (ghostPreview?.waypointId === wp.id) {
+      setPreview(robotId, null); // 같은 항목 재클릭 = 끄기
+    } else {
+      setPreview(robotId, {
+        waypointId: wp.id,
+        name: wp.name,
+        jointNames: wp.joint_names,
+        jointAngles: wp.joint_values,
+      });
+    }
+  };
+  // 패널 unmount / robot 스위칭 시 ghost 정리 (남은 ghost = 주인 없는 표시)
+  useEffect(() => {
+    return () => setPreview(robotId, null);
+  }, [robotId, setPreview]);
 
   const startEdit = (wp: WaypointRecord) => {
     if (wp.id == null) return;
@@ -292,6 +315,16 @@ export function WaypointPanel() {
                     ) : (
                       <>
                         <span className="flex-1 truncate font-mono">{w.name}</span>
+                        <Button
+                          size="sm"
+                          variant={
+                            ghostPreview?.waypointId === w.id ? "default" : "ghost"
+                          }
+                          onClick={() => onTogglePreview(w)}
+                          data-testid="wp-preview"
+                        >
+                          보기
+                        </Button>
                         <Button
                           size="sm"
                           variant="outline"

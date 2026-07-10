@@ -2,7 +2,7 @@
 // 컴포넌트 렌더는 R3F Canvas 필요 — 여기선 dispatch 규칙만 계약으로 고정.
 
 import { describe, expect, it } from "vitest";
-import { extractMarkers } from "./TaskResultLayer";
+import { extractMarkers } from "./TaskResultsOverlay";
 
 const det = (x: number, score = 0.9) => ({
   prompt: "white cube",

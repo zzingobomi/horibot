@@ -19,6 +19,7 @@ import type {
   CalibrationBundle,
   CalibrationRunRecord,
 } from "@/api/generated/contract";
+import { useCameraStore } from "@/stores/cameraStore";
 
 const VERDICT_COLOR: Record<string, string> = {
   green: "bg-green-500",
@@ -39,6 +40,8 @@ export function CalibrationPanel() {
   const activate = useService(ServiceKey.CALIBRATION_ACTIVATE_RESULT, robotId);
 
   const preview = useStream(Topic.CALIBRATION_PREVIEW, { robotId, staleMs: 1000 });
+  const showFrustum = useCameraStore((s) => s.showFrustum);
+  const setShowFrustum = useCameraStore((s) => s.setShowFrustum);
 
   const [runId, setRunId] = useState<number | null>(null);
   const [poseIndex, setPoseIndex] = useState(0);
@@ -118,9 +121,20 @@ export function CalibrationPanel() {
       <section className="mb-3">
         <div className="mb-1 flex items-center justify-between">
           <span className="font-mono uppercase text-muted-foreground">preview</span>
-          <Button size="sm" variant={previewOn ? "default" : "outline"} onClick={onTogglePreview} data-testid="preview-toggle">
-            {previewOn ? "ON" : "OFF"}
-          </Button>
+          <div className="flex items-center gap-1.5">
+            {/* 카메라 시야(frustum) — 렌더는 Camera 씬 객체, 여기는 토글만 (소유권 모델) */}
+            <Button
+              size="sm"
+              variant={showFrustum ? "default" : "outline"}
+              onClick={() => setShowFrustum(!showFrustum)}
+              data-testid="frustum-toggle"
+            >
+              시야
+            </Button>
+            <Button size="sm" variant={previewOn ? "default" : "outline"} onClick={onTogglePreview} data-testid="preview-toggle">
+              {previewOn ? "ON" : "OFF"}
+            </Button>
+          </div>
         </div>
         <div className="flex items-center gap-2 rounded border p-2">
           <span

@@ -6,9 +6,11 @@
  *   - Density(voxel) → backend down-sample 크기. 1/2/5mm 3단계 radio
  *                      (10mm+ 는 hand-eye/scan/로봇 위치 확인에 정보량 부족 —
  *                      사용자 결정 2026-06-21). default 2mm.
- *   - Point Size    → frontend Scene3DLayer pointsMaterial.size (UI only)
+ *   - Point Size    → frontend cloud pointsMaterial.size (UI only)
+ *   - Camera Frustum → cameraStore.showFrustum (렌더는 Camera 씬 객체 — 패널은 토글만)
  *
- * 3D 렌더는 Canvas 의 Scene3DLayer — scanStore 로 결합 (dockview overlay ↔ Canvas).
+ * 3D 렌더는 Canvas 의 Camera 씬 객체(scene/Cameras.tsx) — scanStore/cameraStore 로
+ * 결합 (dockview overlay ↔ Canvas). 패널은 카메라를 그리지 않는다 (소유권 모델).
  */
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +19,7 @@ import { useRobotId } from "@/hooks/useRobotId";
 import { useMirror, useService, useStream } from "@/framework";
 import { ServiceKey, Topic } from "@/api/generated/contract";
 import type { CalibrationBundle } from "@/api/generated/contract";
+import { useCameraStore } from "@/stores/cameraStore";
 import { useScanStore } from "@/stores/scanStore";
 
 const DENSITY_OPTIONS: { label: string; mm: number; hint: string }[] = [
@@ -30,7 +33,7 @@ export function LivePointCloudPanel() {
 
   const setStream = useService(ServiceKey.SCENE3D_SET_STREAM, robotId);
 
-  // hand-eye 적용 상태 표시 — Scene3DLayer 와 같은 Mirror. cloud 가 identity
+  // hand-eye 적용 상태 표시 — Camera 씬 객체와 같은 Mirror. cloud 가 identity
   // (캘 미적용) 로 그려지는 상태를 사용자가 즉시 보게 (silent fallback 방지).
   const bundle = useMirror({
     snapshotService: ServiceKey.CALIBRATION_SNAPSHOT_BUNDLE,
@@ -52,6 +55,8 @@ export function LivePointCloudPanel() {
   const setVoxelSize = useScanStore((s) => s.setVoxelSize);
   const pointSize = useScanStore((s) => s.pointSize);
   const setPointSize = useScanStore((s) => s.setPointSize);
+  const showFrustum = useCameraStore((s) => s.showFrustum);
+  const setShowFrustum = useCameraStore((s) => s.setShowFrustum);
 
   // unmount(mode 이탈) 시 stream 정리 — 카메라/PC decode 낭비 X.
   useEffect(() => {
@@ -162,6 +167,22 @@ export function LivePointCloudPanel() {
               </button>
             );
           })}
+        </div>
+      </section>
+
+      <section className="mb-3">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="font-mono uppercase text-muted-foreground">
+            camera frustum
+          </span>
+          <Button
+            size="sm"
+            variant={showFrustum ? "default" : "outline"}
+            onClick={() => setShowFrustum(!showFrustum)}
+            data-testid="frustum-toggle"
+          >
+            {showFrustum ? "ON" : "OFF"}
+          </Button>
         </div>
       </section>
 

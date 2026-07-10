@@ -1,13 +1,13 @@
 /**
- * scanStore — Scan/LivePointCloud 패널(dockview overlay) ↔ 3D layer(Canvas) 브리지.
+ * scanStore — Scan/LivePointCloud 패널(dockview overlay) ↔ 씬 객체(Canvas) 브리지.
  *
- * Scene3DLayer / MeshLayer 는 R3F Canvas(RobotsLayout) 안에 있고 패널은 dockview
- * overlay 라 직접 prop 전달 불가 → 이 store 로 결합.
- *   - liveEnabled : 라이브 PC on/off (Scene3DLayer 가 구독 gate)
+ * Camera 씬 객체(cloud) / ScanMesh 는 R3F Canvas(RobotsLayout) 안에 있고 패널은
+ * dockview overlay 라 직접 prop 전달 불가 → 이 store 로 결합.
+ *   - liveEnabled : 라이브 PC on/off (Camera 씬 객체의 cloud gate)
  *   - voxelSize   : backend voxel down-sample (m). SET_STREAM 으로 전송 —
  *                   1/2/5mm 3단계, default 2mm (사용자 결정 2026-06-21, v1 정책).
  *   - pointSize   : 렌더 dot 크기 (mm). frontend 시각 옵션 — backend 모름.
- *   - meshPly     : GET_MESH 로 받은 .ply bytes (MeshLayer 가 parse+render)
+ *   - meshPly     : GET_MESH 로 받은 .ply bytes (ScanMesh 가 parse+render)
  *
  * 현재 라이브 뷰는 focus robot 1대 기준 (scan workflow 가 robot-scoped 페이지).
  * N robot 동시 라이브가 필요해지면 liveEnabled/voxelSize 를 dict[robot_id] 화.

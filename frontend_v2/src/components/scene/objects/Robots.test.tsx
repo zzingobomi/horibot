@@ -1,4 +1,4 @@
-// RobotLayer — per-robot joint 구독 회귀 가드.
+// Robots — per-robot joint 구독 회귀 가드.
 //
 // 2026-07-06 사건: Container 가 "focus robot 1대의 TCP stream" 을 전 robot 에
 // 적용 → Tasks(focus=null) 에서 default 가 비활성 robot 이면 전원이 얼어붙고,
@@ -9,13 +9,13 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render } from "@testing-library/react";
 import { useFrameworkStore } from "@/framework/store";
-import { RobotLayer } from "./RobotLayer";
+import { Robots } from "./Robots";
 import { RobotModel } from "./RobotModel";
 import type { RobotInfo } from "@/api/generated/contract";
 
 vi.mock("./RobotModel", () => ({ RobotModel: vi.fn(() => null) }));
 // AxisFrame 은 R3F useFrame 사용 — Canvas 밖 render 위해 mock.
-vi.mock("./AxisFrame", () => ({ AxisFrame: vi.fn(() => null) }));
+vi.mock("../shared/AxisFrame", () => ({ AxisFrame: vi.fn(() => null) }));
 
 const ROBOT_A: RobotInfo = {
   id: "so101_6dof_0",
@@ -69,9 +69,9 @@ function propsFor(robotType: string) {
   return call![0];
 }
 
-describe("RobotLayer — robot 마다 자기 TCP stream 구독", () => {
+describe("Robots — robot 마다 자기 TCP stream 구독", () => {
   it("focus=null (Tasks): 두 robot 이 각자 자기 joints 를 받음", () => {
-    render(<RobotLayer robots={[ROBOT_A, ROBOT_B]} focusId={null} />);
+    render(<Robots robots={[ROBOT_A, ROBOT_B]} focusId={null} />);
 
     const a = propsFor("so101_6dof");
     const b = propsFor("omx_f");
@@ -86,7 +86,7 @@ describe("RobotLayer — robot 마다 자기 TCP stream 구독", () => {
   });
 
   it("focus 지정: non-focus 도 자기 실 상태 (dim 만 다름)", () => {
-    render(<RobotLayer robots={[ROBOT_A, ROBOT_B]} focusId="so101_6dof_0" />);
+    render(<Robots robots={[ROBOT_A, ROBOT_B]} focusId="so101_6dof_0" />);
 
     const a = propsFor("so101_6dof");
     const b = propsFor("omx_f");
@@ -110,7 +110,7 @@ describe("RobotLayer — robot 마다 자기 TCP stream 구독", () => {
       serviceData: {},
       bridgeConnected: true,
     });
-    render(<RobotLayer robots={[ROBOT_A]} focusId={null} />);
+    render(<Robots robots={[ROBOT_A]} focusId={null} />);
 
     const a = propsFor("so101_6dof");
     expect(a.jointNames).toEqual([...NAMES_A, "joint7"]);
@@ -119,7 +119,7 @@ describe("RobotLayer — robot 마다 자기 TCP stream 구독", () => {
 
   it("stream 미도착 robot 은 빈 배열 (URDF 기본 pose 안전 fallback)", () => {
     useFrameworkStore.setState({ topicData: {}, serviceData: {}, bridgeConnected: true });
-    render(<RobotLayer robots={[ROBOT_A]} focusId={null} />);
+    render(<Robots robots={[ROBOT_A]} focusId={null} />);
 
     const a = propsFor("so101_6dof");
     expect(a.jointAngles).toEqual([]);

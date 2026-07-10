@@ -1,21 +1,22 @@
 /**
- * TaskResultLayer — task step 결과의 3D 시각화 (v1 포팅).
+ * TaskResultsOverlay — task step 결과의 3D 시각화 (v1 포팅). 기능 오버레이
+ * (task 기능 소유, topic 수명 — 결과는 패널이 닫혀도 남는 진단 도구라 scenePart 아님).
  *
- * TASK_STEP_RESULT 를 step_id 별 누적 (스트림은 latest-only 라 layer 가 직접
+ * TASK_STEP_RESULT 를 step_id 별 누적 (스트림은 latest-only 라 여기서 직접
  * subscribe + 누적), TASK_TREE 도착(새 preview/run) 시 clear. type 별 dispatch:
  *   - "Detection" → emerald sphere + 라벨 (검출 위치 — 라이브 cloud 와 겹쳐
  *     보면 검출 오차가 눈에 보임 = grasp 실패 진단 도구)
  *   - "list"      → Detection 모양 원소만 회색 소형 sphere (후보들)
  *   - "Position3" → amber 소형 box (grasp/place 목표점)
- * 좌표는 robot base frame → robotBaseMatrix 부모 transform (per-robot).
+ * 좌표는 robot base frame → <RobotFrame> 부모 transform (per-robot).
  */
 import { useEffect, useMemo, useState } from "react";
-import * as THREE from "three";
 import { Text } from "@react-three/drei";
 import { bridge, topicFor } from "@/api/bridge";
 import { Topic } from "@/api/generated/contract";
-import { useRobots } from "@/hooks/useRobots";
-import { robotBaseMatrix } from "./transforms";
+import type { SceneObjectProps } from "../sceneTypes";
+import { RobotFrame } from "../shared/RobotFrame";
+import { VizColor } from "../theme/visualizationColors";
 
 interface StepResultMsg {
   step_id: string;
@@ -72,13 +73,19 @@ export function extractMarkers(results: Record<string, StepResultMsg>): Marker[]
 }
 
 const COLOR: Record<Marker["kind"], string> = {
-  detection: "#34d399",
-  candidate: "#71717a",
-  position: "#f59e0b",
+  detection: VizColor.DETECTION,
+  candidate: VizColor.CANDIDATE,
+  position: VizColor.TARGET,
 };
 
-export function TaskResultLayer({ robotId }: { robotId: string }) {
-  const { robots } = useRobots();
+export function TaskResultsOverlay({ robots, focusId }: SceneObjectProps) {
+  // 대상 robot = focus ?? 첫 robot (옛 Container 결정 이동). 로드 전엔 미마운트.
+  const robotId = focusId ?? robots[0]?.id ?? "";
+  if (!robotId) return null;
+  return <ResultsForRobot robotId={robotId} />;
+}
+
+function ResultsForRobot({ robotId }: { robotId: string }) {
   const [results, setResults] = useState<Record<string, StepResultMsg>>({});
 
   useEffect(() => {
@@ -101,29 +108,10 @@ export function TaskResultLayer({ robotId }: { robotId: string }) {
 
   const markers = useMemo(() => extractMarkers(results), [results]);
 
-  const base = useMemo(() => {
-    const r = robots.find((x) => x.id === robotId);
-    if (!r) return null;
-    const m = robotBaseMatrix(r.base_pose);
-    const p = new THREE.Vector3();
-    const q = new THREE.Quaternion();
-    const s = new THREE.Vector3();
-    m.decompose(p, q, s);
-    return { position: [p.x, p.y, p.z] as const, quaternion: [q.x, q.y, q.z, q.w] as const };
-  }, [robots, robotId]);
-
-  if (!base || markers.length === 0) return null;
+  if (markers.length === 0) return null;
 
   return (
-    <group
-      position={[base.position[0], base.position[1], base.position[2]]}
-      quaternion={[
-        base.quaternion[0],
-        base.quaternion[1],
-        base.quaternion[2],
-        base.quaternion[3],
-      ]}
-    >
+    <RobotFrame robotId={robotId}>
       {markers.map((m) => (
         <group key={m.key} position={m.position}>
           {m.kind === "position" ? (
@@ -156,6 +144,6 @@ export function TaskResultLayer({ robotId }: { robotId: string }) {
           )}
         </group>
       ))}
-    </group>
+    </RobotFrame>
   );
 }

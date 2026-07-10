@@ -1,18 +1,26 @@
 /**
- * R3F Canvas + multi-robot URDF + base/TCP axis frame.
+ * R3F Canvas — 씬의 조립 지점 (소유권 모델, [docs/scene_contribution_architecture.md]).
  *
- * robot 상태(joint/TCP frame)는 RobotLayer 가 robot 마다 자기 stream 구독
- * (per-robot — N=2 협동 자리). Scene 은 조명/grid/카메라 + layer 배치만.
+ * - Core chrome  : 조명/grid/BASE 축/OrbitControls — 씬 그 자체.
+ * - Scene object : 세계에 있는 것들 — Robot / Camera / ScanMesh. 각 객체가 자기
+ *                  시각 요소를 자기 안에서 그림 (패널은 속성 토글만). 새 객체
+ *                  종류 추가 = 드문 아키텍처 사건 — 여기 한 줄이 정직함.
+ * - Feature overlay: 기능이 보여주는 것 — TaskResultsOverlay(topic 수명) +
+ *                  ScenePartHost(패널 수명). **기능/패널 기여로는 이 파일 diff 0.**
+ *
+ * robot 상태(joint/TCP frame)는 Robots 가 robot 마다 자기 stream 구독
+ * (per-robot — N=2 협동 자리).
  */
 import { useCallback, useMemo } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Grid, Environment } from "@react-three/drei";
 import * as THREE from "three";
-import { RobotLayer } from "./RobotLayer";
-import { AxisFrame } from "./AxisFrame";
-import { Scene3DLayer } from "./Scene3DLayer";
-import { TaskResultLayer } from "./TaskResultLayer";
-import { MeshLayer } from "./MeshLayer";
+import { Robots } from "./objects/Robots";
+import { Cameras } from "./objects/Cameras";
+import { ScanMesh } from "./objects/ScanMesh";
+import { AxisFrame } from "./shared/AxisFrame";
+import { TaskResultsOverlay } from "./overlays/TaskResultsOverlay";
+import { ScenePartHost } from "./overlays/ScenePartHost";
 import { DEFAULT_SCENE_OPTIONS, type SceneOptions } from "./sceneOptions";
 import type { RobotInfo } from "@/api/generated/contract";
 
@@ -24,10 +32,6 @@ interface RobotSceneProps {
   focusId?: string | null;
   cameraPosition?: [number, number, number];
   cameraTarget?: [number, number, number];
-  /** focus robot base transform (z-up→y-up + base_pose) — scan mesh 배치용. */
-  robotBaseMatrix?: THREE.Matrix4 | null;
-  /** focus robot id — scan live cloud (Scene3DLayer 가 stream/hand_eye 자체 구독). */
-  robotId?: string;
 }
 
 function SceneContent({
@@ -36,8 +40,6 @@ function SceneContent({
   robots,
   focusId,
   cameraTarget,
-  robotBaseMatrix = null,
-  robotId = "",
 }: RobotSceneProps) {
   return (
     <>
@@ -79,20 +81,21 @@ function SceneContent({
         </group>
       )}
 
-      {/* joint + TCP frame — robot 마다 자기 TCP_STATE 구독 (per-robot) */}
-      <RobotLayer
+      {/* ── Scene objects — 세계에 있는 것들 (자기가 자기를 그림) ── */}
+      <Robots
         robots={robots}
         focusId={focusId ?? null}
         onLinksLoaded={onLinksLoaded}
         showRobot={options.showRobot}
         showTcpFrame={options.showTCPFrame}
       />
+      {/* rgbd robot 파생 카메라 — frustum(cameraStore)/live cloud(scanStore) gate */}
+      <Cameras robots={robots} focusId={focusId ?? null} />
+      <ScanMesh robots={robots} focusId={focusId ?? null} />
 
-      {/* scan — 라이브 PC (scanStore.liveEnabled gate) + reconstruction mesh */}
-      {robotId && <Scene3DLayer robotId={robotId} />}
-      {/* task step 결과 (검출 sphere / 목표점 marker) — cloud 와 겹쳐 오차 확인 */}
-      {robotId && <TaskResultLayer robotId={robotId} />}
-      <MeshLayer robotBaseMatrix={robotBaseMatrix} />
+      {/* ── Feature overlays — 기능이 보여주는 것 ── */}
+      <TaskResultsOverlay robots={robots} focusId={focusId ?? null} />
+      <ScenePartHost />
 
       <OrbitControls
         makeDefault

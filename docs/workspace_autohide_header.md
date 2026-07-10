@@ -180,3 +180,48 @@ backend motion·task 편집 중)과 안 부딪힘:
 
 검증 철학: 이 종류 UI 는 말보다 직접 써봐야 답이 남 (프로젝트 L4 headed 검증과
 동일 이유). 프로토타입 → 하루 사용 → 확정.
+
+---
+
+## 7. capability 게이팅 (2026-07-10 구현)
+
+"어떤 robot 이 못 여는 패널(예: OMX 는 rgbd 없음 → Scan/Live PointCloud)" 처리.
+**숨기지 않고 disabled + 이유**, 열린 패널은 **empty state**, 최종 권한은 백엔드.
+
+### 7.1 SSOT — registry 의 `requiredCapabilities`
+
+패널 → 요구 capability 선언은 [registry.ts](../frontend_v2/src/components/panels/registry.ts)
+의 `PANEL_CATALOG` 한 곳 (`scan`/`livePointCloud` → `["rgbd"]`). 선언 없으면 요구
+없음 = 항상 활성. capability 어휘는 **robots.yaml SSOT** (프론트 `useRobots()` 노출)
+— 프론트에 별도 `RobotCapability` union 을 만들지 않음(어휘 이중화 = drift). 값은
+`string[]`; 컴파일타임 안전이 필요하면 백엔드 Pydantic `Literal` 승격 → contract
+regen 이 정석.
+
+### 7.2 부족 사유 = capability 에서 파생
+
+문구는 패널마다 손으로 쓰지 않고 [lib/capabilities.ts](../frontend_v2/src/lib/capabilities.ts)
+의 `CAPABILITY_LABELS` 에서 조립(`describeMissing`) → `requiredCapabilities` 와 drift
+불가 + 다중 요구 자동 조립 + 부족한 그것을 정확히 지목. `unavailableReason` 은
+예외적 UX override 자리만 (기본은 파생). registry ↔ robotOwnership 순환 import 를
+피하려 helper 는 lib 모듈.
+
+### 7.3 두 소비자 — 헤더 disabled(조건부) + HOC empty state(항상)
+
+- **AutoHideHeader `+ 패널 추가`** — 부족 항목을 🔒 + 사유로 disabled.
+  단 **ambient robot(route `:id`)이 있을 때만** 판정. `/tasks`·`/world` 는 focus=null
+  이라 "현재 robot" 자체가 없음(robot 은 패널이 소유, [[robot_ownership_model]]) →
+  `ambientCapabilities=null` → 아무것도 disable 안 함.
+- **`withRobotOwnership`** — 패널이 실제 바인딩한 robot 을 검사하는 **항상-정확한
+  1차 방어**. capability 부족이면 "이 robot 에서는 지원하지 않습니다" empty state
+  (레이아웃 유지 — 저장된 SO-101 layout 을 OMX 로 열어도 패널을 강제로 없애지 않음).
+  `params.robotId` reactive → 탭 셀렉터로 robot 바꾸면 판정도 자동 재계산.
+- `requiredCapabilities` 는 **wrap 시점 클로저**로 HOC 에 주입(dockview params 아님)
+  — static registry 사실이 localStorage layout 에 영속돼 stale 되는 것 방지.
+
+### 7.4 registry = UI 힌트, 백엔드 = 권한의 원천
+
+`requiredCapabilities` 는 "capability 상 명백히 불가능"(OMX 엔 rgbd 자체가 없음)만
+선제 차단하는 **힌트**. robot 이 capability 를 가졌다고 반드시 성공하는 건 아니며
+(detector 미실행 / calibration 미로드 등 동적 조건), 최종 판정은 백엔드가 계속 수행
+→ 실패는 기존 서비스 에러 메시지 경로로 표면화. 그래서 §2 의 "전체 카탈로그" 철학은
+유지된다 — 카탈로그는 전체를 보여주고, **선택 가능 여부만** robot context 가 결정.

@@ -9,8 +9,9 @@
  *   - pointSize   : 렌더 dot 크기 (mm). frontend 시각 옵션 — backend 모름.
  *   - meshPly     : GET_MESH 로 받은 .ply bytes (ScanMesh 가 parse+render)
  *
- * 현재 라이브 뷰는 focus robot 1대 기준 (scan workflow 가 robot-scoped 페이지).
- * N robot 동시 라이브가 필요해지면 liveEnabled/voxelSize 를 dict[robot_id] 화.
+ * liveEnabled 는 **per-robot dict** — robot-owned 패널의 토글은 자기 robot cloud 만
+ * 켠다 (cameraStore.frustum 과 같은 클래스 — 전역 bool 은 cross-robot 오발사).
+ * voxelSize/pointSize 는 robot 무관 표시 선호값이라 전역 유지.
  */
 import { create } from "zustand";
 
@@ -20,8 +21,9 @@ interface ScanMeshMeta {
 }
 
 interface ScanState {
-  liveEnabled: boolean;
-  setLiveEnabled: (b: boolean) => void;
+  /** robot_id → live cloud 표시 여부 */
+  liveEnabled: Record<string, boolean>;
+  setLiveEnabled: (robotId: string, on: boolean) => void;
   /** backend voxel down-sample 크기 (m). */
   voxelSize: number;
   setVoxelSize: (m: number) => void;
@@ -35,8 +37,9 @@ interface ScanState {
 }
 
 export const useScanStore = create<ScanState>((set) => ({
-  liveEnabled: false,
-  setLiveEnabled: (b) => set({ liveEnabled: b }),
+  liveEnabled: {},
+  setLiveEnabled: (robotId, on) =>
+    set((s) => ({ liveEnabled: { ...s.liveEnabled, [robotId]: on } })),
   voxelSize: 0.002, // 2mm Normal — v1 Live PointCloud 패널 default
   setVoxelSize: (m) => set({ voxelSize: m }),
   pointSize: 2.5, // mm — 기존 하드코딩 0.0025m 와 동일 시각

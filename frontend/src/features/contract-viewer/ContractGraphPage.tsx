@@ -1,7 +1,7 @@
 /**
  * ContractGraphPage — /contract route entry (개발자 도구).
  *
- * backend_v2 의 module 계약(service/stream/event)을 노드+방향엣지 그래프로.
+ * backend 의 module 계약(service/stream/event)을 노드+방향엣지 그래프로.
  * GET /contract/graph (unfiltered) → dagre layout → React Flow. 엣지/노드 클릭 →
  * payload 스키마 드릴다운 (Swagger 드릴다운 등가).
  *

@@ -2,7 +2,7 @@
 
 자연어(한국어/영어) pick-and-place 명령 → (pick_object, place_object) 구조화.
 GroundingDINO 는 영어 prompt 만 잘 먹으므로 LLM 이 **영어 객체명으로 번역** + 의도
-추출 (backend_v2.md §17 NL PnP). 구현체(Qwen 등)는 adapter 뒤 (§17.1 "인터페이스 ≠
+추출 (backend.md §17 NL PnP). 구현체(Qwen 등)는 adapter 뒤 (§17.1 "인터페이스 ≠
 구현"). robot-agnostic (host 당 1 — 파싱은 robot 무관, §2.7).
 """
 

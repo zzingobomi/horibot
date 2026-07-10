@@ -6,7 +6,7 @@ projection→geometry 로 base frame OBB(grasp yaw / footprint)의 소스. **box
 
 로드 규약은 gdino.py 와 동일: transformers/torch module-top import (lazy `from` race
 회피) + 무거운 weight 로드만 공유 transformers_load_lock 으로 직렬화 (GDINO·미래 Qwen
-과 동시 from_pretrained 차단, docs/llm_preload_race_debug.md). device_map="auto".
+과 동시 from_pretrained 차단, docs/perception.md). device_map="auto".
 
 facebook/sam2.1-hiera-large = 오픈(ungated). SAM3 는 gated(manual 승인) 이라 이 seam
 뒤 교체 대상 — 승인 후 sam3.py 로 갈아끼움 (module/DSL 무변경).

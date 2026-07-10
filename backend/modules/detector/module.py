@@ -1,6 +1,6 @@
 """DetectorModule — `Detect Object` (Day-1 primitive). PC 배치, **robot-agnostic**.
 
-host 당 1 인스턴스 (backend_v2.md §2.7) — 무거운 모델(GDINO)을 1회 로드하고,
+host 당 1 인스턴스 (backend.md §2.7) — 무거운 모델(GDINO)을 1회 로드하고,
 매 DETECT 요청의 `req.robot_id` 로 그 로봇의 camera/캘/TCP 를 조회해 dispatch. __init__ 에
 robot_id 없음 (framework 계약: host-level = robot_id 미보유).
 
@@ -9,7 +9,7 @@ motion TCP → adapter 검출(Top-K bbox) → 후보별 depth median Z → base 
 Top-K Detection (§17.5). prior 적용/최종 선택은 소비자(task SelectTarget).
 
 모델은 DetectorBackend adapter 뒤 (§0). 투영 수학은 projection.py (결정적).
-다른 모듈 호출은 `await self.runtime.call(...)` 로 통일 (framework_async_call_contract.md).
+다른 모듈 호출은 `await self.runtime.call(...)` 로 통일 (backend.md).
 """
 
 from __future__ import annotations

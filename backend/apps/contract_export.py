@@ -55,6 +55,7 @@ FRONTEND_EXPOSED: set[str] = {
         Calibration.Service.CAPTURE,
         Calibration.Service.UNDO_LAST_CAPTURE,
         Calibration.Service.FINALIZE_RUN,
+        Calibration.Service.ABORT_RUN,
         Calibration.Service.ACTIVATE_RESULT,
         Calibration.Service.PREVIEW_ENABLE,
         Calibration.Service.SNAPSHOT_BUNDLE,

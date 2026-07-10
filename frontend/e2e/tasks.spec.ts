@@ -1,4 +1,4 @@
-// frontend_v2 L4 — RobotTaskMode(NL PnP) e2e (mock backend + vite dev).
+// frontend L4 — RobotTaskMode(NL PnP) e2e (mock backend + vite dev).
 //
 // 검증 invariant (frontend ↔ bridge WS ↔ llm/task 전 wire):
 //   1. WS 연결 + PromptPanel + TaskProgressPanel 렌더
@@ -8,11 +8,11 @@
 // 주의: mock backend 는 waypoint("search" group)·calibration(hand_eye) 이 비어 있어
 // PnP 는 SearchWaypointGroup 에서 자연 실패(status=failed) — 이 e2e 는 "명령→파싱→
 // 실행→진행 표시" **프론트↔백 wire** 검증이지 완주가 아님. 완주(정확도)는 실물
-// waypoint 티칭 + 캘 + 하드웨어 (docs/backend_v2.md §17.5).
+// waypoint 티칭 + 캘 + 하드웨어 (docs/backend.md §17.5).
 //
 // 외부 의존 (실행 전 띄움):
-//   - mock backend (port 8000): cd backend_v2 && uv run --no-sync python -m apps.main --host mock
-//   - frontend vite (port 5174): cd frontend_v2 && pnpm dev
+//   - mock backend (port 8000): cd backend && uv run --no-sync python -m apps.main --host mock
+//   - frontend vite (port 5173): cd frontend && pnpm dev
 
 import { expect, test } from "@playwright/test";
 

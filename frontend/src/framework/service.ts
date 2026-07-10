@@ -10,7 +10,7 @@
  * `bridge.callService` 가 본 store 에 pending → response 갱신, 본 hook 은
  * *reactive view* 만 제공.
  *
- * frontend_v2.md §3.1 — backend_v2 의 exception model 은 bridge.ts shim
+ * frontend.md §3.1 — backend 의 exception model 은 bridge.ts shim
  * (type=2 → success:true / type=3 → success:false) 로 옛 `{success, message, data}`
  * shape 유지.
  */
@@ -35,10 +35,13 @@ export function useService<K extends keyof ServiceMap>(
   key: K,
   robotId?: string,
 ): UseServiceReturn<K> {
-  const wireKey = bridge.expand(key, robotId);
+  // 캐시 키 = robot 별 분리 (bridge.callService 의 write 와 동일 규칙). robot-agnostic
+  // 서비스도 robot_id 가 req 필드로 대상이 다르므로 캐시를 나눠야 cross-robot 오염이
+  // 없다 (wire 라우팅 키 expand 와 별개).
+  const cacheKey = bridge.serviceCacheKey(key, robotId);
   const entry = useFrameworkStore(
     (s) =>
-      s.serviceData[wireKey] as
+      s.serviceData[cacheKey] as
         | ServiceEntry<ServiceMap[K]["res"]>
         | undefined,
   );
@@ -52,7 +55,7 @@ export function useService<K extends keyof ServiceMap>(
         timeoutMs: opts?.timeoutMs,
         robotId: opts?.robotId ?? robotId,
       });
-      const wk = bridge.expand(key, opts?.robotId ?? robotId);
+      const wk = bridge.serviceCacheKey(key, opts?.robotId ?? robotId);
       return useFrameworkStore.getState().serviceData[wk] as ServiceEntry<
         ServiceMap[K]["res"]
       >;

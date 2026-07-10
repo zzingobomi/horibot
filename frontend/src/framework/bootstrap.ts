@@ -13,8 +13,8 @@
  *   global (placeholder 없음) 은 1회.
  * - onConnect: 연결 시점 호출 (재연결 시 매번).
  *
- * frontend_v2.md §2.1 SSOT — backend `/robots` 의 robots 목록만 구독.
- * backend_v2 의 RobotInfo 는 enabled field 박지 X — 모든 robot active 자체.
+ * frontend.md §2.1 SSOT — backend `/robots` 의 robots 목록만 구독.
+ * backend 의 RobotInfo 는 enabled field 박지 X — 모든 robot active 자체.
  */
 import { useEffect } from "react";
 import { bridge, topicFor } from "@/api/bridge";

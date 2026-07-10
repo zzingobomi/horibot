@@ -9,11 +9,11 @@
  * layoutKey 는 mode 별 분리 (`workspace3d.<id>.<mode>`) — 한 robot 안에서도
  * mode 별 panel 배치를 독립적으로 기억.
  *
- * 패널 관리 UI = AutoHideHeader ([docs/workspace_autohide_header.md]) — 패널 닫기
+ * 패널 관리 UI = AutoHideHeader ([docs/frontend.md]) — 패널 닫기
  * (탭 X) 와 `+ 패널 추가` 가 세트라 실수 복구 가능 (옛 hideClose + Reset 플로팅
  * 버튼 조합 대체. Reset 은 ⋯ 메뉴의 비상용으로 강등).
  *
- * 옛 frontend ModeDockview carry over (frontend_v2.md §2.3). 기능 추가 =
+ * 옛 frontend ModeDockview carry over (frontend.md §2.3). 기능 추가 =
  * PANEL_COMPONENTS 등록 + mode 파일 PANELS 한 줄.
  */
 import { useCallback, useRef, useState } from "react";
@@ -41,12 +41,29 @@ import {
 export type PanelSpec = {
   id: string;
   component: PanelComponentKey;
-  title: string;
-  width: number;
-  height: number;
+  /** title/width/height 미지정 시 PANEL_CATALOG 에서 derive — 카탈로그가 SSOT.
+   *  mode 파일에 중복 선언하면 두 곳 손동기화가 어긋남 (calibrationCamera 탭이
+   *  "Camera" 로 떠 구분 불가하던 실제 사고). override 는 예외 자리만. */
+  title?: string;
+  width?: number;
+  height?: number;
   requiredCapabilities?: string[];
   unavailableReason?: string;
 };
+
+/** PanelSpec + PANEL_CATALOG merge — 미지정 필드는 카탈로그 기본값. */
+function resolveSpec(p: PanelSpec): {
+  title: string;
+  width: number;
+  height: number;
+} {
+  const meta = PANEL_CATALOG[p.component];
+  return {
+    title: p.title ?? meta.title,
+    width: p.width ?? meta.width,
+    height: p.height ?? meta.height,
+  };
+}
 
 interface ModeDockviewProps {
   mode: string;
@@ -55,7 +72,7 @@ interface ModeDockviewProps {
 
 // `+ 패널 추가` 모집단 = 전체 카탈로그이며, 현재 robot 의 capability 에 따라 일부
 // 항목은 disabled 로 표시될 수 있다 (선택 가능 여부만 robot context 가 결정 — "전체
-// 카탈로그" 철학은 유지, [docs/workspace_autohide_header.md]). mode PANELS 는 그
+// 카탈로그" 철학은 유지, [docs/frontend.md]). mode PANELS 는 그
 // 페이지 default 세트일 뿐. id 는 `add-` prefix — mode default id("camera" 등)와
 // 충돌 방지. 배치 여부 판정은 id 가 아니라 component 기준 (AutoHideHeader).
 const CATALOG_SPECS: PanelSpec[] = (
@@ -111,7 +128,8 @@ export function ModeDockview({ mode, panels }: ModeDockviewProps) {
       let rowHeight = 0;
 
       for (const p of panels) {
-        if (x + p.width > containerWidth - MARGIN && x > MARGIN) {
+        const { title, width, height } = resolveSpec(p);
+        if (x + width > containerWidth - MARGIN && x > MARGIN) {
           x = MARGIN;
           y += rowHeight + GAP_Y;
           rowHeight = 0;
@@ -120,14 +138,14 @@ export function ModeDockview({ mode, panels }: ModeDockviewProps) {
         event.api.addPanel({
           id: p.id,
           component: p.component,
-          title: p.title,
-          floating: { x, y, width: p.width, height: p.height },
+          title,
+          floating: { x, y, width, height },
           // robot-owned 패널만 robot params + robot 셀렉터 탭. task 패널은 carve-out.
           params: owned ? { robotId: initialRobotId() } : {},
           tabComponent: owned ? "robot" : undefined,
         });
-        x += p.width + GAP_X;
-        rowHeight = Math.max(rowHeight, p.height);
+        x += width + GAP_X;
+        rowHeight = Math.max(rowHeight, height);
       }
     },
     [panels, initialRobotId],
@@ -168,17 +186,18 @@ export function ModeDockview({ mode, panels }: ModeDockviewProps) {
   const handleAddPanel = useCallback(
     (p: PanelSpec) => {
       if (!api) return;
+      const { title, width, height } = resolveSpec(p);
       const owned = ROBOT_OWNED_PANELS.has(p.component);
       const n = api.panels.length;
       api.addPanel({
         id: p.id,
         component: p.component,
-        title: p.title,
+        title,
         floating: {
           x: 24 + (n % 5) * 28,
           y: 48 + (n % 5) * 20,
-          width: p.width,
-          height: p.height,
+          width,
+          height,
         },
         params: owned ? { robotId: initialRobotId() } : {},
         tabComponent: owned ? "robot" : undefined,

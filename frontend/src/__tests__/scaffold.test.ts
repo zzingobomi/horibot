@@ -1,4 +1,4 @@
-// frontend_v2.md §12.5 Step F1.5 — Vitest scaffold 동작 검증.
+// frontend.md §12.5 Step F1.5 — Vitest scaffold 동작 검증.
 // 본 test 는 *meaningful invariant* 검증하지 않음 — Vitest 가 도는지 smoke check 만.
 // Step F2 부터 invariant test 박힘.
 

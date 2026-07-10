@@ -1,5 +1,5 @@
 [project]
-name = "horibot-backend-v2"
+name = "horibot-backend"
 version = "0.1.0"
 description = "Horibot Backend v2 — framework (Runtime / Contract / Mirror / Transport)"
 requires-python = ">=3.11"

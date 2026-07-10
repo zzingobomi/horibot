@@ -1,8 +1,8 @@
 /**
- * `useMirror` — backend_v2 §3.3 Mirror[T] frontend 등가.
+ * `useMirror` — backend §3.3 Mirror[T] frontend 등가.
  *
- * frontend_v2.md §3.4 + §7 — mount 시 snapshot fetch + change event 도착 시
- * 재호출 (payload 박지 X — invalidate+refetch only, backend_v2 §3.3.5 정합).
+ * frontend.md §3.4 + §7 — mount 시 snapshot fetch + change event 도착 시
+ * 재호출 (payload 박지 X — invalidate+refetch only, backend §3.3.5 정합).
  *
  *   const cal = useMirror({
  *     snapshotService: ServiceKey.CALIBRATION_SNAPSHOT_BUNDLE,

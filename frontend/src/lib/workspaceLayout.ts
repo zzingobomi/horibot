@@ -3,7 +3,7 @@
  *
  * collapse(패널 접기)는 PanelShell 이 도입될 때 함께 — 지금은 패널 chrome 이
  * 없어 collapse 를 구동할 UI 가 없으므로 관련 helper 를 두지 않는다 (반쯤
- * 배선된 dead code 방지, frontend_v2.md §2.3).
+ * 배선된 dead code 방지, frontend.md §2.3).
  */
 // v2: 패널의 대상 robot 이 dockview params(params.robotId)에 저장되도록 스키마가
 // 바뀜([[robot_ownership_model]]). robotId 없는 옛 v1 레이아웃을 그대로 복원하면

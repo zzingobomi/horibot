@@ -1,4 +1,4 @@
-// frontend_v2.md §12.2 useTopic — 1 invariant.
+// frontend.md §12.2 useTopic — 1 invariant.
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { act, renderHook } from "@testing-library/react";
@@ -14,7 +14,7 @@ describe("useTopic", () => {
     });
   });
 
-  // spec frontend_v2.md §12.2 — invariant: store.setTopicData → useTopic reactive read
+  // spec frontend.md §12.2 — invariant: store.setTopicData → useTopic reactive read
   it("store.setTopicData 후 useTopic reactive 갱신", () => {
     const wire = "stream/motion/so101_6dof_0/tcp_state";
     const { result } = renderHook(() =>

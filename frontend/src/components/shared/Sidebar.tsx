@@ -1,7 +1,7 @@
 /**
  * Sidebar — robot enumeration + mode navigation.
  *
- * 옛 frontend Sidebar carry over (frontend_v2.md §2.3), v2 로 적응:
+ * 옛 frontend Sidebar carry over (frontend.md §2.3), v2 로 적응:
  *   - robots.yaml SSOT 자동 enumeration (useRobots) — capabilities 로 mode 링크.
  *   - Dashboard / World / Settings / Tasks 섹션은 해당 page/backend 부재로 제거
  *     (Step E+ 박히면 nav 추가). SIDEBAR_MODES 는 현재 ["move"].

@@ -2,7 +2,7 @@
 
 `Detect Object` = Day-1 primitive (모든 매니퓰레이션 stack 공통, 하드웨어 무관 의미).
 구현체(Grounding DINO / YOLO / FoundationPose)는 adapter 뒤 — DSL·Runtime 은
-"Detect Object" 만 안다 (backend_v2.md §17.1).
+"Detect Object" 만 안다 (backend.md §17.1).
 
 prompt → base frame 3D 후보 **Top-K** (§17.5 ①). 후보별 기하 속성(base_z=position[2],
 size_m) 을 제공하고, prior 적용/최종 선택은 소비자(task `SelectTarget(candidates,
@@ -59,7 +59,7 @@ class DetectionsUpdate(BaseModel):
 
 class Detector:
     class Service(StrEnum):
-        # robot-agnostic (host 당 1, backend_v2.md §2.7) — robot_id 는 req field.
+        # robot-agnostic (host 당 1, backend.md §2.7) — robot_id 는 req field.
         # 무거운 모델(GDINO)은 1회 로드, 매 요청이 robot_id 로 그 로봇의 camera/캘/TCP 조회.
         DETECT = "srv/detector/detect"  # prompt + robot_id → base 3D 후보 Top-K
         # [DRAFT] OBB(grasp yaw + footprint) 탐색용 — SAM mask → base 점군 → minAreaRect.
@@ -109,7 +109,7 @@ class OrientedDetection(DraftModel):
     bbox_2d: tuple[float, float, float, float] | None = None
     # 카메라 패널 오버레이(image-space px). obb_2d = base OBB 코너 4개를 픽셀로 reproject
     # (회전 사각형). mask_contour = SAM mask 윤곽 폴리곤 (실루엣). mask bitmap 은 wire 에
-    # 안 실음 — 폴리곤(점 수십 개)만 (backend_v2.md 결정). depth 부족 등으로 없으면 None.
+    # 안 실음 — 폴리곤(점 수십 개)만 (backend.md 결정). depth 부족 등으로 없으면 None.
     obb_2d: list[tuple[float, float]] | None = None
     mask_contour: list[tuple[float, float]] | None = None
 

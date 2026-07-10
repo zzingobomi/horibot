@@ -1,7 +1,7 @@
 """ScanModule (@service wire) 검증 — in-process, hardware 불요.
 
 robot-agnostic (host 당 1) — **multi-robot 눈속임 방지**
-(backend_v2.md §2.7.3): 6DOF so101 + 5DOF omx 세션이 한 인스턴스
+(backend.md §2.7.3): 6DOF so101 + 5DOF omx 세션이 한 인스턴스
 안에서 격리 (arm ids / raw / blob 경로 / scene3d dispatch). 전체 wire + TSDF build
 는 test_scan_e2e 가 커버 — 여기선 capture dispatch/격리를 fake 로 직접.
 """

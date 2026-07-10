@@ -1,10 +1,10 @@
 /**
  * URDF robot model. 옛 frontend RobotModel.tsx 의 ref-stash + loadMeshCb override
  * pattern 그대로 carry over — commit f15a20b 의 race fix + cross-robot opacity bleed
- * fix 보존 (frontend_v2.md §10 + anchor #12).
+ * fix 보존 (frontend.md §10 + anchor #12).
  *
- * 변경 사항 (backend_v2 정합):
- *   - useMotorConfigs 제거 — backend_v2 의 Motion.Stream.TCP_STATE.joints (rad list)
+ * 변경 사항 (backend 정합):
+ *   - useMotorConfigs 제거 — backend 의 Motion.Stream.TCP_STATE.joints (rad list)
  *     활용. joint name 매핑은 URDF 의 non-fixed joint file order 그대로.
  *   - URDF path: `${BASE_URL}/robot/${type}/urdf/${type}.urdf` (Bridge static mount).
  */

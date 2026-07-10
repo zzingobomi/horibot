@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import type { CalibrationBundle } from "@/api/generated/contract";
-import { cameraInBase, frustumSegmentPositions } from "./cameraPose";
+import {
+  cameraInBase,
+  fovFromIntrinsic,
+  frustumSegmentPositions,
+} from "./cameraPose";
 
 describe("cameraInBase", () => {
   it("hand_eye 없음(캘 전/mock) → identity fallback = TCP pose 그대로", () => {
@@ -49,5 +53,54 @@ describe("frustumSegmentPositions", () => {
     for (let i = 24; i < 48; i += 3) {
       expect(buf[i + 2]).toBeCloseTo(depth);
     }
+  });
+
+  it("fov 인자 → half-extent 가 depth·tan(half) — 캘 FOV 가 frustum 에 반영", () => {
+    const depth = 0.1;
+    const fov = { halfH: Math.PI / 4, halfV: Math.PI / 6 }; // 45° / 30°
+    const buf = frustumSegmentPositions(depth, fov);
+    // 첫 corner = (-hw, -hv, depth)
+    expect(buf[3]).toBeCloseTo(-depth * Math.tan(fov.halfH));
+    expect(buf[4]).toBeCloseTo(-depth * Math.tan(fov.halfV));
+  });
+});
+
+describe("fovFromIntrinsic", () => {
+  it("fx=w/2 → halfH=45° (atan 유도 계약)", () => {
+    const bundle = {
+      intrinsic: {
+        result_data: {
+          camera_matrix: [
+            [640, 0, 632],
+            [0, 360, 360],
+            [0, 0, 1],
+          ],
+          dist_coeffs: [[0, 0, 0, 0, 0]],
+          image_size: [1280, 720],
+        },
+      },
+    } as unknown as CalibrationBundle;
+    const fov = fovFromIntrinsic(bundle);
+    expect(fov).not.toBeNull();
+    expect(fov!.halfH).toBeCloseTo(Math.PI / 4); // atan(640/640)
+    expect(fov!.halfV).toBeCloseTo(Math.PI / 4); // atan(360/360)
+  });
+
+  it("intrinsic 없음 / image_size 없음(factory seed 이전) → null (fallback 신호)", () => {
+    expect(fovFromIntrinsic(null)).toBeNull();
+    const noSize = {
+      intrinsic: {
+        result_data: {
+          camera_matrix: [
+            [640, 0, 632],
+            [0, 360, 360],
+            [0, 0, 1],
+          ],
+          dist_coeffs: [[0]],
+          image_size: null,
+        },
+      },
+    } as unknown as CalibrationBundle;
+    expect(fovFromIntrinsic(noSize)).toBeNull();
   });
 });

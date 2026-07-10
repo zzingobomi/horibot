@@ -2,7 +2,7 @@
 
 robot-agnostic (host 당 1) — 단일 인스턴스가 req.robot_id / run 파생으로 dispatch.
 DB-backed 서비스가 Repository 로 올바로 배선되고 ACTIVATED/COMMITTED 이벤트를 내는지
-+ **multi-robot 눈속임 방지** (backend_v2.md §2.7.3): so101(6DOF) 과
++ **multi-robot 눈속임 방지** (backend.md §2.7.3): so101(6DOF) 과
 omx(5DOF) 를 같은 인스턴스로 구동 — 한쪽 하드코딩 잔재는 다른쪽 경로에서 터짐.
 """
 
@@ -21,6 +21,7 @@ from infra.database.sqlite import open_sqlite
 from infra.object_store.filesystem import FilesystemObjectStore
 from modules.calibration.vision import sim_board
 from modules.calibration.contract import (
+    AbortRunRequest,
     ActivateResultRequest,
     Calibration,
     CalibrationActivated,
@@ -163,6 +164,7 @@ def test_service_wiring_discovers_all_keys(tmp_path: Path):
         Calibration.Service.START_RUN,
         Calibration.Service.CAPTURE,
         Calibration.Service.FINALIZE_RUN,
+        Calibration.Service.ABORT_RUN,
         Calibration.Service.ACTIVATE_RESULT,
         Calibration.Service.UNDO_LAST_CAPTURE,
         Calibration.Service.PREVIEW_ENABLE,
@@ -223,6 +225,41 @@ def test_finalize_run_publishes_committed_and_sets_status(tmp_path: Path):
     assert isinstance(committed[0], CalibrationCommitted)
     # robot_id 는 run row 에서 파생 (req 에 없음)
     assert committed[0].run_id == run.id and committed[0].robot_id == _SO101
+
+
+def test_abort_run_marks_failed_and_rejects_double_abort(tmp_path: Path):
+    """세션 탈출구 계약 — 0장 세션에서 finalize(캡처부족 거부)+undo(비활성)로
+    갇히던 결함의 회귀망. abort = in_progress → failed, 이미 종료된 run 은 ok=False."""
+    mod, _, repo = _module(tmp_path)
+    run = repo.create_run(_SO101, "intrinsic", "charuco_manual")
+    assert run.id is not None
+
+    res = mod.abort_run(AbortRunRequest(run_id=run.id))
+    assert res.ok
+    assert repo.get_run(run.id).status == "failed"  # type: ignore[union-attr]
+
+    res2 = mod.abort_run(AbortRunRequest(run_id=run.id))
+    assert not res2.ok and "failed" in res2.message
+
+
+def test_start_run_aborts_stale_in_progress_same_robot(tmp_path: Path):
+    """도메인 규칙: robot 당 활성 세션 1개 — reload 로 UI 가 runId 를 잃어도
+    새 시작이 orphan in_progress 를 failed 로 정리 (preview 오판 방지)."""
+    mod, _, repo = _module(tmp_path)
+    stale = repo.create_run(_SO101, "intrinsic", "charuco_manual")
+    other_robot = repo.create_run(_OMX, "intrinsic", "charuco_manual")
+    assert stale.id is not None and other_robot.id is not None
+
+    res = mod.start_run(
+        StartRunRequest(
+            robot_id=_SO101, kind="hand_eye", algorithm="hand_eye_capture_only"
+        )
+    )
+
+    assert repo.get_run(stale.id).status == "failed"  # type: ignore[union-attr]
+    assert repo.get_run(res.run_id).status == "in_progress"  # type: ignore[union-attr]
+    # 다른 robot 의 세션은 건드리지 않음
+    assert repo.get_run(other_robot.id).status == "in_progress"  # type: ignore[union-attr]
 
 
 def test_snapshot_bundle_returns_active(tmp_path: Path):

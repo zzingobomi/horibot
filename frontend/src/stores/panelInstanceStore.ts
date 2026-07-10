@@ -1,7 +1,7 @@
 /**
  * panelInstanceStore — 살아있는 robot-owned 패널 인스턴스의 runtime 목록.
  *
- * scenePart 메커니즘([docs/scene_contribution_architecture.md])의 경계 데이터:
+ * scenePart 메커니즘([docs/frontend.md])의 경계 데이터:
  * dockview 패널 트리 ↔ R3F Canvas 트리 사이를 runtime 에 넘는 것은 JSX 가 아니라
  * **이 인스턴스 목록(순수 데이터)뿐**이다. withRobotOwnership HOC(모든 robot-owned
  * 인스턴스의 mount/robotId/capability 를 아는 chokepoint)가 등록/해제하고,

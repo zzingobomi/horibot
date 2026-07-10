@@ -7,7 +7,7 @@
  * 실행하는 2-스텝 (LLM 오해 시 확인 가능).
  *
  * detector/llm/task 는 robot-agnostic — LLM parse 는 robot 무관, TASK_RUN 은 req 에
- * robot_id (docs/backend_v2.md §2.7). 정확도(검출/파싱)는 실물 hardware tuning (§17.5).
+ * robot_id (docs/backend.md §2.7). 정확도(검출/파싱)는 실물 hardware tuning (§17.5).
  */
 import { useState } from "react";
 import { Button } from "@/components/ui/button";

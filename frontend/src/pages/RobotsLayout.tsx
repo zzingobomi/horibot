@@ -5,7 +5,7 @@
  * 한 번만 로드되고 mode 갈아탈 때 reuse. 각 mode 컴포넌트 (RobotMoveMode 등)
  * 가 ModeDockview 만 Outlet 으로 렌더 → mode 별 panel set 만 갈아끼움.
  *
- * 옛 frontend RobotsLayout carry over (frontend_v2.md §2.3). backend_v2 의
+ * 옛 frontend RobotsLayout carry over (frontend.md §2.3). backend 의
  * RobotInfo 는 enabled field 박지 X — robots.yaml SSOT (포함된 robot 모두 active).
  */
 import { Outlet, useParams } from "react-router-dom";
@@ -46,7 +46,7 @@ export function RobotsLayout() {
 
       <Outlet />
       {/* 우상단 robot id/type 박스는 제거 — 사이드바와 순수 중복
-          ([docs/workspace_autohide_header.md] §2.2) */}
+          ([docs/frontend.md] §2.2) */}
     </div>
   );
 }

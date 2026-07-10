@@ -5,7 +5,7 @@
  * 데이터·대상 robot 을 결정 — 여기엔 "특정 robot 의 stream" 개념이 없다.
  * 남은 책임: robots 목록 / focus / OrbitControls target.
  * (옛 scanRobotId/scanBaseMatrix per-layer plumbing 은 객체 안으로 이동 —
- * [docs/scene_contribution_architecture.md].)
+ * [docs/frontend.md].)
  */
 import { useMemo } from "react";
 import { RobotScene } from "./Scene";

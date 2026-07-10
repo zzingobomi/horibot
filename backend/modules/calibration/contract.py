@@ -1,6 +1,6 @@
 """Calibration Module — 외부 Public Surface (wire contract).
 
-boundary spec = [docs/calibration_module_boundary.md]. 순수 schema 만 — result
+boundary spec = [docs/calibration.md]. 순수 schema 만 — result
 data 모델에 numpy / helper method 박지 X (v2 contract = pure data, 옛 backend
 `result_models.py` 의 get_trans / as_array / from_calibration_result 는 consumer
 (Motion kinematics build / offline BA) 책임으로 이동).
@@ -213,7 +213,7 @@ class CalibrationBundle(BaseModel):
 
 class Calibration:
     class Service(StrEnum):
-        # robot-agnostic (host 당 1, backend_v2.md §2.7) — 대상 robot 은
+        # robot-agnostic (host 당 1, backend.md §2.7) — 대상 robot 은
         # req 필드로 식별: 새 세션(start_run/preview/조회)은 `req.robot_id`,
         # 진행 중 자원은 그 식별자(run_id/result_id)에서 파생 (robot_id 중복 채널 X).
         # commands (write)
@@ -221,6 +221,7 @@ class Calibration:
         CAPTURE = "srv/calibration/capture"
         UNDO_LAST_CAPTURE = "srv/calibration/undo_last_capture"
         FINALIZE_RUN = "srv/calibration/finalize_run"
+        ABORT_RUN = "srv/calibration/abort_run"
         ACTIVATE_RESULT = "srv/calibration/activate_result"
         PREVIEW_ENABLE = "srv/calibration/preview_enable"
         # queries (read)
@@ -259,6 +260,16 @@ class StartRunRequest(BaseModel):
 
 class StartRunResponse(BaseModel):
     run_id: int
+
+
+class AbortRunRequest(BaseModel):
+    run_id: int
+
+
+class AbortRunResponse(BaseModel):
+    # in_progress 가 아니면 ok=False + message (이미 종료된 run 중복 abort 방어).
+    ok: bool
+    message: str = ""
 
 
 class ActivateResultRequest(BaseModel):
@@ -361,6 +372,11 @@ class CalibrationPreview(BaseModel):
     corners_2d: list[list[float]] = Field(default_factory=list)  # 검출 코너 픽셀 (N,2)
     image_width: int | None = None  # 원본 프레임 크기 (overlay 좌표 스케일용)
     image_height: int | None = None
+    # PnP 성공 시 board pose (camera frame, 4x4 row-major). intrinsic 없거나
+    # 미검출이면 None. frontend CalibrationScenePart 가 카메라 pose(tcp·hand_eye)
+    # 와 합성해 보드를 3D 씬에 렌더 — 캘 후엔 실물 보드 위치와의 비교가 곧
+    # hand_eye 품질의 육안 검증.
+    board_in_cam: list[list[float]] | None = None
 
 
 class CalibrationActivated(BaseModel):

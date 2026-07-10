@@ -1,7 +1,7 @@
 /**
- * frontend_v2 framework — backend_v2 의 4 primitive 를 React hook 으로 노출.
+ * frontend framework — backend 의 4 primitive 를 React hook 으로 노출.
  *
- * frontend_v2.md §3 — 6 hook:
+ * frontend.md §3 — 6 hook:
  *   - useService — RPC + auto cache
  *   - useTopic / onTopic — generic latest cache
  *   - useResource — HTTP fetch + cache + poll

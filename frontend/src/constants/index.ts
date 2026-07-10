@@ -1,4 +1,4 @@
-// backend_v2 wire endpoint.
+// backend wire endpoint.
 // (기본 로봇 상수 없음 — robot 은 라우트 param(useRobotId) 또는 task 바인딩
 //  (useTaskRobotId)에서 명시적으로 온다. ambient default 로봇 개념 폐기.)
 

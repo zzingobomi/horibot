@@ -1,4 +1,4 @@
-"""LOOCV 최저점 max-push — outlier iteration squeeze (backend_v2 이월).
+"""LOOCV 최저점 max-push — outlier iteration squeeze (backend 이월).
 
 옛 backend/scripts/calibrate_squeeze.py 이월. calibrate_offline 의 짝꿍 진단 도구:
 committed 캘 결과가 어떤 drop set 으로 나왔는지 재현 / 새 캘의 outlier 자동 제거.
@@ -25,8 +25,8 @@ from pathlib import Path
 
 import numpy as np
 
-BACKEND_V2 = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(BACKEND_V2))
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND_ROOT))
 
 from apps.config import _ROBOT_DIR, load_robots  # noqa: E402
 from infra.database.sqlite import open_sqlite  # noqa: E402

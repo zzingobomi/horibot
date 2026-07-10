@@ -1,4 +1,4 @@
-// frontend_v2 L4 — RobotScanMode e2e (mock backend + vite dev + chromium headed).
+// frontend L4 — RobotScanMode e2e (mock backend + vite dev + chromium headed).
 //
 // 검증 invariant (frontend ↔ bridge WS ↔ scene3d/scan 서비스 ↔ DB 전 wire):
 //   1. WS 연결 — connected badge
@@ -11,8 +11,8 @@
 // 프론트→백엔드 서비스 wire 만. mock 은 hand_eye 없어 build reject 라 e2e 제외.
 //
 // 외부 의존 (실행 전 띄움):
-//   - mock backend (port 8000): cd backend_v2 && uv run --no-sync python -m apps.main --host mock
-//   - frontend vite (port 5174): cd frontend_v2 && pnpm dev
+//   - mock backend (port 8000): cd backend && uv run --no-sync python -m apps.main --host mock
+//   - frontend vite (port 5173): cd frontend && pnpm dev
 
 import { expect, test } from "@playwright/test";
 

@@ -1,4 +1,4 @@
-// frontend_v2 L4 — RobotAssetsMode(Waypoint) e2e (mock backend + vite dev).
+// frontend L4 — RobotAssetsMode(Waypoint) e2e (mock backend + vite dev).
 //
 // 검증 invariant (frontend ↔ bridge WS ↔ waypoint 서비스 ↔ DB 전 wire):
 //   1. WS 연결 + WaypointPanel 렌더
@@ -9,8 +9,8 @@
 // 이라 joint state 도착함 (teach accepted).
 //
 // 외부 의존 (실행 전 띄움):
-//   - mock backend (port 8000): cd backend_v2 && uv run --no-sync python -m apps.main --host mock
-//   - frontend vite (port 5174): cd frontend_v2 && pnpm dev
+//   - mock backend (port 8000): cd backend && uv run --no-sync python -m apps.main --host mock
+//   - frontend vite (port 5173): cd frontend && pnpm dev
 
 import { expect, test } from "@playwright/test";
 

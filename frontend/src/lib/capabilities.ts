@@ -10,7 +10,7 @@
  * 를 가졌다고 반드시 성공하는 건 아니며(예: detector 미실행 / calibration 미로드),
  * 최종 사용 가능 여부는 백엔드가 계속 판정한다. 여기서는 "capability 상 명백히
  * 불가능"한 경우(예: OMX 엔 rgbd 자체가 없음)만 선제 안내해 무의미한 실패를 막는다.
- * [docs/workspace_autohide_header.md]
+ * [docs/frontend.md]
  */
 
 // capability slug → 사람이 읽는 라벨. 새 capability(force_torque 등) 추가 시 여기만
@@ -39,7 +39,7 @@ export function missingCapabilities(
 /**
  * 부족 capability 안내 문구. override 가 있으면 그것을 그대로, 없으면 라벨에서
  * 조립 ("RGB-D 카메라 필요" / "RGB-D 카메라, 모션 필요"). override 는 예외적
- * UX 자리에서만 (§workspace_autohide_header.md — 기본은 파생).
+ * UX 자리에서만 (§frontend.md — 기본은 파생).
  */
 export function describeMissing(
   missing: readonly string[],

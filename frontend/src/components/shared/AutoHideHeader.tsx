@@ -1,5 +1,5 @@
 /**
- * Workspace auto-hide 헤더 ([docs/workspace_autohide_header.md]).
+ * Workspace auto-hide 헤더 ([docs/frontend.md]).
  *
  * 원칙: 이 UI 의 주인공은 3D 씬 — 관리 UI 는 평소 0px, 마우스가 상단으로 향하는
  * 의도의 순간에만 슬라이드 다운. 내용은 `+ 패널 추가`(미배치 목록) 와 `⋯`(레이아웃

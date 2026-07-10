@@ -1,0 +1,477 @@
+# Motion (통합)
+
+> **통합본 (2026-07-11 문서 다이어트)** — 아래 문서들을 원문 그대로 병합. 옛 파일명으로의
+> 링크는 본 문서 내 해당 부(또는 git history). 각 부의 제목/상태 배너는 병합 당시 그대로.
+> - `motion.md`
+> - `motion.md`
+> - `motion.md`
+
+
+---
+---
+
+<!-- ═══════════ [통합 원문] motion.md ═══════════ -->
+
+# Motion Taxonomy
+
+Horibot 의 motion primitive 분류 + 산업 표준 매핑 + 채택 결정.
+
+## 4 계층 (2026-06-17 정정)
+
+```
+Move*    one-shot target motion (trajectory-planned)
+Servo*   external absolute target stream — RL / Vision servo
+Jog*     human/manual velocity stream — frontend / gamepad
+Task*    scripted execution — task_node
+```
+
+명명 자리 컨벤션 — *이름 = primitive contract*. 이름 자리 깨면 안 됨.
+
+| 계층 | Joint | Cartesian | caller | server | 산업 표준 매핑 |
+|---|---|---|---|---|---|
+| **Move** | `MoveJ` | `MoveL` / `MoveC` / `MoveP` | 단발 절대 target | Ruckig jerk-limited 보간 | UR `movej/movel/movec/movep` / ABB `MoveJ/L/C` |
+| **Servo** (target chase) | `ServoJ` | `ServoTcp` | *외부 controller* 가 자기가 계산한 *절대 target* 빠른 rate 스트림 | direct IK + publish (planner 우회) | UR `servoj/servoc`, ABB EGM, KUKA RSI |
+| **Jog** (human velocity) | `JogJ` | `JogTcp` (linear + angular twist + frame) | *human / gamepad* 가 velocity 보냄 | backend latched ref + 실 dt 적분 → IK + publish | LeRobot delta-pose, UR teach pendant jog |
+| **Task** | (n/a — task_node primitive) | | scripted recipe | step DSL 통한 직접 motion 호출 | — |
+
+## 산업 표준 명명 자리 vs 우리 구현
+
+- **Servo (target chase)**: 산업 표준 자리 = 외부 controller (RL / Vision / EGM / RSI / Karel stream) 가 자기가 계산한 *절대 target* 자리 빠른 rate (50Hz+) 으로 스트림. server 자리 = direct IK + publish, planner 우회. UR `servoj` (joint) / `servoc` (cartesian) 가 reference. 우리 caller 자리 = 미래 RL / vision servo policy node.
+
+- **Jog (human velocity)**: 산업 표준 자리 = teach pendant 의 human 조작 jog. caller 자리 = *human / pendant / joystick* 가 velocity 보냄. server 자리 = jerk-limited velocity stream 또는 backend latch + 적분 (LeRobot 방식). 우리 자리 = backend latch + 실 dt 적분 → IK + publish (LeRobot SO100FollowerEndEffector + InverseKinematicsEEToJoints 패턴 자리).
+
+| 우리 | UR (URScript) | ABB (RAPID) | KUKA (KRL) | FANUC |
+|---|---|---|---|---|
+| `MoveJ` | `movej` | `MoveJ` / `MoveAbsJ` | `PTP` / `SPTP` | `J` |
+| `MoveL` | `movel` | `MoveL` | `LIN` / `SLIN` | `L` |
+| `MoveC` | `movec` | `MoveC` | `CIRC` / `SCIRC` | `C` |
+| `MoveP` | `movep` | (없음) | `SPLINE` | (없음) |
+| `ServoJ` | `servoj` | (EGM) | (RSI / FRI) | (Karel stream) |
+| `ServoTcp` | `servoc` | (EGM) | (RSI Cartesian) | (Karel stream) |
+| `JogJ` | `speedj` (variant) | (EGM) | RSI velocity | (Karel jog) |
+| `JogTcp` | `speedl` (variant) | (EGM) | RSI Cartesian velocity | (Karel jog) |
+
+ABB EGM / KUKA RSI / FRI 자리 servo/velocity 통합 streaming. 의미적으론 같은 자리.
+
+## 브랜드 매핑 (cross-check)
+
+| 우리 | UR (URScript) | ABB (RAPID) | KUKA (KRL) | FANUC |
+|---|---|---|---|---|
+| `MoveJ` | `movej` | `MoveJ` / `MoveAbsJ` | `PTP` / `SPTP` | `J` |
+| `MoveL` | `movel` | `MoveL` | `LIN` / `SLIN` | `L` |
+| `MoveC` | `movec` | `MoveC` | `CIRC` / `SCIRC` | `C` |
+| `MoveP` | `movep` | (없음) | `SPLINE` | (없음) |
+| `ServoJ` | `servoj` | (EGM) | (RSI / FRI) | (Karel stream) |
+| `ServoTcp` | `servoc` | (EGM) | (RSI Cartesian) | (Karel stream) |
+| `SpeedJ` | `speedj` | (EGM 속도 모드) | RSI velocity | (Karel jog) |
+| `SpeedTcp` | `speedl` | (EGM 속도 모드) | RSI Cartesian velocity | (Karel jog) |
+
+ABB 의 EGM (Externally Guided Motion) / KUKA 의 RSI (Robot Sensor Interface) / FRI (Fast Research Interface) 는 servo/velocity 통합 streaming 인터페이스. 의미적으론 같은 자리.
+
+## 펜던트의 jog 패턴 — 산업 표준
+
+펜던트의 cartesian jog 는 **6DOF twist** 입력 = 평행이동 3 + 회전 3:
+
+```
++X / -X    +Rx / -Rx
++Y / -Y    +Ry / -Ry
++Z / -Z    +Rz / -Rz
+```
+
+전형적으로 `SpeedTcp` 으로 구현 — 사용자가 "+Rx" 버튼 누르면 `SpeedTcp(linear=(0,0,0), angular=(w,0,0))` publish. **TCP 위치 고정 + 자세만 변경** 케이스 (예: 용접 토치를 끝점 중심 기울이기) 자동 처리.
+
+**ISO 10218 enabling switch** (3-position deadman, 산업 펜던트 안전 필수) → gamepad LT/RT 트리거 hold 로 매핑. 손 떼면 velocity timeout 발동 → 자동 정지. **velocity primitive 가 jog 자리인 핵심 이유**.
+
+## Horibot 채택 결정
+
+### Phase 1 — 구현 완료 (2026-06-16)
+
+| 작업 | 상세 | 상태 |
+|---|---|---|
+| **신규** `MOTION_SPEED_TCP` (backend) | `SpeedTcpReq {linear, angular, frame: "base" \| "tcp"}`. Ruckig `ControlInterface.Velocity` + 100ms timeout + idle grace 0.5s 자동 정지. server-side `PybulletKinematics.tcp_twist_to_joint_vel` 가 Jacobian pseudo-inverse (frame 변환 포함). dof<6 자리 linear-only fallback. | ✅ |
+| **신규** `MOTION_SPEED_J` (backend) | `SpeedJReq {velocities}` (arm dof). joint velocity 직접 추적. dof mismatch 시 ValueError. | ✅ |
+| **rename** `MOVE_TCP` → `SERVO_TCP` (backend) | `ServoTcpReq {position, quaternion?}` — 6DOF orientation 옵션 (None = position-only). `MotionCommand` 패턴 정식 편입 (기존 dict-API `_srv_move_tcp` 폐기). | ✅ |
+| **gamepad rewrite** | capability gate (enabled + `"gamepad"` 정확히 1개, N>1 fail-fast). LT deadman + Back mode 토글 + Start frame 토글. TCP mode 6DOF twist, Joint mode 6축 매핑. 모든 버튼 (X/Y/A/B). | ✅ |
+| **frontend 모션패널 — Trajectory 4 탭** | `MoveJ.tsx` / `MoveL.tsx` / `MoveC.tsx` / `MoveP.tsx`. 단발 절대 target. 탭 mount 시 자동 sync (탭 reset → 0 명령 위험 차단), 소수점 `toFixed(2)` 통일. | ✅ |
+| **frontend 모션패널 — Velocity 2 탭 (Jog)** | `SpeedJ.tsx` (joint별 −/+ 버튼 hold = 50Hz `MOTION_SPEED_J` publish) / `SpeedTcp.tsx` (6DOF twist 버튼 hold + base/tcp frame 토글). 손 떼면 backend 100ms deadman timeout 자동 정지 — 게임패드 LT hold 와 동일 메커니즘. **2026-06-16 추가 (`MOTION_SPEED_TCP`/`MOTION_SPEED_J` backend Phase 1 시점에 빠져 있던 자리)**. | ✅ |
+| **host config 등록** | `host_pc.yaml` / `host_dev.yaml` 에 gamepad 추가. host_mock 은 의도적 제외 (frontend UX 자리, 실 펜던트 의미 X). robots 는 enabled robot 과 일치 (`so101_6dof_0`). | ✅ |
+| **robots.yaml** | `so101_6dof_0.capabilities` 에 `"gamepad"` 추가. OMX 안 줌 (5DOF 펜던트 부적합). | ✅ |
+
+**Servo 계층 (ServoTcp / ServoJ) 은 frontend 모션패널에서 빠짐.** ServoJ 는 Phase 3 보류 (driver 없음). ServoTcp 는 정의상 *외부 컨트롤러 50Hz+ chase* 가정이라 단발 패널 자리 의미 미스매치 — 한때 만들어졌던 `frontend/src/components/panels/motion/ServoTCP.tsx` 는 2026-06-16 제거. 운영 caller = 게임패드 (`GamepadNode`) + 미래 RL/외부 driver 만.
+
+### Phase 1.5 (2026-06-17) — Servo / Jog 분리 + SpeedJ/SpeedTcp 폐기
+
+**SpeedTcp/SpeedJ 의 directional transient drift** ([motion.md](motion.md)) 진단 결과 root cause 가 *resolved-rate velocity-streaming* 아키텍처 자체 (`pinv(J) @ ramping_twist` 자리 ratio mismatch). LeRobot 본체 + XLeRobot + box2ai-robotics 가 *전부 position-increment (delta-pose 적분)* 으로 짠 자리. 우리 jog 도 그 패턴 채택.
+
+**명명 자리 정정** — 처음 자리 ServoJ/ServoTcp 자리 *velocity input* 자리 박았던 자리 = *Servo 의미 자리 깨는 자리* 자리 (Servo 자리 산업 표준 의미 = caller 가 절대 target 자리). 정석 자리는 **Jog 라는 별도 계층 신설** + **Servo 의미 자리 보존**.
+
+| 작업 | 상세 | 상태 |
+|---|---|---|
+| **신규 계층** `Jog*` | `JogJReq {velocities}` / `JogTcpReq {linear, angular, frame}`. backend `JogJCommand` / `JogTcpCommand` 가 자기 process joint_cache → ref latch + 실 dt 적분 (SE(3) 적분 자리 scipy `Rotation`) → IK → publish_cmd. service (`MOTION_JOG_J/TCP` 단발) + topic stream (`MOTION_JOG_J/TCP_STREAM` 50Hz). | ✅ |
+| **`ServoJ` / `ServoTcp` 자리** | 산업 표준 의미 자리 (절대 target chase, UR `servoj/servoc`) 자리 *보존*. caller 자리 = 미래 RL / Vision servo policy node. service 자리만 노출 (단발). | ✅ |
+| **`SpeedJ` / `SpeedTcp` 자리 폐기** | Ruckig velocity stream + `_velocity_loop` + `Synchronization.Phase` fix 자리 + cartesian Ruckig 자리 dead code 자리 전체 제거. `_tcp_twist_to_joint_vel` callback 자리도 제거. | ✅ |
+| **gamepad_node** | `MOTION_SPEED_TCP` / `MOTION_SPEED_J` service call → `MOTION_JOG_TCP_STREAM` / `MOTION_JOG_J_STREAM` topic publish. 50Hz service RTT 회피. | ✅ |
+| **Frontend** | `ServoJ.tsx` / `ServoTcp.tsx` (Three.js Quaternion 적분 자리) + `SpeedJ.tsx` / `SpeedTcp.tsx` 자리 4 자리 모두 폐기 → `JogJ.tsx` / `JogTcp.tsx` 2 자리. velocity / twist 만 publish — SE(3) 적분 자리 backend SSOT. | ✅ |
+| **`motion_node` refactor** | `_dispatch_cartesian` 공통 chain 추출 → MoveL/MoveC/MoveP/ServoTcp service 자리 같은 chain. JogTcp 자리 자체 SE(3) 적분. | ✅ |
+| **mock backend boot fix** | `main.py` 의 instance start 순서 reorder — application_nodes 먼저, device_nodes 다음. 기존엔 motion_node 가 storage retry deadlock 으로 mock backend 90s timeout. | ✅ |
+
+**왜 부드러운가** (motion.md 참조):
+- 매 publish 가 *기하학적으로 정확한 절대 target* → ramp 중 옆으로 새는 자리 0.
+- 50Hz × ~2mm/cycle = effective 100 mm/s 인데 cycle 당 step 이 작아 모터 trapezoidal profile 이 *cycle 안에 도달 못 함* → continuous chase → 부드러움.
+- backend fresh latch (joint_cache → fk) — 인코더 - ref 누적 drift 차단.
+
+**SSOT 자리**: SE(3) 적분 자리 backend 1자리 (scipy `Rotation`). frontend Three.js / Python gamepad 자리 중복 없음. cross-process safe — frontend 가 모르는 `joint_offset` 자리 backend SSOT.
+
+### Phase 1 구현 중 발견된 trauma (mock 검증으로 잡힌 자리, hardware 안 가도 됐음)
+
+`backend/tests/test_motion_{speed,e2e,gamepad}.py` 37 test 가 잡은 자리:
+
+1. **`TrajectoryRunner._launch` 가 velocity state wipe** — `set_speed_joint` 직후 `_ensure_velocity_streamer` 의 `_launch` 가 `self.stop()` 호출 → `_vel_last_set` 0 reset → streamer 첫 step 에서 timeout 즉시 종료. `_stop_thread` / `_reset_velocity_state` 분리로 fix.
+2. **`JointStateCache.subscribe` default robot mismatch** — `subscribe(self)` 가 default robot 토픽 구독. motion_node 가 다른 robot 으로 떠도 default 만 봄. `robot_id=self.robot_id` 명시.
+3. **`MotionModes` / `_kinematics` default = so101** — motion_node 가 다른 robot 자리에서 dof / Jacobian mismatch. `MotionModes(robot_id=...)` + `RobotRegistry().get_kinematics(robot_id)`.
+4. **PyBullet dof (arm + gripper) vs streamer (arm-only) length mismatch** — `calculateJacobian` 호출 시 silent crash → SpeedTcp publish 0. motion_node 에서 zero-pad / slice.
+5. **host_mock 의 robots ↔ robots.yaml enabled mismatch** — host config 의 robot 이 disabled 면 calibration 이 그 robot 의 kinematics initialize 안 함 → motion_node 의 fk 호출 시 RuntimeError. host_mock 의 robots 를 enabled robot 과 일치.
+
+### Phase 2 — 실제 써본 후 평가
+
+Phase 1 의 6 primitives + gamepad pendant 로 SO-101 캘 / 일반 운용 진행. 다음 검토 대상:
+
+- `MoveL/C/P` 의 orientation 확장 — random palletizing / 비스듬한 면 접근 같은 task driver 가 등장하면.
+- gamepad button 매핑 fine-tuning — 실 사용 ergonomics 피드백.
+
+### Phase 3 — 진짜 driver 등장 시 추가
+
+- `ServoJ` — RL / imitation learning replay / 외부 trajectory player 등 외부 컨트롤러가 joint 절대 target 을 빠른 rate 로 보내고 싶을 때.
+- 그 외 산업표준 primitive 들이 우리 use case 와 매칭될 때.
+
+**보류 원칙**: driver 없는 primitive 미리 만들지 않음. driver 의 요구를 알고 디자인하는 게 더 정확.
+
+## 각 primitive — semantic 한 줄
+
+이름이 흔들리지 않게 의미 박제. rename / 신규 결정의 anchor.
+
+| primitive | semantic 한 줄 |
+|---|---|
+| `MoveJ` | Caller 제공 절대 joint target 으로 trajectory-planned (Ruckig) 이동. |
+| `MoveL` | Caller 제공 절대 TCP position 으로 cartesian 직선 trajectory-planned 이동. |
+| `MoveC` | Caller 제공 via + end TCP position 으로 cartesian 원호 trajectory-planned 이동. |
+| `MoveP` | Caller 제공 waypoint list 로 cartesian spline trajectory-planned 이동. |
+| `ServoTcp` | *외부 controller* (RL / Vision servo) 가 자기가 계산한 *절대 TCP target* 을 빠른 rate (50Hz+) 로 스트림 → server direct IK + publish (planner 우회). UR `servoc` / EGM / RSI Cartesian 자리 정석. caller=human jog 자리 X (그건 `JogTcp`). |
+| `ServoJ` | *외부 controller* (RL replay / motion capture remap) 가 자기가 계산한 *절대 joint target* 을 빠른 rate 로 스트림 → server direct publish (IK 불요). UR `servoj` / KUKA RSI joint 자리 정석. |
+| `JogTcp` | *Human / gamepad* 가 *velocity twist* (linear+angular+frame) 보냄 → backend 가 자기 process joint_cache → fk 로 URDF EE pose fresh latch + 실 dt SE(3) 적분 → IK → publish_cmd. LeRobot delta-pose 패턴, scipy `Rotation` SSOT. |
+| `JogJ` | *Human / gamepad* 가 *joint velocity* 만 보냄 → backend 가 joint_cache (joint_offset 적용 URDF rad) 에서 ref latch + 실 dt 적분 → publish_cmd. IK 불요. cross-process safe (joint_offset SSOT = backend). |
+
+## gamepad mini 펜던트 — primitive 매핑
+
+```
+TCP jog 모드:
+  왼스틱 X/Y → SpeedTcp(linear=(vx,vy,0), angular=(0,0,0))
+  LT/RT     → SpeedTcp(linear=(0,0,vz), ...)
+  오른스틱   → SpeedTcp(angular=(wx,wy,0), linear=(0,0,0))
+  LB/RB     → SpeedTcp(angular=(0,0,wz), ...)
+
+Joint jog 모드:
+  스틱/트리거 6 축 → SpeedJ(velocities=[v1,v2,...,v6])
+  6DOF 면 정확히 일대일 매핑
+
+공통 버튼:
+  X = 토크 토글 (기존)
+  Y = 홈 (MoveJ to home)
+  A = 그리퍼 토글
+  B = CALIB_HANDEYE_CAPTURE (캘 모드일 때)
+  Back/Start = mode 토글 (TCP / Joint jog)
+  LT hold = deadman (안 누르면 모든 motion 토픽 정지)
+```
+
+세부 매핑은 implement session 시 ergonomics 보면서 조정.
+
+## References
+
+- [UR ROS2 Driver Position/Velocity Control](https://docs.universal-robots.com/Universal_Robots_ROS_Documentation/rolling/doc/ur_robot_driver/ur_robot_driver/doc/usage/position_velocity_control.html)
+- [UR Forum — Gamepad with SpeedJ or ServoJ](https://forum.universal-robots.com/t/control-robot-from-gamepad-with-speedj-or-servoj/7293)
+- [URScript Manual SW5.11](https://s3-eu-west-1.amazonaws.com/ur-support-site/115824/scriptManual_SW5.11.pdf)
+- [ABB RAPID Motion Instructions](https://library.e.abb.com/public/688894b98123f87bc1257cc50044e809/Technical%20reference%20manual_RAPID_3HAC16581-1_revJ_en.pdf)
+- [KUKA Motion Types Discussion](https://www.robot-forum.com/robotforum/thread/36117-understanding-the-difference-between-motion-types/)
+- [Fanuc Frames Convention](https://industrialrobotics.miraheze.org/wiki/Frames)
+- [MoveIt Gamepad Teleoperation](https://moveit.picknik.ai/main/doc/how_to_guides/controller_teleoperation/controller_teleoperation.html)
+- [ISO 10218-1 Enabling Switch](https://blog.ansi.org/ansi/iso-10218-1-2025-robots-and-robotic-devices-safety/)
+
+
+---
+---
+
+<!-- ═══════════ [통합 원문] motion.md ═══════════ -->
+
+# Cartesian Jog Transient Drift — 진단 + Fix 박제
+
+SO-101 6DOF (Feetech STS3215/STS3250) 의 SpeedTcp/SpeedJ jog 자리에서 발생한 **transient drift** (계속 누름 시 *처음 한 번 Z 처지고 그 후 cruise에서 정상 +X*, 찔끔찔끔 자리에 더 심함, wrist down 자세에서 증폭) 진단 + fix 박제. 2026-06-17 session 결과.
+
+**현재 상태 (2026-06-17 update v2)**: **근본 fix 도달 + 4 계층 taxonomy 정리**. root cause 자리 *resolved-rate velocity-streaming* 아키텍처 자체 (`pinv(J) @ ramping_twist`) 였음. **SpeedJ/SpeedTcp 자리 폐기** + 신규 **JogJ/JogTcp** (LeRobot delta-pose 패턴, backend SE(3) 적분 SSOT) + Servo 의미 자리 보존 (절대 target chase = 미래 RL/Vision). frontend / gamepad 자리 모두 같은 wire (`MOTION_JOG_J_STREAM` / `MOTION_JOG_TCP_STREAM`) — directional transient 자리 자체 사라짐 (수학적 보장).
+
+## 신규 ServoJ / ServoTcp = jog의 진짜 fix (2026-06-17)
+
+리서치 (LeRobot SO100FollowerEndEffector, XLeRobot keyboard EE, box2ai-robotics FK/IK) 결과 — **SO-101 cartesian EE 제어 자체는 흔함**, 다만 모두 *position-increment* (delta-pose 적분) 패턴이지 *velocity-streaming/resolved-rate* 아님.
+
+| 자리 | 기존 SpeedTcp | 신규 ServoTcp |
+|---|---|---|
+| 입력 | twist (linear+angular) | 절대 pose (position + quaternion) |
+| 적분 | server `_velocity_loop` 의 cartesian Ruckig | **frontend** ref pose latch + 50Hz dt 적분 |
+| Server | pinv(J) @ smoothed_twist → joint vel → Ruckig velocity → publish | IK(target, seed=current_joints) → publish |
+| Ramp 자리 | cart Ruckig + joint Ruckig 2 layer ramp | 모터 trapezoidal profile 1 layer (`motors.yaml::profile`) |
+| Direction transient | ramp 중 *ratio mismatch* → 옆으로 새는 cartesian drift | **0** — 매 cycle target 이 기하학적으로 정확 |
+| Cycle 당 변위 | 가변 (twist × ramp factor) | **~2mm/cycle @ 100mm/s** (cap by motion.yaml::max_trans_vel) |
+| Wire | service `MOTION_SPEED_TCP` (RTT 자리) | topic `MOTION_SERVO_TCP_STREAM` (fire-and-forget, LeRobot 표준) |
+
+**왜 잘 동작하나**:
+1. 매 publish 가 *절대 target* — ramp 중 옆 방향으로 샐 자리 자체 X (캘이 정확한 한 IK 가 그 pose 풀기만).
+2. 50Hz × 1-2mm/cycle = effective 50-100mm/s 인데 cycle 당 *step* 자체가 작아 모터 trapezoidal profile 이 *cycle 안에 도달 못 함* → 매 cycle 모터가 chase 중 → continuous motion.
+3. caller (frontend) 가 *fresh latch* — button hold 시작 시 인코더 reading 으로 ref 새로 잡음 → 인코더 - ref 누적 drift 차단.
+
+**잔존 자리** = Feetech PID 응답 자체 (모터 layer). gravity dynamics 의 transient torque lag 가 위치 어긋남 → 모터 PID 가 따라잡음. 단 *방향성 (cartesian Z drift)* 은 사라짐 — 균일한 위치 lag 이라 사용자가 "받아들일만한 자리".
+
+## 박제 폐기 자리 (2026-06-17)
+
+이전 박제 결론 두 개 폐기:
+
+1. ~~"DIY 6DOF cartesian jog는 흔하지 않은 자리"~~ — **틀림**. LeRobot 본체 `SO100FollowerEndEffector`, XLeRobot 키보드 EE, box2ai-robotics/lerobot-kinematics 모두 동일 자리. 차이는 *jog UI 직접 구현* 뿐.
+2. ~~"잔존 transient = *물리 layer (Feetech PID + gravity dynamics)* 자리 운명"~~ — **과함**. 대부분은 *velocity-streaming 선택의 산물*. position-increment 로 가니 directional transient 0. 진짜 물리 자리 (PID + gravity) 잔존만 남음.
+
+이 결론 폐기의 결정타 — *왜 +X 누르면 항상 Z 먼저 처짐* 이 깨끗한 방향성을 가졌나는 random backlash 가 아니라 *아키텍처의 결정론적 증상* 이었음.
+
+## 배경 — 증상
+
+사용자 frontend Jog TCP 패널에서 +X 1초 누름:
+1. **transient phase (~0.3s)**: EE가 *Z 방향으로 약 1-2cm 처짐*
+2. **cruise phase**: 정상 +X 추종
+
+새 단서:
+- *찔끔찔끔 burst 자리*에 더 심함 — 매 burst가 *transient에서 끝나고 cruise 못 도달* → drift 누적
+- *wrist down 자세*일수록 심함 — shoulder J2 토크 부담 큼
+- *위쪽 자세에서 +X = Z 처짐 → 앞으로 / -X = Z 올라감 → 뒤로* — gravity dynamics 시그니처
+
+## 진단 결과 — backend layer 깨끗
+
+### 1. Jacobian frame 검증
+
+[pybullet_kinematics.py:tcp_twist_to_joint_vel](../backend/modules/kinematics/adapters/pybullet_kinematics.py#L234) 의 `pinv(J) @ twist` 결과 *V_recovered = J @ qdot* 출력. 모든 cycle `err_rel = 0.000000` — Jacobian self-consistent, frame mismatch 아님. PyBullet의 `calculateJacobian`이 *world frame Jacobian* 반환 (= URDF base link frame, useFixedBase identity).
+
+### 2. Ruckig state persistent 확인
+
+[trajectory_runner.py:_velocity_loop](../backend/modules/kinematics/trajectory_runner.py#L515) — Ruckig `otg/inp/out` 가 *while loop 밖에서 1회 init* + 안에서 `otg.update(inp, out)` 만 호출. `inp.current_position = out.new_position` 자동 갱신. **trajectory restart 안 일어남**, 산업 pendant 패턴.
+
+### 3. Joint Ruckig ratio mismatch — **root cause**
+
+진단 log 분석 (Synchronization.Phase 적용 전):
+
+```
+Cycle 00: target=[0, 0.3035, -0.1569, -0.1466]  out_v=[0, 0.002, -0.002, -0.002]
+Cycle 03: target=[0, 0.3037, -0.1581, -0.1456]  out_v=[0, 0.032, -0.0285, -0.0271]
+                                                         ↑ J2 11% / J3 18% / J4 18% — ★ ratio mismatch!
+Cycle 17: target=[0, 0.3067, -0.1697, -0.1370]  out_v=[0, 0.3067, -0.1692, -0.1376]
+                                                         ↑ cruise reached, ratio OK
+```
+
+**원인**: Ruckig default = `Synchronization.No` → 각 joint *independent jerk-limited ramp*. *큰 target_velocity (J2=0.30)*가 *작은 (J3=0.16)*보다 ramp 늦음 → out_v ratio ≠ target ratio → cartesian direction transient 동안 깨짐 → visual Z drift.
+
+## 적용된 Fix — 시간순
+
+| # | 변경 | 효과 |
+|---|---|---|
+| 1 | [motion.yaml](../robot/so101_6dof/motion.yaml) joint jerk/acc 통일 → 일관 ramp | 진단용 (joint별 jerk 불균형 배제) |
+| 2 | [trajectory_runner.py:574](../backend/modules/kinematics/trajectory_runner.py#L574) Jacobian @ encoder reading (closed-loop) | belief drift 차단 |
+| 3 | [motor_node.py:29](../backend/nodes/device/motor_node.py#L29) `STATE_PUBLISH_HZ = 50` (20 → 50) | encoder reading stale 자리 줄임 |
+| 4 | [SpeedTcp.tsx](../frontend/src/components/panels/motion/SpeedTcp.tsx) / [SpeedJ.tsx](../frontend/src/components/panels/motion/SpeedJ.tsx) button up → explicit `target=0` publish | pendant jog semantics. 찔끔찔끔 자리 fix |
+| 5 | [trajectory_runner.py:_velocity_loop](../backend/modules/kinematics/trajectory_runner.py#L515) `release_profile/restore_profile` 호출 제거 (SpeedTcp/SpeedJ 자리만) | motors.yaml default profile 유지 → 모터 trapezoidal profile 활성 |
+| 6 | [trajectory_runner.py](../backend/modules/kinematics/trajectory_runner.py) Cartesian-space Ruckig (6D linear+angular smoothing) | twist 자체 jerk-limited ramp |
+| 7 | ★ **[trajectory_runner.py](../backend/modules/kinematics/trajectory_runner.py) `Synchronization.Phase`** | **root cause fix** — 모든 joint 같은 phase로 ramp → target ratio 매 cycle 100% 유지 → cartesian direction 일관 |
+
+**Synchronization.Phase 시뮬레이션 검증**:
+
+```python
+target_velocity = [0.30, -0.16, -0.15]  # target ratio: 1.000 / -0.533 / -0.500
+# Synchronization.Phase 적용:
+cycle 00: vel=[0.003, -0.0016, -0.0015]  ratio: 1.000 / -0.533 / -0.500 ✓
+cycle 05: vel=[0.108, -0.0576, -0.0540]  ratio: 1.000 / -0.533 / -0.500 ✓
+cycle 14: vel=[0.300, -0.1600, -0.1500]  ratio: 1.000 / -0.533 / -0.500 ✓
+```
+
+모든 cycle에서 *target ratio 100% 유지*. cartesian direction 일관.
+
+## 잔존 자리 — 물리 layer
+
+Phase sync 적용 후 *대부분 자세 cartesian direction 일관*. 잔존:
+- *바닥 근처 (wrist down) 자세*에서 여전히 transient
+- *위쪽 자세에서 +X 명령 → Z 처짐 → 앞으로* (gravity dynamics)
+
+가설:
+1. **자세별 gravity dynamics** — 모터가 *static gravity 보상 torque*에서 *motion torque*로 *전환할 때 순간 lag*. Feetech *position servo*가 gravity feedforward 없음. PID가 *error 누적 → torque 증가 → catch up* 동안 EE 처짐
+2. **모터 PID 응답 자체** — STS3250 (shoulder, 50kg·cm) 의 inertia + default PID 응답 시간
+3. **부분 sag** — *J4 wrist pitch sag* 또는 *gripper + D405 cantilever 무게*가 자세별 link 변형
+
+## 앞으로 테스트/확인 자리
+
+테스트 그만하는 자리이지만 *나중에 시도 시 참고*용 옵션:
+
+### A. Sag 캘리브레이션 — 부분 fix 추정
+
+- **효과 추정**: *자세별 static gravity 처짐 보상*. transient 시작 자세에서 *moter 명령이 이미 sag 보상* → catch up 자리 줄어듦. 단 *완전 사라짐 보장 X*
+- **한계**: 우리 sag 모델 = J2/J3만 ([sag_corrected.py:36](../backend/modules/kinematics/adapters/sag_corrected.py#L36)). *wrist sag (J4 pitch sag, gripper cantilever)*는 안 잡힘
+- **수치 측정 가치**: SO-101의 *실 sag 크기 (mm vs cm)*가 *측정됨*. 이게 *jog drift의 *얼마가 sag 기여*인지 판정
+- **절차**: [docs/calibration.md](calibration.md) — Hand-Eye 캘과 같은 자세 패턴 + sag 계산
+
+### B. Feetech PID 튜닝 — STS3250 P gain 올리기
+
+- **효과 추정**: 모터 응답 빠르게 → transient 짧아짐
+- **위험**: EEPROM write ([feetech_driver.py:set_position_pid](../backend/modules/motor/adapters/feetech_driver.py#L239)). Lock pattern으로 *brick risk 낮음*, 잘못된 값이면 oscillation
+- **반복 cycle**: P gain 단계별 올리며 *visual + transient log* 측정
+- **현재 default**: motors.yaml에 PID 설정 X = Feetech 공장 default. 보수적
+- **시도 순서**: J2 (STS3250 shoulder) P=32 (default) → 48 → 64 → ... overshoot까지 측정
+
+### C. Goal_Position + Goal_Speed sync write
+
+- **효과 추정**: backend가 매 cycle *position + velocity 함께 publish*. 모터 *내장 trapezoidal profile* + *backend Ruckig velocity* 두 layer 동기. *모터가 *backend의 의도 velocity 직접 추종*
+- **변경 자리**: [motor_node.py](../backend/nodes/device/motor_node.py) 의 `MOTOR_CMD_JOINT` 메시지 schema 확장 + driver의 `set_goal_positions_sync` + `set_profile_velocities_sync` 매 cycle 호출
+- **트레이드오프**: Ruckig output velocity 변환 (rad/s → motor raw step/s) 필요, 큰 코드 변경
+
+### D. Encoder velocity feedback closed-loop
+
+- **효과 추정**: backend가 *모터 실 velocity (encoder finite difference)* 측정 + 명령 velocity 와 비교 + *error를 target_velocity 보정에 누적*. 모터 lag을 backend layer가 *실시간 보상*
+- **변경 자리**: [trajectory_runner.py:_velocity_loop](../backend/modules/kinematics/trajectory_runner.py#L515) 매 cycle encoder velocity 계산 + Jacobian @ encoder + velocity error feedback
+- **트레이드오프**: 가장 산업 표준 closed-loop control. 큰 코드 변경. 그러나 *hobby motor 한계 어차피 잔존*
+
+### E. 모터 업그레이드 — Dynamixel XM, 산업 grade
+
+- **효과**: 진짜 산업 grade response. transient 완전 사라짐 예상
+- **트레이드오프**: $$$ + 다른 robot type 통합 작업
+
+### F. 인정 + 운용 (현재 자리)
+
+- jog는 *대략 이동/teach* 용도로 운용 OK
+- 정밀 cartesian motion 필요한 자리는 *MoveL/MoveC/MoveP* (trajectory 패스) — jog의 transient 자리와 **무관**한 코드 경로. trajectory가 *전체 path generate + Ruckig position mode + release_profile* 사용해 자체적으로 부드러움 보장
+- backend layer는 산업 표준 도달, study output 충분
+
+## 핵심 결정 박제
+
+- ~~**DIY 6DOF cartesian jog는 흔하지 않은 자리**~~ — **폐기** (위 §박제 폐기 참조). LeRobot 자리 흔함, 우리만 resolved-rate 선택했음.
+- **Synchronization.Phase 가 SpeedTcp/SpeedJ 자리의 backend layer 마지막 cap** — root cause 의 *resolved-rate aware fix* 자리. SpeedTcp/SpeedJ 사용 유지 시 의미 있는 박제. ServoTcp/ServoJ 자리는 적분 자체가 server-side 아니라 무관.
+- **진짜 root cause fix = position-increment (ServoJ/ServoTcp)** — backend layer 의 마지막 cap 이 아니라 *아키텍처 선택의 마지막 cap*. SpeedJ/SpeedTcp 의 directional transient 는 *수학적으로* 사라짐 (방향이 매 cycle 기하학적으로 정확).
+- **잔존 transient = *물리 layer (Feetech PID + gravity dynamics)* 자리** — 그 자리 자체는 그대로 남음. backend 자리에서 sag 캘 / Feetech PID 튜닝 (옵션 A/B) 으로 줄일 수 있지만 *완전 보장 X*. 사용자가 받아들이는 자리.
+
+## References
+
+- [motion.md](motion.md) — 3 계층 motion primitive 분류, Phase 1 채택
+- [calibration.md](calibration.md) — 4종 캘리브레이션 절차
+- [calibration_apply_flow.md](calibration_apply_flow.md) — sag/link/joint offset 적용 메커니즘
+- [Ruckig Synchronization](https://github.com/pantor/ruckig) — Phase/Time/TimeIfNecessary/No 옵션
+- [Feetech LeRobot motors](https://www.mintlify.com/huggingface/lerobot/motors/feetech) — STS3215 default 패턴
+- [LeRobot configure_motor issue #673](https://github.com/huggingface/lerobot/issues/673) — Maximum_Acceleration 설정
+
+
+---
+---
+
+<!-- ═══════════ [통합 원문] motion.md ═══════════ -->
+
+# Frontend URDF visual ↔ backend corrected TCP mismatch (2026-06-22, 다음 세션 논의 anchor)
+
+> SO-101 + D405 setup 에서 3D viewer 의 *URDF tcp link visual* (빨간 box) 와
+> *TCP 좌표축* (label="TCP", backend `MOTION_STATE_TCP`) 가 위치 어긋남. ≤ 4°
+> 정도, 시각 cosmetic 만 — robot 명령 / 캘 / motion 다 좌표축 (corrected FK)
+> 기준이라 동작 영향 0. 사용자가 "URDF 잘못 맞춘 거 아니냐" 로 인지해 발견.
+> 진단 끝, 수정 보류 (추후 논의 후 진행).
+
+## 증상
+
+[Move 페이지 / Calibrate 페이지 공통] 3D viewer 에서:
+- URDF 의 `<link name="tcp">` visual (작은 빨간 box, [so101_6dof.urdf:448-454](../robot/so101_6dof/urdf/so101_6dof.urdf#L448-L454)) 가 한 자리
+- TCP 좌표축 (X/Y/Z arrow + "TCP" label) 이 그 옆 살짝 떨어진 자리
+- 둘이 정확히 겹쳐야 *시각적으로 일관* 하지만 어긋남
+
+## Root cause — 두 FK chain 이 서로 다른 URDF + sag 유무
+
+같은 joint angle (backend `MOTOR_STATE_JOINT`) 을 입력으로 받지만:
+
+```
+joint angle ─┬─→ frontend urdf-loader (RobotModel.tsx)
+             │     ├─ 입력: /robot/.../so101_6dof.urdf  (정적 마운트 raw 원본)
+             │     ├─ sag 보정: 없음
+             │     └─ 결과: tcp link 위치 → 빨간 box 렌더
+             │
+             └─→ backend motion_node
+                   ├─ 입력: 같은 URDF 를 in-memory patch (link_offset 적용)
+                   │       pybullet_kinematics.py:96 `patch_urdf_text`
+                   ├─ sag 보정: SagCorrectedKinematics Decorator (J2/J3 처짐)
+                   └─ 결과: MOTION_STATE_TCP publish → 좌표축 렌더
+```
+
+차이:
+| | URDF 자체 | sag |
+|---|---|---|
+| 빨간 박스 (frontend) | raw 원본 | ❌ |
+| 좌표축 (backend) | link_offset patch | ✅ |
+
+캘 5종 모두 active (`storage/horibot.db::calibration_results WHERE is_active=1` —
+joint_offset / link_offset / sag / hand_eye / intrinsic) 라 mismatch 가 visible.
+
+## 왜 frontend 가 patched URDF 를 못 쓰나
+
+- backend [pybullet_kinematics.py:103-122](../backend/modules/kinematics/adapters/pybullet_kinematics.py#L103-L122) 가 patch 결과를 `tempfile` 로 1회성 write → `loadURDF` → `unlink`. 디스크에 안 남김.
+- frontend urdf-loader 는 [bridge/zenoh_bridge.py](../backend/bridge/zenoh_bridge.py) 가 `/robot` 으로 정적 마운트한 **raw 파일** HTTP fetch — patch 가 안 박힌 원본.
+- sag 는 자세 의존 보정 (Decorator) 이라 *URDF 수정으로 표현 불가능* — frontend FK 에 넣을 방법 자체가 없음 (joint angle 마다 다른 보정량).
+
+## Impact
+
+| | 영향 |
+|---|---|
+| MoveL / MoveC / MoveP / ServoTcp / JogTcp 도달점 | ✅ 좌표축 기준 (corrected FK) — 빨간 박스 무시 |
+| Hand-eye 카메라 frustum / cameraMatrix | ✅ 좌표축 기준 |
+| PyBullet IK target | ✅ 좌표축 기준 |
+| Live PointCloud transform | ✅ 좌표축 기준 (`cameraMatrix = tcpMatrix · handEye`) |
+| 빨간 박스 위치 | ❌ raw URDF FK — 시각 표시에만 사용, 명령 chain 어디에도 안 들어감 |
+
+→ **시각 cosmetic 만**. critical X. ([Container.tsx:72-76](../frontend/src/components/scene/Container.tsx#L72-L76) 에 "critical 아니라 미룸" 으로 박혀있는 자리.)
+
+## Fix 옵션 (보류, 추후 논의)
+
+### 옵션 A: bridge 가 patched URDF 를 endpoint 로 서빙
+
+- bridge 에 `GET /robots/{robot_id}/urdf` 추가 — `RobotRegistry.get_kinematics(id)` 가 들고 있는 patched URDF 텍스트 (또는 path) 반환
+- frontend urdf-loader 가 정적 `/robot/<type>/urdf/...` 대신 robot 별 patched endpoint fetch
+- 단 sag 는 여전히 안 들어감 → ≤ 4° 잔존 (자세 따라 변동)
+- **장점**: 구현 간단. URDF 가 robot instance 의 link_offset 반영
+- **단점**: sag mismatch 잔존. urdf-loader 가 robot 별 URDF 받는 lifecycle 변경 필요
+
+### 옵션 B: backend 가 전체 link pose topic publish + frontend urdf-loader 자체 FK off
+
+- backend 가 `MOTION_STATE_LINKS` (또는 비슷한 이름) topic 으로 *각 link 의 corrected world pose* 매 motor update 마다 publish (joint state 기반)
+- frontend `RobotModel.tsx` 가 urdf-loader 의 자체 FK 끄고 각 link 를 backend pose 로 직접 setMatrix
+- **장점**: 완전 일관. sag 도 반영. *진짜* SSOT 정석 (캘/sag 가 backend 한 곳에만 산다는 본 architecture 원칙과 align)
+- **단점**: urdf-loader 의 자체 FK 끄는 API hook 필요 (gkjohnson loader 가 지원하는지 확인). bandwidth 살짝 증가 (link 수 × matrix 4×4). RobotModel 자리 자체 FK chain 다 갈아엎기
+
+### 옵션 C: 그대로 두기 (현재)
+
+- Container.tsx 코멘트에 박혀있듯 "≤ 4°, critical 아님"
+- 캘 정확도 / 명령 / 모션 다 backend SSOT, 빨간 박스는 frontend cosmetic
+- **단점**: 새 사용자/개발자가 매번 헷갈림 (사용자가 "URDF 잘못 맞춘 거 아니냐" 로 발견). 학습 곡선 비용
+
+## 결정 사항 (추후 논의 항목)
+
+1. 옵션 A / B / C 중 선택
+2. 옵션 B 의 경우 — urdf-loader 가 외부 link pose 받는 API 존재 여부 (gkjohnson urdf-loaders 문서 확인 자리)
+3. 옵션 A 의 경우 — patched URDF 가 robot instance 별 다르므로 URL scheme 결정 (`/robots/{id}/urdf` vs `/robot/instances/{id}/urdf` 등)
+4. 빨간 box 자체 제거 옵션 — `<link name="tcp">` 의 `<visual>` 빼고 backend 좌표축만 시각에 남기는 것. 가장 간단하지만 "URDF 에 grasp point 표시" 의도 사라짐
+
+## 관련 코드 위치
+
+- Backend FK (corrected): [pybullet_kinematics.py](../backend/modules/kinematics/adapters/pybullet_kinematics.py) + [sag_corrected.py](../backend/modules/kinematics/adapters/sag_corrected.py)
+- URDF patch: [urdf_patcher.py](../backend/core/coords/urdf_patcher.py) + `patch_urdf_text`
+- TCP topic publish: [motion_node.py:580-595](../backend/nodes/device/motion_node.py#L580) (`_publish_tcp_loop`)
+- Frontend tcpMatrix 수신: [Container.tsx:77-107](../frontend/src/components/scene/Container.tsx#L77-L107)
+- Frontend URDF FK (raw): [RobotModel.tsx](../frontend/src/components/canvas/3d/RobotModel.tsx) (gkjohnson urdf-loader)
+- 정적 URDF 마운트: bridge 의 `app.mount("/robot", StaticFiles(directory=...))`
+
+## 관련 문서
+
+- [calibration_apply_flow.md](calibration_apply_flow.md) — 캘 4종이 어디서 적용되는지 (link_offset 의 URDF in-memory patch 가 backend 한정인 사실 자리)
+- [multi_robot_architecture.md](multi_robot_architecture.md) §3.1 — Kinematics layer decorator chain
+- [move_page_pointcloud_issues.md](move_page_pointcloud_issues.md) #5 — *별개* 이슈 (URDF joint limits clip 으로 인한 URDF FK 자체 오류). 본 이슈는 limit 가 아니라 link_offset+sag 차이라 root cause 다름.

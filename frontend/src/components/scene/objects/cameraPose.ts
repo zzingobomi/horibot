@@ -4,7 +4,7 @@
  * 카메라 pose(base frame) = tcp(corrected FK, base frame) · hand_eye.
  * base 변환은 <RobotFrame> 이 담당하므로 여기는 base-frame 안 local 만 계산.
  * (옛 LivePointCloudPanel/cameraPose.ts — frustum 이 패널 소유에서 카메라(월드)
- * 소유로 이동하며 함께 이사, [docs/scene_contribution_architecture.md].)
+ * 소유로 이동하며 함께 이사, [docs/frontend.md].)
  */
 import * as THREE from "three";
 import type { CalibrationBundle } from "@/api/generated/contract";
@@ -39,17 +39,48 @@ export function cameraInBase(
   return { position: [p.x, p.y, p.z], quaternion: [q.x, q.y, q.z, q.w] };
 }
 
-// D405 depth FOV 87°(H) × 58°(V) — 시야 방향 감 잡기용 시각화 (정밀 캘 값 아님)
-const HALF_H_RAD = ((87 / 2) * Math.PI) / 180;
-const HALF_V_RAD = ((58 / 2) * Math.PI) / 180;
+export interface FrustumFov {
+  halfH: number; // rad
+  halfV: number; // rad
+}
+
+// D405 depth FOV 87°(H) × 58°(V) — active intrinsic 없을 때 fallback (방향 감용 상수)
+export const DEFAULT_FOV: FrustumFov = {
+  halfH: ((87 / 2) * Math.PI) / 180,
+  halfV: ((58 / 2) * Math.PI) / 180,
+};
+
+/**
+ * active intrinsic → 실 캘 FOV (halfH = atan(w/2/fx)). intrinsic 없으면 null —
+ * caller 가 DEFAULT_FOV fallback. 캘된 카메라는 frustum 이 스펙 상수가 아니라
+ * 실측 시야각으로 그려짐 (intrinsic 의 3D 시각화).
+ */
+export function fovFromIntrinsic(
+  bundle: CalibrationBundle | null,
+): FrustumFov | null {
+  const d = bundle?.intrinsic?.result_data;
+  const cm = d?.camera_matrix;
+  const size = d?.image_size;
+  if (!cm || !size || size.length < 2) return null;
+  const fx = cm[0]?.[0];
+  const fy = cm[1]?.[1];
+  if (!fx || !fy) return null;
+  return {
+    halfH: Math.atan(size[0] / 2 / fx),
+    halfV: Math.atan(size[1] / 2 / fy),
+  };
+}
 
 /**
  * 카메라 frame(OpenCV: z 전방) frustum wireframe 선분들 — lineSegments 용
  * position buffer (선분당 점 2개). apex→4 corner + far-rect 4 edge = 8 선분.
  */
-export function frustumSegmentPositions(depth = 0.12): Float32Array {
-  const hw = depth * Math.tan(HALF_H_RAD);
-  const hv = depth * Math.tan(HALF_V_RAD);
+export function frustumSegmentPositions(
+  depth = 0.12,
+  fov: FrustumFov = DEFAULT_FOV,
+): Float32Array {
+  const hw = depth * Math.tan(fov.halfH);
+  const hv = depth * Math.tan(fov.halfV);
   const corners: [number, number, number][] = [
     [-hw, -hv, depth],
     [hw, -hv, depth],

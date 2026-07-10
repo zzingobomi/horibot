@@ -1,7 +1,7 @@
 """Contract export 검증 — frontend_contract_gen.md §6 (backend EXPORT 쪽).
 
 경계: backend 는 자기 계약을 /contract.json 으로 EXPORT 만 한다. TS 조립(render)은
-frontend 소비자(frontend_v2/scripts/gen-contract.mjs)의 몫 — 그쪽 vitest 가 검증.
+frontend 소비자(frontend/scripts/gen-contract.mjs)의 몫 — 그쪽 vitest 가 검증.
 여기선 EXPORT 쪽만:
 - snapshot 이 로드된 module 의 @service/@subscriber/@publishes 를 열거하는지
 - build_contract_json 이 FRONTEND_EXPOSED subset + reachability + name-conflict 를
@@ -93,8 +93,8 @@ def test_contract_json_shape():
     assert topic_keys | service_keys == FRONTEND_EXPOSED
     # +task STATE/TREE/STEP_RESULT +detector DETECTIONS +DETECTIONS_ORIENTED(draft)
     assert len(data["topics"]) == 16
-    # +detector DETECT +DETECT_ORIENTED(draft) +llm PARSE +task 8
-    assert len(data["services"]) == 46
+    # +detector DETECT +DETECT_ORIENTED(draft) +llm PARSE +task 8 +calibration ABORT_RUN
+    assert len(data["services"]) == 47
     # 내부 전용 payload 는 도달성으로 제외 — JointCommand 안 나옴
     iface_names = {i["name"] for i in data["interfaces"]}
     assert "JointCommand" not in iface_names
@@ -205,7 +205,7 @@ async def test_contract_json_endpoint_serves(contract_endpoint: str):
     assert set(data) == {"enums", "interfaces", "topics", "services"}
     # HTTP 로 serve 된 JSON = in-process build_contract_json 과 동일 계약
     assert len(data["topics"]) == 16  # +DETECTIONS_ORIENTED(draft)
-    assert len(data["services"]) == 46  # +DETECT_ORIENTED(draft)
+    assert len(data["services"]) == 47  # +DETECT_ORIENTED(draft) +ABORT_RUN
 
 
 # ─── build_contract_graph — unfiltered attribution + wiring (§5.2) ─
@@ -245,7 +245,7 @@ def test_graph_nodes_are_contentful_modules_only():
     assert by_id["MotionModule"]["domain"] == "motion"
     assert by_id["CameraDriverModule"]["domain"] == "camera"
     # robot-agnostic (host당 1, 설계 §2.7) — 2026-07-03 드리프트 정정 완료
-    # (backend_v2.md §2.7). robot-scoped = 물리 자원 owner 만.
+    # (backend.md §2.7). robot-scoped = 물리 자원 owner 만.
     host_level = {
         "DetectorModule",
         "CalibrationModule",

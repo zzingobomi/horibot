@@ -189,6 +189,33 @@
       "draft": false
     },
     {
+      "name": "AbortRunRequest",
+      "fields": [
+        {
+          "name": "run_id",
+          "ts": "number",
+          "optional": false
+        }
+      ],
+      "draft": false
+    },
+    {
+      "name": "AbortRunResponse",
+      "fields": [
+        {
+          "name": "ok",
+          "ts": "boolean",
+          "optional": false
+        },
+        {
+          "name": "message",
+          "ts": "string",
+          "optional": true
+        }
+      ],
+      "draft": false
+    },
+    {
       "name": "ActivateResultRequest",
       "fields": [
         {
@@ -247,6 +274,11 @@
         {
           "name": "image_size",
           "ts": "number[] | null",
+          "optional": true
+        },
+        {
+          "name": "rms_px",
+          "ts": "number | null",
           "optional": true
         }
       ],
@@ -756,6 +788,11 @@
           "name": "image_height",
           "ts": "number | null",
           "optional": true
+        },
+        {
+          "name": "board_in_cam",
+          "ts": "number[][] | null",
+          "optional": true
         }
       ],
       "draft": false
@@ -902,6 +939,11 @@
           "name": "ok",
           "ts": "boolean",
           "optional": false
+        },
+        {
+          "name": "message",
+          "ts": "string",
+          "optional": true
         }
       ],
       "draft": false
@@ -2941,6 +2983,13 @@
     }
   ],
   "services": [
+    {
+      "const": "CALIBRATION_ABORT_RUN",
+      "key": "srv/calibration/abort_run",
+      "req": "AbortRunRequest",
+      "res": "AbortRunResponse",
+      "draft": false
+    },
     {
       "const": "CALIBRATION_ACTIVATE_RESULT",
       "key": "srv/calibration/activate_result",

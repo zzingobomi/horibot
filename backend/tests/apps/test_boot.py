@@ -111,7 +111,7 @@ def test_registry_role_isolated_no_heavy_imports():
         "assert not heavy, f'pi_hori1 import 에 끌려온 무거운 모듈: {heavy}'\n"
         "print('isolated-ok')\n"
     )
-    root = Path(__file__).resolve().parents[2]  # backend_v2
+    root = Path(__file__).resolve().parents[2]  # backend
     r = subprocess.run(
         [sys.executable, "-c", code], cwd=root, capture_output=True, text=True
     )

@@ -1,7 +1,7 @@
 /**
- * `useCapability` — backend_v2 §7 Capability snapshot (boot 1회 fetch, Mirror X).
+ * `useCapability` — backend §7 Capability snapshot (boot 1회 fetch, Mirror X).
  *
- * frontend_v2.md §3.5 — D405 vs USB / 5DOF vs 6DOF / RGB vs DEPTH 자리 UI 가
+ * frontend.md §3.5 — D405 vs USB / 5DOF vs 6DOF / RGB vs DEPTH 자리 UI 가
  * 분기 박을 자리 boot 1회 cache. invalidation cycle 박지 X — static fact.
  *
  *   const motorCap = useCapability(ServiceKey.MOTOR_CAPABILITIES);
@@ -45,10 +45,10 @@ function notify<T>(entry: CapEntry<T>): void {
 
 async function fetchCapability<T, K extends keyof ServiceMap>(
   key: K,
-  wireKey: string,
+  cacheKey: string,
   robotId?: string,
 ): Promise<void> {
-  const entry = getEntry<T>(wireKey);
+  const entry = getEntry<T>(cacheKey);
   if (entry.pending) {
     await entry.pending.catch(() => undefined);
     return;
@@ -92,24 +92,26 @@ export function useCapability<K extends keyof ServiceMap>(
   key: K,
   options?: { robotId?: string },
 ): UseCapabilityReturn<ServiceMap[K]["res"]> {
-  const wireKey = bridge.expand(key, options?.robotId);
+  // 캐시 정체성 = (service, robot) — useService 와 동일한 규칙(serviceCacheKey).
+  // wire 라우팅 키(expand) 와 별개: robot-agnostic capability 도 robot 별로 분리.
+  const cacheKey = bridge.serviceCacheKey(key, options?.robotId);
   const connected = useBridgeConnected();
   const [, setVersion] = useState(0);
 
   useEffect(() => {
-    const entry = getEntry<ServiceMap[K]["res"]>(wireKey);
+    const entry = getEntry<ServiceMap[K]["res"]>(cacheKey);
     const listener = () => setVersion((v) => v + 1);
     entry.listeners.add(listener);
     // WS 미연결 시 callService 가 drop → timeout — connected 후 fetch.
     if (connected && entry.value === null && !entry.pending && !entry.loading) {
-      void fetchCapability(key, wireKey, options?.robotId);
+      void fetchCapability(key, cacheKey, options?.robotId);
     }
     return () => {
       entry.listeners.delete(listener);
     };
-  }, [wireKey, key, options?.robotId, connected]);
+  }, [cacheKey, key, options?.robotId, connected]);
 
-  const entry = getEntry<ServiceMap[K]["res"]>(wireKey);
+  const entry = getEntry<ServiceMap[K]["res"]>(cacheKey);
   return {
     value: entry.value,
     loading: entry.loading,

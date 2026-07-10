@@ -557,7 +557,7 @@ import time
 from enum import StrEnum
 from pathlib import Path
 
-sys.path.insert(0, os.environ["BACKEND_V2_PATH"])
+sys.path.insert(0, os.environ["BACKEND_PATH"])
 
 from pydantic import BaseModel
 
@@ -647,14 +647,14 @@ def test_mirror_cross_process(tmp_path: Path):
     script_path = tmp_path / "owner.py"
     script_path.write_text(_OWNER_SCRIPT, encoding="utf-8")
 
-    backend_v2_path = str(Path(__file__).resolve().parents[2])
-    venv_python = Path(backend_v2_path) / ".venv" / "Scripts" / "python.exe"
+    backend_path = str(Path(__file__).resolve().parents[2])
+    venv_python = Path(backend_path) / ".venv" / "Scripts" / "python.exe"
     if not venv_python.is_file():
-        venv_python = Path(backend_v2_path) / ".venv" / "bin" / "python"
+        venv_python = Path(backend_path) / ".venv" / "bin" / "python"
     python_exe = str(venv_python) if venv_python.is_file() else sys.executable
 
     env = os.environ.copy()
-    env["BACKEND_V2_PATH"] = backend_v2_path
+    env["BACKEND_PATH"] = backend_path
     env["ZENOH_ENDPOINT"] = endpoint
     env["READY_FILE"] = str(ready_file)
     env["DONE_FILE"] = str(done_file)

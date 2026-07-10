@@ -2,7 +2,7 @@ import { useResource } from "@/framework";
 import type { TasksResponse } from "@/api/generated/contract";
 
 /**
- * backend_v2 `GET /tasks` — task registry. 각 task 는 자기 참여 robot 을 선언
+ * backend `GET /tasks` — task registry. 각 task 는 자기 참여 robot 을 선언
  * (robot_ids). frontend 는 이 목록으로 task 의 통신 robot 을 정한다 — ambient
  * default 로봇 추측 없음 (task 가 대상 robot 의 SSOT).
  */

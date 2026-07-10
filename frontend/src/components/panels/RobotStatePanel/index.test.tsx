@@ -1,4 +1,4 @@
-// frontend_v2.md §12.2 RobotStatePanel — 2 invariant.
+// frontend.md §12.2 RobotStatePanel — 2 invariant.
 // 패널이 useParams 로 robotId 를 self-read 하므로 MemoryRouter + /robots/:id
 // route 로 감싸 렌더 (router 의존은 패널에서 끝 — §2.3).
 
@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe("RobotStatePanel", () => {
-  // spec frontend_v2.md §12.2 — invariant: torque toggle → setTorque service call
+  // spec frontend.md §12.2 — invariant: torque toggle → setTorque service call
   it("torque toggle 시 Motor.Service.SET_TORQUE call (enabled 반전)", async () => {
     // Capability fetch (topology) — boot 1회. SET_TORQUE 호출은 별도 mock.
     const callSpy = vi.spyOn(bridge, "callService").mockImplementation((key) =>
@@ -58,7 +58,7 @@ describe("RobotStatePanel", () => {
     );
 
     // 초기 torque state — Motor.Stream.STATE 5Hz 발행 후 store 갱신 (torque_enabled=true).
-    // (backend_v2 결정 B — state ≠ event, torque 현재값은 stream 소유.)
+    // (backend 결정 B — state ≠ event, torque 현재값은 stream 소유.)
     act(() => {
       useFrameworkStore
         .getState()
@@ -142,7 +142,7 @@ describe("RobotStatePanel", () => {
     });
   });
 
-  // spec frontend_v2.md §12.2 — invariant: TCP stream stale → "stale" badge 표시
+  // spec frontend.md §12.2 — invariant: TCP stream stale → "stale" badge 표시
   it("Motion.Stream.TCP_STATE 의 timestamp_unix old → stale badge 표시", async () => {
     vi.spyOn(bridge, "callService").mockResolvedValue({
       success: true,

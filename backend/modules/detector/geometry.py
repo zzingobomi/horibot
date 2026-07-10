@@ -106,7 +106,7 @@ def mask_contour(mask: np.ndarray) -> np.ndarray | None:
     """SAM mask → 최대 외곽 윤곽 폴리곤 (M,2) px. 없으면 None. image-space (오버레이).
 
     approxPolyDP 로 단순화 — bitmap 통째가 아니라 점 수십 개만 wire 에 실어 카메라
-    패널이 실루엣을 그린다 (mask 자체는 wire 에 안 나감, backend_v2.md 결정).
+    패널이 실루엣을 그린다 (mask 자체는 wire 에 안 나감, backend.md 결정).
     """
     m = mask.astype(np.uint8)
     contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

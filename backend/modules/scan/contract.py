@@ -73,9 +73,9 @@ class ReconstructionRecord(StrictModel):
 
 class Scan:
     class Service(StrEnum):
-        # robot-agnostic (host 당 1, backend_v2.md §2.7) — 대상 robot 은
+        # robot-agnostic (host 당 1, backend.md §2.7) — 대상 robot 은
         # 새 세션/조회는 req.robot_id, 진행 중 자원은 session/scan/recon row 에서
-        # 파생 (robot_id 중복 채널 X, backend_v2.md §2.7.1).
+        # 파생 (robot_id 중복 채널 X, backend.md §2.7.1).
         NEW_SESSION = "srv/scan/new_session"
         LIST_SESSIONS = "srv/scan/list_sessions"
         DELETE_SESSION = "srv/scan/delete_session"

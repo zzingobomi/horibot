@@ -1,7 +1,7 @@
 """WaypointModule (@service wire) 검증 — in-process, hardware 불요.
 
 robot-agnostic (host 당 1) — teach(rad+names 저장) / CRUD / group ordering(reorder) /
-cascade invariant + **multi-robot 눈속임 방지** (backend_v2.md §2.7.3):
+cascade invariant + **multi-robot 눈속임 방지** (backend.md §2.7.3):
 6DOF so101 + 5DOF omx 를 같은 인스턴스로 — 이름 유일성은 robot 단위,
 joints 캐시는 payload robot_id 키.
 """

@@ -49,20 +49,22 @@ export function LivePointCloudPanel() {
   // 이 배지는 그 수렴 여부를 사용자가 즉시 보게 하는 표면화.
   const tcp = useStream(Topic.MOTION_TCP_STATE, { robotId });
 
-  const liveEnabled = useScanStore((s) => s.liveEnabled);
+  // per-robot live 토글 — 이 패널의 ON 은 자기 robot cloud 만 (robot ownership)
+  const liveEnabled = useScanStore((s) => !!s.liveEnabled[robotId]);
   const setLiveEnabled = useScanStore((s) => s.setLiveEnabled);
   const voxelSize = useScanStore((s) => s.voxelSize);
   const setVoxelSize = useScanStore((s) => s.setVoxelSize);
   const pointSize = useScanStore((s) => s.pointSize);
   const setPointSize = useScanStore((s) => s.setPointSize);
-  const showFrustum = useCameraStore((s) => s.showFrustum);
-  const setShowFrustum = useCameraStore((s) => s.setShowFrustum);
+  // per-robot frustum — 이 패널의 토글은 자기 robot 카메라만 (robot ownership)
+  const showFrustum = useCameraStore((s) => !!s.frustum[robotId]);
+  const setFrustum = useCameraStore((s) => s.setFrustum);
 
   // unmount(mode 이탈) 시 stream 정리 — 카메라/PC decode 낭비 X.
   useEffect(() => {
     return () => {
       void setStream.call({ robot_id: robotId, enabled: false });
-      setLiveEnabled(false);
+      setLiveEnabled(robotId, false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -75,7 +77,7 @@ export function LivePointCloudPanel() {
       enabled: next,
       voxel_size: voxelSize,
     });
-    setLiveEnabled(next);
+    setLiveEnabled(robotId, next);
   };
 
   const onDensity = async (mm: number) => {
@@ -178,7 +180,7 @@ export function LivePointCloudPanel() {
           <Button
             size="sm"
             variant={showFrustum ? "default" : "outline"}
-            onClick={() => setShowFrustum(!showFrustum)}
+            onClick={() => setFrustum(robotId, !showFrustum)}
             data-testid="frustum-toggle"
           >
             {showFrustum ? "ON" : "OFF"}

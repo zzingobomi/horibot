@@ -7,7 +7,7 @@
  *
  * 티칭 소스 = backend WaypointModule 이 Motion.TcpState(rad) 를 캐시 → TEACH 는
  * "현재 joint 저장". 이 패널은 현재 자세를 tcp stream 으로 보여주기만 (참고용).
- * docs/backend_v2.md §17.2.
+ * docs/backend.md §17.2.
  */
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";

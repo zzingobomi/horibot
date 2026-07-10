@@ -1,4 +1,4 @@
-// frontend_v2.md §12.2 JogJControl — 3 invariant.
+// frontend.md §12.2 JogJControl — 3 invariant.
 // JogTcpControl 의 동일 invariant 는 L4 Playwright 가 검증 (mock backend e2e).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe("JogJControl", () => {
-  // spec frontend_v2.md §12.2 — invariant: button hold 시 50Hz publish + payload.robot_id
+  // spec frontend.md §12.2 — invariant: button hold 시 50Hz publish + payload.robot_id
   it("50Hz interval publish + payload.robot_id + velocities 박힘", async () => {
     const publishSpy = vi.spyOn(bridge, "publish").mockImplementation(() => {});
 
@@ -80,7 +80,7 @@ describe("JogJControl", () => {
     expect((data as { velocities: number[] }).velocities[1]).toBe(0);
   });
 
-  // spec frontend_v2.md §12.2 — invariant: pointerUp → interval clear → publish 안 함
+  // spec frontend.md §12.2 — invariant: pointerUp → interval clear → publish 안 함
   it("pointerUp → publish 중단", async () => {
     const publishSpy = vi.spyOn(bridge, "publish").mockImplementation(() => {});
 
@@ -113,7 +113,7 @@ describe("JogJControl", () => {
     expect(publishSpy.mock.calls.length).toBe(countBefore);
   });
 
-  // spec frontend_v2.md §12.2 — invariant: window blur → deadman, publish 중단
+  // spec frontend.md §12.2 — invariant: window blur → deadman, publish 중단
   it("window blur — deadman 박힘 (publish 중단)", async () => {
     const publishSpy = vi.spyOn(bridge, "publish").mockImplementation(() => {});
 

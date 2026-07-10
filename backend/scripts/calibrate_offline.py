@@ -1,4 +1,4 @@
-"""Offline hand-eye 캘리브레이션 분석 + commit (backend_v2 이월).
+"""Offline hand-eye 캘리브레이션 분석 + commit (backend 이월).
 
 옛 backend/scripts/calibrate_offline.py 이월 — capture-only 시나리오의 짝꿍.
 frontend/capture 는 raw blob + record 만 저장, 본 스크립트가 storage 직접
@@ -45,9 +45,9 @@ from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation as Rot
 from scipy.stats import median_abs_deviation
 
-# Repo imports (script standalone) — backend_v2 를 path 에.
-BACKEND_V2 = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(BACKEND_V2))
+# Repo imports (script standalone) — backend 를 path 에.
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND_ROOT))
 
 from apps.config import _ROBOT_DIR, RobotConfig, load_robots  # noqa: E402
 from infra.database.sqlite import open_sqlite  # noqa: E402
@@ -1419,7 +1419,7 @@ def main() -> int:
 
     robots = load_robots()
     if args.robot not in robots:
-        logger.error("robot %s 없음 (robot_v2/robots.yaml)", args.robot)
+        logger.error("robot %s 없음 (robot/robots.yaml)", args.robot)
         return 1
     robot = robots[args.robot]
 

@@ -37,9 +37,9 @@ function mockBridge() {
       .spyOn(bridge, "callService")
       // @ts-expect-error — 테스트 stub, 응답 shape 는 respond() 가 책임
       .mockImplementation(async (key, _req, opts) => {
-        const wk = bridge.expand(
+        const wk = bridge.serviceCacheKey(
           key,
-          (opts as { robotId?: string })?.robotId ?? ROBOT_ID,
+          (opts as { robotId?: string })?.robotId,
         );
         const entry: ServiceEntry = {
           success: true,

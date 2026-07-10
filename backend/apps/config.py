@@ -5,7 +5,7 @@
   `robots.yaml`(registry) + `<type>/motors.yaml`(모터 레이아웃) +
   `instances/<id>/instance.yaml`(port/baud). 옛 RobotRegistry 코드는 안 씀 —
   v2 자체 loader (깨끗한 데이터만 재사용, 옛 아키텍처 X).
-- **backend_v2/config/deployments/** — v2 배포 토폴로지 (host→module, driver_mode).
+- **backend/config/deployments/** — v2 배포 토폴로지 (host→module, driver_mode).
 
 calibration 도메인 파라미터 중:
 - `sag_joint_motor_ids` 는 로봇 타입의 **물리 모델 사실** (어느 관절이 중력 sag 를
@@ -178,7 +178,7 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
     return robots
 
 
-# ─── deployment yaml (backend_v2/config/deployments/) ───────────
+# ─── deployment yaml (backend/config/deployments/) ───────────
 
 
 class DriverMode(StrEnum):

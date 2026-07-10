@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[2]  # backend_v2
+_ROOT = Path(__file__).resolve().parents[2]  # backend
 
 # role-split heavy dep + "계약 = 순수 데이터" 위반 신호 (numpy/cv2 등).
 _BANNED = (

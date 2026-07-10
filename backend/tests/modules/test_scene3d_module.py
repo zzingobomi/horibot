@@ -1,7 +1,7 @@
 """Scene3DModule (@service wire) 검증 — in-process, hardware 불요.
 
 robot-agnostic (host 당 1) — **multi-robot 눈속임 방지**
-(backend_v2.md §2.7.3): rgbd robot 2대의 depth/color/intrinsic/
+(backend.md §2.7.3): rgbd robot 2대의 depth/color/intrinsic/
 stream 상태가 한 인스턴스 안에서 격리되는지. e2e wire (mock boot) 는
 test_scan_e2e 가 커버 — 여기선 dispatch/격리를 fake runtime 으로 직접.
 """

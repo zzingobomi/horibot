@@ -54,7 +54,7 @@ function mockBridge() {
     .spyOn(bridge, "callService")
     // @ts-expect-error — 테스트 stub
     .mockImplementation(async (key, _req, opts) => {
-      const wk = bridge.expand(key, (opts as { robotId?: string })?.robotId ?? ROBOT_ID);
+      const wk = bridge.serviceCacheKey(key, (opts as { robotId?: string })?.robotId);
       const entry: ServiceEntry = {
         success: true,
         message: "",

@@ -10,17 +10,12 @@ import { ModeDockview, type PanelSpec } from "@/components/shared/ModeDockview";
  * 실용 슬라이스(Task DSL 미사용). Task DSL 도입 시 scan 은 TasksPage 로 흡수 —
  * 그때 이 mode/panel 은 제거 후보 (scan_interactive_design.md §2 C).
  */
+// title/width/height 는 PANEL_CATALOG(SSOT)에서 derive — 여기선 배치 선언만.
 const PANELS: PanelSpec[] = [
-  { id: "robot-state", component: "robotState", title: "Robot State", width: 260, height: 300 },
-  { id: "scan", component: "scan", title: "Scan", width: 320, height: 460 },
-  {
-    id: "live-pc",
-    component: "livePointCloud",
-    title: "Live PointCloud",
-    width: 300,
-    height: 320,
-  },
-  { id: "camera", component: "camera", title: "Camera", width: 420, height: 340 },
+  { id: "robot-state", component: "robotState" },
+  { id: "scan", component: "scan" },
+  { id: "live-pc", component: "livePointCloud" },
+  { id: "camera", component: "camera" },
 ];
 
 export function RobotScanMode() {

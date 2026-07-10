@@ -1,13 +1,378 @@
-# backend_v2 — 아키텍처 spec (framework + Module catalog + Task 방향)
+# backend — 아키텍처 spec (framework + Module catalog + Task 방향)
 
-> 본 문서 = backend_v2 의 **아키텍처 SSOT 단일 문서**. 구성: §1–§14 framework spec
+> 본 문서 = backend 의 **아키텍처 SSOT 단일 문서**. 구성: §1–§14 framework spec
 > (8 라운드 토론 2026-06-25 + 이후 정정), **§16 Module catalog** (옛
-> backend_v2_modules.md 통합, 2026-07-03), **§17 Task-first 운영 원칙 + Task/PnP 설계**
+> backend_modules.md 통합, 2026-07-03), **§17 Task-first 운영 원칙 + Task/PnP 설계**
 > (옛 task_dsl_waypoint_port.md 통합). §2.7 에 robot-scoped/agnostic + robot_id 라우팅
 > 최종 규칙 (옛 robot_agnostic_module_refactor.md 통합).
 >
-> **진행 status / 다음 작업 = [backend_v2_status.md](backend_v2_status.md)** (본 문서엔
-> 진행 표기 안 둠). 결정 history = [framework_dogfood_plan.md](framework_dogfood_plan.md).
+> **진행 status / 다음 작업 = 바로 아래 [진행 status] 부** (2026-07-11 구 backend.md 통합 — 세션 handoff 는 항상 그 부를 갱신).
+
+
+---
+---
+
+<!-- ═══════════ [통합 원문] backend.md — 진행 status + 세션 handoff (항상 이 부를 갱신) ═══════════ -->
+
+# backend — 진행 status + 다음 세션 handoff
+
+> 새 세션이 **바로 이어서 작업**할 수 있게 박은 status. 아키텍처 SSOT =
+> [backend.md](backend.md) (framework §1–§14 + Module catalog §16 + Task-first §17).
+> 본 문서 = "지금 어디까지 됐고 다음 뭐 할지" 만 — 설계 결정은 여기 안 둠.
+
+## 현재 상태 (2026-07-07)
+
+**framework + 10 Module 전부 가동 + robot-agnostic 스코프 리팩터 완료.**
+
+### 2026-07-07 — liveliness + Mirror 활성 (부팅 순서 종속성 근본 제거)
+
+분산에서 PC(calibration) 늦게 뜨면 motion 이 **무보정으로 조용히 영원히 운전**하던
+설계 구멍을 프레임워크 레벨에서 제거 (정본 = backend.md §3.3 배너 + anchor #2/#9/#23):
+
+- **L1 Transport**: `declare_liveliness` / `subscribe_liveliness` (zenoh liveliness
+  token, history=True). 4전이 실검증 (사전존재/undeclare/재선언/세션 crash) →
+  `test_transport.py::test_liveliness_presence_lifecycle`
+- **L2 Runtime**: service 등록 시 같은 key 로 token **자동 선언** (Mirror 가 구독)
+  (모듈이 "나 떴어요" publish 하는 손 컨벤션 금지 — 부팅 순서 = distribution 문제 =
+  framework 책임)
+- **L3 Mirror 완성**: owner liveliness 구독 (늦은 부팅/재시작 자동 refetch 수렴) +
+  `@mirror.on_change(old,new)` 훅 (실제 값 변경 전이만 발화) + refetch 직렬화.
+  → `test_mirror.py::test_mirror_converges_when_owner_boots_later`
+- **L4 Motion = 첫 Mirror consumer**: start() blocking fetch 삭제 → mirror peek.
+  없음→값 = runner idle 때 **live 적용** / 값→값′ = `calibration_stale` 표시만
+  ("변경은 재부팅" 유지). `TcpState.calibration_applied/stale` 상시 표면화 +
+  frontend LivePointCloudPanel "robot FK" 배지.
+  → `test_motion_calibration.py::test_motion_converges_when_calibration_owner_boots_later`
+- 같은 날 오전: bridge WS **CONNECTING 창 service 프레임 silent drop** 수정 (버퍼→
+  open flush, `bridge.test.ts` 회귀 가드) — tasks e2e 파싱 실패의 근본 원인이었음.
+
+검증 (전부 실행 확인, 2026-07-03):
+
+| 층 | 결과 |
+|---|---|
+| backend pytest | **212 PASS** (모듈별 so101 6DOF + omx 5DOF multi-robot 눈속임 방지 포함) |
+| ruff / pyright | 0 / 0 |
+| frontend vitest / lint / tsc | **47 PASS** / 0 / 새 에러 0 (pre-existing jest-dom 2건만 — [[project-frontend-v2-build-prexisting-fail]]) |
+| **Playwright e2e (headed)** | **14/14** — jog 50Hz full wire / calibrate `CALIB_SIM_BOARD=1` capture over-wire / scan 세션+캡처 / waypoint 티칭+group / contract-graph 9노드 |
+| mock 실부팅 | 전 Module host-level/scoped 정상 add+start, 에러 0 |
+
+**집 하드웨어 검증 (2026-07-02)**: frontend → backend wire → 실 SO-101 **TCP jog**
+동작 확인 (C2 transport + JogTcp→IK→feetech + 토크 enable).
+
+| 영역 | 상태 |
+|---|---|
+| framework (contract/runtime/transport/persistence/storage/Mirror/liveliness) | ✅ (Mirror 활성 2026-07-07 — 첫 consumer Motion.calibration, spec §3.3 + anchor #23) |
+| infra (zenoh / sqlite·postgres / fs·minio) + 루트 alembic | ✅ |
+| motor (mock + 실 feetech) / camera (mock + realsense_d405) / camera_decoded | ✅ (실 feetech TCP jog 검증됨. realsense·PID/profile 미검증 — 아래) |
+| motion — D1 kinematics(dof=6) / D2 MoveJ+TCP state / D3 Jog / **MoveL v1 + await-complete 완료 계약** | ✅ (spec §17.3) |
+| calibration — persistence/capture/preview/factory-seed + offline 분석 흐름 | ✅ (capture 는 sim-image — 실 D405 미검증) |
+| detector — `Detect Object` (mock backend, 투영 수학 단위검증) | ✅ (GDINO 실 모델 = 슬라이스 3, 집) |
+| scene3d / scan (TSDF build 포함) / waypoint | ✅ |
+| bridge (WS relay + MJPEG + HTTP + /contract.json + /contract/graph) + frontend contract gen | ✅ |
+| **robot-agnostic 스코프 리팩터** (detector·calibration·scan·scene3d·waypoint → host당 1) | ✅ (2026-07-03 — 규칙은 spec §2.7, 아래 히스토리) |
+| Task / Gamepad Module | 미착수 (task-first — spec §17) |
+
+**검증 명령** (cwd 반드시 `backend/`):
+```bash
+cd backend
+uv run --no-sync pytest -q                          # 265 passed (~75s)
+uv run --no-sync ruff check . && uv run --no-sync pyright
+uv run --no-sync python -m apps.main --host mock    # 실 boot (:8000)
+# frontend: cd frontend && pnpm vitest run && pnpm lint
+# e2e: mock backend(CALIB_SIM_BOARD=1) + pnpm dev(:5174) 띄우고 pnpm test:e2e (headed)
+```
+
+> **⚠️ 검증 게이트가 몇 분씩 hang 하면 → 유령 `apps.main` 확인** (2026-07-07 사고, [[project-verify-hang-stale-backend]]).
+> 이전 세션이 `--host mock` 으로 띄운 backend 를 kill 안 하고 남기면 그게 :8000 을
+> 계속 점유한다. 그 상태에서 pytest 를 돌리면 full-boot fixture 의 bridge 가 실패하고
+> **pytest 요약은 찍히지만 프로세스가 종료되지 않는다** (`| tail` 버퍼링이라 출력조차
+> 안 보임). 원인은 "테스트가 느림" 이 아니라 좀비 프로세스. 클린 상태 실측 = 전체
+> 게이트 ~86s.
+> - **구조 fix 완료** (재발해도 hang 대신 명확한 에러로 실패): bridge 소켓 pre-bind
+>   (uvicorn `sys.exit(1)`→`RuntimeError("bind 실패")`), `Runtime.start` 실패 시
+>   started 모듈 역순 rollback, 테스트 전부 `bridge_port=0` (ephemeral — 실 backend
+>   와 공존). 회귀 가드 = `test_runtime::test_start_failure_stops_already_started_modules`
+>   + `test_bridge::test_start_port_conflict_raises_clear_error`.
+> - **운영 수칙**: 검증/실행용으로 띄운 backend 는 그 세션 안에서 반드시 kill.
+>   장시간 무출력이면 프로세스 트리에 `apps.main`/`pytest` 잔존부터 확인
+>   (`Get-NetTCPConnection -LocalPort 8000 -State Listen`).
+
+## 아키텍처 불변식 (절대 어기지 말 것 — 포팅 시 [[feedback-port-keep-v2-arch]])
+
+- **레이어링**: `modules/` 는 `apps/` import 금지. 다른 모듈 contract import 는 OK.
+- **role 격리 (lazy registry)**: `apps/registry.py` = name→"path:Class" string lazy import,
+  `apps/resolve.py` = branch 안 lazy import. eager import 금지 (test_boot subprocess 검증).
+- **scope + robot_id 라우팅 = spec §2.7** — robot-scoped 4 (motor/camera/camera_decoded/
+  motion) 외 전부 robot-agnostic. robot_id 는 키(주소) 또는 req 필드(파생 규칙) —
+  Bridge 자동주입 금지. 새 모듈/서비스 추가 시 §2.7.1 3갈래부터.
+- **raw↔rad = Motion 책임**. MotorDriver 는 순수 raw.
+- **contract.py 컨벤션**: nested `Service`/`Stream`/`Event` StrEnum. stream/event payload
+  에 `robot_id`+`seq`+`timestamp_unix` (spec §16.6). Stream key 는 채널 정의 모듈 contract 에.
+- **Bridge = relay only** (spec §16.6) — domain logic 0.
+- Motion = pi_motor 배치 (100Hz 명령 network 안 넘게). dof = arm only.
+- **안전 수치 임의 금지**: limit=motors.yaml(실측), 속도=motion.yaml. 새 값 필요하면
+  사용자에게 꺼내 보여줄 것, 추측 X.
+- 테스트는 통과용 X — 실제 동작/invariant + spec ref docstring ([[feedback-meaningful-tests]], spec §15).
+
+## 다음 작업 후보
+
+1. **detector 슬라이스 3 — 실 GDINO backend** (`Detect Object` 의 구현체). 현재
+   `apps/resolve.py::_detector_backend` 가 mock 만 배선 (real = NotImplementedError —
+   그 메시지가 진입점).
+   **2026-07-03 착수 — pyproject 까지만 완료 (uncommitted)**: `pc` 그룹에
+   `transformers>=4.45,<5` + `accelerate` + `pillow` + `torch==2.11.0`
+   (cu130 uv.sources/index, 옛 backend 동일 판). `uv sync` 아직 안 돌림.
+   **transformers 상한 판단 (사용자 지적)**: 옛 backend 의 `<4.57` 핀 근거
+   (meta tensor + `.to(device)` 깨짐) 는 **Qwen LLM 로드에서 관측**된 것 —
+   GDINO 단독으론 분리 검증된 적 없고 v2 는 LLM 없음. 옛 결과를 근거로 인용하면
+   거짓 권위 → `<5` 만 남김 (v5 의 `AutoModelForZeroShotObjectDetection` 제거는
+   API 존재 문제라 확실). **smoke 때 최신 4.x 로 preload 검증 — 깨지면 그때
+   실측 근거로 핀**. 남은 구현 순서:
+   1. `modules/detector/gdino.py` 신규 — 옛 `backend/modules/detector/grounded_detector.py`
+      포팅 (계약 = `detect(img, prompt) -> (bbox, score) | None`). **별도 파일** =
+      torch/transformers import 를 mock 배치에서 격리 (motor/camera drivers 패턴 동형).
+      load lock + transformers module-top import 유지.
+   2. `backend.py` Protocol 에 `preload()` 추가 (Mock no-op).
+   3. `module.py` — `start()` background preload (`asyncio.to_thread`) + `detect()` 의
+      backend 호출도 `to_thread` (blocking 추론 → async 계약).
+   4. `resolve.py::_detector_backend` real branch 배선 + `pc.yaml` 에 detector 추가.
+   5. 테스트 (preload 배선 + real resolve 회귀) → `uv sync` → pytest/ruff/pyright →
+      실 모델 로드 smoke (최신 4.x 에서 preload OK 확인 — 위 상한 판단의 검증 자리.
+      깨지면 에러 실측 후 상한 핀 + 주석에 v2 측정 결과 기록).
+   preload race 판단: 옛 race 는 LLM+GDINO **두** `from_pretrained` 동시 실행 전제 —
+   v2 는 transformers 모델이 GDINO 하나라 전제가 구조적으로 없음. reproduction script
+   ([perception.md](perception.md)) 는 두 번째 transformers
+   소비자(LLM 포팅) 등장 시점의 프로토콜. 지금은 load lock + 단일 preload 경로로 보장.
+   모델 로드/배선/mock 대비 회귀는 회사 가능, **검출 정확도는 집 하드웨어**.
+   frontend 노출 필요 시 `FRONTEND_EXPOSED` 에 `Detector.Service.DETECT` 추가 + regen.
+2. **PnP task (task-first — spec §17)** — ② 필요 primitive 정의 → task #1 을 async 함수 +
+   디버거로. Day-1 primitive 중 MoveL·Detect Object(계약) 완료, 남은 것: Gripper 서비스 /
+   VerifyGrasp / async runner+디버거 (spec §17.4) / detection Top-K+기하 prior (§17.5 —
+   detector 슬라이스 3 과 자연 병행).
+3. **Motion boot consumer** — Motion.start() 가 `snapshot_bundle` 읽어 kinematics build
+   (link_offset patched URDF + joint/sag). calibration bundle wire 는 살아있음 — 미배선.
+4. **offline BA 이월** — `calibrate_offline.py`(1722 LOC 5-stage BA) + `fk_chain.py` v2
+   재배선 → 실 horibot.db run 으로 σ regression. capture→finalize 는 완성, BA 만 남음.
+   (σ 0.818 재현 불가는 port 버그 아님 — 미기록 drop set, [[project-offline-ba-port-faithful]].)
+5. **집 하드웨어 검증** — 아래 미검증 목록.
+
+## 하드웨어 미검증 (집에서)
+
+- `realsense_d405.py` (pipeline/align) — 아직 실 통신 안 해봄. 실 D405 intrinsic /
+  ChArUco 캘 정확도 / scan TSDF 실물.
+- feetech PID/profile write — motors.yaml `pid`/`profile` 가 실 모터 미적용 (driver 가
+  EEPROM default 사용). 모션 느리거나 진동 시 wire (EEPROM write-once 주의).
+- joint jog / cartesian MoveL 실물 / detector GDINO 실 모델 + preload race (reproduction
+  script 먼저 — [[llm-preload-race]]).
+
+## follow-up (blocking 아님)
+
+- frontend framework store 의 agnostic 서비스 캐시가 robot 간 공유 (마지막 응답 wins) —
+  패널이 robot 변경 시 refetch 라 기능 문제 아님. robot 별 캐시 분리는 실사용 시점에.
+- omx `enabled: false` 라 mock fleet 투영 제외 — multi-robot **실부팅** 검증은 두 robot
+  enabled 배포가 생기는 시점 (unit 층은 눈속임 방지 테스트가 커버).
+- Playwright e2e CI 화 시 `CALIB_SIM_BOARD=1` backend 기동을 webServer 에 포함 (sim-board
+  capture 테스트 skip 방지).
+- latent (해당 step 진입 시): color+depth stream 페어링 (독립 seq) / Mirror refetch
+  coalescing (consumer 등장 시) / Minio 예외·list semantics (Phase 3).
+
+## 히스토리 (요지 — 상세는 git log)
+
+- **2026-07-03 robot-agnostic 리팩터**: detector 구현 중 드리프트 발견 (설계 =
+  robot-agnostic 인데 calibration 발 robot-scoped 가 복사 전파, 근거 없는 드리프트) →
+  사용자 결정 "설계대로 되돌린다" → §2.7 라우팅 규칙 확정 (Bridge 자동주입 폐기 과정
+  포함 — spec §2.7.3 폐기안) → calibration (최난도, 패턴 증명) → scan/scene3d/waypoint
+  적용 → 전 층 검증 (위 표). mock 초기 자세 버그 fix (`MotorSpec.initial_raw` clamp —
+  joint3 영점이 limit 밖) + so101 home/rest waypoint DB 삽입 동반.
+- **2026-07-03 task-first 재정의**: "DSL 먼저" 폐기 → spec §17. 첫 task = 단팔 PnP.
+  waypoint 모듈 (Robot Asset Layer 첫 자산) backend+frontend 완료.
+- **2026-07-02 Calibration Step E 풀스택** + C2 (frontend 적응) TCP jog 실물 검증.
+  CalibrationBundle = boot-time config 재분류 → Mirror consumer 0 (deferred).
+- **2026-07-01 contract gen 파이프라인** (`/contract.json` EXPORT + gen-contract.mjs) +
+  contract graph viewer (`/contract/graph` + React Flow).
+- 상세 캘 도메인 결정 = [calibration.md](calibration.md),
+  frontend = [frontend.md](frontend.md), framework 결정 history =
+  [backend.md](backend.md).
+
+
+---
+---
+
+# 부록 — 통합 원문 (2026-07-11 문서 다이어트)
+
+> 아래 문서들을 본 문서 부록으로 병합 (원문 그대로):
+> - `backend.md`
+
+
+---
+---
+
+<!-- ═══════════ [통합 원문] backend.md ═══════════ -->
+
+# Pick & Grasp / Motion 디버깅 handoff (2026-07-07~08 세션)
+
+작은 흰 큐브 pick&place 가 계속 못 집던 문제를 파고든 세션 기록 + 남은 문제/버그 +
+다음 세션 할 일. **모든 변경은 working tree 에 있고 커밋 안 됨** (사용자 검토 후 결정).
+
+---
+
+## 0. 한 줄 요약
+
+`pick_and_place` 가 큐브를 못 집는 문제를 파다가 **접근 primitive 를 MoveL(Cartesian
+직선) → MoveJPose(관절 공간) 로 전면 재설계** + IK 어댑터 **multi-restart** + **pinch
+offset** 도입까지 왔음. 한 번 집혔지만 **운**이고 아직 신뢰성 없음. detection 이 가끔
+엉뚱한 데 찍히고, 모션이 급하고, verify_grasp 가 별개 버그로 실패함.
+
+---
+
+## 1. 이번 세션 진행 히스토리 (어떻게 여기까지 왔나)
+
+1. **시작**: `ApproachAlongTool` 의 MoveL 이 `MotionFailed: MoveL failed` — trajectory
+   FAILED. 원인 = cartesian loop 의 IK 실패 (`MoveL IK 실패 | s=2.2cm`).
+2. **오진 1 (내가)**: "SO-101 워크스페이스 한계로 도달 불가" 라고 docstring("FK 20만
+   샘플, 수직 z≤0.05") 을 그대로 읊음. → 사용자 반박: "J2 150° 까지 가는데 왜 불가?"
+3. **진짜 원인**: 실제 보정 kinematics 로 heavy sampling(seed 400) 해보니 — **위치는
+   전부 도달**(position-only IK OK), 문제는 **PyBullet `calculateInverseKinematics`
+   가 seed 1개짜리 local 솔버라 존재하는 해를 놓침**. straight-down 14° 자세도 seed
+   400 개면 나옴. → **reach 문제 아님, IK 솔버 robustness 문제.**
+4. **핵심 재정의 (사용자 주도)**: 목표는 "그리퍼를 -Z 수직으로" 가 아니라 "**큐브를
+   잘 집는다**". 필요없는 자세 제약을 걸어 도달 가능한 위치의 IK 를 스스로 죽이고
+   있었음. + MoveL(자세 고정 직선)은 **높이마다 도달 자세가 변하는** SO-101 에서
+   구조적으로 실패 (heavy sampling 으로 확인 — 같은 자세로 z 2.3cm 만 OK, 4.3cm+ FAIL).
+5. **재설계 (사용자 주도)**: "MoveL 에 갇히지 말고 다양한 primitive 써라. lift 도 월드
+   Z 상승만이 답이냐?" → **pick 전체를 관절 공간 config 전이로**. approach/grasp/lift
+   전부 `MoveJPose`(pose→IK→run_joint). lift = "위 config 로 복귀 = 자연 상승".
+6. **단일 jaw 발견 (사용자)**: 그리퍼가 좌우 대칭이 아님 — **파란 jaw 고정, 검은 jaw
+   (joint7) 만 회전**해 닫힘. 물체는 고정 jaw 쪽으로 눌려 잡힘. → tcp ≠ 파지점 →
+   **pinch offset** 필요 (tool-frame, 그리퍼 상수, 큐브 무관).
+7. **detection projection fix**: bbox 중심 픽셀 × 윗면 depth **불일치** → 파지 x/y 가
+   카메라 쪽 모서리로 편향. → **윗면 픽셀 3D centroid** 로 교체.
+8. **gripper URDF 시각화**: 프론트가 arm(TcpState)만 받아 gripper 안 움직임 → motion 이
+   gripper rad 를 TcpState 별도 필드로 report.
+9. **결과**: 한 번 집힘 — 근데 **운** (사용자: "운좋게 집은거야, 디텍팅도 가끔 이상한데
+   찍힘"). 아직 미해결.
+
+**교훈 (내 반복 실수)**: 검증 전에 "불가/미완/워크스페이스 한계" 를 단정함. 진단 도구
+(IK 솔버) 가 "불가" 라 해도 물리 증거(손으로 도달)가 상충하면 **도구(seed 수)를 의심**.
+[[feedback_verify_solver_not_reality]]
+
+---
+
+## 2. 구현된 것 (파일별, 전부 uncommitted)
+
+### Motion
+- `backend/modules/motion/adapters/pybullet.py` — **IK multi-restart**. seeded 1회
+  실패 시 random restart 24회 후 seed 에 가장 가까운 해 선택 (motion 연속성). single-seed
+  local IK 가 존재하는 해 놓치는 것 방지. `_ik_from_seed` 로 분리.
+- `backend/modules/motion/contract.py` — `MOVE_J_POSE` 서비스 + `MoveJPoseRequest`
+  (target_position, optional target_quaternion, optional **tool_offset**). TcpState 에
+  `gripper_joint_name`/`gripper_rad` 필드 추가.
+- `backend/modules/motion/module.py` — `move_j_pose` 핸들러 (pose→IK(현재자세 seed,
+  multi-restart)→run_joint). **tool_offset**: IK(target)→자세 R→`target - R·offset`
+  재-IK (파지점을 target 에 맞춤, 검증 0.5mm). gripper rad report (units SSOT).
+
+### Task
+- `backend/modules/task/steps.py` — `MoveToPose` step (MOVE_J_POSE 호출, optional
+  tool_offset). 기존 `MoveTCP`(MoveL)는 남겨둠 (안 쓰임, Cartesian 필요시용).
+- `backend/modules/task/tasks/pick_and_place.py` — approach/grasp/lift/place 전부
+  `MoveToPose` 로. `ApproachAlongTool`/`RetreatAlongTool` 삭제. **PINCH_OFFSET =
+  (0.0, -0.015, 0.0)** (rough URDF 추정, grasp/place 에 적용, 튜닝 필요).
+
+### Detector
+- `backend/modules/detector/projection.py` — `object_top_center_base` (윗면 픽셀
+  3D centroid). 기존 z_cam_from_depth_bbox/unproject_to_base 는 test 만 씀.
+- `backend/modules/detector/module.py` — `object_top_center_base` 로 파지 x/y 산출.
+
+### Frontend
+- `frontend/src/api/generated/contract.ts` — TcpState gripper 필드 (offline 재생성).
+- `frontend/src/components/scene/RobotLayer.tsx` — gripper joint 를 arm 뒤 append.
+
+### Tests (통과)
+- multi-restart 회귀 (`test_kinematics.py`), projection centroid (`test_detector_projection.py`),
+  MoveJPose stack 도달 (`test_motion.py`), pick 이 MoveL 안 씀 (`test_pick_and_place.py`),
+  gripper report (`test_motion.py`), RobotLayer gripper append.
+
+---
+
+## 3. 열린 문제 / 버그 (다음 세션 우선순위)
+
+### ★ P1 — 모션이 급하고 안 스무스함 (사용자 2026-07-08 관찰)
+> "moveJ 가 너무 빨리 움직여. 서치 후 다음 포인트 이동도 급해. 집으러 갈 때도. 빠른 게
+> 중요한 게 아냐, 스무스한 느낌이 없어."
+
+- 후보 원인:
+  - `run_joint` 의 Ruckig joint max **velocity/accel/jerk** 가 큼 (robot motion.yaml).
+    profile 값 확인 — 급가감속.
+  - 각 step 이 **독립 MoveJ + 끝에서 정지** → start-stop-start (blending 없음).
+  - position-only IK 가 **자세를 매번 자유롭게** 잡아 config 가 크게 튀면 큰 관절 이동
+    = 휙 도는 느낌. (seed 근처 해 선택하지만 여전할 수 있음)
+- 조사 시작점: `backend/modules/motion/trajectory_runner.py` `run_joint`/`_joint_loop`
+  + robot motion.yaml 의 joint profile + MoveJPose 가 넘기는 속도 한계.
+
+### ★ P2 — detection 이 가끔 엉뚱한 데 찍힘
+- 사용자: "디텍팅이 이상한데 찍히기도 했어." grasp 정확도의 뿌리 — 여기가 틀리면 나머지
+  다 무의미.
+- 조사: projection fix(`object_top_center_base`) 의 top-band 선택이 노이즈/테이블에
+  민감한지, 아니면 GDINO bbox 자체가 가끔 오검출인지 분리 필요. depth top-percentile
+  band(0.010m) 튜닝 여지. `backend/modules/detector/projection.py` + `module.py`.
+
+### P3 — verify_grasp "gripper 상태 미수신"
+- grasp 물리 성공해도 `VerifyGrasp` 가 실패 (task 모듈이 gripper raw 캐시 못 함).
+- 확인된 것: 프레임워크는 robot-scoped 구독을 wildcard(`stream/motor/*/raw_state`)로
+  등록([app.py:280](../backend/framework/runtime/app.py)) → task 모듈이 RAW_STATE
+  받아야 정상. scan 모듈은 같은 패턴으로 잘 됨. gripper_index=`r.motors.index(grip)`=6
+  (7모터), positions_raw 7개면 유효.
+- **미확정**: 왜 캐시가 None 인가. 라이브 로그 필요 — `_on_motor_raw` 가 실제 호출되는지,
+  cross-machine(PC task ← 모터 Pi RAW_STATE) 이 도착하는지, robot_id 매칭 되는지.
+  `backend/modules/task/module.py:66` `_on_motor_raw`.
+
+### P4 — grasp 신뢰성 (아직 운)
+- **pinch offset 값이 rough 추정** `(0,-0.015,0)` — 실측 필요. 큐브 문 자세(토크오프)
+  에서 tcp pose vs 큐브 base 차이 = 정확한 tool-frame offset. 미스 방향이 튜닝 정보.
+- **jaw-yaw 정렬 미구현** — detector 가 큐브 yaw 를 안 줌. top-face PCA 로 yaw 뽑아
+  그리퍼 roll 을 큐브 면에 맞추면 회전된 큐브도 평평한 면 파지. 단 자세 제약이라
+  도달성은 cube 90° 대칭 + 후보 search 로 처리 (motion 에 grasp-pose search 필요).
+  **작은 큐브가 pinch offset 만으로 잡히면 불필요할 수도 — 테스트가 판단 근거.**
+
+---
+
+## 4. 검증된 사실 (다음 세션이 재유도 말 것)
+
+- **reach 는 문제 아님**: position-only IK 가 큐브 위 z 2~16cm 전부 도달.
+- **MoveL(자세 고정 직선)은 SO-101 pick 에 구조적으로 부적합**: 같은 자세로 z 2.3cm 만
+  도달, 4.3cm+ 는 seed 400 개로도 FAIL. 높이마다 도달 자세가 바뀜. → 관절 이동만이 답.
+- **single-seed PyBullet IK 는 존재하는 해를 놓침**: 14° 자세가 seed 몇 개론 FAIL,
+  400개론 OK. → multi-restart 필수 (구현됨).
+- **그리퍼 = 단일 가동 jaw** (파란 고정 / 검은 joint7 회전). 파지점 ≠ 기하 중앙 ≠ tcp.
+- **tcp 는 gripper_center 에서 +X 0.04m** (URDF tcp_joint). fingertip ≈ tcp (접근축),
+  파지 중심은 tcp 에서 고정 jaw 쪽(tool -Y).
+- **tool_offset 메커니즘 검증**: pinch point 가 target 에 0.5mm 정렬 (재-IK 1회 근사).
+
+## 5. 설계 결정 (박힌 것)
+
+- pick 접근/파지/승강 = **MoveJPose(관절 공간)**, MoveL 아님. 월드축(Z-lift 포함) 명령 X.
+- IK 어댑터 = multi-restart (seeded 우선 + 실패시 restart, seed 최근접 해).
+- pinch offset = **그리퍼 상수(tool-frame), 큐브 치수 하드코딩 금지**. jaw 정렬 = 검출
+  기하(cube yaw). 둘 다 큐브 크기 독립.
+- gripper 관절 상태 = motion 이 TcpState 별도 필드로 report (arm `joints` 에 안 섞음 —
+  waypoint 가 `.joints` 를 arm/IK 벡터로 소비하므로 섞으면 MoveJ dof 깨짐).
+
+## 6. 배포 노트
+
+- 변경 노드: **PC** (task, detector) + **모터 Pi** (motion, IK). 카메라 Pi 변경 없음.
+- frontend: contract.ts + RobotLayer (재빌드). contract.ts 는 이미 offline 재생성됨.
+- `MOVE_J_POSE` 는 frontend 미노출 (task 가 backend 에서 호출).
+
+---
+
+*세션 중 반복된 사용자 피드백: 검증 전 문제 단정 금지 / 한 primitive·한 축에 갇히지 말
+것 / 목표(잘 집기)를 놓지 말 것 / 성급히 메모리·"미완" 선언 말 것.*
+
+
+---
+---
+
+<!-- ═══════════ 여기부터 아키텍처 spec 본문 ═══════════ -->
 
 ## 1. 개요
 
@@ -582,7 +947,7 @@ class CalibrationBundle(BaseModel):
 
 #### 3.3.4 Effective apply — framework 안 박힘, consumer 책임
 
-> ⚠️ **이 절의 calibration 예제는 SUPERSEDED (2026-07-02).** 아래 `link_offsets 변경 → _rebuild_kinematics` 런타임 재로드는 **실제 calibration 에서 제거됨** — Bundle 은 boot-time config 라 Motion 은 start() 에서 1회 build 하고 런타임 rebuild 하지 않는다 ([calibration_module_boundary.md §10.2](calibration_module_boundary.md): "Mirror 니까 실시간이어야 한다" 는 아키텍처적 연역이었고 실제 트리거가 없었음). 아래는 *만약* control-correctness-state consumer 가 있었다면 effective-apply 를 framework 가 아니라 consumer 가 처리한다는 **패턴 illustration** 으로만 유지.
+> ⚠️ **이 절의 calibration 예제는 SUPERSEDED (2026-07-02).** 아래 `link_offsets 변경 → _rebuild_kinematics` 런타임 재로드는 **실제 calibration 에서 제거됨** — Bundle 은 boot-time config 라 Motion 은 start() 에서 1회 build 하고 런타임 rebuild 하지 않는다 ([calibration.md §10.2](calibration.md): "Mirror 니까 실시간이어야 한다" 는 아키텍처적 연역이었고 실제 트리거가 없었음). 아래는 *만약* control-correctness-state consumer 가 있었다면 effective-apply 를 framework 가 아니라 consumer 가 처리한다는 **패턴 illustration** 으로만 유지.
 
 Mirror cache 갱신 = framework 자동. 단 *effective apply* (architectural side-effect) 는 consumer 책임 — framework 가 `@on_mirror_change` 같은 magic 데코 박지 X, 그저 **일반 `@subscriber(ChangeEvent)`** 박아 자기 도메인 처리.
 
@@ -951,7 +1316,7 @@ instance = MotionModule(runtime=runtime_api, robot_id=rid, repo=repo)
 
 ## 4. Owner / Reader 비대칭 — code 형태
 
-> ⚠️ **아래 §4.1–§4.2 의 Calibration↔Motion `Mirror[CalibrationBundle]` 코드는 Mirror 메커니즘 illustration (stand-in) 이다 (2026-07-02).** 실제 calibration 은 boot-time configuration 이라 Mirror 를 쓰지 않고 Motion 은 boot-time `snapshot_bundle` query 로 읽는다 ([calibration_module_boundary.md §6](calibration_module_boundary.md), anchor #2). Owner/Reader **비대칭 원칙 자체는 유효** — 다만 Reader 의 실제 접근이 Mirror 가 아니라 boot-query 인 경우 (calibration) 와 per-request service call 인 경우 (§4.4 Detector) 가 현 도메인의 실제 형태.
+> ⚠️ **아래 §4.1–§4.2 의 Calibration↔Motion `Mirror[CalibrationBundle]` 코드는 Mirror 메커니즘 illustration (stand-in) 이다 (2026-07-02).** 실제 calibration 은 boot-time configuration 이라 Mirror 를 쓰지 않고 Motion 은 boot-time `snapshot_bundle` query 로 읽는다 ([calibration.md §6](calibration.md), anchor #2). Owner/Reader **비대칭 원칙 자체는 유효** — 다만 Reader 의 실제 접근이 Mirror 가 아니라 boot-query 인 경우 (calibration) 와 per-request service call 인 경우 (§4.4 Detector) 가 현 도메인의 실제 형태.
 
 ### 4.1 Owner side — Calibration Module
 
@@ -1180,7 +1545,7 @@ class DetectorModule:
 ## 5. 폴더 구조
 
 ```
-backend_v2/
+backend/
 │
 ├── framework/                    # 변하지 않는 시스템 기반
 │   │
@@ -1354,7 +1719,7 @@ ZenohTransport:
 
 ### 6.2 Motion read calibration (Reader side)
 
-> ⚠️ **SUPERSEDED (2026-07-02) — 아래 Mirror 흐름은 stand-in illustration.** 실제 calibration = boot-time config → Motion 의 실제 흐름은: `start()` 에서 `runtime.call(Calibration.Service.SNAPSHOT_BUNDLE, ...)` **1회** → kinematics build → 끝. subscribe / event refetch / 런타임 cache 갱신 **없음**. 아래 "런타임: Calibration 측 activate → refetch" 부분은 일어나지 않는다 (activate = "재시작 필요" 알림, [calibration_module_boundary.md §5/§9](calibration_module_boundary.md)). Mirror 흐름의 메커니즘 예시로만 유지.
+> ⚠️ **SUPERSEDED (2026-07-02) — 아래 Mirror 흐름은 stand-in illustration.** 실제 calibration = boot-time config → Motion 의 실제 흐름은: `start()` 에서 `runtime.call(Calibration.Service.SNAPSHOT_BUNDLE, ...)` **1회** → kinematics build → 끝. subscribe / event refetch / 런타임 cache 갱신 **없음**. 아래 "런타임: Calibration 측 activate → refetch" 부분은 일어나지 않는다 (activate = "재시작 필요" 알림, [calibration.md §5/§9](calibration.md)). Mirror 흐름의 메커니즘 예시로만 유지.
 
 ```
 부팅 시점:
@@ -1736,13 +2101,13 @@ Runtime 내부 `add_module` 은 `inspect.signature(cls.__init__)` 로 constructo
 
 ### 9.2 Migration owner — 루트 단일 Alembic (2026-07-02 정정)
 
-> **초안의 "Module N 개 = Alembic N 개" 폐기.** 소유권 ≠ 마이그레이션 권위 ([calibration_module_boundary.md §8](calibration_module_boundary.md)):
+> **초안의 "Module N 개 = Alembic N 개" 폐기.** 소유권 ≠ 마이그레이션 권위 ([calibration.md §8](calibration.md)):
 > - **테이블/ORM/Repository 소유 = 모듈별** (Storage *Module* RPC 중개자 폐기는 그대로).
-> - **마이그레이션 = 루트 하나** (`backend_v2/alembic/`, 공유 `infra/database/base.py::Base`). 같은 프로세스 + 공유 DB = Database-per-**Service** 아님. per-module Alembic 은 version_table 충돌 / cross-module FK 순서 / 전체 초기화 복잡도만 들여옴.
+> - **마이그레이션 = 루트 하나** (`backend/alembic/`, 공유 `infra/database/base.py::Base`). 같은 프로세스 + 공유 DB = Database-per-**Service** 아님. per-module Alembic 은 version_table 충돌 / cross-module FK 순서 / 전체 초기화 복잡도만 들여옴.
 
 기존: Storage Module 부팅 시 Alembic `upgrade head` 한 번.
 
-새 spec: 루트 `backend_v2/alembic/env.py` 가 모든 DB 모듈 ORM 을 import → 공유 `Base.metadata` 단일 history. runtime `upgrade head` 는 apps boot(또는 DB owner 모듈)가 프로그래매틱 실행. Pi 는 alembic 실행/import 안 함 (PC 전용 도구 — role 격리 유지). **구현·검증됨** (`tests/modules/test_alembic.py`).
+새 spec: 루트 `backend/alembic/env.py` 가 모든 DB 모듈 ORM 을 import → 공유 `Base.metadata` 단일 history. runtime `upgrade head` 는 apps boot(또는 DB owner 모듈)가 프로그래매틱 실행. Pi 는 alembic 실행/import 안 함 (PC 전용 도구 — role 격리 유지). **구현·검증됨** (`tests/modules/test_alembic.py`).
 
 ### 9.3 DB dependency 격리
 
@@ -1809,7 +2174,7 @@ decode dedup 패턴 (§3.5) 으로 카메라 자리 39% → 21% CPU. LocalTransp
 
 같은 process 안 routing 도 Zenoh same-session 통과 — 측정 결과 ([backend/scripts/bench_transport.py](../backend/scripts/bench_transport.py)) 작은 message ~3us, 5MB ~1.27ms.
 
-**✅ 완료** — [backend_v2/framework/transport/protocol.py](../backend_v2/framework/transport/protocol.py) + [backend_v2/infra/transport/zenoh.py](../backend_v2/infra/transport/zenoh.py). **7 test PASS** — same-session pub/sub + service call + handler exception → `RemoteError` + timeout → `TimeoutError` + callback exception swallow + cross-process pub/sub (subprocess).
+**✅ 완료** — [backend/framework/transport/protocol.py](../backend/framework/transport/protocol.py) + [backend/infra/transport/zenoh.py](../backend/infra/transport/zenoh.py). **7 test PASS** — same-session pub/sub + service call + handler exception → `RemoteError` + timeout → `TimeoutError` + callback exception swallow + cross-process pub/sub (subprocess).
 
 ### Step 2 — Contract layer
 
@@ -1819,7 +2184,7 @@ decode dedup 패턴 (§3.5) 으로 카메라 자리 39% → 21% CPU. LocalTransp
 - `@service` 박은 메소드를 framework 가 inspect 해서 ServiceSpec 추출.
 - ZenohTransport 위에 service register + same-session call round-trip.
 
-**✅ 완료** — [backend_v2/framework/contract/](../backend_v2/framework/contract/). **19 test PASS** — service / subscriber spec 추출 + invalid type hint fail-fast + `@publishes(*pairs)` class 데코 + envelope round-trip + E2E ZenohTransport wire + handler exception E2E + event publish/subscribe E2E.
+**✅ 완료** — [backend/framework/contract/](../backend/framework/contract/). **19 test PASS** — service / subscriber spec 추출 + invalid type hint fail-fast + `@publishes(*pairs)` class 데코 + envelope round-trip + E2E ZenohTransport wire + handler exception E2E + event publish/subscribe E2E.
 
 ### Step 3 — Runtime + Module discovery
 
@@ -1833,7 +2198,7 @@ decode dedup 패턴 (§3.5) 으로 카메라 자리 39% → 21% CPU. LocalTransp
 
 부팅 순서 = **instantiate → register → start** (§3.6).
 
-**✅ 완료** — [backend_v2/framework/runtime/](../backend_v2/framework/runtime/). **12 test PASS**:
+**✅ 완료** — [backend/framework/runtime/](../backend/framework/runtime/). **12 test PASS**:
 - 빈 Module runtime start → stop
 - 두 Module + service call round-trip (`runtime.call(Module.Service.X, req, ResCls)`)
 - publish → `@subscriber` callback 도달
@@ -1875,7 +2240,7 @@ decode dedup 패턴 (§3.5) 으로 카메라 자리 39% → 21% CPU. LocalTransp
 
 ### Step 7 — Reader 박아서 검증 (Motion)
 
-> ⚠️ **2026-07-02 정정**: 실제 Motion Reader 는 Mirror 아니라 **boot-time `snapshot_bundle` query** (calibration = boot-time config, anchor #2). 아래 "Mirror + activate → 갱신" 검증은 stand-in. 실제 검증 = 부팅 시 1회 조회 → kinematics build (§4 banner + [calibration_module_boundary.md §9](calibration_module_boundary.md)). Mirror primitive 자체 (Step 5) 는 별도로 이미 테스트됨 — domain consumer 만 없음.
+> ⚠️ **2026-07-02 정정**: 실제 Motion Reader 는 Mirror 아니라 **boot-time `snapshot_bundle` query** (calibration = boot-time config, anchor #2). 아래 "Mirror + activate → 갱신" 검증은 stand-in. 실제 검증 = 부팅 시 1회 조회 → kinematics build (§4 banner + [calibration.md §9](calibration.md)). Mirror primitive 자체 (Step 5) 는 별도로 이미 테스트됨 — domain consumer 만 없음.
 
 `modules/motion/`. boot-time `snapshot_bundle` query + kinematics + IK.
 
@@ -1921,7 +2286,7 @@ decode dedup 패턴 (§3.5) 으로 카메라 자리 39% → 21% CPU. LocalTransp
 
 ### Step 10 — backend/ discard
 
-backend_v2 가 backend 의 모든 기능 가지면 backend/ 폐기. 새 코드 = backend_v2/.
+backend 가 backend 의 모든 기능 가지면 backend/ 폐기. 새 코드 = backend/.
 
 ## 12. 알려진 risk
 
@@ -1947,21 +2312,21 @@ framework 짜는 자체 무거움. Protocol + Runtime + Contract + Transport + M
 - **infra adapter 는 wrapping 만** — Zenoh / SQLAlchemy / Alembic / boto3 기능 자체는 활용, framework 가 wrap 만.
 - **Transport 한 갈래** (Zenoh 만, §3.4) — LocalTransport 박지 않아서 resolver / behavior 일관성 risk / 두 path 유지 부담 0. capacity 절약.
 
-### 12.4 backend/ 와 backend_v2/ 병행 risk
+### 12.4 backend/ 와 backend/ 병행 risk
 
 framework_dogfood_plan §14.3 규칙 그대로:
 - backend/ 의 framework 부분 (BaseNode / 노드 hierarchy) 추가 변경 X.
-- backend_v2 자체 *기능 개발 금지*, framework 검증만.
+- backend 자체 *기능 개발 금지*, framework 검증만.
 - 실 hardware 1 robot (omx_f_0) 만 붙여보기.
 - backend/ 의 코드 reference OK (BA / Ruckig / IRLS / step DSL 등 자산), 재구성.
 
 ## 13. 인접 문서
 
-- [framework_dogfood_plan.md](framework_dogfood_plan.md) — 결정 history + plan + §13 결정 history (20 항목) + §14 backend_v2 reframe + §15 Runtime-centric reframe. 본 문서는 §15 위 정리.
-- [architecture_review_protocol.md](architecture_review_protocol.md) — 검토 phase protocol. 본 문서는 그 산출물의 한 단계.
+- [backend.md](backend.md) — 결정 history + plan + §13 결정 history (20 항목) + §14 backend reframe + §15 Runtime-centric reframe. 본 문서는 §15 위 정리.
+- [dev_reference.md](dev_reference.md) — 검토 phase protocol. 본 문서는 그 산출물의 한 단계.
 - [storage_layer.md](storage_layer.md) — 기존 Storage Module 설계. 본 문서에서 폐기 결정. 단 ORM / Repository 자산 (SQLAlchemy 패턴 / Alembic 운영) 재활용.
-- [motion_taxonomy.md](motion_taxonomy.md) — Move / Servo / Jog / Task 4 계층. modules/motion/ 안 그대로 옮겨심음.
-- [step_dsl.md](step_dsl.md) — Step / Slot / Recipe DSL. modules/task/dsl/ 안 그대로.
+- [motion.md](motion.md) — Move / Servo / Jog / Task 4 계층. modules/motion/ 안 그대로 옮겨심음.
+- [task.md](task.md) — Step / Slot / Recipe DSL. modules/task/dsl/ 안 그대로.
 - [multi_robot_architecture.md](multi_robot_architecture.md) — multi-robot platform 설계. 본 framework 위 robot dispatch 패턴 자연 흡수 (Module 안 `robot_id` 인자).
 - [backend/scripts/bench_transport.py](../backend/scripts/bench_transport.py) — Transport latency 측정 script. §3.4 (LocalTransport 박지 않음) + §3.5 (derived read model decode dedup) 결정의 evidence. spec 변경 시 재실행.
 
@@ -2003,7 +2368,7 @@ framework_dogfood_plan §14.3 규칙 그대로:
 - 박지 말 패턴: 추가 옵션 카탈로그 던지기 / cost-based reflex ("한 줄 fix") / cargo cult (외부 framework 명명 흉내) / flipflop (사용자 push 자동 반대편 점프) / measurement 없는 추정.
 - test 짤 때 production code 에 dogfood 넣지 X.
 
-## 15. 구현 진행 → [backend_v2_status.md](backend_v2_status.md)
+## 15. 구현 진행 → [backend.md](backend.md)
 
 진행 status / 검증 수치 / 다음 작업은 전부 status 문서로 이동 (본 문서 = spec 만,
 진행 표기 안 둠). 아래 test 원칙만 spec 으로 유지:
@@ -2012,7 +2377,7 @@ framework_dogfood_plan §14.3 규칙 그대로:
 - 새 test 박을 때 = docstring 에 spec ref + invariant 명시 (예: `spec §3.3.2 — Mirror partial state 노출 X`)
 - 구현 중 spec 충돌 / 새 invariant 발견 시 §14 anchor 표 update 박은 후 진행
 
-## 16. Module catalog (옛 backend_v2_modules.md 통합, 2026-07-03 현행화)
+## 16. Module catalog (옛 backend_modules.md 통합, 2026-07-03 현행화)
 
 ### 16.1 4 layer + Module catalog
 
@@ -2125,7 +2490,7 @@ frontend 시각화) vs `Motion.Service.TCP_SNAPSHOT` (Detector/Scan 의 point-in
 
 `contract.py` = 두 소비자의 SSOT (둘 다 **runtime-served**):
 ① **frontend TS gen** — bridge `GET /contract.json` EXPORT → `pnpm gen:types` 가
-contract.ts 조립 ([frontend_v2.md §2.1](frontend_v2.md)). 노출 =
+contract.ts 조립 ([frontend.md §2.1](frontend.md)). 노출 =
 `apps/contract_export.py::FRONTEND_EXPOSED` opt-in allowlist 한 곳.
 ② **developer contract graph viewer** — bridge `GET /contract/graph` (unfiltered
 declared universe) → frontend `/contract` React Flow ([contract_graph_viewer.md](contract_graph_viewer.md)).
@@ -2238,3 +2603,995 @@ runner+디버거 e2e 부터. frontend = TaskProgressPanel / PromptPanel / TaskRe
 - recipe 재설계: BreakIf 제거 → **Waypoint Group 순회하며 후보 누적** →
   `SelectTarget(candidates, prompt, priors)` 스코어 → 최종 Detection.
 - 검증: 구조/계약/mock e2e = 회사, **detection 정확도 = 집 하드웨어만**.
+
+
+---
+---
+
+# 부록 — 통합 원문 (2026-07-11 문서 다이어트)
+
+> 아래 문서들을 본 문서 부록으로 병합 (원문 그대로):
+> - `backend.md`
+> - `backend.md`
+> - `backend.md`
+
+
+---
+---
+
+<!-- ═══════════ [통합 원문] backend.md ═══════════ -->
+
+# Framework — Async-Uniform Call Contract (설계, 2026-07-03)
+
+> ⚠️ **부분 stale (2026-07-11 문서 전수 감사)**: intro 의 "구현 전 단계" 는 stale — **구현 완료** (scan/detector module.py 가 본 문서를 근거로 인용). 설계 내용 자체는 현행.
+> 본 감사에서 삭제된 v1 문서 참조가 남아있을 수 있음 — git history 에서 복원 가능.
+
+> backend framework 의 **모듈 간 호출 API 통일** 설계. **구현 전 단계** — 방향 결정
+> 완료, 구현은 다음 세션. 본 문서로 논의 이어가기. ([backend.md](backend.md) 의
+> 4 primitive 계약 위에 얹는 실행모델 정정.)
+
+## 1. 문제 — "sync냐 async냐"를 모듈 개발자가 의식하게 만든다
+
+모듈 개발자가 다른 모듈의 service 를 호출할 때, **지금 자기가 어느 함수 안에 있느냐**
+에 따라 호출 방법이 달라진다:
+
+| 지금 있는 곳 | 호출 방법 |
+|---|---|
+| `async def start()` / 내가 띄운 async task | `await self.runtime.call(...)` |
+| `@service` / `@subscriber` 핸들러 (sync `def`) | `run_coroutine_threadsafe(...).result()` 브리지 |
+
+실제 사례 — [scan/module.py](../backend/modules/scan/module.py) 의 `_call` 헬퍼:
+sync `capture()` 핸들러가 scene3d SNAPSHOT 을 부르려고 이벤트 루프 저장 +
+`run_coroutine_threadsafe` + `Future.result()` 를 **모듈 코드에** 들고 있다. 이건 scan
+도메인이 아니라 **asyncio 실행모델 처리** — framework 가 감춰야 할 것이 모듈로 새어
+올라온 것.
+
+**판정 기준**: 모듈 개발자가 "이거 await 해야 하나? call_sync 였나?" 를 고민하며 다른
+코드를 뒤지게 만들면, 그 지점에서 framework 는 UX 실패다. 모듈 간 호출은 **문맥과
+무관하게 단 하나의 방법**이어야 한다.
+
+## 2. 현재 실행 모델 (실측)
+
+- **transport.call** ([infra/transport/zenoh.py](../backend/infra/transport/zenoh.py)):
+  `async def call` → `await asyncio.to_thread(self._call_sync, ...)`. **이미 Zenoh 의
+  sync `session.get()` 을 thread 로 감싸 async 로 노출**한다. (transport layer 는 이미
+  옳게 흡수 중.)
+- **service 핸들러 등록** ([app.py `_register_service`](../backend/framework/runtime/app.py)):
+  `handler_bytes(req_bytes)` 가 `bound_method(req)` 를 **동기** 호출, BaseModel 즉시 반환
+  기대. Zenoh queryable 콜백(`_on_query`)은 **Zenoh 워커 스레드**에서 sync 로 불린다 →
+  핸들러도 sync 전용.
+- **subscriber** (`_register_subscriber`): `bound_method(event)` 동기. sync 전용.
+- **Mirror** (`_register_mirror_subscriber`): change_topic 콜백(zenoh 스레드)에서
+  `asyncio.run_coroutine_threadsafe(self._refetch_mirror(...), loop)`. → **framework 가
+  이미 sync콜백→loop 브리지를 내부에 갖고 있다** (§4 구현의 선례).
+- **publish** (`_TransportRuntime.publish`): sync. fire-and-forget (응답 안 기다림).
+- **start/stop**: Runtime 이 `await` (sync/async/없음 다 허용, [app.py:143-166]).
+  현재 start/stop 을 가진 모든 모듈이 async (CameraDecoded 만 없음 — 띄울 게 없어서).
+
+핵심: **Zenoh 는 sync API 만** 준다. transport.call 은 이미 to_thread 로 흡수했고,
+**핸들러/subscriber 콜백 경로만 아직 sync 로 노출**돼 있어 그 위 모듈이 브리지를 떠안는다.
+
+## 3. 결정 — 방향 1 (전부 async 중심, framework 가 Zenoh 흡수)
+
+두 후보:
+
+- **방향 1 — 전부 async 통일**: 핸들러도 `async def`, 어디서나 `await runtime.call(...)`.
+  무거운 CPU 는 `await asyncio.to_thread(...)`. framework 가 Zenoh sync 콜백을 loop 로
+  bridge (Mirror 와 동일 패턴).
+- **방향 2 — async 를 완전히 숨김**: 모듈이 보는 `runtime.call(...)` 은 항상 블로킹처럼
+  (await 없이). asyncio 는 내부 구현.
+
+**채택 = 방향 1.** 근거:
+
+1. **cost 가시성** — 네트워크 RPC 는 시간이 걸린다. `await runtime.call(...)` 이 코드에
+   보이면 읽는 사람이 "여기서 제어가 넘어갈 수 있다"를 즉시 안다. 방향 2 는 그 비용을
+   함수 호출 뒤로 숨겨 오해를 부른다.
+2. **생태계 정합** — FastAPI / aiohttp / SQLAlchemy async 전부 `await`. Python 개발자의
+   기본 멘탈모델.
+3. **이미 async 시스템** — Zenoh pub/sub + streaming + 백그라운드 task + RPC 구조. 일부만
+   sync 처럼 숨기면 오히려 "왜 이것만 await 가 없지?" 가 된다.
+
+**단, 방향 1 의 전제 = framework 가 async 핸들러를 제대로 지원해야 한다.** 그래야 모듈
+개발자는 `snapshot = await runtime.call(...)` 하나만 알면 된다.
+
+## 4. 목표 계약 (developer-facing)
+
+모듈 개발자가 배워야 할 규칙은 **딱 하나**: **다른 모듈을 부르면 `await runtime.call(...)`.**
+
+- **`call` API 는 하나** — `await self.runtime.call(key, req, res_cls, ...)`. (`ModuleRuntime`
+  protocol 은 애초에 `call` 단일 — public `call_sync` 는 존재한 적 없음, §8-2 확인.)
+  "두 개 중 뭐 쓰지" 선택 자체가 없다.
+- **핸들러는 async 지원** — `@service async def capture(...)` / `@subscriber async def
+  on_x(...)` 를 framework 가 자연스럽게 지원. (sync 핸들러도 backward-compat 로 계속
+  허용 — §7 마이그레이션. 단 다른 서비스를 호출하려면 async 여야 함 = 자연스러운 강제.)
+- **publish 는 sync 그대로** — `self.runtime.publish(...)`. 응답을 안 기다리니 문맥 문제가
+  없다. 통일 대상은 **응답을 기다리는 `call` 뿐.** (build progress / state 발행 등 전부
+  sync 유지.)
+- **start/stop async 그대로.**
+
+즉 통일의 정확한 범위 = **"응답을 기다리는 cross-module 호출은 무조건 `await
+runtime.call`"** 하나. publish·start 는 이미 문제가 없다.
+
+## 5. framework 가 흡수하는 것 (Zenoh sync → async)
+
+"모듈이 Zenoh 를 잊어버린다" 를 framework 내부에서 실현:
+
+1. **transport.call** — 이미 `to_thread(_call_sync)`. 유지.
+2. **service 핸들러 (신규 async 지원)** — Zenoh queryable 콜백은 여전히 sync (zenoh 스레드).
+   그 콜백 안에서 핸들러가 coroutine 이면
+   `asyncio.run_coroutine_threadsafe(handler(req), loop).result(timeout)` 로 loop 에서
+   실행 후 결과 회수 (Mirror 선례와 동일). **브리지가 모듈에서 framework 로 이동** — 개발자
+   눈엔 안 보임. sync 핸들러면 기존대로 직접 호출 (`iscoroutine` 분기).
+3. **subscriber (신규 async 지원)** — 콜백에서 coroutine 이면 loop 에 schedule
+   (fire-and-forget, 결과 대기 X — subscriber 는 반환값 없음).
+4. **예외 전파** — async 핸들러의 예외도 기존 `reply_err` 경로(RemoteError)로 그대로.
+
+## 6. 핵심 설계 과제 — 무거운 CPU 가 이벤트 루프를 막지 않게
+
+방향 1 의 유일한 실질 리스크. 지금 sync 핸들러는 **Zenoh 워커 스레드**에서 돌아 30초짜리
+TSDF `build` 가 loop 를 안 막는다 (그게 sync 핸들러의 뜻밖의 이점이었음). async 핸들러로
+바꾸면 loop 위에서 돌 위험이 생긴다.
+
+해결 = **관례 명문화**: async 핸들러 안의 CPU 무거운 일은 `await asyncio.to_thread(...)`.
+framework 가 `run_coroutine_threadsafe(handler, loop)` 로 loop 에 태워도, 핸들러가
+`await to_thread(build)` 하면 그 동안 loop 는 자유 (다른 service/stream 정상). zenoh 워커
+스레드 하나가 `.result()` 로 블로킹되지만 pool>1 이라 무방 (현재와 동일).
+
+**미결 — framework 가 이걸 강제/지원할 방법:**
+- (a) 순수 관례 (문서로만: "무거우면 to_thread")
+- (b) `@service(offload=True)` 같은 선언 → framework 가 자동 to_thread
+- (c) heavy 전용 실행 정책(worker pool) 을 framework 가 제공
+→ §8 논의.
+
+## 7. 마이그레이션 영향 (모듈별)
+
+| 모듈 | 변경 |
+|---|---|
+| **scan** | `_call` / `self._loop` / asyncio import **삭제**. `capture`/`build` → `async def` + `await self.runtime.call(...)`. `build` 의 Open3D 부분 → `await asyncio.to_thread(build_mesh)` (§6). |
+| **scene3d** | start/live_loop 이미 async. 변경 거의 없음. |
+| **calibration / motor / motion / camera** | 핸들러가 sync 지만 cross-service `call` 을 안 함 → **당장 안 바꿔도 동작** (sync 핸들러 backward-compat). 통일하려면 점진적으로 async 로. |
+
+→ 결정 필요: **일괄 async 전환 vs 점진**(call 하는 핸들러만 우선). sync 핸들러 허용을
+영구로 둘지, deprecate 할지.
+
+## 8. 항목 분류 (2026-07-03 재구성 — 성격별)
+
+옛 §8 은 6항목을 평평한 "미해결" 로 나열했으나, 실제로는 성격이 셋으로 갈린다.
+평면 나열이 "다 정해야 구현 시작" 오해를 부른 것 — 실제로는 ①만 전제, 나머지는
+구현을 막지 않는다.
+
+### ① 확정된 전제 (더 이상 미해결 아님)
+
+- Zenoh 는 **sync callback** 을 (별도 워커 스레드에서) 호출한다. zenoh-python 이 async
+  콜백 API 를 주지 않으므로, **framework 가 `run_coroutine_threadsafe` bridge 를 내부에서
+  담당**한다 (§5-2, Mirror 선례와 동일).
+- **서비스 구현자는 이 사실을 몰라도 된다** — 이게 설계의 산출물. "전부 async" 는 목표가
+  아니라 결과.
+- 사용 중인 zenoh-python 버전 소스를 한 번 확인해 둘 수는 있으나 **설계를 막는 관문은
+  아니다** (전제로 확정).
+
+### ② 구현하면서 확인할 항목 (정책 아니라 검증)
+
+- **Zenoh worker pool 크기 + long-handler 동작 실측.** 새 구조에서 heavy call 하나는
+  스레드 2개를 쓴다:
+
+  ```
+  현재:  Zenoh worker └── build() 30s
+
+  신규:  Zenoh worker  └── future.result() 대기
+         event loop    └── await asyncio.to_thread(build)
+         threadpool    └── build() 30s
+  ```
+
+  "pool>1 이라 무방"(§6) 이 성립하려면 워커 pool 이 실제로 >1 이어야 한다. 구현 중 눈으로
+  확인해 둘 값 — **구조를 바꿀 리스크는 아님**.
+
+### ③ 추후 정책 (실사용 경험 후 결정)
+
+- **heavy-work 자동 offload** — `to_thread` 관례로 시작. `@service(offload=True)`(§6-b) /
+  worker pool(§6-c) 는 실사용에서 반복 필요성이 보일 때 검토.
+- **timeout / 취소** — long handler 의 client timeout ↔ loop-side coroutine 취소 경로.
+- **sync 핸들러 backward-compat 존치 기간** (§7) + 일괄 vs 점진 전환.
+- **`call_sync` 제거 후 API 정리** — 아래 구현 순서 2번에 포함.
+
+### 구현 (2026-07-03 완료 — 180 test PASS, ruff/pyright clean)
+
+1. ✅ **framework 가 sync/async bridge 를 완전히 흡수** — [app.py `_register_service`](../backend/framework/runtime/app.py)
+   `handler_bytes` 가 `asyncio.iscoroutine(result)` 면 `run_coroutine_threadsafe(coro,
+   self._loop).result()` (timeout 없음 — long build 는 핸들러 안 `to_thread` 로 loop 안
+   막고, 워커 스레드만 완료까지 대기 = sync 핸들러와 동일). `_register_subscriber` 도
+   coroutine 이면 fire-and-forget schedule + done-callback 으로 예외 로깅. sync 핸들러는
+   기존대로 직접 호출 (backward-compat).
+2. ✅ **`call_sync` — 애초에 public API 에 없었음.** `ModuleRuntime` protocol
+   ([api.py](../backend/framework/runtime/api.py)) 은 처음부터 `call` 단일. zenoh
+   transport 내부 `_call_sync` 만 존재하고 그건 이미 `to_thread` 로 흡수된 올바른 자리.
+   §4 의 "call_sync 폐기" 는 선제적 표현이었고 **제거할 대상이 없었다** (no-op 확인).
+3. ✅ **scan 모듈 async 정리** — [scan/module.py](../backend/modules/scan/module.py) 의
+   `_call` / `self._loop` / `Coroutine`·`cast`·`TypeVar`·`BaseModel` import 삭제.
+   `capture`/`build` → `async def` + `await self.runtime.call(...)`. `build_mesh` →
+   `await asyncio.to_thread(...)`.
+4. ✅ CPU 집약(build_mesh)은 `await asyncio.to_thread(...)` (③-heavy 관례). `@service(
+   offload=True)` 자동화는 미도입 — 실사용에서 반복 필요성 보이면 그때.
+
+핵심 목표 **"모듈 개발자는 `await runtime.call(...)` 만 알면 된다"** 달성. 이후 정책
+(②-pool 측정 / ③-heavy·timeout·sync 존치)은 실사용 경험 위에서.
+
+## 9. 관련 문서
+
+- [backend.md](backend.md) — framework SSOT (4 primitive / Runtime lifecycle / Owner-Reader). 본 문서는 그 위 **실행모델(sync/async) 정정**.
+- [backend.md](backend.md) — Runtime/Module/Transport 3 layer reframe.
+- [project_scan_pragmatic_slice] — `_call` 브리지가 처음 등장한 자리 (이 논의의 발단).
+
+
+---
+---
+
+<!-- ═══════════ [통합 원문] backend.md ═══════════ -->
+
+# contract gen — 분산 배치·정적 생성 논의 기록 (2026-07-06)
+
+> **결정: 지금은 아무것도 안 바꾼다.** gen:types 는 현행(전 모듈 로드된 mock/dev
+> backend 에서 생성) 유지. 본 문서는 그 결정에 도달하기까지 검토·기각된 선택지들과
+> 재논의 트리거를 남기는 기록 — 다음 세션이 같은 의심을 처음부터 다시 돌지 않게.
+
+## 1. 출발 질문
+
+분산 배치 — PC1(모듈A, 모듈B, bridge) + PC2(모듈C, 모듈D) — 에서 모듈 D 의 계약을
+프론트로 노출할 수 있는가?
+
+**답은 두 축으로 갈린다:**
+
+| 축 | 되나 | 메커니즘 |
+|---|---|---|
+| **데이터** (서비스 호출/스트림 구독) | ✅ | bridge 는 relay-only, Zenoh 가 D 의 위치를 투명 라우팅. bridge 와 D 가 다른 host 여도 무관 |
+| **타입 생성** (gen:types) | 부분 배치에선 ❌ (의도된 가드) | `build_contract_json` 이 running runtime 의 snapshot 에서 payload 를 채움 → bridge host 에 로드 안 된 모듈의 payload 없음 → incomplete-host guard 가 거부 |
+
+핵심 구분: **gen:types 는 build-time 스텝이다.** contract.ts 는 개발 머신에서 생성해
+커밋하는 산출물이고, 분산 배포 중에 gen 을 돌릴 일 자체가 없다. 따라서 위 ❌ 는
+운영 결함이 아니라 "gen 은 전 모듈 로드된 host 에서" 라는 워크플로 전제.
+
+## 2. 코드로 확정한 사실 (재검증 불필요)
+
+1. **key↔payload 바인딩의 원천 = 핸들러 시그니처.** contract.py 에는 키(StrEnum)와
+   타입(BaseModel)이 나란히 있을 뿐 연결 선언이 없다. 연결은
+   `@service` 데코레이터가 `get_type_hints(method)` 로 시그니처에서 추출
+   ([framework/contract/service.py](../backend/framework/contract/service.py)).
+2. **추출된 바인딩은 metadata 로 클래스에 이미 부착된다** (`ServiceSpec` →
+   `_service_spec` attr, `@publishes` 는 데코레이터 인자로 payload 명시). 즉
+   **module.py 를 import 만 하면** 인스턴스/runtime 없이 전부 읽힌다 —
+   `build_snapshot_from_classes` ([framework/runtime/snapshot.py](../backend/framework/runtime/snapshot.py))
+   가 그 구현이고 `/contract/graph` 가 실사용 중.
+3. **json 과 graph 의 소스가 다른 건 드리프트가 아니라 요구 차이.**
+   graph = 분산 배치 *운영 중에도* 전 fleet 을 보여야 하는 런타임 뷰어 → MODULE_REGISTRY
+   정적 introspect. json = build-time 산출물 → running mock 으로 충분.
+4. **"전체 import 가능" 은 우연이 아니라 아키텍처 전제.** Runtime(프로세스) 이 최소
+   단위고 모듈들은 한 인터프리터에 동거한다 (framework_dogfood_plan §15). 같은 host 에
+   배치되는 모듈들의 의존성 공존은 요구사항이며, 개발 머신은 "전 모듈을 배치하는
+   host"(mock) — pytest(전체 import) / mock 부팅도 같은 전제 위에 있다.
+   **모듈별 venv/Docker 는 이 아키텍처와 양립 불가** (그건 폐기된 "Node=최소단위" 회귀).
+
+## 3. 검토된 선택지 사다리 (우선순위 순)
+
+### 3.1 현행 유지 — 채택 (지금)
+
+전 모듈 로드된 mock/dev backend 에서 gen. incomplete-host guard 가 부분 host 실수를
+명확한 메시지로 차단. 개발 루프가 어차피 mock/pytest 로 전체 import 를 요구하므로
+gen 만의 추가 전제가 없다.
+
+### 3.2 모듈별 fragment 빌드 산출물 + merge — **미래 지정 경로**
+
+각 모듈(의존성이 있는 자기 환경에서)이 `contract.fragment.json` 을 빌드 산출물로
+남기고, gen 은 fragment 들을 수집·merge. **Runtime 불필요 + Zenoh 불필요 + 전체
+import 불필요** — 셋을 동시에 만족하는 유일한 선택지라 미래 경로 1순위.
+
+- fragment 내용은 클래스 객체가 아니라 **qualified 이름 문자열**
+  (`waypoint.TeachRequest`) 이면 충분 — merge 측이 contract.py 전체(import-light,
+  어디서든 가능)로 full catalog 를 만들고 이름으로 실 클래스를 해소. name-conflict
+  는 기존 `resolve_names` 그대로.
+- framework 수정 불필요 — `build_snapshot_from_classes` 가 per-class 리스트로 이미
+  동작 (2026-07-06 확인).
+- **버전 정합 가드 필수**: fragment 에 git hash (또는 schema version) 를 박고
+  불일치 merge 거부. 서로 다른 checkout 의 fragment 를 섞으면 조용히 깨진
+  contract.ts 가 나온다.
+
+### 3.3 Zenoh fleet 집계 (runtime 에 fragment 서비스) — 목적이 다른 도구
+
+각 Runtime 이 `contract_fragment` 서비스를 들고, gen 시점에 zenoh 로 전 peer 의
+fragment 를 모아 merge. 기술적으로 성립하고 (각 host 는 자기 모듈을 이미 import 중,
+fragment = 문자열) zenoh-native 라 우아하지만 — **빌드 도구가 "fleet 이 떠 있음"
+이라는 운영 상태에 의존하게 된다.** 이는 애초 문제(타입 생성이 실행 상태에 결합)의
+방향만 바꾼 재현.
+
+→ 판정: **"프론트 타입 생성" 용도로는 부적합. "현재 배포된 fleet 의 실 계약 조회"
+라는 별개 목적이 생기면 그때 자연스러운 설계.** 두 목적(build-time 타입 생성 vs
+runtime fleet 조회)을 한 메커니즘으로 묶지 말 것.
+
+- 부수 논점: "fleet 완전성 검사" 도 목적 따라 다르다 — 프론트가 안 쓰는 모듈이
+  꺼져 있다고 gen 이 실패할 이유는 없음. 완전성 기준은 fleet 전체가 아니라
+  FRONTEND_EXPOSED 커버리지.
+
+### 3.4 AST 파싱 — 최후 수단 (사실상 안 씀)
+
+import 없이 소스 텍스트에서 추출. 이 repo 는 **전 파일 `from __future__ import
+annotations`** → 모든 annotation 이 문자열이라 alias/forward-ref/typing 해석기를
+직접 만들어야 함 (`get_type_hints` 가 공짜로 해주는 것 전부). 유지보수 비용이
+Python 언어 기능을 따라가는 영구 부채.
+
+### 3.5 contract.py 에 바인딩 승격 (`SERVICE_PAYLOADS` 선언) — 기각
+
+한때 "정적 생성의 유일한 길" 로 검토됐으나, §2-2 사실(데코레이터 metadata 가 이미
+존재, import 만으로 읽힘)로 전제가 무너짐. 선언 중복 + 컨벤션 변경(10개 contract +
+framework 검증 + spec 문서) 비용만 있고 얻는 게 없다. **payload 정보를 얻는 방법이
+하나뿐이라는 잘못된 가정에서 나온 과잉 해결** — 문제는 "선언 위치" 가 아니라
+"추출을 어디서 하느냐" 였다.
+
+## 4. 재논의 트리거
+
+**"어떤 모듈의 의존성이 나머지와 한 venv 에 공존 불가" 가 실제로 발생하는 날.**
+
+그날은 gen 만이 아니라 pytest(전체 import)·mock 단일 프로세스 부팅이 같이 깨지므로
+대응은 한 묶음이다:
+
+1. 충돌 모듈을 별도 host/deployment 로 분리 (기존 메커니즘 — deployment yaml + role group)
+2. 개발 루프: mock 단일 프로세스 → multi-process sim (host_*_sim 방식) 으로 분할
+3. gen: §3.2 (fragment 빌드 산출물 + merge + git hash 가드) 채택
+
+그 전까지는 어떤 선제 구현도 하지 않는다 (1-peer 환경에서 분산 메커니즘의 가치가
+발휘될 상황 자체가 없음).
+
+## 5. 남긴 미해결 (재논의 시 진입점)
+
+- fragment 스키마 상세 (git hash 외 schema version 병기 여부)
+- 완전성 기준 — FRONTEND_EXPOSED 커버리지 vs fleet 전체 (§3.3 부수 논점)
+- "현재 fleet 계약 조회" 라는 별개 도구의 실수요 여부 (§3.3 을 그 목적으로 부활할지)
+- `/contract.json` 엔드포인트의 장기 위상 — gen 이 §3.2 로 이관되면 소비자가
+  사라짐 (제거 vs runtime 디버그 조회용 존치)
+
+
+---
+---
+
+<!-- ═══════════ [통합 원문] backend.md ═══════════ -->
+
+# Node Framework Dogfood Plan
+
+> 본 문서는 [dev_reference.md](dev_reference.md) 의 검토 phase 첫 큰 산출물.
+> **2026-06-25 update — §15 Runtime-centric reframe.** §14 까지의 plan 은 Node 가 최소 단위라는 잘못된 전제. 진짜 깨달음 = Runtime (Process) 이 최소 단위, Module = 기능 묶음. backend_v2/ 폴더 삭제, §15 위에 다시 짬.
+> 새 세션에서 "framework 진행하자" / "Runtime" / "Module" / "Transport adapter" 톤 던지면 본 문서 진입.
+> 결정된 것만 정리. 미정 항목은 §9.
+
+## 1. 배경
+
+검토 phase 진입 직후 사용자가 짚은 본질:
+
+> "레이어 분리는 잘 됐는데 사람 (나 또는 추후 개발자) 이 코드 이해/파악이 너무 어렵다"
+
+원인 분해 (사용자 + Claude + GPT 공동 reframing):
+
+1. **기능 추적 비용** — 한 wire 추가 시 `messages` → `topic_map` → `api_contract` → handler → repo → client → frontend store → component 까지 N 파일 횡단
+2. **반복 boilerplate** — schema + topic 등록 + contract 등재 + handler + client wrapper + frontend gen 패턴 매번 복붙. "작은 RPC 프레임워크를 손으로 쓰는 형태"
+3. **Storage Node 책임 침범** — 워크플로우 단계 (run finalize / result activate 등) 가 storage service 안에 들어와 있음. CRUD 인프라가 도메인 로직 흡수
+
+## 2. 3대 방향
+
+| # | 방향 | 채택 |
+|---|---|---|
+| 1 | 미니 framework (boilerplate 제거, FastAPI DX 미러) | ✅ |
+| 2 | system-docs 자동 생성 (노드별 service/topic/publish 한눈) | ✅ |
+| 3 | Storage = CRUD only, Workflow = 도메인 노드 | ✅ (경계는 case-by-case 합의 후 진입) |
+
+## 3. 설계 원칙 (다음 세션도 유지)
+
+1. **매직 스트링 금지** — `Service` / `Topic` enum SSOT 유지. 데코레이터 인자는 enum *referent*, 새 string SSOT 신규 X
+2. **데코레이터 = binding 메타** — 기존 SSOT (enum + Pydantic message) 들을 함수에 묶는 역할. 새 SSOT 만들지 X
+3. **목표 = "transport boilerplate 몰라도 domain 코드만 작성"** — *프레임워크 만들기* 가 아닌 DX 개선
+4. **`backend/framework/` 폴더** — frontend `framework/` 와 명명 일치 ([frontend/src/framework/index.ts](../frontend/src/framework/index.ts) 검증된 패턴)
+5. **두 audience 분리**:
+   - *운영 contract* = `PUBLIC_TOPICS / PUBLIC_SERVICES` 필터, frontend `contract.ts` 자동 emit (기존)
+   - *dev system-docs* = 전체 노출, frontend `/system-docs` page (신규)
+   - 같은 registry, 다른 exposure
+6. **DI container 안 도입** (2026-06-24 결정) — FastAPI `Depends` 의 call-time lookup 본질은 HTTP request lifecycle 에 묶인 패턴. 우리는 process-scoped service라 정당화 약함. testability 는 monkey-patch 패턴 (test_gamepad) 이미 정착. lazy singleton + 명시적 `__init__` 호출로 충분 — cargo cult 회피
+7. **production code 자리 dogfood 박지 말 것** (2026-06-24 결정) — test 만을 위한 메소드 / attribute 를 production class 에 박는 자체 noise. cross-process verification 안 되는 자리는 production 박을 정당화 없음. test 안 self-contained dummy class + raw string topic + dummy Pydantic 로 framework 자체만 검증
+8. **점진 적용 = 검토 위함** (2026-06-24 명확화) — 호환성 보장 X (개발 단계). 작은 commit + 검토 + 한 자리씩 변환. 변경 때문에 다른 노드 깨지면 `host_mock.yaml::application_nodes` 에서 잠시 빼놓고 진행, 끝나면 다 변환 + 다시 활성
+
+## 4. Framework API (현재까지 확정 — 2026-06-24)
+
+### 4.1 `@service` — RPC handler
+
+```python
+from framework import service
+from core.transport.messages.base import ServiceRequest, ServiceResponse
+
+class StorageNode(ApplicationNode):
+    @service(Service.STORAGE_LIST_CALIBRATIONS)
+    def list_calibrations(
+        self, req: ServiceRequest[ListCalibrationsReq]
+    ) -> ServiceResponse[ListCalibrationsRes]:
+        ...
+```
+
+- `key` = enum referent (`Service.X` 값)
+- `req_cls` / `res_cls` = type hint 에서 자동 추출 (FastAPI 패턴)
+- Pydantic v2 generic (`ServiceRequest[X]`) 은 `typing.get_args()` 가 빈 tuple 반환 → `__pydantic_generic_metadata__["args"]` fallback 박혀있음 ([framework/service.py](../backend/framework/service.py))
+
+### 4.2 `@subscriber` — Topic subscriber
+
+```python
+from framework import subscriber
+
+class FooNode(BaseNode):
+    @subscriber(Topic.STORAGE_CALIBRATION_INVALIDATED)
+    def on_invalidation(self, msg: CalibrationInvalidated) -> None:
+        ...
+```
+
+- `key` = enum referent
+- `msg_cls` = type hint 직접 (envelope X, service 와 다름)
+- `from __future__ import annotations` 환경에서 `get_type_hints(func)` 가 `func.__globals__` 만 보고 local scope 못 봄 → type hint 의 Pydantic class 는 module-level import 필요
+
+### 4.3 `@publishes` — Topic publisher (Phase B — 미구현)
+
+```python
+class MotorNode(BaseNode):
+    @publishes(Topic.MOTOR_STATE_JOINT)
+    def _publish_state(self, state: MotorJointState) -> None:
+        self.publish(Topic.MOTOR_STATE_JOINT, state)
+```
+
+**mechanism — mark only** (FastStream wrap 패턴 채택 X). 이유:
+- 우리 publish 패턴은 worker loop / event callback 안 `self.publish(...)` 호출 — 함수 return 자동 publish 패턴 안 맞음
+- mark only 면 함수 본문 자유 + registry 가 *이 함수가 Topic.X 발행한다* 만 인식
+- boilerplate 증가 = 데코 한 줄
+
+class-level (`__publishes__ = (Topic.X,)`) 옵션은 *어디서* 정보 손실 — 함수-level mark 채택.
+
+## 5. attach 가능한 객체 — class hierarchy 강제 X (2026-06-24 재결정)
+
+**§5 이전 버전의 BaseComponent 다이어그램 폐기.** 박을 때 잘못된 진단 박힘 — "JointStateCache 가 `__init__` 안 `ZenohSession.declare_subscriber` 직접 호출하면 invisible" — 현재 cache 코드는 그렇게 안 돼있음. cache 는 `node.create_subscriber` 위임, lifecycle 은 노드가 가짐. hypothetical scenario 자체로 lifecycle 계층 (BaseComponent) 끌어온 cargo cult.
+
+**진짜 문제** = `JointStateCache` 가 어떤 topic 듣는지 framework registry 에서 안 보임. 해결 = 메소드에 `@subscriber` 데코 박는 것만. base class 상속 강제 X.
+
+```
+framework helper (bind_decorated_subscribers / collect_*_specs_from_instance)
+        ↑                ↑                ↑
+        |                |                |
+    BaseNode         Handler           Cache
+    (start() 안 호출)  (node.attach_     (__init__ 안 호출)
+                      handler(self))
+```
+
+**원칙** — 데코 박은 메소드 = 계약 + 실행 엔트리포인트. 별도 mark (`__subscribes__ = (...)`) X — dual source of truth 위반.
+
+**framework 가 보고 dispatch 하는 객체 카테고리**:
+
+| 카테고리 | 예시 | attach 시점 |
+|---|---|---|
+| Node (BaseNode 상속) | CalibrationNode / MotionNode | `start()` 안 self bind |
+| Handler (composition member) | CalibrationHandlers / ScanWorkflowHandlers | 노드가 `attach_handler(self)` |
+| Cache (process singleton) | JointStateCache / FrameCache | `__init__` 안 self bind |
+
+class hierarchy 강제 X — 셋 다 동일 framework helper (`bind_decorated_subscribers(obj)`) 호출만 다름.
+
+**Bridge 는 scan 제외** — infrastructure layer (FastAPI middleware 등가). application contract 가 아닌 plumbing. system-docs viewer 에 안 박힘.
+
+**docs 두 레벨 분리 (2026-06-24, distributed 관점)**:
+
+- **레벨 1 — 객체 contract**: 단일 객체가 *스스로* 박는 정보. subscribes / publishes / services. `@subscriber` / `@publishes` / `@service` 데코로 객체 안에 박힘. PC 어디 떠 있든 무관 = local declaration.
+- **레벨 2 — 시스템 topology**: 여러 객체 contract 합쳐서 보임. "DetectorNode publish DETECTION_RESULT" → "Scene3DNode subscribes DETECTION_RESULT" 자리 연결. registry 전체 합치면 자동 생성.
+
+caller 관계 (누가 service 호출하나) 는 docs 목표에서 제외 — *분산 observability* 문제 자체 별개 layer (process-local 정보 X, `@calls` 박을 수 없음). `@publishes` 의 process_name / module 같은 metadata 자체 후속 검토 (Phase B 진입 시).
+
+## 6. 메타 질문 (2026-06-24 학습)
+
+"새 노드 / framework 변환 시 항상 던질 질문":
+
+1. **이 노드는 일반 노드인가, composite host 인가?** — composite host (예: StorageNode + CalibrationHandlers / ScanWorkflowHandlers) 면 sub-handler 패턴 + `attach_handler` 사용. 일반 노드면 `__init_subclass__` scan 만으로 충분.
+2. **이 wire 는 cross-process verification 가능한가?** — service 면 mock backend spawn + test peer call → 응답 받음으로 verify. subscriber callback / production attribute 는 backend process 안 → test peer 가 read 못 함. 안 되면 production 에 박지 말고 test 안 self-contained dummy class 로 framework 만 검증.
+3. **dogfood 가 test 만을 위한 production code 박는 경우인가?** — production class 에 dogfood 메소드 / attribute 박는 것 자체 noise. 메소드가 production 으로 실제로 사용되거나 (V2 service 같이 cross-process verification 경우) 아니면 박지 말 것.
+4. **FastAPI / Spring / FastStream / Faust / ROS 2 의 어떤 패턴을 차용하나?** — 우리 use case 정당화되는 부분만 차용. 겉모양 / 명명만 흉내 X (cargo cult 회피 메모리).
+5. **이 데코는 계약(선언)인가, 실행 흐름인가?** — `@service` / `@subscriber` 는 framework 가 *호출* 하는 자리 = 선언적 계약. `@publishes` 는 객체가 *호출* 하지만 클래스 scope 라 AST 로 데코 vs 실제 `self.publish` 일치 검증 가능 → 계약 OK. `@calls` 는 함수 scope + flow + wrapper + 조건부 → 검증 어려움, stale 위험 → 데코 X, runtime call graph 로 풀 것.
+6. **이 hypothetical 진단 박을 때 실제 코드 봤나?** — §5 BaseComponent 다이어그램 박을 때 "cache 가 `__init__` 안 declare_subscriber 직접 호출" 이라고 잘못 진단. 실제 코드는 `node.create_subscriber` 위임. 가상 시나리오로 framework 계층 끌어오는 것 자체 cargo cult. 진단 박기 전 코드 grep 필수.
+7. **이 정보는 process-local 인가, 시스템 layer 인가?** — distributed 환경에서 PC A 의 객체가 PC B 의 객체에 대해 *스스로* 박을 수 없는 정보는 객체 contract 가 아님 = 분산 observability layer. `@subscriber` / `@publishes` / `@service` = local declaration (객체 스스로 박힘) = contract OK. `@calls` / caller graph = 시스템 topology (누가 나를 호출하는지는 process 너머 정보) = docs 목표에서 제외.
+
+## 7. Phase 순서
+
+| Phase | 작업 | 산출물 | 상태 |
+|---|---|---|---|
+| 0 | Storage CRUD vs Workflow 경계 *합의* (코드 짚어서, 실제 이동 X) | 본 문서 §10 표 정밀화 | 미진행 — Phase 5 진입 전 자리 |
+| 1 | 1 wire dogfood — framework MVP + `STORAGE_LIST_CALIBRATIONS_V2` 변환 + cross-process test | 동작 + 6 dogfood test PASS | ✅ **완료** (2026-06-24) |
+| 2 | dogfood 평가 + 메타데이터 SSOT shape 확정 — `@service` / `@subscriber` 데코 + composite host (`attach_handler`) + production 미침범 | §3 / §5 / §6 결정 박힘 | ✅ **완료** (2026-06-24) |
+| **A** | **framework 확장 (signature codec / robot_id inject / wildcard expand / dedup) + cache 한 곳 변환 (JointStateCache)** | cache 가 `@subscriber` 박힌 일반 객체로 동작, registry visible | ✅ **완료** (2026-06-24) — framework/topic.py 확장 + framework/binding.py 신규 + base_node refactor + JointStateCache 변환 + 호출자 6곳 정리. dogfood 6 PASS / calibration_e2e 2 PASS / 전체 pytest PASS |
+| ~~B~~ | ~~`@publishes` 데코 + AST lint + 노드 publish 한 곳씩 변환~~ | ~~publish 도 contract SSOT~~ | **보류 — backend_v2 reframe (§14)** |
+| ~~C~~ | ~~system-docs viewer~~ | ~~"누가 발행 / 누가 듣는지" 시각화~~ | **보류 — backend_v2** |
+| ~~3~~ | ~~두 번째 wire (`MOTION_MOVE_L`) dogfood~~ | ~~robot-scoped placeholder + multi-dispatch 검증~~ | **보류 — backend_v2** |
+| ~~4~~ | ~~나머지 wire 일괄 마이그레이션~~ | ~~모든 service/topic `@service` / `@subscriber`~~ | **보류 — backend_v2 완성 후 backend/ discard** |
+| ~~5~~ | ~~Storage workflow service 들 도메인 노드로 재배치~~ | ~~Storage = 순수 CRUD~~ | **보류 — backend_v2 의 Component 분리 자체가 흡수** |
+
+**Phase A 세부 변경 (framework)**:
+1. robot-scoped key (`{robot_id}` placeholder) 감지 → wildcard subscribe (`horibot/*/...`) + sample.key_expr 에서 robot_id 추출
+2. callback signature codec 판단 — `msg: Pydantic` → validate, `payload: bytes` → skip
+3. callback signature inject — `(self, robot_id, msg)` / `(self, robot_id, payload: bytes)` / `(self, msg)` / `(self, payload)` (robot-scoped 여부 + codec 조합)
+4. instance 단위 bound dedup (cache singleton 자리 N 개 노드가 attach 호출해도 한 번만 bind)
+5. `bind_decorated_subscribers(obj)` 일반 helper — Node / Handler / Cache 모두 동일 호출 (BaseNode.start / node.attach_handler / cache.__init__ 안에서 각각)
+
+**Phase A 진입 후 JointStateCache 변환 결과**:
+
+```python
+class JointStateCache:
+    def __init__(self):
+        if self._initialized: return
+        self._initialized = True
+        ...
+        bind_decorated_subscribers(self)
+
+    @subscriber(Topic.MOTOR_STATE_JOINT)
+    def _on_motor_state(self, robot_id: str, msg: MotorJointState):
+        ...
+```
+
+호출자 노드의 `cache.subscribe(self, rid)` 패턴 폐기 — cache 가 자기 subscribe 책임.
+
+## 7.5 Reframe — backend_v2 실험실 (2026-06-24, §14 참조)
+
+Phase A 까지 박은 후 사용자가 더 근본 질문 던짐:
+
+1. **노드 자체 진짜 필요한가?** — framework 박힌 후 cache/handler 가 self-contained 객체로 동작. 노드는 *grouping convention* 일 뿐 — process / robot / component 가 진짜 unit. ROS mental model 의 유산.
+2. **여러 노드가 여러 번 구독 = 정상** — Zenoh pub/sub 본질. cache 의 motivation 은 *상태 공유* (ROS-think) 아니라 *boilerplate + 변환 wrapper* (JointState) 또는 *expensive transformation memoization* (Frame decode).
+3. **운영 X = 리라이트 cost 작음** — "이미 개발했음" 은 cost-based 근거 (메모리 위반). 진짜 합리적이면 처음부터 다시.
+4. **Contract First + Binder = 확정. Node 완전 삭제 + Handler/Cache/Worker/Adapter 4분류 = 가설** — 코드로 검증 필요.
+
+결정 = backend_v2/ 실험실 박음. §14 자체 plan.
+
+Phase B / C / 3 / 4 / 5 자체 자체 보류 — backend_v2 결과에 흡수. 단 Phase A 산출물 (framework 확장 + JointStateCache 변환) 자체 자체 backend/ 안에 박혀 있음 — 회귀 0, 운영 (개발 단계) 안 깨짐.
+
+## 8. 완료된 dogfood (Phase 1)
+
+**wire = `STORAGE_LIST_CALIBRATIONS_V2`** (read-only, host-level, 단순)
+- [topic_map.py:127](../backend/core/transport/topic_map.py#L127) — V2 enum 추가 (dogfood-only 임시 wire)
+- [handlers/calibration.py:144](../backend/nodes/application/storage/handlers/calibration.py#L144) — `@service(STORAGE_LIST_CALIBRATIONS_V2)` 메소드. `_srv_list` 위임 (구현 재사용)
+- [handlers/calibration.py:139](../backend/nodes/application/storage/handlers/calibration.py#L139) — `register()` 끝에 `node.attach_handler(self)` 한 줄로 sub-handler 의 `@service` 메소드 자동 발견 + bind
+
+**dogfood test 6 PASS** ([tests/test_framework_service_dogfood.py](../backend/tests/test_framework_service_dogfood.py))
+- `test_v2_same_response_as_v1` (same-process round-trip)
+- `test_v2_round_trip_via_mock_backend` (L3 — host_mock subprocess + 분리 zenoh peer cross-process)
+- `test_v2_spec_on_sub_handler` (composite host spec discovery)
+- `test_subscriber_spec_on_general_node` (BaseNode `__init_subclass__` scan)
+- `test_subscriber_spec_on_sub_handler` (`collect_subscriber_specs_from_instance`)
+- `test_subscriber_callback_round_trip` (in-process publish → callback 발동)
+
+subscriber test 자리 production 미참조 — `_DOGFOOD_TOPIC = "test/framework/dogfood"` raw string + `_DogfoodMsg(BaseModel)` test 안 dummy.
+
+**갈아치움 step (Phase 4 자리)** — `_srv_list` 의 본문을 `list_calibrations_v2` 로 흡수, `register()` 안 `Service.STORAGE_LIST_CALIBRATIONS` 등록 줄 제거, V2 enum 제거 → frontend / 다른 caller 안 건드림 (key 자체 유지).
+
+## 9. 미정 항목 (다음 세션 진입점)
+
+| # | 미정 | 결정 시점 |
+|---|---|---|
+| 1 | ~~`@service` 가 owner 노드를 어떻게 식별~~ | ✅ Phase 2 — `__init_subclass__` 자동 scan + composite host 자리 `attach_handler` |
+| 2 | robot_id scope 처리 — `BaseNode.r()` 위에 얹는지 / 데코레이터가 직접 관리 | Phase 3 (MOTION_MOVE_L) |
+| 3 | ApplicationNode `dict[robot_id]` multi-dispatch 와 데코레이터 결합 | Phase 3 |
+| 4 | Storage CRUD vs Workflow 경계 case-by-case 표 정밀화 | Phase 0 (Phase 5 진입 전) |
+| ~~5~~ | ~~Phase A 진입 — A1 / A2 갈래~~ | ✅ Phase 2 재검토 — BaseComponent 폐기, framework 확장 + cache 변환만 (§5 / §7 정리) |
+| 6 | callback signature inject 디테일 — robot-scoped 아닌 경우 robot_id 인자 자체 없애야 (signature 검사) / Pydantic vs bytes codec 판단 fail-fast | Phase A 구현 |
+| 7 | AST lint 구현 — `@publishes` 데코 자리 vs 실제 `self.publish(Topic.X)` 일치 검증 | Phase B |
+
+## 10. Storage 경계 case-by-case (Phase 0 입력)
+
+현재 코드 의심 후보 (Phase 0 에서 추적해 확정):
+
+| service | CRUD ✅ / Workflow ⚠️ | 비고 |
+|---|---|---|
+| `STORAGE_LIST_CALIBRATIONS` | ✅ | 단순 read |
+| `STORAGE_COMMIT_CALIBRATION` | ⚠️ | run finalize + result INSERT + activate 묶음 |
+| `STORAGE_ACTIVATE_CALIBRATION` | ⚠️ | 같은 (robot, kind) atomic toggle. 트랜잭션 + 도메인 로직 섞임 |
+| `STORAGE_NEW_SCAN_SESSION` | ✅ | session row INSERT |
+| `STORAGE_DELETE_SCAN_SESSION` | ✅ | CASCADE — 트랜잭션 무결성 |
+| `STORAGE_PUT_SCAN` | ✅ | scan_id allocate + blob put + row INSERT |
+| `STORAGE_PUT_RECONSTRUCTION` | ✅ | append-only blob + row |
+
+→ 경계 원칙 *잠정*:
+- **트랜잭션 (atomic 보장 필요)** → storage 안 OK
+- **도메인 결정 (어느 result 가 active / run status transition)** → 도메인 노드로 이동
+
+Phase 0 = 위 표 정밀화 + 원칙 fix.
+
+## 11. 검토 protocol 와의 관계
+
+본 작업은 [dev_reference.md](dev_reference.md) §산출물 의 첫 큰 docs 산출. protocol 제약 그대로 적용:
+- 단편 reflex X — FastAPI 그대로 복사 X, 우리 use case 에 맞게 수정
+- "cheap fix" / "한 줄이면 끝" 어휘 X
+- "개인 학습 프로젝트라서" / "N=2 라서" scope 핑계 X
+- 사용자 push 에 입장 뒤집기 X
+- md/docs 인용 X — 실제 코드 우선
+- 의도 떠넘기지 X
+- "자리" placeholder 의미 없이 박지 X (메모리 자리)
+- 짜기 전 hand-simulate + edge case 사전 질문 (memory)
+
+## 12. 다음 세션 시작점
+
+새 세션 진입 시:
+
+1. 본 문서 + [dev_reference.md](dev_reference.md) 동시 anchor.
+2. **§15 Runtime-centric reframe (2026-06-25)** 가 현재 결정 — Node 가 잘못된 전제, Runtime (Process) 이 최소 단위, Module = 기능 묶음.
+3. **backend_v2/ 폴더 폐기 (2026-06-25)** — Phase 1 MVP 산출물 (framework + 7 test PASS) 이 Node 잘못된 전제 위 코드. §15 reframe 위에 다시 짬.
+4. §14 = history (잘못된 전제 위 plan).
+5. Phase 1 / 2 / A (§14 의 backend/ 변환) — docs 에 완료 기록 있으나 사용자가 이후 discard. main branch 코드에 framework/ 없음 (참고만).
+6. 다음 step = Transport abstraction (§15.7).
+7. 새 코드 작성 전 §6 메타 질문 7 가지 던질 것.
+8. test 짤 때 production code 에 dogfood 넣지 말 것 — self-contained dummy class 로 framework 만 검증.
+
+사용자가 "Runtime" / "Module" / "Transport adapter" / "Contract layer" / "distribution is runtime concern" 톤 던지면 §15 진입. "backend_v2" / "Component 4분류" / "Node 삭제" 톤은 §15 reframe 안내 (§14 history). "BaseComponent" 톤은 §13.8 정정 안내.
+
+## 13. 결정 history (학습 anchor)
+
+본 plan 진행 중 잘못 짚었다가 사용자가 정정한 자리 — 다음 세션 같은 실수 회피:
+
+1. **handler 분리 패턴 자체 못 짚음** (대화 초기) — `StorageNode` 의 `CalibrationHandlers` / `ScanWorkflowHandlers` composition 자리 보자마자 "composite host?" 메타 질문 던졌어야. V2 메소드를 StorageNode 자체에 박은 자체 잘못. 정정 후 sub-handler `attach_handler` 패턴 박힘.
+2. **FastAPI DI cargo cult** — Depends + call-time lookup 패턴 우리에게 적합한지 따져봤다가, HTTP request lifecycle 자체에 묶인 패턴 자리 우리 process-scoped service 자리 정당화 약함 발견. monkey-patch + lazy singleton 패턴 유지.
+3. **production code 자리 dogfood 박음** — CalibrationNode + CalibrationHandlers 에 dogfood `@subscriber` 메소드 + attribute 박은 자체 잘못. test peer 가 backend process 안 attribute 못 read → test 가 결국 in-process dummy class 자리. production class 박힌 자리 unused 잔재. 정정 후 production 미참조 + test self-contained.
+4. **`STORAGE_CALIBRATION_INVALIDATED_V2` enum 추가도 잘못** — dogfood-only wire 인데 production code 자리 V2 enum publish 자체 없음. enum 자리 잔재. 정정 후 raw string topic 으로 갈아치움.
+5. **DI / Container 자리 너무 빨리 확장** — FastStream 패턴 차용 자리 사용자가 다시 짚은 자리 = "JointStateCache 같은 cache 가 framework registry visible 되어야 한다" 만. DI container 자리 사용자 의도 X. BaseComponent layer + `@subscriber` 자체 확장 자리만 정당화.
+6. **publish 도 framework registry 자리 visible 필요** — 처음 plan 자리 `@service` / `@subscriber` 만. publish 자리 누락. 사용자가 짚은 자리 = "어떤 노드가 publish 한다" docs 자리 안 보임 → `@publishes` 데코 추가 결정.
+7. **점진 적용 = 호환성 X, 검토만** (사용자 명확화) — 개발 단계라 한 곳 깔끔 변환. 다른 노드 깨지면 host_mock 에서 잠시 끄고 진행. *기존 패턴 호환 layer* 안 둠.
+8. **BaseComponent 추출 — hypothetical scenario 로 박은 cargo cult** (2026-06-24 두 번째 정정) — §5 다이어그램 박을 때 "cache 가 `__init__` 안 `ZenohSession.declare_subscriber` 직접 호출하면 invisible" 진단 박음. 실제 코드는 `node.create_subscriber` 위임 — cache 가 ZenohSession 직접 안 만짐. 가상 시나리오로 lifecycle 계층 끌어옴. 사용자 reframe — "원래 문제는 docs visibility 만, lifecycle 은 따로 문제" — 정답. 진단 박기 전 코드 grep 필수 메모리 박힘 (§6 메타 6).
+9. **`__subscribes__ = (...)` dual mark 추천 — dual source of truth 위반** (2026-06-24) — cache 변환 옵션으로 "class-level mark 한 줄" 박았는데 사용자 정정: 실행 로직 (`def subscribe(...)`) 과 계약 (`__subscribes__`) 분리되면 어긋날 수 있음. 정석 framework = 실행 엔트리포인트 = 계약 (FastAPI `@app.get` 등). 따라서 `@subscriber` 데코 박은 메소드 = 계약 + 실행 한 곳.
+10. **`@calls` 와 `@publishes` 같은 카테고리로 묶은 잘못** (2026-06-24) — `@calls` 폐기 한 후 같은 논리로 `@publishes` 도 폐기 박았는데 사용자 반박: "그러면 system-docs viewer 가 누가 publish 하는지 어떻게 박나?" runtime instrumentation 은 idle 노드 / 조건부 publish 못 박음. 차이 = 검증 가능성 — `@publishes` 는 클래스 scope 라 AST 로 데코 vs 실제 `self.publish(Topic.X)` 일치 검증 가능, `@calls` 는 함수 scope + flow + wrapper + 조건부 → 검증 어려움. 따라서 `@publishes` 유지 + AST lint.
+
+    **§10.5 distributed 관점 강화 (2026-06-24 후속)** — `@calls` 대안으로 "runtime caller graph 박자" 박았는데 사용자 반박: distributed 환경에서 `TaskNode (PC A) → MotionNode (PC B)` 호출 자리 MotionNode 프로세스는 호출자가 GroundedDetect 인지 PickTask 인지 모름. caller graph 자체 process-local 정보 X = *시스템 topology* 정보 = 분산 observability layer. 객체 contract 와 다른 layer. 따라서 runtime call graph 자체도 폐기 — *caller 관계는 docs 목표에서 제외*. `@service` / `@subscriber` / `@publishes` 는 객체가 스스로 박는 local declaration (PC 어디 떠 있든 무관) = 객체 contract layer. 두 layer 섞지 말 것.
+11. **cost-based 추천 (메모리 `feedback_no_cheap_argument` 위반)** (2026-06-24) — cache 변환 옵션 추천 시 "코드 변경 최소" / "framework 변경 zero" 근거로 박음. 사용자 정정: "적용 비용 기준 빼고 설계적으로만 보면 답 바뀜" — 메모리 박혀 있는데도 reflex 적으로 cost 박음. 정석 / 원칙 / 일관성으로 평가할 것.
+12. **자체 분석 안 박고 카탈로그 / 옵션 / "어때?" 패턴 반복** (2026-06-24) — 사용자 명시 지적: "너는 너가 생각 안 해? 왜 이렇게 분석 안 해?" 검토 phase 진행 중 거의 매 turn 옵션 나열 + 의견 물음 패턴. push 두려움 + 자체 틀림 회피 = 안전 자세. 검토 phase 의미 약화 — 자체 입장 박은 후 사용자가 평가해야 검토 의미 있음. 단 입장 박을 때 *근거* 박혀 있어야 (cost 같은 메모리 위반 근거 X).
+13. **Cache motivation 잘못 진단 (ROS-think reflex)** (2026-06-24) — JointStateCache 박을 때 "중앙 상태 저장소 자체 자체 모든 노드 공유" motivation 박힘. 사용자 reframe: Zenoh pub/sub 에서 *여러 노드가 여러 번 구독 정상*. cache 진짜 motivation = (a) boilerplate 줄임 + (b) 변환 wrapper. *상태 공유* 아님 (cache 도 process-local, distributed 면 PC 별 별개). singleton 자체 = cost saving 만, correctness 아님. FrameCache 는 다름 — *JPEG decode dedup* 진짜 가치 (단 현재 raw bytes 보유라 미실현).
+14. **노드 unique 책임 없음 — grouping convention** (2026-06-24) — "노드 왜 필요?" 질문에 처음 답 = deployment / identity / lifecycle / heartbeat / thread 호스트 — 현재 코드 정당화 답. 사용자 reframe: zero-base 면 process / robot / component (Handler/Cache/Worker/Adapter) 가 진짜 unit, 노드는 ROS mental model 유산 = grouping convention. framework 강제 X.
+15. **cost-based reflex 재발 — "이미 개발했음"** (2026-06-24) — Component 분리 박은 후 두 번째 답에서 "분산 + 이미 개발된 코드 + 노드 mental model 자연" 박음. 사용자 정정: "노드 패턴 많이 개발함 이런건 빼고 — 진짜 합리적이면 처음부터 다시 짤 거". cost-based 근거 (메모리 위반) 또 박힘. 정석 / 원칙으로 평가.
+16. **운영 X = 리라이트 cost 작음** (2026-06-24) — 사용자 명확화: 운영 단계 아님. 사용자 없음. 배포 안 함. 즉 "절대 갈아엎지 마라" 계열 조언 해당 X. framework cost << future maintenance cost 시점. 단 *바로 전체 삭제 X*, backend_v2 실험실 박은 후 판정.
+
+17. **Node = 잘못된 전제** (2026-06-25) — §14 까지의 plan 이 "Node 라는 실행 단위가 있다" 전제 위에 서 있음. 진짜 깨달음 = Runtime (Process) 이 최소 단위, Node 가 Runtime 책임을 자기 이름에 가졌던 abstraction. Module + Runtime 분리가 진짜 reframe. §15 참조.
+
+18. **"Local 호출처럼 보이게" 표현 잘못** (2026-06-25) — GPT 와 토론 중 framework 책임 표현이 "service 호출은 로컬 호출처럼 보이게" 였는데 사용자 정정: 핵심은 *통신 계약 (service / topic) 은 동일, transport (local memory / Zenoh) 만 바뀐다*. local memory path 도 transport 의 한 종류.
+
+19. **`.` vs `/` — key path 형태** (2026-06-25) — 표현이 `storage.commit` 같은 객체 메서드 호출이었는데 사용자 정정: 통신 계약 이름은 path (`/storage/commit`). 이미 v2 framework MVP 가 `/` 사용 — 변경 없음.
+
+20. **backend_v2/ 폴더 폐기** (2026-06-25) — 사용자가 폴더 삭제. 이유 = §14 의 Phase 1 산출물 (framework MVP + 7 test PASS) 이 Node 잘못된 전제 위에 서 있는 코드. §15 reframe 위에 다시 짬.
+
+**메타 학습** — *코드 보자마자 메타 질문 던질 것* + *짜기 전 hand-simulate + verification path 사전 검증* + *FastAPI / 다른 framework 차용 시 우리 use case 정당화 박을 것* (cargo cult 회피) + *진단 박기 전 실제 코드 grep* + *데코 박을 자리 — 계약(framework 호출) vs 실행 흐름(객체 호출) 판단 + 검증 가능성 판단* + *카탈로그 / 옵션만 던지지 말고 자체 입장 + 근거 박을 것* + *cost-based reflex 재발 주의 (메모리 박혀 있어도 두 번 박음)* + *Zenoh pub/sub 본질 = 여러 구독 OK, ROS-think (중앙 상태 model) reflex 차단*.
+
+## 14. backend_v2 — zero-base 실험실 (2026-06-24)
+
+### 14.1 동기
+
+§7.5 reframe — Phase A 까지 박은 후 발견:
+1. Contract First + Binder 모델 = 거의 확정 (`@service` / `@subscriber` / `@publishes` → ContractSpec → Binder)
+2. BaseNode = 계약 / 실행 / 배포 / lifecycle 결합. 분리 필요.
+3. 일반 객체 (BaseNode 비상속) 도 framework 가 attach 가능해야 — 이미 backend/ 에 capability 박힘.
+4. Transport (Zenoh) / Framework (Horibot) 분리 필요.
+
+→ 갈아엎을 만한 확신 박힘. 단 *Node 완전 삭제 + 4분류* 는 가설 — 코드로 검증.
+
+### 14.2 plan
+
+운영 단계 아님 (사용자 / 배포 / production 자체 없음). 리라이트 cost 작음.
+
+```
+1. backend/ 의 framework 변경 (Phase A 산출물) 그대로 유지 — 회귀 0
+2. backend_v2/ 새 폴더 zero-base 실험실 박음
+3. backend_v2 framework 자체 박음 (Contract First + Binder + Transport/Framework 분리)
+4. 첫 component 1개 박아서 검증
+5. 며칠 사용 후 4 질문 판정:
+   - 개발 더 빨라졌나?
+   - 테스트 쉬워졌나?
+   - 문서 생성 쉬워졌나?
+   - 새 컴포넌트 머리 덜 아픈가?
+6. YES 3-4개 면 → backend/ 의 도메인 logic (캘 BA / motion / task DSL / scan / detector / scene3d / reconstruction / storage 등) 다 backend_v2 의 component 로 옮겨심음
+7. backend_v2 가 backend/ 의 모든 기능 가지면 → backend/ discard
+```
+
+### 14.3 규칙 (실패한 리라이트 방지)
+
+많은 리라이트 실패 패턴:
+```
+v1 멈춤 → v2 시작 → 기능 부족 → 계속 추가 → 6개월 후 둘 다 망함
+```
+
+차단:
+- **규칙 1**: backend/ 자체 계속 개발 가능 (캘 / motion / scan 등). 단 framework 부분 (BaseNode / 노드 hierarchy) 자체 자체 자체 *추가 변경 X* — Phase A 까지가 끝.
+- **규칙 2**: backend_v2 자체 자체 *기능 개발 금지*. 오직 framework 검증. 첫 component 자체 자체 framework 가 진짜 동작하는지 검증용.
+- **규칙 3**: 실제 hardware 자체 자체 1 robot (omx_f_0) 만 붙여보기. 설계는 종이에선 다 좋아 보임 — 실제 붙여봐야 Worker / Handler 경계 자체 자체 검증.
+- **규칙 4**: backend/ 자체 자체 자체 자체 *코드 reference* 박을 수 있음 — 캘 BA / Ruckig / IRLS / ChArUco / step DSL 등은 자산. *재구성* 자체 자체 자체 — 그저 framework 모양 자체 다름.
+
+### 14.4 폴더 구조 (잠정)
+
+```
+backend_v2/
+  transport/
+    session.py          — ZenohSession (process singleton)
+  contract/
+    subscriber.py       — @subscriber + SubscriberSpec
+    service.py          — @service + ServiceSpec
+    publishes.py        — @publishes + PublishesSpec
+  binding/
+    bind.py             — bind_decorated(obj, session, robot_id, ...)
+  components/
+    joint_state_read.py — process-singleton Cache 자체 (read model)
+    dynamixel_adapter.py — hardware Adapter 자체
+    motion_worker.py     — running thread Worker 자체
+    calibration_handler.py — stateless Handler 자체
+  main.py               — orchestrator (host config → component list → instantiate + start)
+```
+
+### 14.5 Component 분류 (가설 — 코드로 검증)
+
+| 종류 | 책임 | lifecycle | state | robot scope |
+|---|---|---|---|---|
+| **Handler** | service handler 묶음 | 없음 (attach 시점만) | stateless | constructor 인자 |
+| **Cache (read model)** | state holder | self-bind in `__init__` | process singleton | 모든 robot (wildcard) |
+| **Worker** | thread / state machine | start/stop | 자체 보유 | constructor 인자 |
+| **Adapter** | hardware driver wrapper | start/stop | hardware resource | constructor 인자 |
+
+검증 포인트 — *실제 component 박을 때 경계 명확한가?* 예: `CalibrationWorker` 가 service 도 받고 state 도 들고 background 작업도 함 — Handler 인가 Worker 인가 애매. 이게 가설 시험.
+
+### 14.6 Architecture detail
+
+**4 Layer 분리**:
+```
+Application (Task DSL / Recipe / Step)
+       ↓
+Components (Handler / Cache / Worker / Adapter)
+       ↓
+Framework (Contract + Binding)
+       ↓
+Transport (ZenohSession + Pydantic schema + Key registry)
+```
+
+**Layer 별 책임**:
+
+| Layer | 책임 | 폴더 |
+|---|---|---|
+| Transport | wire + serialize | `transport/` |
+| Framework | 데코 + binding helper | `contract/` + `binding/` |
+| Component | 객체 책임 (4 종) | `components/` |
+| Application | 도메인 logic | `tasks/` + `recipes/` |
+
+**Framework contract (1급 계약 3개)**:
+- `@service(key)` — RPC handler
+- `@subscriber(key)` — topic sub (signature 기반 codec + robot_id inject)
+- `@publishes(key)` — mark only (docs + AST lint, 실제 publish 는 helper 호출)
+- `bind_decorated(obj, session, robot_id, ...)` — 일반 helper. Node / Handler / Cache / Worker / Adapter 다 동일 호출.
+
+**Identity model**:
+- process: `process_id` (host config)
+- robot: `robot_id` (constructor 인자)
+- component: `cls.__name__` + optional `robot_id`
+- BaseNode 같은 class hierarchy identity 없음 — 그저 plain class.
+
+**Process orchestration**:
+- `main.py` 가 host config 읽음
+- host config = `process_id` + `transport` + `components` list (cls / robots)
+- main 이 import → instantiate → start. lifecycle = component 단위.
+
+**Heartbeat**:
+- `ProcessHeartbeat` Worker (process-level 하나)
+- payload: `process_id` + active component list (cls / robot_id)
+- 노드별 heartbeat 폐기. visibility 는 component list 로 충분.
+
+**Publish API**:
+- `from framework import publish` — `publish(key, msg)` stateless helper
+- BaseModel / bytes / dict 자동 codec 판단
+- `@publishes` 데코 = 마킹만 (docs / lint)
+- AST lint 가 데코 vs 실제 `publish(Topic.X, ...)` 호출 일치 검증 → stale 차단
+
+**Data flow (subscribe)**:
+```
+Publisher → Zenoh router → bind_decorated callback
+  → key_expr 에서 robot_id 추출 (template parse)
+  → payload codec (Pydantic.model_validate_json / bytes)
+  → component method 호출 (robot_id inject 여부는 signature 기반)
+```
+
+**Data flow (service)**:
+```
+call_service → Zenoh queryable → bind_decorated handler
+  → req: ServiceRequest[X] model_validate_json
+  → component method
+  → res: ServiceResponse[Y] model_dump_json reply
+```
+
+**Data flow (publish)**:
+```
+component method → framework.publish(key, msg)
+  → ZenohSession.put(key, encoded)
+```
+
+**핵심 결정**:
+- **BaseNode 폐기**. 모든 객체 plain class. framework 가 wire.
+- **Component 4분류 = 책임 분리 가설** — 가설 검증 위해 4 종 다 박아봄.
+- **`@publishes` = mark only** — 실제 publish 는 `framework.publish()` helper.
+- **Identity = process_id + robot_id** 두 축. component 식별 = cls name + optional robot.
+- **Heartbeat = process 1개** — active components list 박음. node-level 자체 폐기.
+
+### 14.7 폐기될 backend/ 의 framework 자산
+
+backend_v2 자체 자체 완성 박힌 후 폐기:
+- `core/transport/base_node.py` 자체 `BaseNode` / `start()` / `attach_handler` / `r()` 자체
+- `core/transport/application_node.py` / `device_node.py` — 2-layer 분류 자체 자체 (`isinstance(cls, DeviceNode)` 자체 자체 main.py 검증)
+- `core/transport/node_registry.py` — lazy-import factory
+- `core/cache/joint_state_cache.py` (Phase A 변환된 모양 — backend_v2 자체 자체 자체 재구성)
+- `core/cache/frame_cache.py` (Phase A 미적용 — backend_v2 자체 자체 자체 재구성)
+- `framework/` 폴더 자체 자체 — backend_v2/contract / backend_v2/binding 자체 재구성
+
+옮겨심을 도메인 logic (재배치, 폐기 X):
+- 캘 BA / IRLS / Huber / observability / strategy / ChArUco / capture_quality
+- Motion command / TrajectoryRunner / Ruckig / Jog 적분 SE(3) / IK
+- Task DSL / Step / Slot / TaskRunner / Recipe / 정규 task (pick_and_place / scan)
+- Detector / YOLO / Grounding DINO / search_and_detect
+- Scene3D / depth_frame / consensus / pointcloud streaming
+- Reconstruction / ICP / PoseGraph / TSDF / mesh extract
+- Storage 자체 (RDB / ObjectStore Protocol / Alembic migration / 캘 5종 / scan workflow)
+- Bridge (WebSocket + MJPEG + binary framing)
+- Kinematics (Pybullet + SagCorrected + link_offset patch)
+- Coordinates (Joint / Link / Sag)
+- Gamepad / 8BitDo mapper
+- Robot Registry (robots.yaml + RobotConfig + factory)
+
+### 14.8 검증 후 시나리오
+
+**Case A — backend_v2 좋음 (예상)**:
+- 도메인 logic 다 backend_v2 component 로 옮겨심음 (1-2달 자체)
+- backend/ discard
+
+**Case B — backend_v2 별로 (백업)**:
+- backend_v2 폐기
+- backend/ 그대로 + framework 부분 강화 (Phase B/C 자체 자체 backend/ 안 자체 자체)
+
+### 14.9 폐기 alert (2026-06-25)
+
+§14 전체 plan 이 **잘못된 전제** 위에 서 있음 — Node 가 최소 단위 가정. 진짜 깨달음 = **Runtime (Process) 이 최소 단위, Module = 기능 묶음** (§15 참조). backend_v2/ 폴더 (Phase 1 MVP 산출물 + 7 test PASS) 를 사용자가 삭제 (2026-06-25). §15 reframe 위에 다시 짬.
+
+§14.5 의 4분류 가설 (Handler / Cache / Worker / Adapter) 은 §15 에서 *Module 의 유형 힌트* 로 위치 변경 — framework 는 종류 모름 (duck typing).
+
+§14.6 의 Architecture detail (BaseNode 폐기 / Component 4분류 / Heartbeat 1개 등) 은 §15 의 Contract / Runtime / Transport 3 layer 안 흡수되거나 재배치.
+
+## 15. Runtime-centric Reframe (2026-06-25)
+
+### 15.1 잘못된 전제 발견
+
+§14 까지의 plan 의 전제 = "Node 라는 실행 단위가 있고, BaseNode 가 그 실행 단위의 공통 기능을 제공해야 한다". 이 전제 위에서 자연스럽게:
+
+- BaseNode 가 bind 관리
+- BaseNode 가 decorator 수집
+- BaseNode 가 lifecycle 관리
+- Node 가 서비스/토픽 제공자
+- Node 를 없애면 싱글톤은? 실행 단위는?
+
+모두 *Node 가 근본 개념* 가정 위에 서 있는 질문.
+
+진짜 물어야 할 질문 = **"이 시스템에서 배포/실행의 최소 단위가 무엇인가?"**
+
+답 = **Process / Runtime / Deployment Unit**. Node 가 *Runtime 의 책임을 자기 이름에 가졌던 잘못된 abstraction*. Module 과 Runtime 이 한 클래스에 묶여 있었음.
+
+### 15.2 새 사고
+
+```
+Runtime (Process)
+ |
+ +-- Module (Service Provider)
+ |
+ +-- Module (Service Provider)
+ |
+ +-- Module (Subscriber)
+```
+
+- **Module** = 기능 묶음. `@service` / `@subscriber` / `@publishes` 가진 함수 보유. plain class.
+- **Runtime** = 실행 컨테이너. lifecycle / transport 연결 / registry / DI / shutdown / thread 관리.
+
+"Node 삭제" 의 진짜 의미 = **기능 제공자 (Module) 와 실행 컨테이너 (Runtime) 분리**.
+
+### 15.3 Framework 핵심 책임
+
+**"같은 코드가 어디 배치되든 그대로 동작하게 만들기"**
+
+개발자가 절대 신경 쓰지 않아야 함:
+
+- 같은 process 냐?
+- 다른 process 냐?
+- 다른 장비냐?
+- Zenoh 쓰냐?
+
+모두 framework 내부 결정. 한 줄 요약: **"distribution is not a code concern, it is a runtime concern"**.
+
+### 15.4 Contract / Runtime / Transport 분리
+
+```
+Contract (계약 — @service / @subscriber / @publishes)
+    ↓
+Runtime (Module 등록 + lifecycle + Transport 선택)
+    ↓
+Transport (계약을 만족시키는 매체)
+    ├── Local memory (같은 process)
+    └── Zenoh (다른 process / 다른 장비)
+```
+
+핵심:
+
+- **Service / Topic = 통신 추상화 계약**, key 는 path 형태 (`/storage/commit`, `/camera/frame`)
+- **Zenoh = 그 계약을 만족시키는 외부 transport**
+- **Local memory path 도 transport 의 한 종류** — 같은 process 의 provider 는 direct dispatch (serialize 없음)
+- 어느 transport 쓸지 = **Runtime 의 결정** (provider 위치 resolver)
+
+### 15.5 4분류 (Handler / Cache / Worker / Adapter) 의 위치
+
+§14.5 의 4분류 가설은 **Module 의 유형 힌트** 로 위치 이동. framework 자체는 Module 종류 모름 (duck typing) — Lifecycle protocol (`start()` / `stop()`) 만 호출. 4분류는 *사용자 mental model* + *system-docs viewer 의 분류* 도구.
+
+### 15.6 v2 framework MVP 의 현재 상태
+
+| Layer | 상태 |
+|---|---|
+| Contract (`@service` / `@subscriber` / `@publishes`) | ✅ 구현됨 (backend_v2/ 박혔던 것, 폴더 삭제) |
+| Module direct wire 등록 (`bind_decorated`) | ✅ 구현됨 |
+| **Transport abstraction** (local vs Zenoh) | ❌ Zenoh hardcoded |
+| **Runtime resolver** (provider 위치) | ❌ |
+| **Lifecycle protocol** (start/stop) | ❌ |
+| **DI / config** | ❌ |
+
+진짜 reframe 핵심 — `bind_decorated` 가 지금 Zenoh 직접 호출. 같은 process call 도 Zenoh 통과 = wire serialize/deserialize. 이게 *distribution is runtime concern* 원칙 위반.
+
+backend_v2/ 폴더 (2026-06-25 사용자 삭제) — 위 ✅ 두 layer 가 §15 reframe 위에 다시 짜짐 (모양은 거의 동일, transport 만 추상화).
+
+### 15.7 다음 step
+
+step 후보:
+
+1. **Transport interface** — `class Transport(Protocol)`:
+   - `call(key, req) → res`
+   - `publish(key, msg)`
+   - `subscribe(key, cb)`
+   - `register_service(key, handler)`
+2. **ZenohTransport** — 기존 v2 binding 의 동작 wrapping
+3. **LocalTransport** — process-local registry (key → handler dict), direct dispatch, serialize 없음
+4. **bind_decorated** → Transport 호출 (Zenoh 직접 X)
+5. **Runtime** — config 받은 후 Module instantiate + transport 선택 (provider 위치 resolver)
+6. test — 같은 7 case 가 ZenohTransport + LocalTransport 둘 다 PASS
+
+진짜 첫 step = Transport abstraction. 그 위에 Runtime / Lifecycle / DI 쌓는다.
+
+### 15.8 motion 영역에서 검증된 마찰점
+
+§14 reframe 이후 backend/ motion_node 의 design decision 8 개를 problem statement 관점에서 추출 (2026-06-25). v2 의 Module + Runtime 분리 모델이 그 마찰을 어떻게 푸는지 검증:
+
+1. **같은 도메인 4 entrypoint (Move/Servo/Jog/Task) × N 비즈니스 함수 = N×4 wrapper boilerplate** — backend/ 의 `_make_jog_j_topic_subscriber` / `_make_jog_j_service_handler` 등 8+ wrapper factory.
+   → v2 풀이 = 한 method 에 데코 여러 개 (`@service + @subscriber`). signature 는 비즈니스 데이터만 (envelope X, error 는 raise). framework 가 entrypoint shape 변환. wrapper 8+ → 0 줄.
+
+2. **Callback 순서 보장 X** — MOTOR_STATE_JOINT 를 JointStateCache + `_on_motor_state_publish_tcp` 둘 다 subscribe, 순서 보장 안 됨 → motion_node 가 cache 무시하고 직접 raw parse.
+   → v2 풀이 = derived read model Module (`TcpStateRead` — JointState 받음 → FK → MotionTcpState publish). motion command handler 와 분리.
+
+3. **한 클래스에 두 책임** — MotionNode = motion command handler + derived state publisher.
+   → v2 풀이 = Module 분리.
+
+4. **Service envelope vs topic raw 두 unwrap** — `req: ServiceRequest[JogJReq]` 와 `req: JogJReq` 두 signature.
+   → v2 풀이 = framework 가 envelope 흡수. handler signature 는 둘 다 raw 비즈니스.
+
+5. **JointStateCache.subscribe(node, robot_id) 패턴** — singleton 인데 어느 robot 받을지 모름.
+   → v2 풀이 = 이미 해결 (wildcard subscribe + robot_id callback inject).
+
+6. **self.r(template) 매 호출 명시** — service 등록 8 줄 + topic 등록 2 줄 + publish 3 줄 전부 명시.
+   → v2 풀이 = framework 자동 (이미 부분 해결).
+
+7. **100Hz publish boilerplate** — `self.publish(self.r(Topic.X), MotorCmd(...))`.
+   → v2 풀이 = stateless `publish(Topic.X, msg, robot_id=...)` (이미 해결).
+
+8. **Cross-process calibration apply** — start() 안 storage fetch + 자기 process 객체 mutate.
+   → v2 풀이 = Module lifecycle hook `start()` 그대로 OR `CalibrationApplier` Module.
+
+가장 큰 검증 — **MotionNode 가 한 일 = framework + Module 사이에 끼어있던 wrapper layer**. framework 가 두꺼워지고 Module 이 직접 wire 등록하면 Node 자체가 할 일 없음. §14 의 "Node 삭제" 결론을 코드로 재확인 → §15 Runtime-centric reframe 도달.
+
+### 15.9 새 anchor
+
+새 세션 진입 시:
+
+1. 본 §15 anchor
+2. §14 = history (잘못된 전제 위 plan — 폐기)
+3. §13 결정 history 17~20 — Node 잘못된 전제 / "Local 호출처럼" 표현 잘못 / `.` vs `/` / backend_v2/ 폐기
+4. backend_v2/ 폴더 없음 — 새로 시작
+
+사용자가 "Runtime" / "Module" / "Transport adapter" / "Contract layer" / "distribution is runtime concern" 톤 던지면 §15 진입. "backend_v2" / "Component 4분류" / "Node 삭제" 톤은 §15 reframe 안내 (§14 history).
+
+default plan = Case A. Case B 는 만약 4 질문 결과 NO 가 많을 때 backup.

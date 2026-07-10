@@ -1,4 +1,4 @@
-// frontend_v2.md §12 L4 — MovePage e2e (mock backend + vite dev + chromium headed).
+// frontend.md §12 L4 — MovePage e2e (mock backend + vite dev + chromium headed).
 //
 // 검증 invariant:
 //   1. WS 연결 — connected badge green
@@ -14,8 +14,8 @@
 // hold 는 headless/headed 모두 pointercancel 없이 정상 — 입력 도구 문제가 아님.
 //
 // 외부 의존 (실행 전 띄움):
-//   - mock backend (port 8000): cd backend_v2 && uv run --no-sync python -m apps.main --host mock
-//   - frontend vite (port 5174): cd frontend_v2 && pnpm dev
+//   - mock backend (port 8000): cd backend && uv run --no-sync python -m apps.main --host mock
+//   - frontend vite (port 5173): cd frontend && pnpm dev
 
 import { expect, test } from "@playwright/test";
 

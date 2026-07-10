@@ -3,7 +3,7 @@
  *
  * 패널이 router 의존(useParams)을 여기서 흡수하고, 내부 control (JogJControl /
  * JogTcpControl) 에는 robotId 를 props 로만 내림 → control 은 순수·테스트 용이
- * (frontend_v2.md §2.3, panel = extension unit).
+ * (frontend.md §2.3, panel = extension unit).
  *
  * 새 motion control 추가 = TabsTrigger + TabsContent 한 줄 (Move* 계층은 backend
  * MoveJ 외 미구현 = Step E+).

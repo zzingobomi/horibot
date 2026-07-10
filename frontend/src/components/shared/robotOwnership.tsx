@@ -67,7 +67,7 @@ export interface RobotOwnershipOptions {
    * registry PANEL_COMPONENTS key. 이 HOC 는 모든 robot-owned 인스턴스의
    * mount/robotId/capability 를 아는 chokepoint 라, 여기서 panelInstanceStore 에
    * 등록 → Canvas 의 ScenePartHost 가 scene 컴포넌트를 인스턴스별 마운트
-   * ([docs/scene_contribution_architecture.md]).
+   * ([docs/frontend.md]).
    */
   panelKind?: string;
 }
@@ -140,7 +140,7 @@ export function withRobotOwnership(
  * robot-scoped 패널의 탭 — 제목 + robot 셀렉터 + 닫기.
  * robot 이 하나뿐이면 셀렉터를 숨긴다(선택지 하나짜리 picker = 노이즈, §6).
  * 닫기는 auto-hide 헤더의 `+ 패널 추가` 와 세트라 활성
- * ([docs/workspace_autohide_header.md] §2.3 — 닫아도 다시 추가 가능해야 실수 복구).
+ * ([docs/frontend.md] §2.3 — 닫아도 다시 추가 가능해야 실수 복구).
  */
 export function RobotTab(props: IDockviewPanelHeaderProps) {
   const { robots } = useRobots();

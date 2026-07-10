@@ -1,6 +1,6 @@
 """Scene3D domain — public contract surface.
 
-RGBD **primitive** (backend_v2 scene3d 분리 원칙): 라이브 pointcloud stream +
+RGBD **primitive** (backend scene3d 분리 원칙): 라이브 pointcloud stream +
 N-frame consensus snapshot 만. scan/mesh/session/storage 는 scan 모듈 책임.
 
 옛 backend/nodes/application/scene3d_node.py 의 primitive 부분만 이월 —
@@ -16,8 +16,8 @@ from pydantic import BaseModel
 
 class Scene3d:
     class Service(StrEnum):
-        # robot-agnostic (host 당 1, backend_v2.md §2.7) — 대상 robot 은
-        # req.robot_id (다른 식별자 없음, backend_v2.md §2.7.1).
+        # robot-agnostic (host 당 1, backend.md §2.7) — 대상 robot 은
+        # req.robot_id (다른 식별자 없음, backend.md §2.7.1).
         SET_STREAM = "srv/scene3d/set_stream"  # 라이브 PC on/off + voxel
         SNAPSHOT = "srv/scene3d/snapshot"  # N-frame consensus RGBD
 

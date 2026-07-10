@@ -1,5 +1,5 @@
 /**
- * JogJControl — joint-space velocity jog (frontend_v2.md §3.3 + motion_taxonomy.md §Jog).
+ * JogJControl — joint-space velocity jog (frontend.md §3.3 + motion.md §Jog).
  *
  * MotionPanel 안에서만 쓰는 control (구현 세부). robotId 는 props 로 받음 (순수 —
  * router 의존은 상위 패널에서 끝). 단위테스트가 이 계약에 의존.

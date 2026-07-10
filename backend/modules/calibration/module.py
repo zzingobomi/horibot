@@ -1,7 +1,7 @@
 """CalibrationModule — robot-agnostic Domain Module (5 종 산출물 owner).
 
-boundary spec = [docs/calibration_module_boundary.md]. **robot-agnostic** — host 당
-1 인스턴스 (backend_v2.md §2.7). 서비스
+boundary spec = [docs/calibration.md]. **robot-agnostic** — host 당
+1 인스턴스 (backend.md §2.7). 서비스
 키에 {robot_id} 없음; 대상 robot 은 req.robot_id 또는 run_id/result_id 의 DB row 에서
 파생. runtime state 는 전부 robot_id 키 dict, robot config(모터 id 등)는 resolve 가
 주입한 robots 투영으로 요청 시점 조회 (모듈이 복사·재보유 X). PC 배치.
@@ -52,6 +52,8 @@ from .contract import (
     CalibrationPreview,
     CaptureQualityPayload,
     CaptureRequest,
+    AbortRunRequest,
+    AbortRunResponse,
     CaptureResponse,
     FinalizeRunRequest,
     FinalizeRunResponse,
@@ -215,9 +217,42 @@ class CalibrationModule:
     # ── commands (write) ──────────────────────────────────────
     @service(Calibration.Service.START_RUN)
     def start_run(self, req: StartRunRequest) -> StartRunResponse:
+        # 도메인 규칙: robot 당 활성 캡처 세션 1개 — preview 판정이
+        # get_in_progress_run 으로 세션을 찾으므로 stale run 이 남으면 오판.
+        # 새 시작 = 이전 미완 세션 폐기 (browser reload 로 UI 가 runId 를 잃어도
+        # orphan run 이 영구 in_progress 로 쌓이지 않음).
+        for kind in ("intrinsic", "hand_eye"):
+            stale = self._repo.get_in_progress_run(req.robot_id, kind)
+            while stale is not None and stale.id is not None:
+                self._repo.finalize_run(stale.id, "failed")
+                logger.info(
+                    "stale in_progress run 자동 abort: robot=%s run=%d (%s)",
+                    req.robot_id,
+                    stale.id,
+                    kind,
+                )
+                stale = self._repo.get_in_progress_run(req.robot_id, kind)
         run = self._repo.create_run(req.robot_id, req.kind, req.algorithm)
         assert run.id is not None
         return StartRunResponse(run_id=run.id)
+
+    @service(Calibration.Service.ABORT_RUN)
+    def abort_run(self, req: AbortRunRequest) -> AbortRunResponse:
+        """세션 중도 포기 — run status → failed. 캡처 row 는 보존 (append-only).
+
+        finalize 와 별개 경로: intrinsic finalize 는 캡처 부족 시 run 을 살려두는데
+        (ok=False, 더 캡처 유도), 사용자가 그 상태에서 그냥 나가고 싶을 때의
+        탈출구가 이 서비스 (0장 세션에서 종료 거부 + undo 비활성으로 갇히던 결함).
+        """
+        run = self._repo.get_run(req.run_id)
+        if run is None:
+            raise KeyError(f"run {req.run_id} 없음")
+        if run.status != "in_progress":
+            return AbortRunResponse(
+                ok=False, message=f"run {req.run_id} 은 이미 {run.status}"
+            )
+        self._repo.finalize_run(req.run_id, "failed")
+        return AbortRunResponse(ok=True)
 
     @service(Calibration.Service.CAPTURE)
     def capture(self, req: CaptureRequest) -> CaptureResponse:
@@ -633,6 +668,7 @@ class CalibrationModule:
                 corners_2d=corners_2d,
                 image_width=img_w,
                 image_height=img_h,
+                board_in_cam=det.board_in_cam if det is not None else None,
             ),
         )
         self._preview_seq[robot_id] = seq + 1

@@ -1,4 +1,4 @@
-// frontend_v2.md §12.2 useCapability — 2 invariant.
+// frontend.md §12.2 useCapability — 2 invariant.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
@@ -49,7 +49,7 @@ function waitOpen(): Promise<void> {
 }
 
 describe("useCapability", () => {
-  // spec frontend_v2.md §12.2 — invariant: mount → 1회 service call
+  // spec frontend.md §12.2 — invariant: mount → 1회 service call
   it("boot 1회 fetch — mount 시 service call 1회만", async () => {
     let callCount = 0;
     server.on("connection", (socket) => {
@@ -77,7 +77,7 @@ describe("useCapability", () => {
     expect(result.current.value).toEqual({ flags: ["torque_toggle", "reboot"] });
   });
 
-  // spec frontend_v2.md §12.2 — invariant: re-mount 시 fetch 안 함 (cache hit)
+  // spec frontend.md §12.2 — invariant: re-mount 시 fetch 안 함 (cache hit)
   it("module-cache — 두 hook 박혀도 fetch 1회만 호출 (re-mount cache hit)", async () => {
     let callCount = 0;
     server.on("connection", (socket) => {

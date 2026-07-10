@@ -1,5 +1,5 @@
 /**
- * R3F Canvas — 씬의 조립 지점 (소유권 모델, [docs/scene_contribution_architecture.md]).
+ * R3F Canvas — 씬의 조립 지점 (소유권 모델, [docs/frontend.md]).
  *
  * - Core chrome  : 조명/grid/BASE 축/OrbitControls — 씬 그 자체.
  * - Scene object : 세계에 있는 것들 — Robot / Camera / ScanMesh. 각 객체가 자기

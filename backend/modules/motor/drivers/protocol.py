@@ -1,6 +1,6 @@
 """MotorBackend Protocol — Motor 도메인의 hardware adapter 계약.
 
-backend_v2.md §16.4 (driver Protocol) + §16.5 (driver self-declare)
+backend.md §16.4 (driver Protocol) + §16.5 (driver self-declare)
 정합. Module SDK internal — 외부 import 박지 X (TS gen / catalog viewer
 read 대상 X, §8.2).
 """

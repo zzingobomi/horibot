@@ -135,7 +135,7 @@ describe("withRobotOwnership — capability gating", () => {
 });
 
 // scenePart 배선 — HOC 가 chokepoint 로 panelInstanceStore 에 인스턴스 등록.
-// ([docs/scene_contribution_architecture.md] — Canvas 의 ScenePartHost 가 소비)
+// ([docs/frontend.md] — Canvas 의 ScenePartHost 가 소비)
 describe("withRobotOwnership — 인스턴스 등록 (scenePart)", () => {
   beforeEach(() => {
     usePanelInstanceStore.setState({ instances: {} });

@@ -1,5 +1,5 @@
 /**
- * Cameras — 카메라 씬 객체 (월드 소유, [docs/scene_contribution_architecture.md]).
+ * Cameras — 카메라 씬 객체 (월드 소유, [docs/frontend.md]).
  *
  * rgbd capability robot 마다 카메라 1대 파생 (robots.yaml SSOT). CameraItem 이
  * 카메라 pose(tcp corrected FK · hand_eye)를 **한 번** 계산하고, 카메라에 딸린
@@ -24,7 +24,12 @@ import type { CalibrationBundle, RobotInfo } from "@/api/generated/contract";
 import { useMirror, useStream } from "@/framework";
 import { useCameraStore } from "@/stores/cameraStore";
 import { useScanStore } from "@/stores/scanStore";
-import { cameraInBase, frustumSegmentPositions } from "./cameraPose";
+import {
+  cameraInBase,
+  DEFAULT_FOV,
+  fovFromIntrinsic,
+  frustumSegmentPositions,
+} from "./cameraPose";
 import { Frame } from "../shared/primitives";
 import { RobotFrame } from "../shared/RobotFrame";
 import { VizColor } from "../theme/visualizationColors";
@@ -36,8 +41,11 @@ const FRUSTUM_COLOR = VizColor.SENSOR;
 export function Cameras({ robots }: SceneObjectProps) {
   return (
     <>
+      {/* 카메라 유무 = has_camera (robots.yaml SSOT) — rgbd 로 거르면 USB 웹캠
+          robot(omx)의 카메라가 씬에서 통째로 사라짐 (hand_eye 캘 대상인데도).
+          rgbd 는 depth 산출물(live cloud)에만 요구. */}
       {robots
-        .filter((r) => r.capabilities?.includes("rgbd"))
+        .filter((r) => r.has_camera)
         .map((r) => (
           <CameraItem key={r.id} robot={r} />
         ))}
@@ -47,8 +55,10 @@ export function Cameras({ robots }: SceneObjectProps) {
 
 /** 카메라 1대 — pose 1회 계산 + frustum/cloud 자식 렌더. */
 function CameraItem({ robot }: { robot: RobotInfo }) {
-  const showFrustum = useCameraStore((s) => s.showFrustum);
-  const liveEnabled = useScanStore((s) => s.liveEnabled);
+  // per-robot 토글 — 패널의 [시야]/[live] 는 자기 robot 카메라만 켠다.
+  const showFrustum = useCameraStore((s) => !!s.frustum[robot.id]);
+  const rgbd = robot.capabilities?.includes("rgbd") ?? false;
+  const liveEnabled = useScanStore((s) => !!s.liveEnabled[robot.id]) && rgbd;
 
   const tcp = useStream(Topic.MOTION_TCP_STATE, { robotId: robot.id });
   // hand_eye — Mirror (snapshot + CALIBRATION_ACTIVATED invalidate+refetch).
@@ -69,14 +79,21 @@ function CameraItem({ robot }: { robot: RobotInfo }) {
     );
   }, [tcp.value, bundle.value]);
 
+  // frustum FOV — active intrinsic 이 있으면 실측 시야각, 없으면 D405 스펙 상수.
+  const fov = useMemo(
+    () =>
+      fovFromIntrinsic(bundle.value as CalibrationBundle | null) ?? DEFAULT_FOV,
+    [bundle.value],
+  );
+
   const frustumGeom = useMemo(() => {
     const g = new THREE.BufferGeometry();
     g.setAttribute(
       "position",
-      new THREE.BufferAttribute(frustumSegmentPositions(), 3),
+      new THREE.BufferAttribute(frustumSegmentPositions(0.12, fov), 3),
     );
     return g;
-  }, []);
+  }, [fov]);
 
   if (!cam || (!showFrustum && !liveEnabled)) return null;
 
@@ -100,7 +117,7 @@ function CameraItem({ robot }: { robot: RobotInfo }) {
             <Frame
               pose={{ position: [0, 0, 0] }}
               size={0.02}
-              label="D405"
+              label="cam"
               labelColor={FRUSTUM_COLOR}
             />
           </>

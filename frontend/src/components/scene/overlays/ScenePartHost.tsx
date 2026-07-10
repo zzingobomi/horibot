@@ -7,7 +7,7 @@
  *
  * 경계를 runtime 에 넘는 것은 인스턴스 목록(데이터)뿐 — scene 컴포넌트 자체는
  * registry 에 정적 등록 (identity 안정, runtime JSX 주입 기각 근거는
- * [docs/scene_contribution_architecture.md]). 같은 패널 2개(robot A/B)면 조각도
+ * [docs/frontend.md]). 같은 패널 2개(robot A/B)면 조각도
  * 2개 — 각자 자기 robot 으로. Scene.tsx 는 이 컴포넌트 한 줄만 안다.
  */
 import { PANEL_CATALOG, type PanelComponentKey } from "@/components/panels/registry";

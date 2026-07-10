@@ -1,4 +1,4 @@
-// frontend_v2 L4 — RobotCalibrateMode e2e (mock backend + vite dev + chromium).
+// frontend L4 — RobotCalibrateMode e2e (mock backend + vite dev + chromium).
 //
 // 검증 invariant (frontend ↔ bridge WS ↔ calibration 서비스 ↔ DB 전 wire):
 //   1. WS 연결 — connected badge
@@ -11,8 +11,8 @@
 // sim board 모드 = 후속). 여기선 frontend↔backend calibration wire 를 검증.
 //
 // 외부 의존 (실행 전 띄움):
-//   - mock backend (port 8000): cd backend_v2 && uv run --no-sync python -m apps.main --host mock
-//   - frontend vite (port 5174): cd frontend_v2 && pnpm dev
+//   - mock backend (port 8000): cd backend && uv run --no-sync python -m apps.main --host mock
+//   - frontend vite (port 5173): cd frontend && pnpm dev
 
 import { expect, test } from "@playwright/test";
 

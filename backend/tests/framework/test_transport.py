@@ -132,7 +132,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, os.environ["BACKEND_V2_PATH"])
+sys.path.insert(0, os.environ["BACKEND_PATH"])
 
 from infra.transport.zenoh import ZenohTransport
 
@@ -177,10 +177,10 @@ def test_publish_subscribe_cross_process(tmp_path: Path):
     script_path = tmp_path / "subscriber.py"
     script_path.write_text(_SUBSCRIBER_SCRIPT, encoding="utf-8")
 
-    backend_v2_path = str(Path(__file__).resolve().parents[2])
+    backend_path = str(Path(__file__).resolve().parents[2])
 
     env = os.environ.copy()
-    env["BACKEND_V2_PATH"] = backend_v2_path
+    env["BACKEND_PATH"] = backend_path
     env["ZENOH_ENDPOINT"] = endpoint
     env["OUT_FILE"] = str(out_file)
     env["KEY"] = "test/xproc"

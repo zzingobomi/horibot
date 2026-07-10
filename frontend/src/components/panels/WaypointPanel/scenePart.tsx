@@ -6,7 +6,7 @@
  * joint-space 데이터의 정직한 시각화 — cartesian 파생값 저장/FK 서비스 불필요,
  * RobotModel(URDF) 재사용이라 backend 무변경.
  *
- * scenePart 규약 ([docs/scene_contribution_architecture.md]):
+ * scenePart 규약 ([docs/frontend.md]):
  *   - useRobotId() — 패널과 같은 멘탈모델 (RobotProvider 는 ScenePartHost 공급)
  *   - 데이터는 waypointStore (패널 로컬 선택 → store 브리지, scanStore 패턴)
  *   - 패널 닫으면 ghost 도 사라짐 (인스턴스 lifecycle)

@@ -3,7 +3,7 @@
  * joint table / TCP position.
  *
  * 패널이라 router 의존(useParams)을 자체 흡수 (registry 는 순수 유지). 패널 = 폴더
- * (index.tsx), 폴더-per-panel 통일 (frontend_v2.md §4.1) — 내부 분할(Control/Status)
+ * (index.tsx), 폴더-per-panel 통일 (frontend.md §4.1) — 내부 분할(Control/Status)
  * 필요 시 이 폴더에 서브 컴포넌트 추가.
  *
  * Wire:

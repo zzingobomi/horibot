@@ -1,6 +1,6 @@
 """Motion domain — public contract surface.
 
-backend_v2.md §16.1 #4 (Motion) + §3.3 (TCP stream/snapshot 분리) +
+backend.md §16.1 #4 (Motion) + §3.3 (TCP stream/snapshot 분리) +
 §8.5 (stream seq/timestamp invariant).
 
 D2 = MoveJ + TCP_STATE/SNAPSHOT. MoveL/C/P (D2c) / Jog (D3) 후속.
@@ -196,7 +196,7 @@ class MotionCompleted(BaseModel):
     status: TrajStatus  # DONE / FAILED / STOPPED
 
 
-# ─── errors (완료 계약 — backend_v2.md §17.3) ────────────────
+# ─── errors (완료 계약 — backend.md §17.3) ────────────────
 
 
 class MotionFailed(RuntimeError):

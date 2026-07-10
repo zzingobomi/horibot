@@ -1,4 +1,4 @@
-// frontend_v2.md §12.2 useResource — 2 invariant.
+// frontend.md §12.2 useResource — 2 invariant.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 describe("useResource", () => {
-  // spec frontend_v2.md §12.2 — invariant: 같은 path 두 hook 박혀도 fetch 1회만
+  // spec frontend.md §12.2 — invariant: 같은 path 두 hook 박혀도 fetch 1회만
   it("module cache — 같은 path 두 hook 박혀도 fetch 1회만 호출", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ robots: [], default: null }), {
@@ -33,7 +33,7 @@ describe("useResource", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  // spec frontend_v2.md §12.2 — invariant: refetch() 호출 시 force fetch
+  // spec frontend.md §12.2 — invariant: refetch() 호출 시 force fetch
   it("refetch() — cache 박혀있어도 force fetch", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ value: 1 }), {

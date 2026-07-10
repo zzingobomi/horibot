@@ -143,7 +143,7 @@ async def test_get_robots(bridge_url: str):
 
 
 async def test_static_robot_mount_serves_urdf(bridge_url: str):
-    # frontend urdf-loader 가 받을 robot_v2 URDF 를 /robot 으로 서빙
+    # frontend urdf-loader 가 받을 robot URDF 를 /robot 으로 서빙
     async with httpx.AsyncClient() as client:
         res = await client.get(
             f"{bridge_url}/robot/so101_6dof/urdf/so101_6dof.urdf"

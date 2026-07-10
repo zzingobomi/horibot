@@ -3,7 +3,7 @@
 옛 StorageNode(scan) + ReconstructionNode + ScanTask orchestration 통합. Task DSL
 없이 frontend 가 서비스 직접 호출 (실용 슬라이스). PC 배치 (Open3D heavy + DB owner).
 
-**robot-agnostic** — host 당 1 인스턴스 (backend_v2.md §2.7).
+**robot-agnostic** — host 당 1 인스턴스 (backend.md §2.7).
 대상 robot 은 새 세션(new_session/list_sessions)
 은 req.robot_id, 진행 중 자원은 session row 에서 파생. per-robot config(kinematics/
 arm_specs)는 resolve 가 주입한 robots 투영으로 조회, runtime state 는 robot_id 키 dict.
@@ -15,7 +15,7 @@ scans 로드 → raw→rad(+joint_offset)→FK→hand_eye 로 camera pose → TS
 → progress stream 발행 → .ply 저장.
 
 다른 모듈 호출은 `async def` 핸들러 + `await self.runtime.call(...)` 하나로 통일
-(framework_async_call_contract.md). sync→async bridge 는 framework 가 흡수 —
+(backend.md). sync→async bridge 는 framework 가 흡수 —
 모듈은 run_coroutine_threadsafe 를 모른다. heavy build_mesh 는 `await
 asyncio.to_thread(...)` 로 event loop 를 안 막음.
 """

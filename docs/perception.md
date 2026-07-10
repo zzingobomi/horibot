@@ -1,4 +1,207 @@
+# Perception & Scan (통합)
+
+> **통합본 (2026-07-11 문서 다이어트)** — 아래 문서들을 원문 그대로 병합. 옛 파일명으로의
+> 링크는 본 문서 내 해당 부(또는 git history). 각 부의 제목/상태 배너는 병합 당시 그대로.
+> - `perception.md`
+> - `perception.md`
+> - `perception.md`
+
+
+---
+---
+
+<!-- ═══════════ [통합 원문] perception.md ═══════════ -->
+
+# Grounded Detection 설계
+
+> Open-vocabulary detection을 활용한 자연어 기반 픽업 시스템 설계 문서.
+> 사용자가 영어 텍스트로 물체를 묘사하면 그것을 찾아서 잡아오는 파이프라인.
+
+## 목표
+
+```
+사용자: "black car key" 입력 → 로봇이 그것을 찾아서 정해진 위치에 옮김.
+```
+
+기존 detection 흐름은 COCO 80 클래스로 사전학습된 YOLO 기반이라 우리 워크스페이스 물체(차키, 피규어, 부품 등)를 거의 알아보지 못함. 이를 open-vocabulary detection으로 대체.
+
+## 핵심 결정사항
+
+| 항목 | 결정 | 근거 |
+|------|------|------|
+| Detection 모델 | **Grounding DINO** (Swin-B) | 속성 묘사("검은색") 잘 이해, 자연어 grounding SOTA |
+| 입력 언어 | 영어만 | 번역 단계 제거, 단순성 |
+| 동작 흐름 | one-shot | 입력 1번 → inference 1번 → 잡기 1번 |
+| 가정 | 시야 안에 물체 있음 | 첫 단계 단순화 (스캔/탐색은 추후) |
+| 2D → 3D 변환 | bbox 영역 depth median → unproject | D405 RGBD 활용, 평면 가정 안 함 |
+| Grasp 자세 | top-down 고정 yaw | 가장 단순, 작은 물체에 충분 |
+| PLACE 좌표 | 하드코딩 | 추후 ROI 기반으로 확장 |
+| 노드 | `DetectorNode` (기존 이름 재사용, 내용은 재작성) | 익숙한 이름 유지 |
+| Task 연동 | 새 step + 시나리오 | 기존 task 시스템 패턴 유지 |
+
+## 모델 선택 — 왜 Grounding DINO?
+
+후보 3개 비교:
+
+|  | YOLO-World | OWLv2 | **Grounding DINO** |
+|---|---|---|---|
+| prompt 스타일 | 단어 ("cup") | phrase ("red cup") | 자연어 ("the black key on table") |
+| 속성 이해 | 약함 | 보통 | **강함** |
+| 속도 | 30+ FPS | 5~10 | 1~3 |
+| 무게 | ~50MB | ~600MB | ~700MB |
+| 정확도 | 중간 | 중간~높음 | **높음** |
+| 희귀 물체 | 약함 | 보통 | **강함** |
+
+선택 근거:
+
+1. **속성 묘사가 핵심** — "검은색 차키"의 "검은색"이 중요 단서. Grounding DINO만이 자연어 속성을 detection에 제대로 반영.
+2. **속도는 비핵심** — one-shot이라 1~3 FPS도 충분.
+3. **VRAM 여유** — RTX 3060 12GB에서 Swin-B 무리 없음 (실행 시 4~5GB).
+4. **희귀 물체 강함** — 차키/피규어/부품은 COCO에 없음. Grounding DINO 학습 데이터가 훨씬 다양.
+
+## 아키텍처
+
+```
+[Frontend]
+   Input "black car key" + [Run]
+        ↓ task 호출 (prompt 파라미터)
+
+[TaskNode] — 기존 task 시스템 활용
+   pick_named_object 시나리오:
+   ┌─────────────────────────────────────────┐
+   │ 1. GroundedDetectStep(prompt) → 3D 좌표 │
+   │ 2. MoveTCPStep (좌표 위로 접근)         │
+   │ 3. MoveTCPStep (내려가기)               │
+   │ 4. GripperStep (close)                  │
+   │ 5. MoveTCPStep (들어올리기)             │
+   │ 6. MoveTCPStep (PLACE 좌표, 하드코딩)   │
+   │ 7. GripperStep (open)                   │
+   │ 8. HomeStep                             │
+   └─────────────────────────────────────────┘
+        ↓ 1번 step에서 서비스 호출
+
+[DetectorNode] — 새로 짤 노드
+   Service: omx/perception/grounded_detect
+   Input:   {"prompt": "black car key"}
+   Output:  {"success", "position": [x,y,z], "confidence", "bbox"}
+
+   내부 흐름:
+     1. RGB + depth 한 쌍 캡처
+     2. Grounding DINO inference → 2D bbox + score
+     3. bbox 영역 depth median → 카메라 프레임 3D 점
+     4. intrinsic으로 unproject
+     5. hand_eye matrix 곱 → 베이스 프레임 좌표
+```
+
+### 좌표 변환 체인
+
+```
+2D bbox (image px)
+   ↓ bbox 영역 depth median 추출
+depth value (mm or m)
+   ↓ intrinsic (fx, fy, cx, cy)로 unproject
+3D 점 (카메라 frame)
+   ↓ hand_eye matrix 적용
+3D 점 (베이스 frame)
+   ↓ TaskNode가 이걸 받아서 MoveTCP
+실제 위치
+```
+
+## 진화 경로 — 지금 짜는 게 버려지지 않음
+
+지금 구조는 토대. 더 복잡한 작업으로 확장 시에도 유지됨.
+
+```
+                Stage 0     Stage 1        Stage 2       Stage 3
+
+Detection       2D ─────── 2D ──────────── 2D ────────── 3D (2D 보조)
+3D 변환        depth ── depth + multi ── pointcloud ── 3D mask
+Grasp          top-down ── top-down ──── 6DoF 예측 ── 6DoF
+
+                "위 잡기"   "각도 문제"   "어떻게 잡지"   "복잡한 장면"
+```
+
+### Stage 0 (지금 짜는 것)
+
+- 2D detection + depth + top-down
+- 테이블 위 분리된 물체 잡기
+
+### Stage 1 — 시야 각도 문제 해결
+
+**문제**: "위에서 본 차키"는 막대기처럼 보여 detection 실패. 2D 모델은 canonical view에 학습된 만큼, 비정상 view에 약함.
+
+**해결책** (Grounding DINO 자체는 그대로 유지):
+
+- **(A) Multi-view 캡처** — 여러 각도에서 detection 후 confidence fusion
+- **(B) TSDF mesh의 canonical view 렌더링** — 이미 mesh 있으니 거기서 "옆에서 본 모습" 렌더링 → 그 이미지에 detection
+- **(C) Active perception** — confidence 낮으면 카메라 각도 능동 변경
+
+### Stage 2 — 6DoF grasp pose 추가
+
+- 2D detection은 "어디" 만 답
+- 잡힌 영역의 pointcloud → GraspNet / AnyGrasp → "어떻게 잡을지" 자세 예측
+- Detection 그대로, grasp 모듈만 추가
+
+### Stage 3 — 3D segmentation 도입
+
+- 산업 bin picking 같은 정말 복잡한 장면에서만 필요
+- 이때조차 2D는 보조로 남아있는 경우 많음 (mature 하니까)
+
+### 핵심
+
+각 Stage가 **독립적으로 추가**됨. 지금 짜는 Motion 코드, 좌표 변환 코드, Task 구조는 Stage 3까지 그대로 살아남음. "교체"가 아니라 "추가" 모델.
+
+## 우리 방식 vs 진짜 3D Segmentation — 근본 차이
+
+|  | **우리 방식** | **3D Segmentation** |
+|---|---|---|
+| 입력 | 사진 (2D 픽셀) | 점/메시 (3D 구조) |
+| 출력 | 이미지 위 사각형 | 3D 공간의 voxel 집합 |
+| 모델이 "이해"하는 것 | 픽셀의 색/패턴 | 3D 모양/표면 |
+| Depth의 역할 | 단순 조회 ("이 픽셀의 거리") | 모델의 입력 ("이 모양을 봐") |
+
+**비유**:
+- **우리 방식** — 눈 감고 사진 만지는 사람한테 "여기 컵 있어"라고 손가락으로 가리키는 거. AI는 사진만 봤고, 깊이는 우리가 자로 잰 거.
+- **3D seg** — AI가 직접 3D 공간을 만져보고 "여기부터 여기까지가 컵"이라고 판단.
+
+**우리 방식이 충분한 경우** (현재 use case):
+- 테이블 위 떨어져 있는 물체들
+- 위에서 잡기만 하면 됨
+- 중심 좌표만 알면 됨
+
+**우리 방식이 약한 경우** (Stage 3 영역):
+- 겹친 물체, 가려진 면
+- 모양 정보가 필요한 grasp planning
+
+## 미정 사항
+
+구현 단계에서 결정할 것들:
+
+1. **Task step 시그니처** — 기존 `DetectStep` 재사용 vs 새 step (`GroundedDetectStep`)
+2. **시나리오 구조** — `pick_named_object` 이름/위치, 어디에 정의
+3. **PLACE 좌표** — task 파라미터로 받기 vs 시나리오에 하드코딩
+4. **안전 처리** — confidence threshold, 못 찾을 때 동작, z 제한, 워크스페이스 경계
+5. **프론트 UX** — input 위치, 결과 시각화 (bbox 오버레이?)
+6. **Depth 스트리밍 정책** — 평소 켜두기 vs on-demand
+7. **번역 단계** — 추후 한국어 입력 지원 시 (지금은 영어 only로 단순화)
+8. **모델 로드 타이밍** — 노드 시작 시 vs 첫 호출 시 (lazy)
+
+## 참고
+
+- 라이브 detection이 안 될 때 mesh 기반으로 fallback하는 패턴은 [perception.md](perception.md) 참조
+- 캘리브레이션 산출물의 적용 경로는 [calibration_apply_flow.md](calibration_apply_flow.md) 참조
+- 기존 task 시스템 (DetectStep, MoveTCPStep 등)은 [backend/modules/task/](../backend/modules/task/) 참조
+
+
+---
+---
+
+<!-- ═══════════ [통합 원문] perception.md ═══════════ -->
+
 # TSDF Pipeline 구현 가이드
+
+> ⚠️ **부분 stale (2026-07-11 문서 전수 감사)**: ICP/TSDF 알고리즘 결정·Open3D 파라미터는 현행 유효 (`modules/scan/build.py`). §5 토픽·§6 노드 구현 서술은 v1 — scan 모듈로 통합됨.
+> 본 감사에서 삭제된 v1 문서 참조가 남아있을 수 있음 — git history 에서 복원 가능.
 
 > **이 문서의 목적**: 다음 세션의 Claude가 컨텍스트 없이 읽고 바로 구현 시작 가능하게 하는 self-contained 명세. 결정사항/이유/코드 위치/Open3D 호출 패턴까지 박혀 있음.
 >
@@ -936,3 +1139,209 @@ robot/models/
 - Colored ICP — point-to-plane 부족 시.
 - Fragment 단계 — 자세 100개 단위 큰 scene reconstruction.
 - BA doc § 15g step 2~4 (intrinsic 재캘, J2 자세 추가) — TSDF 결과가 캘 floor에 막히면 진입. 보통 mesh 두께/이중벽이 voxel_size 줄여도 안 줄어들면 캘 floor.
+
+
+---
+---
+
+<!-- ═══════════ [통합 원문] perception.md ═══════════ -->
+
+# LLM Preload Meta-Tensor Race — 진단 및 fix plan
+
+> **Status**: 가설 검증 전. fix 적용 전. 본 문서는 *진단 박제* 가 목적 — 코드 깔짝
+> 거리며 "이번엔 됐다" 식 fix 반복 (10회+) 을 멈추기 위한 anchor.
+
+---
+
+## 1. 증상
+
+LLM (`Qwen2.5-1.5B-Instruct`) preload 시 다음 에러가 *간헐적으로* 발생:
+
+```
+NotImplementedError: Cannot copy out of meta tensor; no data!
+Please use torch.nn.Module.to_empty() instead of torch.nn.Module.to()
+when moving module from meta to a different device.
+```
+
+발생 위치: [backend/modules/llm/prompt_parser.py:80](../backend/modules/llm/prompt_parser.py#L80) `_ensure_loaded` 안의 `.to(_device)` 호출.
+
+**핵심 특성: intermittent**.
+- 같은 코드, 같은 환경인데 어떤 날엔 발생, 어떤 날엔 안 함
+- "fix 후 한두 번 안 나오면 fixed 라 판단" → 며칠 뒤 재발 → 다시 깔짝 fix → ...
+- 지금까지 **10회+ 반복**
+
+LLM 로드 실패 후에도 Grounding DINO 는 1-2초 뒤 정상 로드됨. 즉 시스템 자체는 동작하나 task prompt parser 가 죽어 prompt 가 그대로 pick 으로 fallback ([prompt_parser.py:106](../backend/modules/llm/prompt_parser.py#L106)).
+
+---
+
+## 2. 지금까지의 fix 시도 (모두 부분 fix)
+
+| # | 시도 | 잡은 layer | 왜 부족했나 |
+|---|---|---|---|
+| 1 | transformers 함수 안 lazy import → **module-top import** | transformers `_LazyModule.__getattr__` race (두 스레드가 동시에 `from transformers import X` 시 "cannot import name" 발생) | import race 만 잡음. weight load race 는 그대로 |
+| 2 | `from_pretrained(..., low_cpu_mem_usage=False)` | meta-init path 회피 (내 모델만) | accelerate 글로벌 state 가 *상대 스레드* 의 영향 받음 — 내 모델은 False 라도 상대가 meta-init 중이면 leak |
+
+각 fix 가 race window 를 줄이긴 했지만 **원인 자체** 를 안 잡음 → 며칠 후 재발. 패턴 자체가 진단 미완 + 검증 단계 부재.
+
+---
+
+## 3. 현재 가설 — 두 preload thread race
+
+### 증거
+
+마지막 로그 (2026-06-09):
+```
+04:45:55,022 [ERROR] LLM 모델 로드 실패: Cannot copy out of meta tensor
+04:45:56,586 [INFO]  Grounding DINO 로드 완료
+```
+
+→ **1.5초 차이로 두 모델이 같은 시간 window 에서 로드 시도** 중.
+
+코드상 두 백그라운드 preload 스레드가 노드 start 시 동시 출발:
+
+- [task_node.py:116-120](../backend/nodes/application/task_node.py#L116-L120) — `prompt-parser-preload` thread → `prompt_parser.preload()` → `AutoModelForCausalLM.from_pretrained(...).to(device)`
+- [detector_node.py:122-127](../backend/nodes/application/detector_node.py#L122-L127) — `grounded-preload` thread → `GroundedDetector.preload()` → `AutoModelForZeroShotObjectDetection.from_pretrained(...).to(device)`
+
+### 메커니즘
+
+transformers / accelerate 의 weight 초기화 흐름 (`init_empty_weights()` context manager, `_init_weights`, `dispatch_model`) 이 **thread-safe 하지 않음**. 두 스레드가 동시에 `from_pretrained` 진입하면:
+
+1. 스레드 A 가 `init_empty_weights()` 컨텍스트에 enter (글로벌 상태 변경)
+2. 스레드 B 가 `from_pretrained` 진입 — A 의 컨텍스트가 활성 상태로 보임
+3. B 가 `low_cpu_mem_usage=False` 라도 A 의 context 가 활성이라 일부 weight 가 meta 인 채로 leak
+4. B 의 `.to(device)` 단계에서 meta tensor 만나 NotImplementedError
+
+intermittent 한 이유: A 가 context exit 하기 *전에* B 가 진입하느냐, *후에* 진입하느냐 의 단순 타이밍. CPU 부하 / disk cache 상태 / network 다운로드 속도에 따라 매번 달라짐 → **race condition 의 fingerprint**.
+
+### 가설이 틀릴 가능성
+
+- 단일 모델 (LLM 만) preload 만 돌려도 재발한다면 — 두 스레드 race 아님. transformers 자체 버그 / 환경 문제일 수 있음
+- transformers / accelerate 버전 업그레이드 후 사라진다면 — 우연이 아니라 라이브러리 측 fix
+- GPU 메모리 부족으로 인한 다른 path 일 수도 (현재 RTX 3060)
+
+→ **검증 없이는 가설 확정 불가**. 다음 섹션이 핵심.
+
+---
+
+## 4. 가설 검증이 fix 보다 먼저
+
+지금까지의 fix 가 모두 실패한 진짜 이유: **"오늘 안 나옴 = fix 됨" 으로 판단**. race condition 은 운으로 안 나올 뿐이라 이 기준이 무의미.
+
+검증 방법:
+
+### 4.1 reproduction script
+
+위치: `backend/scripts/repro_meta_tensor_race.py` (新)
+
+핵심 골격:
+```python
+# 두 from_pretrained 를 동시 호출. 노드 / Zenoh / bridge 다 빼고
+# 순수하게 race 만 노출.
+import threading, traceback, sys
+from transformers import (
+    AutoModelForCausalLM, AutoModelForZeroShotObjectDetection,
+)
+
+def load_llm():
+    AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-1.5B-Instruct").to("cuda")
+
+def load_dino():
+    AutoModelForZeroShotObjectDetection.from_pretrained(
+        "IDEA-Research/grounding-dino-base"
+    ).to("cuda")
+
+errors = []
+def one_trial():
+    t1 = threading.Thread(target=lambda: _capture(load_llm, errors))
+    t2 = threading.Thread(target=lambda: _capture(load_dino, errors))
+    t1.start(); t2.start(); t1.join(); t2.join()
+
+# N=100 회 반복, 실패 카운트
+```
+
+### 4.2 가설 검증 절차
+
+1. **fix 전 N=100 회 실행** — race 가설 맞으면 ≥1 회 같은 NotImplementedError 재현
+2. **재현 안 되면 (0/100)** → race 가설 폐기. 다른 가설로 재출발 (transformers 버전 / GPU 메모리 / disk cache 등)
+3. **재현 되면 (예: 23/100)** → race 가 root cause 확정. fix 단계 진입
+4. **fix 적용 → 같은 script N=100 회 재실행** → 0/100 입증
+5. **0/100 안 되면 fix 미완** — 가설은 맞지만 fix 가 race 의 일부만 잡았다는 신호. 다음 fix 옵션으로
+
+이러면 "다음에 또 나오면 어쩌나" 의 답이 명확함 — 같은 script 가 즉시 재현. "운으로 안 나옴" 과 "구조적으로 안 나옴" 의 구분 가능.
+
+---
+
+## 5. fix 옵션 (4.2 통과 후 적용)
+
+### Option A: 글로벌 lock
+
+`backend/modules/common/transformers_load_lock.py` (新):
+```python
+import threading
+LOAD_LOCK = threading.Lock()
+```
+
+prompt_parser / grounded_detector 둘 다 `with LOAD_LOCK:` 안에서 `from_pretrained` 호출.
+
+- 변경 4-6 줄
+- *단점*: 새 transformers 사용처가 추가될 때 lock 빠뜨릴 수 있음 → 같은 버그 재발 가능
+
+### Option B (선호): 단일 preload coordinator
+
+[main.py](../backend/main.py) 에 백그라운드 thread 하나만 띄워 두 preload 를 **순차** 호출. [task_node.py:116](../backend/nodes/application/task_node.py#L116) / [detector_node.py:122](../backend/nodes/application/detector_node.py#L122) 의 `_preload_*` thread 삭제.
+
+```python
+# main.py 노드들 start() 후
+threading.Thread(target=_preload_all, daemon=True, name="model-preload").start()
+
+def _preload_all():
+    # 순차 — 동시 실행 가능성 자체가 코드 구조상 없음
+    if "detector" in active_nodes:
+        detector_node._grounded.preload()
+    if "task" in active_nodes:
+        prompt_parser.preload()
+```
+
+- 두 `from_pretrained` 가 **동시 실행될 가능성 자체가 코드 구조상 존재 안 함**
+- lock 누락 가능성 없음
+- 각 노드의 `_ensure_loaded` 는 그대로 유지 — 사용자가 preload 안 기다리고 첫 호출 박았을 때 fallback path 로 살아 있음
+- *단점*: main.py 가 노드 내부 모듈 (`prompt_parser`, `_grounded`) 직접 호출 — 의존성 방향 살짝 거꾸로. 다만 main.py 는 어차피 노드 lazy import 코디네이터라 큰 위반은 아님
+
+### 선택 기준
+
+- race 재현이 두 모델 동시 호출 케이스만 잡는다면 — **Option B**
+- 단일 모델만으로도 재현된다면 — race 가설 자체가 부분적. lock 도 부족. 다른 root cause 탐색
+
+---
+
+## 6. 회귀 방지
+
+- reproduction script 를 `backend/scripts/` 에 영구 보관 (gitignore X)
+- 재발 신호 (LLM 모델 로드 실패 로그) 보이면 → 같은 script 가 즉시 재현 도구로 동작 → 또 깔짝 fix 안 함
+- transformers / torch / accelerate 버전 업그레이드 시에도 회귀 체크 가능 — `uv sync` 후 script 1회 실행을 권장 절차에 포함
+
+---
+
+## 7. 진행 체크리스트
+
+- [ ] reproduction script 작성 (`backend/scripts/repro_meta_tensor_race.py`)
+- [ ] 현재 코드로 script N=100 실행 → race 재현률 측정
+- [ ] 재현률 0 이면 → 본 문서의 §3 가설 폐기, §3 의 "가설이 틀릴 가능성" 항목들로 재출발
+- [ ] 재현률 ≥1 이면 → Option B 적용
+- [ ] Option B 후 N=100 재실행 → 0/100 확인
+- [ ] 0/100 안 되면 → 본 문서 §5 보강 (lock + coordinator 병행 등)
+- [ ] script 를 repo 에 영구 보관 + README 한 줄
+- [ ] 본 문서 §3 / §5 에 *실제 측정 결과* 추가 후 docs/roadmap.md 에 closed 처리
+
+---
+
+## 8. 이 문서의 의도
+
+10 회 깔짝 fix 의 패턴은:
+1. 에러 발생 → 가설 즉흥 (보통 직전 fix 의 인접 layer)
+2. 코드 한두 줄 수정 → 재시작 → 안 나오면 fixed 판단
+3. 며칠 뒤 같은 에러 재발 → 1 로 복귀
+
+본 문서는 이 cycle 을 *재현 script 가 통계적으로 fix 입증할 때까지* 멈추는 게 목적.
+"수정했는데 지금은 괜찮다가 다음에 또 나오면 어떻게 할래" — 답: 같은 script 가
+즉시 재현. 가설 다시. fix 다시. 검증 다시. 운에 안 맡김.

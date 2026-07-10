@@ -1,7 +1,7 @@
 /**
  * TasksPage — 자연어 pick-and-place 실행 (§17 NL PnP). **최상위 페이지** (/tasks).
  *
- * task/detector/llm 은 host-level(robot-agnostic, backend_v2.md §2.7) — 로봇 하위
+ * task/detector/llm 은 host-level(robot-agnostic, backend.md §2.7) — 로봇 하위
  * mode(move/calibrate)가 아니라 최상위 (design: multi_robot_phase2_frontend.md
  * `/tasks/:name` TasksPage, **multi-robot focus=null**).
  *
@@ -17,29 +17,12 @@
 import { RobotSceneContainer } from "@/components/scene/Container";
 import { ModeDockview, type PanelSpec } from "@/components/shared/ModeDockview";
 
+// title/width/height 는 PANEL_CATALOG(SSOT)에서 derive — 여기선 배치 선언만.
 const TASK_PANELS: PanelSpec[] = [
-  {
-    id: "prompt",
-    component: "prompt",
-    title: "Command",
-    width: 340,
-    height: 260,
-  },
-  {
-    id: "task-progress",
-    component: "taskProgress",
-    title: "Task Progress",
-    width: 340,
-    height: 420,
-  },
+  { id: "prompt", component: "prompt" },
+  { id: "task-progress", component: "taskProgress" },
   // 검출 bbox 오버레이 카메라 (v1 tasks 카메라 계승) — 큐브/상자 인식 확인
-  {
-    id: "detection-camera",
-    component: "detectionCamera",
-    title: "Camera (Detection)",
-    width: 440,
-    height: 330,
-  },
+  { id: "detection-camera", component: "detectionCamera" },
 ];
 
 export function TasksPage() {

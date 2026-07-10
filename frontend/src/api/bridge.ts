@@ -30,7 +30,7 @@ export function topicFor(template: string, robotId?: string): string {
 }
 
 type TopicCallback = (data: Record<string, unknown>) => void;
-// backend_v2 wire 에선 topic payload 도 msgpack 통과. binary callback 은 그 msgpack-encoded
+// backend wire 에선 topic payload 도 msgpack 통과. binary callback 은 그 msgpack-encoded
 // raw bytes 받음 (decode 는 consumer 책임 — bytes field 추출 등).
 type BinaryTopicCallback = (payload: ArrayBuffer) => void;
 type ServiceResolver = (res: {
@@ -100,6 +100,20 @@ export class BridgeClient {
     return expandTopicKey(key, robotId);
   }
 
+  /**
+   * 서비스 응답 **캐시 키** — wire 라우팅 키와 별개.
+   *
+   * robot-agnostic 서비스(키에 `{robot_id}` placeholder 없음, robot_id 를 req 필드로
+   * 받는 계약)는 라우팅 키가 로봇 무관하게 동일하다. 그 키로 캐시하면 robotA 응답이
+   * robotB 뷰에 그대로 샌다 (Cameras useMirror(so101) 의 callService 부수효과가
+   * CalibrationPanel useService(omx) 뷰를 오염 — 실제 발생 버그). robotId 를 항상
+   * 붙여 로봇별로 분리한다 (placeholder 키는 이미 expand 로 유니크하지만 일관되게
+   * robotId 접미 → reader/writer 동일 규칙).
+   */
+  serviceCacheKey(key: string, robotId?: string): string {
+    return robotId ? `${key}#${robotId}` : key;
+  }
+
   private _expand(key: string): string {
     // subscribe/publish 호출부는 이미 확장된 키를 넘긴다 (bootstrap/hooks 가
     // topicFor/expand 로 robotId 를 박아서). scoped 키가 미확장으로 오면 그대로 둔다.
@@ -127,7 +141,7 @@ export class BridgeClient {
     });
 
     this.ws.addEventListener("message", (ev) => {
-      // backend_v2 → browser : binary frame only. JSON text 안 옴.
+      // backend → browser : binary frame only. JSON text 안 옴.
       if (ev.data instanceof ArrayBuffer) {
         this._handleBinary(ev.data);
       } else {
@@ -316,9 +330,12 @@ export class BridgeClient {
     options?: { timeoutMs?: number; robotId?: string },
   ): Promise<ServiceResponse<unknown>> {
     const timeoutMs = options?.timeoutMs ?? 5000;
+    // wire 라우팅 키 (robot-agnostic 서비스면 robot_id 는 req 필드라 미확장 그대로).
     const expanded = this.expand(key, options?.robotId);
-    const prev = useFrameworkStore.getState().serviceData[expanded];
-    useFrameworkStore.getState().setServiceData(expanded, {
+    // 캐시 키는 라우팅 키와 분리 — robot 별로 나눠 cross-robot 오염 차단.
+    const cacheKey = this.serviceCacheKey(key, options?.robotId);
+    const prev = useFrameworkStore.getState().serviceData[cacheKey];
+    useFrameworkStore.getState().setServiceData(cacheKey, {
       success: prev?.success ?? false,
       message: prev?.message ?? "",
       data: prev?.data ?? null,
@@ -328,7 +345,7 @@ export class BridgeClient {
     return new Promise((resolve) => {
       const request_id = makeRequestId();
       const cacheAndResolve: ServiceResolver = (res) => {
-        useFrameworkStore.getState().setServiceData(expanded, {
+        useFrameworkStore.getState().setServiceData(cacheKey, {
           success: res.success,
           message: res.message,
           data: res.data,

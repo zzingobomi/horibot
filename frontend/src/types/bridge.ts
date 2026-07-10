@@ -1,4 +1,4 @@
-// backend_v2 WS wire (frontend_v2.md §3 + backend_v2.md §16.6 의 relay).
+// backend WS wire (frontend.md §3 + backend.md §16.6 의 relay).
 // browser → bridge : JSON text {op, ...}
 // bridge → browser : binary frame [u8 ver=1][u8 type][u16 BE key_len][key utf8][payload]
 //   type=1 topic_data       : key=topic,      payload=msgpack

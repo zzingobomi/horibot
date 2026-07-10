@@ -1,4 +1,4 @@
-// frontend_v2.md §12.2 useStream — 5 invariant.
+// frontend.md §12.2 useStream — 5 invariant.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 describe("useStream", () => {
-  // spec frontend_v2.md §12.2 — invariant: seq monotonic (1, 2, 3) → outOfOrderCount=0
+  // spec frontend.md §12.2 — invariant: seq monotonic (1, 2, 3) → outOfOrderCount=0
   it("seq monotonic 정상 — outOfOrderCount=0 유지", () => {
     const { result } = renderHook(() =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -39,7 +39,7 @@ describe("useStream", () => {
     expect(result.current.seq).toBe(3);
   });
 
-  // spec frontend_v2.md §12.2 — invariant: seq 역행 → outOfOrderCount 증가 + console.warn
+  // spec frontend.md §12.2 — invariant: seq 역행 → outOfOrderCount 증가 + console.warn
   it("seq 역행 — outOfOrderCount 증가 + console.warn 박음", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { result } = renderHook(() =>
@@ -61,7 +61,7 @@ describe("useStream", () => {
     );
   });
 
-  // spec frontend_v2.md §12.2 — invariant: timestamp_unix old → lagMs ≈ delta
+  // spec frontend.md §12.2 — invariant: timestamp_unix old → lagMs ≈ delta
   it("timestamp_unix lag detect — lagMs ≈ delta", () => {
     const oldTs = (Date.now() - 1000) / 1000;
     const { result } = renderHook(() =>
@@ -80,7 +80,7 @@ describe("useStream", () => {
     expect(result.current.lagMs).toBeLessThanOrEqual(1100);
   });
 
-  // spec frontend_v2.md §12.2 — invariant: stale = lagMs > staleMs
+  // spec frontend.md §12.2 — invariant: stale = lagMs > staleMs
   it("stale flag — lagMs > staleMs (default 500) → stale=true", () => {
     const oldTs = (Date.now() - 700) / 1000;
     const { result } = renderHook(() =>
@@ -97,7 +97,7 @@ describe("useStream", () => {
     expect(result.current.stale).toBe(true);
   });
 
-  // spec frontend_v2.md §12.2 — invariant: seq field 박지 X → graceful (warn X)
+  // spec frontend.md §12.2 — invariant: seq field 박지 X → graceful (warn X)
   it("seq field 박지 X — graceful (outOfOrderCount=0, lagMs=0)", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { result } = renderHook(() =>

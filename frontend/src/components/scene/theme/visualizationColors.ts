@@ -1,7 +1,7 @@
 /**
  * 씬 시각화 **의미 색** SSOT — hex 를 공유하는 모듈이 아니라 *시각적 의미*를
  * 공유하는 모듈. 새 시각화는 hex 를 고르지 말고 여기서 **역할**을 고른다.
- * ([docs/scene_contribution_architecture.md] 색 시스템)
+ * ([docs/frontend.md] 색 시스템)
  *
  * 지금 소비자 있는 역할만 토큰화 — warning/constraint(red/orange), box ghost,
  * trajectory 등 미래 역할은 그 소비자가 생길 때 추가 (소비자 없는 상수 선제작 X).

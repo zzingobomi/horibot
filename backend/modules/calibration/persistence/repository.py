@@ -2,12 +2,12 @@
 
 CRUD ceremony (add/commit/refresh, get-or-none, delete) 는 advanced-alchemy
 `SQLAlchemySyncRepository` 를 **모듈 내부 헬퍼로만** 사용 (framework 는 이걸 전제 X —
-[backend_v2.md §10.4]: framework = plain Repository Protocol). 라이브러리 의존은 이
+[backend.md §10.4]: framework = plain Repository Protocol). 라이브러리 의존은 이
 파일 안에 갇힘 — 외부엔 `CalibrationRepository` 만 보이고, 나중에 빼면 내부만 교체.
 
 도메인 로직 (activate_result atomic 2-step / get_active_bundle 5-kind aggregate /
 undo cascade) 은 라이브러리가 안 주는 자리라 직접 구현.
-boundary spec = [docs/calibration_module_boundary.md §2].
+boundary spec = [docs/calibration.md §2].
 """
 
 from __future__ import annotations

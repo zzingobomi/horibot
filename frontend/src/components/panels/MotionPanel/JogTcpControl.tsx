@@ -1,5 +1,5 @@
 /**
- * JogTcpControl — Cartesian velocity jog (frontend_v2.md §3.3 + motion_taxonomy.md §Jog).
+ * JogTcpControl — Cartesian velocity jog (frontend.md §3.3 + motion.md §Jog).
  *
  * MotionPanel 안에서만 쓰는 control (구현 세부). robotId 는 props (순수).
  *

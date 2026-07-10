@@ -1,7 +1,7 @@
 /**
  * `useStream` — Stream payload 의 seq monotonic + timestamp_unix lag invariant 검사.
  *
- * frontend_v2.md §3.3 + §6 — backend_v2 §8.5 의 stream payload invariant
+ * frontend.md §3.3 + §6 — backend §8.5 의 stream payload invariant
  * (`seq: int` + `timestamp_unix: float`) 활용. reconnect / lag / out-of-order
  * detection — 옛 frontend 에서 박지 않은 부분.
  *

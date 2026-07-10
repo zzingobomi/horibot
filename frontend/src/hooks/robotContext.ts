@@ -3,7 +3,7 @@ import { createContext } from "react";
 /**
  * robot-scoped 패널의 대상 robot 을 하위 트리에 공급하는 context.
  *
- * robot 소유권 모델(docs/robot_ownership_model.md)의 배선 지점: robot 은 패널이
+ * robot 소유권 모델(docs/frontend.md)의 배선 지점: robot 은 패널이
  * 소유(패널 자기 상태)하고, 그 값을 이 context 로 패널 내부에 흘려보낸다. 패널
  * 내부 코드는 useRobotId() 로 이 값을 읽을 뿐 — route/robot 목록 같은 환경을
  * 직접 읽지 않는다(§4 바인딩 불변식).

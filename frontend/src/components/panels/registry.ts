@@ -3,12 +3,13 @@
  *
  * 패널만 import 하는 순수 map. 각 패널이 useParams(robot context) + scroll
  * container 를 자체 흡수하므로 여기엔 로직·wrapper 없음. 새 패널 추가 =
- * 컴포넌트 만들고 여기 한 줄 + mode 파일 PANELS 한 줄 (frontend_v2.md §2.3).
+ * 컴포넌트 만들고 여기 한 줄 + mode 파일 PANELS 한 줄 (frontend.md §2.3).
  */
 import type { FunctionComponent } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { RobotStatePanel } from "./RobotStatePanel";
 import { WaypointScenePart } from "./WaypointPanel/scenePart";
+import { CalibrationScenePart } from "./CalibrationPanel/scenePart";
 import { MotionPanel } from "./MotionPanel";
 import { CalibrationPanel } from "./CalibrationPanel";
 import { CameraPanel } from "./CameraPanel";
@@ -50,10 +51,10 @@ export type PanelComponentKey = keyof typeof PANEL_COMPONENTS;
  * — 부족하면 헤더에서 disabled + withRobotOwnership 이 unsupported empty state 로
  * 안내하지만, 최종 사용 가능 여부는 백엔드가 계속 판정한다 ([[lib/capabilities]]).
  * 선언 없는 패널 = 요구 capability 없음 = 항상 활성. `unavailableReason` 은
- * 예외적 UX 자리의 override(기본은 capability 라벨에서 파생, [docs/workspace_autohide_header.md]).
+ * 예외적 UX 자리의 override(기본은 capability 라벨에서 파생, [docs/frontend.md]).
  *
  * `scenePart` — 이 패널이 3D 씬에 **기여하는 조각** (씬 전체가 아니라 부분,
- * [docs/scene_contribution_architecture.md]). 패널 폴더의 R3F 컴포넌트를 여기 한
+ * [docs/frontend.md]). 패널 폴더의 R3F 컴포넌트를 여기 한
  * 줄로 선언하면 ScenePartHost 가 살아있는 인스턴스마다 RobotProvider 로 감싸
  * Canvas 에 마운트 — Scene.tsx 편집 0. UI(컴포넌트) + 3D(scenePart) 가 한 항목에
  * co-locate 되는 자리.
@@ -71,10 +72,16 @@ export const PANEL_CATALOG: Record<
 > = {
   robotState: { title: "Robot State", width: 260, height: 300 },
   motion: { title: "Motion", width: 320, height: 380 },
-  calibration: { title: "Calibration", width: 360, height: 520 },
+  calibration: {
+    title: "Calibration",
+    width: 360,
+    height: 520,
+    scenePart: CalibrationScenePart, // preview PnP 보드 pose — 인식/캘 검증 시각화
+  },
+  // 카메라 3종 — 구분 단어를 **앞에** (좁은 탭에서 뒤가 잘려도 구분 유지).
   camera: { title: "Camera", width: 420, height: 340 },
-  detectionCamera: { title: "Camera (Detection)", width: 440, height: 330 },
-  calibrationCamera: { title: "Camera (Calibration)", width: 420, height: 340 },
+  detectionCamera: { title: "Detect Camera", width: 440, height: 330 },
+  calibrationCamera: { title: "Calib Camera", width: 420, height: 340 },
   scan: { title: "Scan", width: 320, height: 460, requiredCapabilities: ["rgbd"] },
   // 카메라 frustum 은 scenePart 가 아니라 Camera 씬 객체(scene/Cameras.tsx)가 그림
   // — 카메라는 월드 소유, 패널은 cameraStore.showFrustum 토글만 (소유권 모델).
@@ -118,7 +125,7 @@ export const ROBOT_OWNED_PANELS: ReadonlySet<PanelComponentKey> = new Set<PanelC
  *
  * requiredCapabilities/unavailableReason 은 **wrap 시점 클로저**로 HOC 에 넘긴다
  * (dockview params 에 넣지 않음 — static registry 사실이 localStorage layout 에
- * 영속되면 stale/serialization 오염. [docs/workspace_autohide_header.md]).
+ * 영속되면 stale/serialization 오염. [docs/frontend.md]).
  */
 export const DOCKVIEW_PANEL_COMPONENTS: Record<
   string,

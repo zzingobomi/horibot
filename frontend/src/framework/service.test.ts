@@ -1,4 +1,4 @@
-// frontend_v2.md §12.2 useService — 2 invariant.
+// frontend.md §12.2 useService — 2 invariant.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, renderHook } from "@testing-library/react";
@@ -47,7 +47,7 @@ function waitOpen(): Promise<void> {
 }
 
 describe("useService", () => {
-  // spec frontend_v2.md §12.2 — invariant: call 후 cache reactive 갱신 (data / success)
+  // spec frontend.md §12.2 — invariant: call 후 cache reactive 갱신 (data / success)
   it("call 후 cache 갱신 + reactive view (data + success) 검증", async () => {
     server.on("connection", (socket) => {
       socket.on("message", (raw) => {
@@ -80,7 +80,7 @@ describe("useService", () => {
     expect(result.current.data).toEqual({ accepted: true, message: "ok" });
   });
 
-  // spec frontend_v2.md §12.2 — invariant: pending = call 직후 true → response 후 false
+  // spec frontend.md §12.2 — invariant: pending = call 직후 true → response 후 false
   it("pending flag — call 직후 true → response 후 false", async () => {
     let respond: (() => void) | null = null;
     server.on("connection", (socket) => {

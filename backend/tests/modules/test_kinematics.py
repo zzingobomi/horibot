@@ -1,4 +1,4 @@
-"""PybulletKinematics (Motion D1) test — robot_v2 so101_6dof URDF.
+"""PybulletKinematics (Motion D1) test — robot so101_6dof URDF.
 
 순수 compute (PyBullet DIRECT) — 하드웨어 불필요, 회사 검증 가능.
 검증: dof=6 (gripper 제외) / FK·IK roundtrip / joint_limits / unreachable→None.

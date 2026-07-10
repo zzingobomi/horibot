@@ -1,5 +1,5 @@
 /**
- * <RobotFrame> — "robot base frame 용 group" ([docs/scene_contribution_architecture.md]).
+ * <RobotFrame> — "robot base frame 용 group" ([docs/frontend.md]).
  *
  * 자식은 robot base frame(백엔드 좌표 그대로, z-up)에서 그려진다 — z-up→y-up +
  * base_pose 변환은 여기가 담당(transforms.ts SSOT). R3F 에서 transform 은 원래

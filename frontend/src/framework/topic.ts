@@ -9,7 +9,7 @@
  *
  * generated `TopicPayloadMap[K]` 로 자동 typed.
  *
- * frontend_v2.md §3.2 — generic latest-cache. Stream invariant (seq / lag) 검사는
+ * frontend.md §3.2 — generic latest-cache. Stream invariant (seq / lag) 검사는
  * `useStream` 자리. event 의 *event-driven refetch* 는 `useMirror` 자리.
  */
 import { useFrameworkStore } from "./store";

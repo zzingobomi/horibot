@@ -5,7 +5,7 @@
 - 라이브 PC 는 camera-frame 발행 → frontend 가 tcp·hand_eye transform (옛 패턴 유지).
 - intrinsic 은 active calibration(우선) → camera factory(fallback) 에서 boot 시 pull.
 
-**robot-agnostic** — host 당 1 인스턴스 (backend_v2.md §2.7).
+**robot-agnostic** — host 당 1 인스턴스 (backend.md §2.7).
 대상 robot 은 req.robot_id. per-robot config 는
 멤버십(rgbd robot 목록)뿐 — resolve 가 robot_ids 주입, runtime state(depth ring /
 color / intrinsic / stream on-off)는 robot_id 키 dict.

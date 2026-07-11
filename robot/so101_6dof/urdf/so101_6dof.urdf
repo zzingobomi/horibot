@@ -449,7 +449,9 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry><box size="0.01 0.01 0.01"/></geometry>
-      <material name="tcp_red"><color rgba="1.0 0.0 0.0 1"/></material>
+      <!-- 몸통색 통일 (2026-07-12): 무보정 FK 로 그려지는 마커라 빨간색이면
+           보정 TCP(gizmo)와 이중 진실 — 진짜 TCP 표시는 gizmo 하나로 -->
+      <material name="tcp_marker"><color rgba="0.45 0.45 0.45 1"/></material>
     </visual>
   </link>
 </robot>

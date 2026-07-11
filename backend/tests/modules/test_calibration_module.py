@@ -14,6 +14,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 from pydantic import BaseModel
 
 from framework.runtime.discovery import discover_services
@@ -106,6 +107,9 @@ def _seed_intrinsic(
             ),
         ),
     )
+    # 실제 seed(_seed_factory_intrinsic)/finalize 흐름과 동일하게 run 을 닫는다 —
+    # in_progress 로 남기면 preview 가 intrinsic 세션 중으로 (올바르게) 판정
+    repo.finalize_run(run.id, "success")
     repo.activate_result(rid)
 
 
@@ -342,6 +346,77 @@ def test_preview_emits_corners_without_intrinsic(tmp_path: Path):
     assert len(pv.corners_2d) == pv.corner_count > 0
     assert pv.image_width == _W and pv.image_height == _H
     assert pv.tilt_deg is None  # PnP 없어 tilt 미산출
+
+
+# ─────────────────────────── cross 세션 (공유 보드 크로스캘) ────────────────
+
+
+def test_cross_run_capture_pnp_and_finalize_ready(tmp_path: Path):
+    """cross run = hand_eye 와 동일한 PnP 캡처 경로 (board_in_cam + motor_positions
+    저장) + finalize 는 ready_for_analysis — offline cross_calibrate.py 입력."""
+    mod, _, repo = _module(tmp_path)
+    _seed_intrinsic(repo, robot_id=_OMX)
+    run_id = mod.start_run(
+        StartRunRequest(robot_id=_OMX, kind="cross", algorithm="cross_capture_only")
+    ).run_id
+
+    _feed(
+        mod,
+        _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35], robot_id=_OMX),
+        [2041, 2342, 903, 2846, 2120],
+        robot_id=_OMX,
+    )
+    res = mod.capture(CaptureRequest(run_id=run_id, pose_index=0))
+    assert res.accepted, res.message
+    c = repo.list_captures(run_id)[0]
+    assert c.board_in_cam is not None  # PnP 경로 (intrinsic detect-only 아님)
+    assert c.motor_positions is not None  # FK 용 joint 저장
+
+    fin = mod.finalize_run(FinalizeRunRequest(run_id=run_id))
+    assert fin.ok
+    assert repo.get_run(run_id).status == "ready_for_analysis"  # type: ignore[union-attr]
+
+
+def test_cross_session_preview_uses_diversity_not_first_pose_green(tmp_path: Path):
+    """preview 의 PnP 세션 탐색이 hand_eye 하드코드면 cross 세션 중 상시
+    green("첫 자세") — intrinsic 재캘 사고와 같은 클래스의 회귀 차단."""
+    mod, rt, repo = _module(tmp_path)
+    _seed_intrinsic(repo, robot_id=_OMX)
+    run_id = mod.start_run(
+        StartRunRequest(robot_id=_OMX, kind="cross", algorithm="cross_capture_only")
+    ).run_id
+    _feed(
+        mod,
+        _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35], robot_id=_OMX),
+        [2048] * 5,
+        robot_id=_OMX,
+    )
+    assert mod.capture(CaptureRequest(run_id=run_id, pose_index=0)).accepted
+
+    # 캡처 직후 같은 자세/같은 뷰 → 다양성 판정이 "첫 자세" green 이면 안 됨
+    mod._publish_preview(_OMX)
+    pv = _last_preview(rt)
+    assert pv.verdict in ("red", "yellow"), (pv.verdict, pv.reasons)
+    assert "첫 자세" not in " ".join(pv.reasons)
+
+
+def test_start_run_rejects_non_session_kind(tmp_path: Path):
+    """joint/link/sag 는 offline BA 산출물 — 캡처 세션 생성 거부."""
+    mod, _, _ = _module(tmp_path)
+    with pytest.raises(ValueError, match="캡처 세션"):
+        mod.start_run(
+            StartRunRequest(robot_id=_OMX, kind="joint_offset", algorithm="x")
+        )
+
+
+def test_start_run_aborts_stale_cross_run(tmp_path: Path):
+    """cross 세션도 stale cleanup 대상 — 새 start_run 이 orphan cross 를 정리."""
+    mod, _, repo = _module(tmp_path)
+    stale_id = mod.start_run(
+        StartRunRequest(robot_id=_OMX, kind="cross", algorithm="x")
+    ).run_id
+    mod.start_run(StartRunRequest(robot_id=_OMX, kind="intrinsic", algorithm="y"))
+    assert repo.get_run(stale_id).status == "failed"  # type: ignore[union-attr]
 
 
 # ─────────────────────────── capture (sim board) ───────────────────────────
@@ -583,6 +658,113 @@ def test_intrinsic_user_cal_capture_and_finalize(tmp_path: Path):
     keys = [k for k, _ in rt.events]
     assert Calibration.Event.COMMITTED in keys
     assert Calibration.Event.ACTIVATED in keys
+
+
+def test_preview_intrinsic_recal_session_uses_coverage_not_handeye(tmp_path: Path):
+    """재캘 실사고 (2026-07-11): active intrinsic 이 이미 있으면 preview 가 PnP
+    성공 → hand-eye 판정으로 새서, intrinsic 세션 중인데 같은 뷰에 상시 green
+    ("첫 자세") 이 떴다. intrinsic 세션 중엔 active intrinsic 유무와 무관하게
+    coverage 판정이어야 한다 — 같은 cell 재방문은 yellow."""
+    mod, rt, repo = _module(tmp_path)
+    _seed_intrinsic(repo, robot_id=_OMX)  # 재캘 = active intrinsic 존재
+    run = repo.create_run(_OMX, "intrinsic", "user_charuco")
+    assert run.id is not None
+
+    _feed(
+        mod,
+        _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35], robot_id=_OMX),
+        [2048] * 5,
+        robot_id=_OMX,
+    )
+    assert mod.capture(CaptureRequest(run_id=run.id, pose_index=0)).accepted
+
+    # 캡처 직후 똑같은 카메라 뷰 → 같은 cell = "이미 커버한 영역" yellow
+    mod._publish_preview(_OMX)
+    pv = _last_preview(rt)
+    assert pv.detected is True
+    assert pv.verdict == "yellow", (pv.verdict, pv.reasons)
+    assert any("이미 커버" in r for r in pv.reasons)
+
+
+def test_preview_intrinsic_counts_captures_not_cells(tmp_path: Path):
+    """preview 의 n_existing 이 커버 cell 수를 세면 (장수 아님) 권장 장수를
+    아무리 채워도 "충분 — 종료 가능" green 에 도달 못 한다 — 장수 기준 검증."""
+    mod, rt, repo = _module(tmp_path)
+    run = repo.create_run(_OMX, "intrinsic", "user_charuco")
+    assert run.id is not None
+
+    _feed(
+        mod,
+        _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35], robot_id=_OMX),
+        [2048] * 5,
+        robot_id=_OMX,
+    )
+    for i in range(10):  # 같은 cell 에 권장 장수만큼 (cell 은 1개)
+        assert mod.capture(CaptureRequest(run_id=run.id, pose_index=i)).accepted
+
+    mod._publish_preview(_OMX)
+    pv = _last_preview(rt)
+    assert pv.verdict == "green", (pv.verdict, pv.reasons)
+    assert any("충분" in r for r in pv.reasons)
+
+
+def test_preview_verdict_hysteresis_suppresses_single_frame_flap(tmp_path: Path):
+    """신호등 널뜀 실사고 (2026-07-11): 보드 고정인데 경계 검출로 프레임마다
+    미검출(red)↔OK(green) 가 튀어 캡처 타이밍을 못 잡음. 단일 프레임 dropout 은
+    표시 verdict 를 못 바꾸고, 지속(4/5)돼야 전환된다."""
+    mod, rt, repo = _module(tmp_path)
+    run = repo.create_run(_OMX, "intrinsic", "user_charuco")
+    assert run.id is not None
+    board = _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35], robot_id=_OMX)
+    blank = CameraDecodedFrame(
+        robot_id=_OMX,
+        seq=0,
+        timestamp_unix=0.0,
+        ndarray_bytes=np.full((_H, _W, 3), 50, dtype=np.uint8).tobytes(),
+        width=_W,
+        height=_H,
+    )
+
+    # 안정 green 확립 (5프레임)
+    _feed(mod, board, [2048] * 5, robot_id=_OMX)
+    for _ in range(5):
+        mod._publish_preview(_OMX)
+    assert _last_preview(rt).verdict == "green"
+
+    # 단일 프레임 미검출 — 신호등은 green 유지, overlay(detected)는 raw 정직
+    _feed(mod, blank, [2048] * 5, robot_id=_OMX)
+    mod._publish_preview(_OMX)
+    pv = _last_preview(rt)
+    assert pv.detected is False
+    assert pv.verdict == "green", (pv.verdict, pv.reasons)
+
+    # 미검출 지속 → red 전환 (4/5 도달)
+    for _ in range(3):
+        mod._publish_preview(_OMX)
+    pv = _last_preview(rt)
+    assert pv.verdict == "red", (pv.verdict, pv.reasons)
+
+
+def test_preview_verdict_resets_after_capture(tmp_path: Path):
+    """캡처는 coverage 기준을 바꾸므로 smoothing 이 리셋돼 다음 판정이 즉시 표시 —
+    같은 뷰가 hysteresis 지연 없이 바로 yellow (이미 커버) 로 떨어져야 한다."""
+    mod, rt, repo = _module(tmp_path)
+    run = repo.create_run(_OMX, "intrinsic", "user_charuco")
+    assert run.id is not None
+    _feed(
+        mod,
+        _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35], robot_id=_OMX),
+        [2048] * 5,
+        robot_id=_OMX,
+    )
+    for _ in range(5):  # 캡처 전 green 으로 포화된 window
+        mod._publish_preview(_OMX)
+    assert _last_preview(rt).verdict == "green"
+
+    assert mod.capture(CaptureRequest(run_id=run.id, pose_index=0)).accepted
+    mod._publish_preview(_OMX)  # 같은 뷰 — 리셋 덕에 1프레임 만에 yellow
+    pv = _last_preview(rt)
+    assert pv.verdict == "yellow", (pv.verdict, pv.reasons)
 
 
 def test_intrinsic_finalize_insufficient_captures_keeps_run_alive(tmp_path: Path):

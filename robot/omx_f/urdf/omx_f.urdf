@@ -21,8 +21,9 @@
       <geometry>
         <box size="0.01 0.01 0.01"/>
       </geometry>
-      <material name="red">
-        <color rgba="1.0 0.0 0.0 1"/>
+      <!-- 몸통색 통일 (2026-07-12): TCP 표시는 gizmo 로 단일화 (so101 동일) -->
+      <material name="tcp_marker">
+        <color rgba="0.45 0.45 0.45 1"/>
       </material>
     </visual>
   </link>

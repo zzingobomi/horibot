@@ -12,6 +12,88 @@
 ---
 ---
 
+<!-- ═══════════ Cross-Calibration (2026-07-11 신규 §) ═══════════ -->
+
+# Cross-Calibration — multi-robot base 배치 (robots.yaml base_pose)
+
+> **상태**: 구현 완료 (2026-07-11) — kind=`cross` 캡처 세션 + `scripts/cross_calibrate.py`.
+> 결정: so101_6dof_0 = world 원점 (0,0,0), 타 robot 의 base_pose 를 크로스캘로 산출.
+
+**원리 (공유 보드 방식 — 산업 표준 multi-robot cell registration)**: hand-eye 캘 완료
+robot 은 보드 1회 관측으로 `T_base←board = FK(q) · T_ee←cam · T_cam←board` 를 안다.
+같은 보드를 두 robot 이 각자 N회 관측 → robust 평균 (`average_se3`) →
+`T_Abase←Bbase = T_Abase←board · (T_Bbase←board)⁻¹` → (x, y, z, yaw) 투영.
+같은 테이블 가정이라 **roll/pitch 잔차 ≈ 0 이 sanity check** (>2° WARN / >5° RED).
+
+**전제**: 두 robot 모두 active intrinsic + hand_eye (joint/link/sag 는 있으면 자동 적용 —
+Motion consumer 와 동형 순서). **기대 정확도** = 각 robot effective σ 의 √2 배 수준
+(σ_t ~10mm / σ_rot ~1°) — 씬 배치·task 협력의 coarse 기준용. 정밀 파지는 각 robot
+자기 perception 몫.
+
+**절차**:
+1. ChArUco 보드를 두 robot 이 모두 볼 수 있는 위치에 고정. **두 세션 사이 이동 절대 금지**
+   (보드가 밀린 만큼 그대로 base_pose 오차 — per-robot 흩어짐 지표에 "보드 이동 의심" 경고).
+2. UI 캘 패널 (robot A) → [크로스 시작] → 6~8장 (관측 방향 다양하게, 신호등은 hand-eye
+   판정기 공유) → 세션 종료 (`ready_for_analysis`).
+3. robot B 동일.
+4. backend 종료 후: `uv run --no-sync python scripts/cross_calibrate.py --db horibot.db`
+   (`--robot-a`/`--robot-b` 기본 so101/omx, `--run-a`/`--run-b` 로 run 지정 가능).
+5. 리포트의 base_pose 블록을 [robot/robots.yaml](../robot/robots.yaml) 에 반영 (스크립트는
+   yaml 을 자동 수정하지 않음 — placement SSOT 는 사람이 확인 후 커밋) → backend 재시작.
+
+**wire**: run kind = `cross` — 캡처 경로는 hand_eye 와 동일 (PnP + motor_positions,
+`board_in_cam` DB 캐시라 blob 불필요). DB result 없음 — 산출물의 SSOT 는 robots.yaml
+base_pose. 장수 다양성 요구는 hand-eye 보다 약함 (방정식 풀이가 아니라 직접 계산의 평균
+— 회전축 스프레드 불필요, 관측 시점만 흩으면 됨).
+
+## 실측 검증 이력 (2026-07-11~12, so101#6 + omx#5 → 4점 보정 → base_pose 확정)
+
+**최종값 = omx (x 0.0342, y 0.2702, z −0.0094, yaw −3.33°).** 도달 경로:
+
+1. **보드 크로스캘** → (0.0452, 0.2432, −0.0354, −3.33°). 통과한 검증: 합성 round-trip
+   (0.5°/5mm) / 줄자 J1 축간 27.2cm ∈ 실측 27~30cm / 10-pose 흩어짐 = σ floor 수준.
+2. **4점 TCP 랑데부** (양 robot 손끝을 같은 세계점 ±20mm 로 명령, 4개 워크스페이스
+   지점, 눈대중 잔차 판독): 잔차가 **전 지점 상수 (+11, −27, −26)mm** (y 산포 ±2mm)
+   → 강체 bias 판정 → base_pose 에 흡수. 보정 후 옆-나란히 재검증 통과 (같은 높이
+   ±1mm 급, 간격 명령 70mm vs 관찰 정합). 보정 후 J1 축간 29.8cm — 줄자 감각과 더
+   정합, base 높이차 −35→−9mm — 같은 테이블 가정과 더 정합.
+3. **교훈 — 보드 방식만으로 끝내지 말 것**: 보드 크로스캘은 각 robot hand-eye 의
+   systematic bias (흩어짐에 안 보임) 를 물려받아 **~2-3cm 상수 오차**가 남을 수 있다.
+   **4점 랑데부가 크로스캘의 필수 마감 단계** — 잔차가 상수면 base_pose 흡수, 지점마다
+   널뛰면 FK 몫(흡수 금지). 주의: 상수 잔차에는 tool 정의 상수 성분이 섞일 수 있어
+   wrist 자세를 바꾼 지점을 섞으면 분리 가능 (이번엔 유사 wrist — 미분리, 열린 항목).
+
+### ⚠️ 물리 검증 시 측정 기준점 함정 (오진 3건의 공통 원인 — 재발 방지 anchor)
+
+**자·캘리퍼스가 닿는 실물 접촉점 ≠ URDF tcp 추상점** — 닫힌 손끝도 부피가 있어
+(wrist roll 90° 평면 터치 시 접촉점 = 손가락 패드 옆·아랫면) TCP 점에서 **~2cm**
+떨어지고 wrist 자세 따라 회전한다 (so101 fit: e≈(−3,−15,−14)mm — 보드 격자+평면
++50mm 구속 역산, A4 여백 17.5mm 자동 재현으로 교차 확증). 그래서:
+- 성분 분해 실측은 **명령-기준 상대 판독** (모델 gap 예측치 대비 잔차) 으로만 —
+  절대 성분은 tip 기하로 뒤섞임
+- "터치한 십자" 정체 주의: 패턴 **테두리 모서리**가 내부 십자로 오인되기 쉬움
+- 순수 TCP 검증 = stylus 지그 + tool_offset 이 정석
+- 당일 오진: "so101 5cm 거짓말"/"관절 스케일 19% 결손"/"보정 FK 해악" — 전부
+  e=0 가정의 파생. **fit 의 암묵 가정은 결론에 명시할 것.**
+
+### ⚠️ 근접 이동 안전 규칙 (2026-07-12 충돌 사고 — so101 이 omx 카메라 마운트 가압)
+
+원인 = TCP **점** 거리만 계산, EE **부피**(카메라 마운트) 미고려 + base_pose 보정
+직후 여유 재계산 누락. 규칙: ① 근접 배치는 EE 외곽 기준 **최소 80mm** ② 한쪽 EE
+수직 기둥 안에 다른 쪽 배치 금지 (포개기 금지, 옆-나란히만) ③ 근접 이동 전 배치도
+(좌표+여유) 를 사용자에게 먼저 제시.
+
+### 3D 씬의 TCP 표시 규약 (2026-07-12)
+
+URDF `tcp` link 의 마커 박스는 **무보정 FK 로 그려지는 도면 참고점** — 보정 TCP
+(gizmo 좌표축, sag/link 반영 = 실물 정합) 와 최대 2~3cm 어긋나 보이는 게 정상.
+이중 진실 혼란을 줄이려 마커를 몸통색(회색)으로 통일 — **화면의 TCP 진실은 gizmo
+하나**. 메쉬 자체를 보정 FK 로 그리는 근본 해결 = motion.md 의 옵션 B (backlog,
+옵션 A 는 sag 미반영이라 기각).
+
+---
+---
+
 <!-- ═══════════ [통합 원문] calibration.md ═══════════ -->
 
 # Calibration Module — boundary spec (v2 Step E 진입 전 설계 확정)

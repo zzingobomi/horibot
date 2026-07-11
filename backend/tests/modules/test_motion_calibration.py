@@ -260,6 +260,39 @@ def test_build_kinematics_applies_all_three(robot, arm, urdf_copy: Path):
     assert mod._joint_off[0] == 0.0
 
 
+def test_build_kinematics_partial_bundle_handeye_and_joint_only(
+    robot, arm, urdf_copy: Path
+):
+    """omx 실 커밋 형태 (2026-07-11): BA 가 link/sag 를 과적합으로 기각해
+    joint_offset 만 active. 없는 산출물은 각각 독립적으로 skip — URDF 원본 로드,
+    sag decorator 없음, joint_offset 만 적용."""
+    factory_paths: list[Path] = []
+
+    def factory(p: Path):
+        factory_paths.append(Path(p))
+        return _RecordingKin()
+
+    bundle = CalibrationBundle(
+        robot_id=_SO101,
+        joint_offset=JointOffsetResultRecord(
+            **_record_kw(_SO101),
+            result_data=JointOffsetResultData(
+                offsets={arm[1].id: 0.066, arm[3].id: 0.078}, method="test"
+            ),
+        ),
+        # link_offset / sag 없음 — 부재가 기본값
+    )
+    mod = _make_module(robot, arm, urdf_copy, factory)
+    mod._build_kinematics(bundle)
+
+    assert factory_paths == [urdf_copy]  # link_offset 없음 → 원본 URDF
+    assert isinstance(mod._kin, _RecordingKin)  # sag 없음 → decorator 없음
+    assert mod._joint_off is not None  # joint_offset 은 적용
+    assert mod._joint_off[1] == pytest.approx(0.066)
+    assert mod._joint_off[3] == pytest.approx(0.078)
+    assert mod._joint_off[0] == 0.0
+
+
 def test_build_kinematics_without_bundle_is_uncorrected(robot, arm, urdf_copy: Path):
     factory_paths: list[Path] = []
 

@@ -32,7 +32,7 @@ pi-hori1 = [
 
 # hori2 — so101 D405 카메라
 pi-hori2 = [
-    "opencv-python-headless>=4.10.0",
+    "opencv-python-headless>=4.10.0,<5",
     "zstandard>=0.22.0",
     "pyrealsense2>=2.54",
 ]
@@ -44,7 +44,7 @@ pi-hori3 = [
     "ruckig>=0.9",
     "scipy>=1.11",
     "yourdfpy>=0.0.56",
-    "opencv-python-headless>=4.10.0",
+    "opencv-python-headless>=4.10.0,<5",
     "zstandard>=0.22.0",
 ]
 
@@ -54,7 +54,7 @@ pc = [
     "uvicorn>=0.30.0",
     "websockets>=13.0",
     "psutil>=6.0.0",
-    "opencv-python-headless>=4.10.0",
+    "opencv-python-headless>=4.10.0,<5",
     "zstandard>=0.22.0",
     "sqlalchemy>=2.0.0",
     "alembic>=1.13.0",

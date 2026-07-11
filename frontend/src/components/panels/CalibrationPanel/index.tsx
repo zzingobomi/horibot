@@ -33,11 +33,12 @@ const VERDICT_COLOR: Record<string, string> = {
   red: "bg-red-500",
 };
 
-type SessionKind = "intrinsic" | "hand_eye";
+type SessionKind = "intrinsic" | "hand_eye" | "cross";
 
 const SESSION_LABEL: Record<SessionKind, string> = {
   intrinsic: "내부캘",
   hand_eye: "핸드아이",
+  cross: "크로스",
 };
 
 // algorithm 은 run 기록용 자유 텍스트 — factory seed("d405_factory")와 구분되는
@@ -45,6 +46,14 @@ const SESSION_LABEL: Record<SessionKind, string> = {
 const SESSION_ALGORITHM: Record<SessionKind, string> = {
   intrinsic: "charuco_manual",
   hand_eye: "hand_eye_capture_only",
+  cross: "cross_capture_only",
+};
+
+// 세션 중 안내 (장수/주의) — 판정 로직 아님 (신호등은 backend verdict).
+const SESSION_HINT: Record<SessionKind, string> = {
+  intrinsic: "권장 10장 · 화면 9칸 커버 + 기울기 다양하게",
+  hand_eye: "권장 8~10장 · 회전(joint) 다양성이 핵심",
+  cross: "권장 6~8장 · 두 robot 세션 사이 보드 이동 절대 금지",
 };
 
 type BundleKind = keyof Pick<
@@ -232,7 +241,9 @@ export function CalibrationPanel() {
     setLastMsg(
       runKind === "intrinsic"
         ? `run ${runId} 종료 — intrinsic 계산·활성 완료`
-        : `run ${runId} 종료 (offline 분석 대기)`,
+        : runKind === "cross"
+          ? `run ${runId} 종료 — 상대 robot 도 cross 캡처 후 cross_calibrate.py 실행`
+          : `run ${runId} 종료 (offline 분석 대기)`,
     );
     setRunId(null);
     setRunKind(null);
@@ -329,6 +340,9 @@ export function CalibrationPanel() {
               <Button size="sm" onClick={() => void onStart("hand_eye")} data-testid="start-run">
                 핸드아이 시작
               </Button>
+              <Button size="sm" onClick={() => void onStart("cross")} data-testid="start-cross">
+                크로스 시작
+              </Button>
             </>
           ) : (
             <>
@@ -353,6 +367,11 @@ export function CalibrationPanel() {
             </>
           )}
         </div>
+        {runKind != null ? (
+          <div className="mt-1 text-muted-foreground" data-testid="session-hint">
+            {SESSION_HINT[runKind]}
+          </div>
+        ) : null}
         <div className="mt-1 text-muted-foreground" data-testid="capture-msg">
           {lastMsg}
         </div>

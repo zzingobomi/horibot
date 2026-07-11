@@ -85,7 +85,7 @@ export interface ActivateResultResponse {
 export interface CalibrationActivated {
   robot_id: string;
   result_id: number;
-  kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
+  kind: "intrinsic" | "hand_eye" | "cross" | "joint_offset" | "link_offset" | "sag";
 }
 
 export interface IntrinsicResultData {
@@ -231,7 +231,7 @@ export interface CalibrationRunRecord {
   algorithm: string;
   algorithm_params?: Record<string, unknown>;
   status: "in_progress" | "ready_for_analysis" | "success" | "failed";
-  kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
+  kind: "intrinsic" | "hand_eye" | "cross" | "joint_offset" | "link_offset" | "sag";
 }
 
 export interface CaptureQualityPayload {
@@ -271,7 +271,7 @@ export interface GetThresholdsResponse {
 
 export interface ListResultsRequest {
   robot_id: string;
-  kind?: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag" | null;
+  kind?: "intrinsic" | "hand_eye" | "cross" | "joint_offset" | "link_offset" | "sag" | null;
 }
 
 export interface ListResultsResponse {
@@ -280,7 +280,7 @@ export interface ListResultsResponse {
 
 export interface ListRunsRequest {
   robot_id: string;
-  kind?: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag" | null;
+  kind?: "intrinsic" | "hand_eye" | "cross" | "joint_offset" | "link_offset" | "sag" | null;
 }
 
 export interface ListRunsResponse {
@@ -302,7 +302,7 @@ export interface SnapshotBundleRequest {
 
 export interface StartRunRequest {
   robot_id: string;
-  kind: "intrinsic" | "hand_eye" | "joint_offset" | "link_offset" | "sag";
+  kind: "intrinsic" | "hand_eye" | "cross" | "joint_offset" | "link_offset" | "sag";
   algorithm: string;
 }
 

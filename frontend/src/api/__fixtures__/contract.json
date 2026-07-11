@@ -252,7 +252,7 @@
         },
         {
           "name": "kind",
-          "ts": "\"intrinsic\" | \"hand_eye\" | \"joint_offset\" | \"link_offset\" | \"sag\"",
+          "ts": "\"intrinsic\" | \"hand_eye\" | \"cross\" | \"joint_offset\" | \"link_offset\" | \"sag\"",
           "optional": false
         }
       ],
@@ -847,7 +847,7 @@
         },
         {
           "name": "kind",
-          "ts": "\"intrinsic\" | \"hand_eye\" | \"joint_offset\" | \"link_offset\" | \"sag\"",
+          "ts": "\"intrinsic\" | \"hand_eye\" | \"cross\" | \"joint_offset\" | \"link_offset\" | \"sag\"",
           "optional": false
         }
       ],
@@ -974,7 +974,7 @@
         },
         {
           "name": "kind",
-          "ts": "\"intrinsic\" | \"hand_eye\" | \"joint_offset\" | \"link_offset\" | \"sag\" | null",
+          "ts": "\"intrinsic\" | \"hand_eye\" | \"cross\" | \"joint_offset\" | \"link_offset\" | \"sag\" | null",
           "optional": true
         }
       ],
@@ -1001,7 +1001,7 @@
         },
         {
           "name": "kind",
-          "ts": "\"intrinsic\" | \"hand_eye\" | \"joint_offset\" | \"link_offset\" | \"sag\" | null",
+          "ts": "\"intrinsic\" | \"hand_eye\" | \"cross\" | \"joint_offset\" | \"link_offset\" | \"sag\" | null",
           "optional": true
         }
       ],
@@ -1066,7 +1066,7 @@
         },
         {
           "name": "kind",
-          "ts": "\"intrinsic\" | \"hand_eye\" | \"joint_offset\" | \"link_offset\" | \"sag\"",
+          "ts": "\"intrinsic\" | \"hand_eye\" | \"cross\" | \"joint_offset\" | \"link_offset\" | \"sag\"",
           "optional": false
         },
         {

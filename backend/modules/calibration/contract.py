@@ -26,6 +26,7 @@ from framework.contract.model import StrictModel
 CalibrationKind = Literal[
     "intrinsic",
     "hand_eye",
+    "cross",  # 크로스캘 capture 세션 — 결과는 offline 합성 → robots.yaml (DB result 없음)
     "joint_offset",
     "link_offset",
     "sag",

@@ -18,6 +18,7 @@ import asyncio
 import logging
 import math
 import time
+from collections import Counter, deque
 from datetime import UTC, datetime
 
 import cv2
@@ -85,6 +86,13 @@ def _raw_to_rad(raw: int) -> float:
 
 _PREVIEW_HZ = 5.0
 
+# 캡처 세션을 여는 kind (start_run 허용 + stale cleanup + preview 라우팅 공용).
+# intrinsic = detect-only, hand_eye/cross = PnP 경로 (동일 캡처·판정, 소비만 다름
+# — hand_eye 는 offline BA, cross 는 cross_calibrate.py 합성 → robots.yaml).
+_CAPTURE_SESSION_KINDS: tuple[str, ...] = ("intrinsic", "hand_eye", "cross")
+# PnP 캡처 세션 (preview 가 hand-eye 다양성 판정기를 공유하는 kind)
+_PNP_SESSION_KINDS: tuple[str, ...] = ("hand_eye", "cross")
+
 
 class CalibrationRobotSpec(BaseModel):
     """robot 별 정적 config — resolve 가 robots.yaml 에서 투영해 주입.
@@ -119,6 +127,9 @@ class CalibrationModule:
         self._latest_raw: dict[str, dict[int, int]] = {}
         self._preview_on: dict[str, bool] = {}
         self._preview_seq: dict[str, int] = {}
+        # preview 신호등 flap 억제 — 최근 raw 판정 window + 현재 표시 판정
+        self._preview_recent: dict[str, deque[tuple[str, tuple[str, ...]]]] = {}
+        self._preview_shown: dict[str, tuple[str, list[str]]] = {}
         self._stop = False
         self._preview_task: asyncio.Task[None] | None = None
 
@@ -217,11 +228,17 @@ class CalibrationModule:
     # ── commands (write) ──────────────────────────────────────
     @service(Calibration.Service.START_RUN)
     def start_run(self, req: StartRunRequest) -> StartRunResponse:
+        # 캡처 세션은 이 3종만 — joint/link/sag 는 offline BA 산출물이라 세션이 없다.
+        if req.kind not in _CAPTURE_SESSION_KINDS:
+            raise ValueError(
+                f"kind {req.kind!r} 는 캡처 세션 대상 아님 "
+                f"(가능: {', '.join(_CAPTURE_SESSION_KINDS)})"
+            )
         # 도메인 규칙: robot 당 활성 캡처 세션 1개 — preview 판정이
         # get_in_progress_run 으로 세션을 찾으므로 stale run 이 남으면 오판.
         # 새 시작 = 이전 미완 세션 폐기 (browser reload 로 UI 가 runId 를 잃어도
         # orphan run 이 영구 in_progress 로 쌓이지 않음).
-        for kind in ("intrinsic", "hand_eye"):
+        for kind in _CAPTURE_SESSION_KINDS:
             stale = self._repo.get_in_progress_run(req.robot_id, kind)
             while stale is not None and stale.id is not None:
                 self._repo.finalize_run(stale.id, "failed")
@@ -269,6 +286,10 @@ class CalibrationModule:
         if run is None:
             raise KeyError(f"run {req.run_id} 없음")
         robot_id = run.robot_id
+        # 캡처는 coverage/diversity 기준 자체를 바꾸므로 신호등 smoothing 리셋 —
+        # 다음 preview 판정이 hysteresis 지연 없이 즉시 표시
+        self._preview_recent.pop(robot_id, None)
+        self._preview_shown.pop(robot_id, None)
 
         frame = self._latest_frame.get(robot_id)
         if frame is None:
@@ -595,64 +616,91 @@ class CalibrationModule:
         if frame is None:
             return
         img_h, img_w = int(frame.shape[0]), int(frame.shape[1])
-        intrinsic = self._repo.get_active(robot_id, "intrinsic")
         det = None
         detected = False
         corner_count = 0
         corners_2d: list[list[float]] = []
-        if isinstance(intrinsic, IntrinsicResultRecord):
-            cm = np.array(intrinsic.result_data.camera_matrix, dtype=np.float64)
-            dist = np.array(intrinsic.result_data.dist_coeffs, dtype=np.float64)
-            det = processing.detect_and_pnp(frame, cm, dist)
-        if det is not None:
-            detected = True
-            corner_count = len(det.corner_ids)
-            corners_2d = det.corners_2d
-            run = self._repo.get_in_progress_run(robot_id, "hand_eye")
-            quality = (
-                self._evaluate_quality(run.id, det, robot_id)
-                if run is not None and run.id is not None
-                else capture_quality.CaptureQuality("green", ["첫 자세 — 캡처 권장"])
-            )
-            verdict, reasons, tilt = quality.verdict, quality.reasons, det.tilt_deg
-        else:
-            # intrinsic 없거나 미검출 — detect-only (tilt 없음). corners_2d 는 overlay
-            # 를 위해 intrinsic 없이도 raw ChArUco 픽셀로 채움 (PnP 불필요).
+        # 진행 중 세션의 kind 가 판정 경로를 결정한다. active intrinsic 존재 여부로
+        # 먼저 분기하면 재캘(intrinsic 세션 + active intrinsic 공존)이 hand-eye
+        # 판정으로 새서 상시 green (2026-07-11 실사고).
+        intr_run = self._repo.get_in_progress_run(robot_id, "intrinsic")
+        if intr_run is not None and intr_run.id is not None:
+            # intrinsic 세션 — detect-only + 3×3 coverage 판정 (PnP 불필요)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             ok, ch_corners, ids = calib_board.detect(gray)
             detected = ok
             corner_count = 0 if ids is None else len(ids)
+            tilt = None
             if ok and ch_corners is not None:
                 corners_2d = ch_corners.reshape(-1, 2).astype(float).tolist()
-            tilt = None
-            intr_run = self._repo.get_in_progress_run(robot_id, "intrinsic")
-            if intr_run is not None and intr_run.id is not None:
-                # intrinsic 세션 진행 중 — coverage 기반 판정 (detect-only 정상 경로)
-                if ok and ch_corners is not None:
-                    img_h_, img_w_ = int(frame.shape[0]), int(frame.shape[1])
-                    covered = {
-                        capture_quality.intrinsic_coverage_cell(
-                            np.array(c.corners_2d, dtype=np.float64), img_w_, img_h_
-                        )
-                        for c in self._repo.list_captures(intr_run.id)
-                        if c.corners_2d
-                    }
-                    cell = capture_quality.intrinsic_coverage_cell(
-                        ch_corners, img_w_, img_h_
+                existing = self._repo.list_captures(intr_run.id)
+                covered = {
+                    capture_quality.intrinsic_coverage_cell(
+                        np.array(c.corners_2d, dtype=np.float64), img_w, img_h
                     )
-                    q = capture_quality.evaluate_intrinsic_capture(
-                        cell=cell,
-                        covered_cells=covered,
-                        n_existing=len(covered),
-                    )
-                    verdict, reasons = q.verdict, q.reasons
-                else:
-                    verdict, reasons = "red", ["보드 미검출"]
+                    for c in existing
+                    if c.corners_2d
+                }
+                cell = capture_quality.intrinsic_coverage_cell(
+                    ch_corners, img_w, img_h
+                )
+                q = capture_quality.evaluate_intrinsic_capture(
+                    cell=cell,
+                    covered_cells=covered,
+                    n_existing=len(existing),
+                )
+                verdict, reasons = q.verdict, q.reasons
             else:
+                verdict, reasons = "red", ["보드 미검출"]
+        else:
+            intrinsic = self._repo.get_active(robot_id, "intrinsic")
+            if isinstance(intrinsic, IntrinsicResultRecord):
+                cm = np.array(intrinsic.result_data.camera_matrix, dtype=np.float64)
+                dist = np.array(intrinsic.result_data.dist_coeffs, dtype=np.float64)
+                det = processing.detect_and_pnp(frame, cm, dist)
+            if det is not None:
+                detected = True
+                corner_count = len(det.corner_ids)
+                corners_2d = det.corners_2d
+                # PnP 세션(hand_eye/cross)이 열려 있으면 그 run 의 기존 캡처 대비
+                # 다양성 판정 — kind 하드코드 금지 (intrinsic 재캘 상시-green 사고
+                # 와 같은 클래스)
+                run = next(
+                    (
+                        r
+                        for k in _PNP_SESSION_KINDS
+                        if (r := self._repo.get_in_progress_run(robot_id, k))
+                        is not None
+                    ),
+                    None,
+                )
+                quality = (
+                    self._evaluate_quality(run.id, det, robot_id)
+                    if run is not None and run.id is not None
+                    else capture_quality.CaptureQuality(
+                        "green", ["첫 자세 — 캡처 권장"]
+                    )
+                )
+                verdict, reasons, tilt = (
+                    quality.verdict,
+                    quality.reasons,
+                    det.tilt_deg,
+                )
+            else:
+                # intrinsic 없거나 미검출 — detect-only (tilt 없음). corners_2d 는
+                # overlay 를 위해 intrinsic 없이도 raw ChArUco 픽셀로 채움.
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                ok, ch_corners, ids = calib_board.detect(gray)
+                detected = ok
+                corner_count = 0 if ids is None else len(ids)
+                if ok and ch_corners is not None:
+                    corners_2d = ch_corners.reshape(-1, 2).astype(float).tolist()
+                tilt = None
                 verdict = "red"
                 reasons = (
                     ["보드 미검출"] if not ok else ["자세 추정 불가 (intrinsic 확인)"]
                 )
+        verdict, reasons = self._smooth_preview_verdict(robot_id, verdict, reasons)
         seq = self._preview_seq.get(robot_id, 0)
         self.runtime.publish(
             Calibration.Stream.PREVIEW,
@@ -672,6 +720,27 @@ class CalibrationModule:
             ),
         )
         self._preview_seq[robot_id] = seq + 1
+
+    def _smooth_preview_verdict(
+        self, robot_id: str, verdict: str, reasons: list[str]
+    ) -> tuple[str, list[str]]:
+        """신호등 flap 억제 — 다수결 hysteresis (2026-07-11 실사고: 보드 고정인데
+        경계 검출 때문에 프레임마다 red/green 널뜀).
+
+        최근 5프레임 window 에서 같은 판정이 4번 이상 지속돼야 표시를 전환하고,
+        그 전까지는 직전 표시 유지 (단일 프레임 미검출/cell 경계 jitter 무시).
+        같은 판정 유지 중엔 reasons 만 최신 프레임 것으로 갱신 (cell 카운트 등).
+        detected/corners_2d 는 raw 유지 — overlay 는 프레임 그대로가 정직하다.
+        """
+        dq = self._preview_recent.setdefault(robot_id, deque(maxlen=5))
+        dq.append((verdict, tuple(reasons)))
+        top, n = Counter(v for v, _ in dq).most_common(1)[0]
+        shown = self._preview_shown.get(robot_id)
+        if shown is None or top == shown[0] or n >= 4:
+            latest = next(r for v, r in reversed(dq) if v == top)
+            shown = (top, list(latest))
+            self._preview_shown[robot_id] = shown
+        return shown
 
     # ── internal ──────────────────────────────────────────────
     def _evaluate_quality(

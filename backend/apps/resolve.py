@@ -102,9 +102,11 @@ def resolve_host_deps(
                 _require_session_factory("waypoint", session_factory)
             )
         }
-    if name == "task":
+    if name == "pick_and_place":
+        # task 모듈 공통 물리 config — gripper raw 를 motors.yaml 에서 투영
+        # (TaskContext.gripper 가 사용. 물리값 추측 X — motors.yaml SSOT).
         from modules.motor.contract import MotorKind
-        from modules.task.spec import TaskRobotSpec
+        from modules.tasks.core.spec import TaskRobotSpec
 
         task_specs: dict[str, TaskRobotSpec] = {}
         for r in robots.values():
@@ -122,12 +124,13 @@ def resolve_host_deps(
                 gripper_held_threshold_raw=held,
             )
         return {"robots": task_specs}
-    if name == "pick_and_place":
-        # 현재는 추가 dep 없음.
-        return {}
     if name == "bridge":
-        from modules.bridge.contract import BasePoseInfo, RobotInfo, TaskInfo
-        from modules.task.tasks import task_infos
+        from modules.bridge.contract import (
+            BasePoseInfo,
+            RobotInfo,
+            TaskInfo,
+            TaskParamInfo,
+        )
 
         # robots.yaml spec — enabled=false robot 은 런타임이 무시 (frontend 에
         # 노출 X). "기본 로봇" 개념 없음 — robot 은 라우트/task 바인딩에서 명시.
@@ -147,16 +150,36 @@ def resolve_host_deps(
             )
             for r in enabled_robots
         ]
+        # task 가 참여 robot/param 을 선언 (§2.7) — bridge 는 GET /tasks relay 만.
+        # 요청 시점 평가: task 모듈 import(=registry 등록) 순서와 무관하게 전체를 봄.
+        def _tasks_provider() -> list[TaskInfo]:
+            from modules.tasks.core.metadata import task_infos
+
+            return [
+                TaskInfo(
+                    name=meta.name,
+                    robot_ids=list(meta.robots),
+                    description=meta.description,
+                    run=str(meta.run),
+                    params=[
+                        TaskParamInfo(
+                            name=p.name,
+                            type=p.type,
+                            required=p.required,
+                            default=p.default,
+                        )
+                        for p in meta.param_specs()
+                    ],
+                )
+                for meta in task_infos()
+            ]
+
         deps: dict[str, Any] = {
             "robots": infos,
             "robot_dir": _ROBOT_DIR,
             "port": deploy.bridge_port,
             "dev_console": deploy.dev_console,
-            # task 가 참여 robot 을 선언 (§2.7) — bridge 는 GET /tasks 로 relay 만.
-            "tasks": [
-                TaskInfo(name=name, robot_ids=robot_ids)
-                for name, robot_ids in task_infos()
-            ],
+            "tasks_provider": _tasks_provider,
         }
         if runtime is not None:
             # contract는 요청 시점에 생성한다.

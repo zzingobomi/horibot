@@ -18,12 +18,12 @@ import { CalibrationCameraPanel } from "./CalibrationCameraPanel";
 import { ScanPanel } from "./ScanPanel";
 import { LivePointCloudPanel } from "./LivePointCloudPanel";
 import { WaypointPanel } from "./WaypointPanel";
-import { PromptPanel } from "./PromptPanel";
+import { PickAndPlacePanel } from "./PickAndPlacePanel";
 import { TaskProgressPanel } from "./TaskProgressPanel";
 import { withRobotOwnership } from "@/components/shared/robotOwnership";
 
 // 모든 패널은 여기 등록 (§4.1 ② — dockview 가 string key→component 로 인스턴스화).
-// prompt/taskProgress 는 최상위 TasksPage(dockview) 의 PANELS 에서 이 key 로 배치.
+// pickAndPlace/taskProgress 는 task 페이지(PickAndPlacePage) 의 PANELS 에서 배치.
 export const PANEL_COMPONENTS = {
   robotState: RobotStatePanel,
   motion: MotionPanel,
@@ -34,7 +34,7 @@ export const PANEL_COMPONENTS = {
   scan: ScanPanel,
   livePointCloud: LivePointCloudPanel,
   waypoints: WaypointPanel,
-  prompt: PromptPanel,
+  pickAndPlace: PickAndPlacePanel,
   taskProgress: TaskProgressPanel,
 } as const;
 
@@ -97,15 +97,15 @@ export const PANEL_CATALOG: Record<
     height: 560,
     scenePart: WaypointScenePart, // ghost 미리보기 — [보기] 토글 시 반투명 자세
   },
-  prompt: { title: "Command", width: 340, height: 260 },
+  pickAndPlace: { title: "Pick & Place", width: 340, height: 340 },
   taskProgress: { title: "Task Progress", width: 340, height: 420 },
 };
 
 /**
  * robot 을 소유하는(useRobotId 계열) 패널 key 집합 ([[robot_ownership_model]]).
  * 여기 든 패널만 robot 셀렉터 탭 + robot params + Select Robot 빈 상태를 갖는다.
- * task 바인딩(useTaskRobotId) 패널(detectionCamera/prompt/taskProgress)은 carve-out
- * 이라 제외 — robot 은 task 가 정한다(§7).
+ * task 바인딩(useTaskRobotId) 패널(detectionCamera/pickAndPlace/taskProgress)은
+ * carve-out 이라 제외 — robot 은 task 가 정한다(§7).
  */
 export const ROBOT_OWNED_PANELS: ReadonlySet<PanelComponentKey> = new Set<PanelComponentKey>([
   "robotState",

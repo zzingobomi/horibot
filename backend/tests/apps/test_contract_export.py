@@ -91,10 +91,10 @@ def test_contract_json_shape():
     topic_keys = {t["key"] for t in data["topics"]}
     service_keys = {s["key"] for s in data["services"]}
     assert topic_keys | service_keys == FRONTEND_EXPOSED
-    # +task STATE/TREE/STEP_RESULT +detector DETECTIONS +DETECTIONS_ORIENTED(draft)
+    # +pick_and_place STATE/TRACE/STEP_RESULT +detector DETECTIONS +DETECTIONS_ORIENTED(draft)
     assert len(data["topics"]) == 16
-    # +detector DETECT +DETECT_ORIENTED(draft) +llm PARSE +task 8 +calibration ABORT_RUN
-    assert len(data["services"]) == 47
+    # +detector DETECT +DETECT_ORIENTED(draft) +llm PARSE +pick_and_place 7 +calibration ABORT_RUN
+    assert len(data["services"]) == 46
     # 내부 전용 payload 는 도달성으로 제외 — JointCommand 안 나옴
     iface_names = {i["name"] for i in data["interfaces"]}
     assert "JointCommand" not in iface_names
@@ -205,7 +205,7 @@ async def test_contract_json_endpoint_serves(contract_endpoint: str):
     assert set(data) == {"enums", "interfaces", "topics", "services"}
     # HTTP 로 serve 된 JSON = in-process build_contract_json 과 동일 계약
     assert len(data["topics"]) == 16  # +DETECTIONS_ORIENTED(draft)
-    assert len(data["services"]) == 47  # +DETECT_ORIENTED(draft) +ABORT_RUN
+    assert len(data["services"]) == 46  # +DETECT_ORIENTED(draft) +ABORT_RUN
 
 
 # ─── build_contract_graph — unfiltered attribution + wiring (§5.2) ─
@@ -236,7 +236,6 @@ def test_graph_nodes_are_contentful_modules_only():
         "WaypointModule",
         "DetectorModule",
         "LlmModule",
-        "TaskModule",
         "PickAndPlaceModule",  # task family (modules/tasks/pick_and_place), host-level
     }
     assert "BridgeModule" not in ids
@@ -253,7 +252,6 @@ def test_graph_nodes_are_contentful_modules_only():
         "ScanModule",
         "WaypointModule",
         "LlmModule",
-        "TaskModule",
         "PickAndPlaceModule",  # task family — robot-agnostic (host당 1)
     }
     for mid in host_level:
@@ -413,7 +411,6 @@ async def test_contract_graph_endpoint_serves(graph_endpoint: str):
         "WaypointModule",
         "DetectorModule",
         "LlmModule",
-        "TaskModule",
         "PickAndPlaceModule",  # task family (modules/tasks/pick_and_place), host-level
     }
     assert len(data["edges"]) >= 4

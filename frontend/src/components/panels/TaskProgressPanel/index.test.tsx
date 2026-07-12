@@ -1,6 +1,6 @@
 // TaskProgressPanel — 디버거 wire 검증 (unit).
-// preview 로 publish 된 tree(store 시딩) 가 step 목록으로 렌더 + dot 클릭 →
-// TOGGLE_BREAKPOINT + breakpoints 표시 + pause/resume 게이팅.
+// TRACE(store 시딩) 가 entry 목록으로 렌더 + dot 클릭 → TOGGLE_BREAKPOINT(label)
+// + breakpoints 표시 + pause/resume 게이팅 + run_to(label) + 실패 사유 표시.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render } from "@testing-library/react";
@@ -17,20 +17,41 @@ vi.mock("@/hooks/useTasks", () => ({
   useTaskRobotId: () => "so101_6dof_0",
   useTasks: () => ({ tasks: [], loading: false, error: null }),
 }));
-const TREE_WIRE = `stream/task/${ROBOT_ID}/tree`;
-const STATE_WIRE = `stream/task/${ROBOT_ID}/state`;
+const TRACE_WIRE = `stream/pick_and_place/${ROBOT_ID}/trace`;
+const STATE_WIRE = `stream/pick_and_place/${ROBOT_ID}/state`;
 
-function seed(status: string, breakpoints: string[] = []) {
+function seed(
+  status: string,
+  {
+    breakpoints = [],
+    error = null,
+    currentLabel = "",
+  }: { breakpoints?: string[]; error?: string | null; currentLabel?: string } = {},
+) {
   useFrameworkStore.setState({
     topicData: {
-      [TREE_WIRE]: {
+      [TRACE_WIRE]: {
         robot_id: ROBOT_ID,
         seq: 1,
         timestamp_unix: 0,
         task_name: "pick_and_place",
-        steps: [
-          { id: "s1", label: "detect", type: "GroundedDetect" },
-          { id: "s2", label: "grasp", type: "GraspPolicy" },
+        entries: [
+          {
+            label: "detect_pick",
+            kind: "detect_oriented",
+            status: "completed",
+            detail: "2개 후보",
+            started_unix: 0,
+            ended_unix: 1,
+          },
+          {
+            label: "descend",
+            kind: "move_l",
+            status: "running",
+            detail: "",
+            started_unix: 1,
+            ended_unix: null,
+          },
         ],
       },
       [STATE_WIRE]: {
@@ -39,8 +60,8 @@ function seed(status: string, breakpoints: string[] = []) {
         timestamp_unix: 0,
         status,
         task_name: "pick_and_place",
-        current_step_id: "",
-        step_statuses: {},
+        current_label: currentLabel,
+        error,
         breakpoints,
       },
     },
@@ -69,9 +90,9 @@ function mockBridge() {
 
 function renderPanel() {
   return render(
-    <MemoryRouter initialEntries={[`/robots/${ROBOT_ID}`]}>
+    <MemoryRouter initialEntries={[`/tasks/pick_and_place`]}>
       <Routes>
-        <Route path="/robots/:id" element={<TaskProgressPanel />} />
+        <Route path="/tasks/pick_and_place" element={<TaskProgressPanel />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -85,40 +106,51 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("TaskProgressPanel — 디버거", () => {
-  it("preview tree(store) → step 목록 렌더 (실행 전에 목록이 뜬다)", () => {
+describe("TaskProgressPanel — TRACE 디버거", () => {
+  it("trace(store) → entry 목록 렌더 (label + kind + detail)", () => {
     mockBridge();
-    seed("idle");
-    const { getAllByTestId } = renderPanel();
-    expect(getAllByTestId("task-step").length).toBe(2);
+    seed("running");
+    const { getAllByTestId, getByText } = renderPanel();
+    expect(getAllByTestId("task-entry").length).toBe(2);
+    expect(getByText("detect_pick")).toBeTruthy();
+    expect(getByText("2개 후보")).toBeTruthy(); // detector 사유/결과 보임
   });
 
-  it("dot 클릭 → TOGGLE_BREAKPOINT(robot_id, step_id)", async () => {
+  it("dot 클릭 → TOGGLE_BREAKPOINT({label})", async () => {
     const spy = mockBridge();
-    seed("idle");
+    seed("running");
     const { getAllByTestId } = renderPanel();
 
     await act(async () => {
-      fireEvent.click(getAllByTestId("task-step-bp")[1]); // s2
+      fireEvent.click(getAllByTestId("task-entry-bp")[1]); // descend
     });
 
     const calls = spy.mock.calls.filter((c) =>
       String(c[0]).includes("toggle_breakpoint"),
     );
     expect(calls.length).toBe(1);
-    expect(calls[0][1]).toEqual({ robot_id: ROBOT_ID, step_id: "s2" });
+    expect(calls[0][1]).toEqual({ label: "descend" });
   });
 
-  it("breakpoints(state) 표시 — 해당 step dot 에 red ring", () => {
+  it("breakpoints(state) 표시 — 해당 label dot 에 red ring", () => {
     mockBridge();
-    seed("idle", ["s1"]);
+    seed("running", { breakpoints: ["detect_pick"] });
     const { getAllByTestId } = renderPanel();
-    const dots = getAllByTestId("task-step-bp");
+    const dots = getAllByTestId("task-entry-bp");
     expect(dots[0].className).toContain("ring-red-500");
     expect(dots[1].className).not.toContain("ring-red-500");
   });
 
-  it("컨트롤 게이팅 — running 은 일시정지만, paused 는 재개/한 스텝 + run-to", async () => {
+  it("실패 = 사유가 error 박스로 표시 (침묵 금지)", () => {
+    mockBridge();
+    seed("failed", {
+      error: "[detect_pick] 'white cube' 검출 실패 — 물체 배치 확인 후 다시 실행하세요",
+    });
+    const { getByTestId } = renderPanel();
+    expect(getByTestId("task-error").textContent).toContain("다시 실행");
+  });
+
+  it("컨트롤 게이팅 — running 은 일시정지만, paused 는 재개/한 스텝 + run-to(label)", async () => {
     const spy = mockBridge();
     seed("running");
     const { getByTestId, queryAllByTestId, rerender } = renderPanel();
@@ -126,11 +158,11 @@ describe("TaskProgressPanel — 디버거", () => {
     expect((getByTestId("task-resume") as HTMLButtonElement).disabled).toBe(true);
     expect(queryAllByTestId("task-run-to").length).toBe(0); // run-to 는 paused 만
 
-    seed("paused");
+    seed("paused", { currentLabel: "descend" });
     rerender(
-      <MemoryRouter initialEntries={[`/robots/${ROBOT_ID}`]}>
+      <MemoryRouter initialEntries={[`/tasks/pick_and_place`]}>
         <Routes>
-          <Route path="/robots/:id" element={<TaskProgressPanel />} />
+          <Route path="/tasks/pick_and_place" element={<TaskProgressPanel />} />
         </Routes>
       </MemoryRouter>,
     );
@@ -138,9 +170,9 @@ describe("TaskProgressPanel — 디버거", () => {
     expect((getByTestId("task-resume") as HTMLButtonElement).disabled).toBe(false);
 
     await act(async () => {
-      fireEvent.click(queryAllByTestId("task-run-to")[1]); // s2 까지 실행
+      fireEvent.click(queryAllByTestId("task-run-to")[1]); // descend 까지 실행
     });
     const calls = spy.mock.calls.filter((c) => String(c[0]).includes("run_to"));
-    expect(calls[0][1]).toEqual({ robot_id: ROBOT_ID, step_id: "s2" });
+    expect(calls[0][1]).toEqual({ label: "descend" });
   });
 });

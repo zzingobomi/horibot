@@ -77,7 +77,6 @@ def test_load_deployment_mock():
         "waypoint",
         "detector",
         "llm",
-        "task",
         "pick_and_place",
         "bridge",
     }

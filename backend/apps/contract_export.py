@@ -27,7 +27,7 @@ from modules.motion.contract import Motion
 from modules.motor.contract import Motor
 from modules.scan.contract import Scan
 from modules.scene3d.contract import Scene3d
-from modules.task.contract import Task
+from modules.tasks.pick_and_place.contract import PickAndPlace
 from modules.waypoint.contract import Waypoint
 
 _MODULES_ROOT = Path(__file__).resolve().parents[1] / "modules"
@@ -98,23 +98,23 @@ FRONTEND_EXPOSED: set[str] = {
         Detector.Stream.DETECTIONS_ORIENTED,  # [DRAFT] obb + mask contour 오버레이
         # Llm
         Llm.Service.PARSE_COMMAND,
-        # Task
-        Task.Service.RUN,
-        Task.Service.PREVIEW,
-        Task.Service.STOP,
-        Task.Service.PAUSE,
-        Task.Service.RESUME,
-        Task.Service.STEP_ONCE,
-        Task.Service.RUN_TO,
-        Task.Service.TOGGLE_BREAKPOINT,
-        Task.Stream.STATE,
-        Task.Stream.TREE,
-        Task.Stream.STEP_RESULT,
+        # Pick & Place (task 모듈 표준 표면 — srv/<task>/... 규약)
+        PickAndPlace.Service.RUN,
+        PickAndPlace.Service.STOP,
+        PickAndPlace.Service.PAUSE,
+        PickAndPlace.Service.RESUME,
+        PickAndPlace.Service.STEP_ONCE,
+        PickAndPlace.Service.RUN_TO,
+        PickAndPlace.Service.TOGGLE_BREAKPOINT,
+        PickAndPlace.Stream.STATE,
+        PickAndPlace.Stream.TRACE,
+        PickAndPlace.Stream.STEP_RESULT,
     )
 }
 
 # HTTP endpoint 응답 모델.
 # Zenoh 키 기반 탐색으로는 찾을 수 없어 별도 seed로 등록한다.
+# (task 스트림 payload 는 tasks/core/contract.py 정의 — 키 payload 로 도달됨)
 FRONTEND_EXPOSED_MODELS: set[type] = {RobotsResponse, SystemMetrics, TasksResponse}
 
 

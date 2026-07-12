@@ -66,7 +66,7 @@ pnpm gen:types    # 떠 있는 backend /contract.json → src/api/generated/cont
 - **에러 전파**: 응답 봉투 없음 — backend 예외가 `RemoteError(type, message)` 로 wire 를 건너고, bridge 가 WS error frame 으로 릴레이. (frontend `bridge.ts` shim 이 `{success, message, data}` 모양을 **클라이언트에서** 복원 — wire 규약이 아님.)
 - **robot 스코프 규칙 (backend.md §2.7)**: robot-scoped 는 `motor` / `camera` / `camera_decoded` / `motion` 4개뿐 (`{robot_id}` 키 placeholder). 나머지는 host 당 1 인스턴스 (robot-agnostic) — 대상 robot 은 req 필드 `robot_id` 또는 진행 자원 id(run_id 등)에서 파생. Bridge 자동주입 금지.
 
-### Module 13개 ([backend/modules/](backend/modules/))
+### Module 12개 ([backend/modules/](backend/modules/))
 
 | module | 역할 |
 | --- | --- |
@@ -80,9 +80,10 @@ pnpm gen:types    # 떠 있는 backend /contract.json → src/api/generated/cont
 | waypoint | waypoint/group CRUD + teach |
 | detector | prompt → base-frame 3D 후보 (GDINO/SAM2/mock driver) |
 | llm | 자연어 → pick/place 구조화 (Qwen/mock) |
-| task | DSL runner + pause/step/breakpoint 디버거 — **폐기 예정** (design decision 참조) |
-| tasks/pick_and_place | imperative task 슬라이스 (전환 방향) |
+| tasks/pick_and_place | Pick&Place **task 모듈** (표준형 레퍼런스 — 검출→도달성 선별→파지→적치). 시나리오 감독은 [modules/tasks/core/](backend/modules/tasks/core/) 부품 (TaskRunner/TaskContext — 모듈 아닌 공유 라이브러리, [docs/task.md](docs/task.md)) |
 | bridge | FastAPI — WS 릴레이 + `/contract.json` + `/robots` + `/tasks` + `/dev` 콘솔 + MJPEG |
+
+task 터미널 실행 (frontend 없이): `uv run --no-sync python scripts/run_task.py pick_and_place --param "pick_object=white cube"` (mock in-process 부팅, :8000 미점유).
 
 ### bridge wire (browser ↔ backend)
 
@@ -121,7 +122,7 @@ capture-only 세션: `start_run(kind)` (robot 당 활성 세션 1개 — stale i
 | [frontend.md](docs/frontend.md) | **frontend SSOT** — hooks/패널/contract gen. 부록: 씬 시각화 소유권(scene_contribution — scenePart/기각 목록) / robot 소유권 불변식 / 워크스페이스 autohide 헤더. "scenePart" / "robot 셀렉터" / "패널에서 3D" 톤 전부 여기. |
 | [hardware.md](docs/hardware.md) | **HW + 운영** — 머신 토폴로지(pi_hori1/2/3 + IP)/실행 명령/OMX 모터·전원/SO-101 6DOF 개조 기록(STS3250·기어비·Feetech provisioning)/카메라/작업대. 부록: pyrealsense2 Pi 소스빌드 가이드. |
 | [calibration.md](docs/calibration.md) | **캘 전부** — 모듈 boundary spec(코드 역참조 정본) + 캡처 절차/보드 spec + **σ floor 진단(캘 trauma 최우선 앵커 — cv2_seed/MCMC/StageE/Kalib 전부 reject 확정)** + 확장 BA 도달기 + 정확도 짜내기 전략. |
-| [task.md](docs/task.md) | **task 방향 지배 결정** — Step/Slot DSL 폐기 → imperative framework (+ 폐기된 DSL reference 원문). "task DSL" / "@task" / "시나리오" 톤이면 여기. |
+| [task.md](docs/task.md) | **task 아키텍처 정본 (2026-07-12 확정)** — task=모듈 + tasks/core 부품, 새 task 체크리스트 §3 (+ 대체된 2026-07-08 안 / 폐기 DSL reference 원문). "task" / "시나리오" / "TaskRunner" 톤이면 여기. |
 | [motion.md](docs/motion.md) | Move/Servo/Jog/Task 4계층 + 산업 매핑 + jog drift 진단 박제 + URDF visual↔FK mismatch (open). |
 | [perception.md](docs/perception.md) | GDINO+SAM2 선택 근거 + multi-way ICP/TSDF 결정·파라미터(구현=modules/scan/build.py) + LLM preload race 진단. |
 | [dev_reference.md](docs/dev_reference.md) | DB 스키마 + 4계층 검증 방법론(testing_strategy) + "이거 왜 이렇게 짰어?" 검토 protocol + 아이디어 버킷. |
@@ -139,7 +140,7 @@ capture-only 세션: `start_run(kind)` (robot 당 활성 세션 1개 — stale i
 ### 프로젝트 design decision (다른 PC / 새 세션이 알아야 할 critical context)
 
 - **대원칙: 모든 작업은 UI / UX / DX 를 고려해야 완성** — 계약 구현 + 테스트 초록은 시작점일 뿐 (테스트는 "내가 짠 계약이 내가 짠 대로 도는지"만 봄, 계약 자체의 구멍은 못 잡음). 완료 보고 전 세 렌즈의 실행 체크: ① **UX — 모든 상태에서 나갈 수 있고, 실패해도 복구 가능한가**: 세션/run/task 류 상태머신은 중도 포기(abort) 경로 필수. 워크스루 = 시작→진행→정상종료→중도포기→**실패** — 각 단계마다 "여기서 실패하면?" (service 에러/timeout/WS 재연결/backend 재시작 중 세션 포함). 실패는 상태를 corrupt 하지 않고 재시도·탈출 가능한 상태로 남아야 (예: intrinsic finalize 실패 = 세션 유지 → 더 캡처 후 재시도). capability 가 다른 robot(omx=웹캠 vs so101=D405)으로도 굴려볼 것. ② **UI — 상태가 보이고 구분되는가**: 실패는 **사유 + 다음 행동**이 사용자에게 표시 ("실패"만 찍으면 반쪽). **침묵 fallback 금지** — 실패를 기본값으로 덮으면 조용한 오동작 (hand_eye snapshot 미도달 → identity fallback 사고 전례, useMirror "침묵 금지" 주석). 같은 화면의 다른 인스턴스(탭 title 등)와 구분. ③ **DX — 다음 개발자가 안전하게 확장하는가**: 토글/store/캐시 신설 시 "robot(인스턴스)별이어야 하나" 질문 — 전역에 두면 두 번째 인스턴스에서 오발사. 기본값은 SSOT 한 곳, override 는 예외 선언. 결함 발견 시 그 일반형(클래스)을 정의하고 같은 클래스를 codebase 전체 sweep, 회귀 테스트는 발견 시나리오 그대로. (기원: 2026-07-11 캘 패널 — intrinsic 0장 세션 갇힘(탈출구 부재) / omx [시야]가 so101 frustum 표시(전역 토글) — 둘 다 vitest 초록이었음)
-- **Step/Slot DSL 폐기 → imperative task framework** — 신규 task/시나리오를 `modules/task` DSL 위에 짓지 말 것. 방향 = [docs/task.md](docs/task.md) ("개발자는 시나리오 의도만, 공통 관심사는 프레임워크"). 병행 슬라이스 = `modules/tasks/pick_and_place` (imperative). 옛 DSL 은 frontend 가 아직 소비 중인 전환기 코드 — 확장 금지, 대체만.
+- **Task 아키텍처 확정 (2026-07-12, DSL 통삭제 완료)** — task = 당당한 모듈 (자기 contract/wire 소유) + `modules/tasks/core/` 프레임워크 **부품** 조합 (TaskRunner=실행 생명주기 / TaskContext·RobotHandle=도메인 접근). 상속·자동배선·@task 데코레이터·중앙 registry 전부 기각. 시나리오 규칙 둘뿐: "ctx 받는 async 함수" + "실패는 raise" (프레임워크가 FAILED+사유+Motion.STOP). 새 task = pick_and_place 복제 — 체크리스트 = [docs/task.md](docs/task.md) §3. **STOP 은 안전 의무** (로봇 세울 통로 없는 task 모듈 금지). task 페이지는 frontend 에서 task 별 전용 (공용 부품 조립).
 - **self-play 는 폐기됨** — 본 방향은 pick_and_place + deterministic IK + 캘/자세 정확도 직접 강화. self-play 점프 제안 / 신규 기능 추가 금지.
 - **Study task 에선 industry standard 도구/플로우 우선** — RL/실험/시뮬레이션 도구 추천 시 인프라 재사용 ROI 보다 산업 표준 (MuJoCo / Isaac / PPO / Stable-Baselines3 등) 우선. "표준 단계 다 밟아보기" 자체가 study output.
 - **URDF TCP link 컨벤션** — 모든 robot type 의 URDF 는 `tcp` 이름 link 필수 (UR `tool0` 등가). 새 robot type 통합 시 wrist link 끝에 fixed joint child 로 추가 — 없으면 부팅 시 fail-fast.

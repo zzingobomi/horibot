@@ -4,16 +4,97 @@
 > 링크는 본 문서 내 해당 부(또는 git history). 각 부의 제목/상태 배너는 병합 당시 그대로.
 > - `task.md`
 > - `task.md`
+>
+> **2026-07-12 개정: 최상단 [확정 아키텍처] 부가 현행 정본.** 아래 두 옛 부
+> (2026-07-08 중앙 프레임워크 설계 / Step DSL reference) 는 역사 기록.
 
 
 ---
 ---
 
-<!-- ═══════════ [통합 원문] task.md ═══════════ -->
+<!-- ═══════════ [확정 아키텍처] Task = 모듈 + core 부품 (2026-07-12 구현 완료 — 현행 정본) ═══════════ -->
+
+# Task 아키텍처 — task 모듈 + tasks/core 프레임워크 부품
+
+> **status: 구현 완료 (2026-07-12).** 사용자 설계 토론 수렴판 — 아래 2026-07-08
+> "중앙 TaskModule + @task registry" 안을 **대체**한다 (그 안의 실행 규약 다수는
+> 계승: cancel 기반 STOP / typed 예외 / TRACE / label 게이트 / FakeContext).
+
+## 1. 지배 요구 (이 프레임워크의 존재 이유 — 기능 추가 판단 기준)
+
+1. **귀찮은 공통 관심사는 프레임워크가** (AOP): 취소·일시정지·진행 보고·예외→실패
+   처리·로깅·robot 배관·timeout 을 시나리오 코드에서 제거.
+2. **시나리오 수정이 두렵지 않게**: 단계 순서 변경/추가 = 줄 편집. 에러 처리는
+   재고 대상이 아님 ("try 를 안 쓰는 게 기본" — 실패는 raise, 프레임워크가 FAILED
+   +사유+모터 정지). catch 는 도메인 복구를 원할 때만.
+3. **작성 방식 강제 금지**: 본문은 그냥 Python. DSL 실패 교훈 — 작성자가 도메인
+   대신 프레임워크 문제를 보게 만드는 순간 실패.
+4. **트리거 다양성**: RUN 서비스는 어댑터 하나. `@subscriber` 콜백/내부 모듈의
+   서비스 호출/CLI 어디서든 `runner.start()` 로 시작 가능 (fire-and-monitor).
+5. **task 도 당당한 모듈**: 자기 contract 소유, 서비스 노출/수신·구독·발행 자유.
+   다른 모듈과의 차이 = "감독되는 long-running 시나리오를 품는다" 하나뿐.
+
+## 2. 구조 (구현 = modules/tasks/)
+
+```
+modules/tasks/
+├── core/                     ← 프레임워크 부품 (contract.py 의 모델만 — 모듈 아님)
+│   ├── runner.py             TaskRunner — 실행 생명주기만 (robot 은 id 문자열만)
+│   ├── context.py            TaskContext/RobotHandle — 도메인 접근 + on_abort
+│   ├── contract.py           STATE/TRACE/STEP_RESULT payload 규약 (공용 UI 전제)
+│   ├── metadata.py           TaskMetadata registry → GET /tasks (params = RunRequest 파생)
+│   ├── errors.py             TaskError 계열 typed 예외
+│   ├── spec.py               TaskRobotSpec (motors.yaml 투영 — resolve 주입)
+│   └── fake.py               FakeContext (실 ctx 상속 — pyright 드리프트 방지)
+└── pick_and_place/           ← task 모듈 표준형 (레퍼런스 구현)
+    ├── contract.py           표준 표면: srv/<task>/run|stop|pause|resume|step_once|
+    │                         run_to|toggle_breakpoint + stream/<task>/{robot_id}/
+    │                         state|trace|step_result. typed RunRequest.
+    ├── module.py             핸들러 one-liner 위임 + _scenario + TASK_INFO 등록
+    └── geometry.py           순수 함수 (하드웨어 없이 pytest)
+```
+
+- **상속/자동배선/@task 데코레이터 없음** — 모듈이 `TaskRunner`/`TaskContextFactory`
+  를 **부품으로 소유** (조합). 핸들러 6~7줄은 명시적으로 씀 (grep 가능, "contract 에
+  선언한 키만 존재"). 디버거 표면은 원하는 task 만 선언. **STOP 은 안전 의무**
+  (움직이는 로봇을 세울 통로 없는 task 모듈 금지).
+- **책임 분리**: TaskRunner = 실행 생명주기만 / TaskContext = 도메인 접근 전부
+  (robot spec, primitive, **모션 보낸 robot 추적 → on_abort 시 그 robot 에만
+  Motion.STOP**) / 모듈 = wire + 시나리오 / geometry = 순수 계산.
+- **시나리오 표면**: `so101 = ctx.robot("so101_6dof_0")` — 누가 움직이는지가 변수로
+  읽힘 (리터럴 id, 상수 금지). primitive 는 게이트를 타고 (label 인자 하나, 생략 시
+  "kind#n"), escape hatch = `robot.call`(robot-scoped 자동 주입) / `ctx.call`(무관).
+  primitive 승격은 반복 관찰 후 (선제작 금지).
+- **관측**: STATE(status/current_label/error/breakpoints) / TRACE(primitive 호출
+  누적 — label/kind/status/detail, 전체 재발행) / STEP_RESULT(값 primitive 자동 +
+  `ctx.record`). breakpoint/run_to = **label** 기준, run 간 보존.
+- **멀티 robot (handover, 미설계)**: robot_ids 선언 + handle 2개 + asyncio.gather
+  까지는 현 구조로 수용. ctx 실행 모델 세부 + 모듈 간 robot lease 중재는 착수 시.
+- `@step` (관측 단위 데코레이터 — 함수명이 span 이름): 논의됨, 골격 굳은 뒤 재논의.
+
+## 3. 새 task 만들기 (개밥먹기 체크리스트)
+
+1. `modules/tasks/<name>/` 에 contract.py(표준 키 + typed RunRequest) / module.py
+   (runner·contexts 부품 + 핸들러 + `_scenario`) / 순수 함수 파일 — pick_and_place
+   복제가 가장 빠름.
+2. `TASK_INFO = register_task(TaskMetadata(...))` — GET /tasks 노출 (robots/설명).
+3. apps/registry.py + deployment yaml 등록. FRONTEND_EXPOSED 에 키 추가 →
+   `pnpm gen:types` (+fixture 쌍).
+4. 검증: 순수 함수 pytest → FakeContext 시나리오 (분기/실패 경로) → CLI
+   `uv run --no-sync python scripts/run_task.py <name> --param k=v` (mock, bridge
+   미점유) → 전용 페이지 (frontend — 페이지는 task 별, 부품은 공용).
+
+---
+---
+
+<!-- ═══════════ [통합 원문] task.md — 2026-07-08 중앙 프레임워크 안 (대체됨 — 역사 기록) ═══════════ -->
 
 # Task Framework — 명령형 async 함수 + 보일러플레이트 흡수 프레임워크 (설계 확정)
 
-> **status: 설계 확정 (2026-07-08 논의 수렴). 구현 대기. backend.md §17.1④/§17.4 는 본 문서로 개정 대상 (§10).**
+> **status: 대체됨 (2026-07-12 — 최상단 [확정 아키텍처] 부가 정본).** 이 부의
+> "중앙 TaskModule + @task registry + ctx 단일 robot 바인딩" 구조는 기각.
+> 실행 규약 (cancel STOP / typed 예외 / TRACE / FakeContext) 은 계승됨.
+> (원문: 설계 확정 2026-07-08 논의 수렴, 구현 대기 상태였음)
 
 ## 1. 목표 — 단일 원칙
 

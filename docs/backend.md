@@ -20,9 +20,58 @@
 > [backend.md](backend.md) (framework §1–§14 + Module catalog §16 + Task-first §17).
 > 본 문서 = "지금 어디까지 됐고 다음 뭐 할지" 만 — 설계 결정은 여기 안 둠.
 
-## 현재 상태 (2026-07-07)
+## 현재 상태 (2026-07-12)
 
-**framework + 10 Module 전부 가동 + robot-agnostic 스코프 리팩터 완료.**
+**framework + 전 Module 가동 + Task 아키텍처 확정·구현 완료 (DSL 통삭제).**
+
+### 2026-07-12 — Task 아키텍처 확정 + 옛 DSL 통삭제 + Pick&Place 본 계약 승격
+
+**설계 (사용자 논의 수렴 — docs/task.md 개정판이 정본):** task = 당당한 모듈
+(자기 contract/서비스/구독/발행 소유), 프레임워크는 `modules/tasks/core/` 의
+**부품** (상속/자동배선/@task 데코레이터 전부 기각 — 조합만):
+
+- `TaskRunner` — 실행 생명주기만: start(fire-and-monitor)/cancel(**in-flight
+  await 즉시 끊김** — 옛 runner 의 step-경계 stop 결함 해소)/pause/step_once/
+  run_to/toggle_breakpoint(**label 기준**), 예외→FAILED+사유 조립, STATE/TRACE/
+  STEP_RESULT 발행 (키는 모듈이 `streams=` 로 주입). robot 은 id 문자열만 앎.
+- `TaskContext`/`RobotHandle` — 도메인 접근: `ctx.robot("so101_6dof_0")` handle 로
+  primitive (detect_oriented/select_reachable/move_j_pose/move_l/gripper — timeout/
+  wire/typed 예외 내장), escape hatch 2종 (robot.call = robot-scoped 주입 /
+  ctx.call = robot 무관), **모션 보낸 robot 추적 → on_abort 시 그 robot 에만
+  Motion.STOP**. 시나리오 규칙은 둘뿐: "ctx 받는 async 함수" + "실패는 raise".
+- `core/contract.py` — STATE/TRACE(TREE 폐기 대체)/STEP_RESULT payload 규약
+  (파일명이 contract 인 이유 = contract_export 가 정의 클래스만 카탈로그).
+- `TaskMetadata` + registry — GET /tasks (param 스펙은 **typed RunRequest 에서
+  자동 파생** — 손 목록 금지), bridge 는 tasks_provider 로 요청 시점 평가.
+- `FakeContext` — 실 ctx 상속+동일 시그니처 override (pyright 드리프트 방지),
+  시나리오 로직을 wire 없이 검증.
+
+**pick_and_place 본 계약 승격** (modules/tasks/pick_and_place — task 모듈 표준형
+= 다음 task 의 레퍼런스): contract.py (표준 표면 7 서비스 + 3 스트림, typed
+`RunRequest{pick_object, place_object=""}`, 디버거 키는 선언한 task 만 생성) /
+module.py (핸들러 one-liner 위임 + `_scenario` — 2026-07-09 실기 검증 시퀀스) /
+geometry.py (순수 함수 — tilt×yaw×flip 후보·고정 조 횡보정·height prior 이식 +
+**plan_place 신설**: place_object 검출 대상 상면 적치, 파지 lateral 재사용).
+gripper raw 는 resolve 의 motors.yaml 투영(TaskRobotSpec) 재사용 — 하드코딩 소멸.
+
+**삭제:** modules/task (DSL 전체 — Step/Slot/TaskRunner/registry), PREVIEW/TREE
+계약, frontend /tasks 페이지·PromptPanel. **frontend:** /tasks/pick_and_place
+전용 페이지 (task 별 페이지 원칙) + PickAndPlacePanel (파싱→typed 폼→실행/중지)
++ TaskProgressPanel (TRACE 기반, breakpoint/run_to=label) + TaskResultsOverlay
+(STEP_RESULT label 키, 새 run RUNNING 전이 시 clear). **CLI:** scripts/run_task.py
+(in-process mock 부팅, bridge 제외 — 터미널 작성 루프).
+
+검증 (2026-07-12 전부 실행): backend pytest full **336 PASS** (신규: runner 게이트/
+cancel-in-flight/on_abort 대상 정밀/FakeContext 시나리오/geometry 경계 52개) /
+ruff·pyright 신규 0 (calibration 기존 3건 별도) / frontend tsc·lint 0 + vitest
+**160 PASS** / Playwright e2e (mock, headed) **pick_and_place 2/2** — 실행→trace→
+FAILED 사유 표시, breakpoint→PAUSED hold→STOP 탈출. mock 완주는 불가 (in-memory
+DB 라 캘 없음 → detector 후보 0 → 자연 실패 = 실패 경로 검증). **실물 완주 검증
+(place 분기 포함) = 다음 hardware 세션.**
+
+다음 후보: ① 실물 pick(+place 신설분) 검증 ② handover task (사용자 개밥먹기 —
+robot 2대 ctx 실행 모델 + 모듈 간 robot lease 그때 설계) ③ `@step` 데코레이터
+(관측 단위 span — 논의만 됨, 골격 굳은 뒤).
 
 ### 2026-07-07 — liveliness + Mirror 활성 (부팅 순서 종속성 근본 제거)
 
@@ -70,7 +119,8 @@
 | scene3d / scan (TSDF build 포함) / waypoint | ✅ |
 | bridge (WS relay + MJPEG + HTTP + /contract.json + /contract/graph) + frontend contract gen | ✅ |
 | **robot-agnostic 스코프 리팩터** (detector·calibration·scan·scene3d·waypoint → host당 1) | ✅ (2026-07-03 — 규칙은 spec §2.7, 아래 히스토리) |
-| Task / Gamepad Module | 미착수 (task-first — spec §17) |
+| **task 프레임워크 (tasks/core) + pick_and_place task 모듈** | ✅ (2026-07-12 — 위 항목. 실물 완주 검증 대기) |
+| Gamepad Module | 미착수 |
 
 **검증 명령** (cwd 반드시 `backend/`):
 ```bash

@@ -25,6 +25,5 @@ modules:
   - name: waypoint
   - name: detector
   - name: llm
-  - name: task
   - name: pick_and_place
   - name: bridge

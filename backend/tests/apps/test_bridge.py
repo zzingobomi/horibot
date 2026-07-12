@@ -58,7 +58,9 @@ def test_resolve_host_deps_bridge_returns_robot_info():
     assert set(infos) == {"so101_6dof_0", "omx_f_0"}
     assert infos["so101_6dof_0"].type == "so101_6dof"
     assert "rgbd" in infos["so101_6dof_0"].capabilities
-    assert infos["so101_6dof_0"].base_pose.x == 0.4  # RobotConfig → RobotInfo 변환
+    # RobotConfig → RobotInfo 변환 — 크로스캘 확정값 (so101=원점 anchor, 2026-07-11)
+    assert infos["so101_6dof_0"].base_pose.x == 0.0
+    assert infos["omx_f_0"].base_pose.x == 0.0342
     assert infos["omx_f_0"].type == "omx_f"
     assert "rgbd" not in infos["omx_f_0"].capabilities  # UVC color-only
 

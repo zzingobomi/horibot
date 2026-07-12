@@ -56,9 +56,19 @@ export interface SystemMetrics {
   mem_percent: number;
 }
 
+export interface TaskParamInfo {
+  name: string;
+  type: string;
+  required: boolean;
+  default?: string;
+}
+
 export interface TaskInfo {
   name: string;
   robot_ids?: string[];
+  description?: string;
+  run?: string;
+  params?: TaskParamInfo[];
 }
 
 export interface TasksResponse {
@@ -640,53 +650,14 @@ export interface SetStreamResponse {
   voxel_size: number;
 }
 
-export interface PreviewRequest {
-  robot_id: string;
-  task_name: string;
-  params?: Record<string, string>;
-}
-
-export interface PreviewResponse {
-  ok: boolean;
-  message?: string;
-}
-
-export interface TaskRunRequest {
-  robot_id: string;
-  task_name: string;
-  params?: Record<string, string>;
-}
-
-export interface TaskRunResponse {
-  accepted: boolean;
-  message?: string;
-}
-
-export interface RunToRequest {
-  robot_id: string;
-  step_id: string;
-}
-
-export interface TaskControlRequest {
-  robot_id: string;
-}
-
-export interface TaskControlResponse {
-  ok: boolean;
-}
-
 export interface TaskState {
   robot_id: string;
   seq: number;
   timestamp_unix: number;
   status: TaskStatusValue;
   task_name?: string;
-  current_step?: number;
-  total_steps?: number;
   current_label?: string;
-  current_step_id?: string;
   error?: string | null;
-  step_statuses?: Record<string, string>;
   breakpoints?: string[];
 }
 
@@ -694,23 +665,52 @@ export interface TaskStepResult {
   robot_id: string;
   seq: number;
   timestamp_unix: number;
-  step_id: string;
+  label: string;
   type: string;
   value?: unknown;
 }
 
-export interface TaskTree {
+export interface TraceEntry {
+  label: string;
+  kind: string;
+  status: string;
+  detail?: string;
+  started_unix: number;
+  ended_unix?: number | null;
+}
+
+export interface TaskTrace {
   robot_id: string;
   seq: number;
   timestamp_unix: number;
   task_name?: string;
-  description?: string;
-  steps?: unknown[];
+  entries?: TraceEntry[];
+}
+
+export interface ControlRequest {
+}
+
+export interface ControlResponse {
+  ok: boolean;
+  message?: string;
+}
+
+export interface RunRequest {
+  pick_object: string;
+  place_object?: string;
+}
+
+export interface RunResponse {
+  accepted: boolean;
+  message?: string;
+}
+
+export interface RunToRequest {
+  label: string;
 }
 
 export interface ToggleBreakpointRequest {
-  robot_id: string;
-  step_id: string;
+  label: string;
 }
 
 export interface AddToGroupRequest {
@@ -841,11 +841,11 @@ export const Topic = {
   MOTOR_RAW_STATE: "stream/motor/{robot_id}/raw_state",
   MOTOR_STATE: "stream/motor/{robot_id}/state",
   MOTOR_TORQUE_CHANGED: "event/motor/{robot_id}/torque_changed",
+  PICKANDPLACE_STATE: "stream/pick_and_place/{robot_id}/state",
+  PICKANDPLACE_STEP_RESULT: "stream/pick_and_place/{robot_id}/step_result",
+  PICKANDPLACE_TRACE: "stream/pick_and_place/{robot_id}/trace",
   SCAN_BUILD_PROGRESS: "stream/scan/{robot_id}/build_progress",
   SCENE3D_CLOUD: "stream/scene3d/{robot_id}/cloud",
-  TASK_STATE: "stream/task/{robot_id}/state",
-  TASK_STEP_RESULT: "stream/task/{robot_id}/step_result",
-  TASK_TREE: "stream/task/{robot_id}/tree",
 } as const;
 export type TopicKey = (typeof Topic)[keyof typeof Topic];
 
@@ -861,11 +861,11 @@ export type TopicPayloadMap = {
   "stream/motor/{robot_id}/raw_state": JointState;
   "stream/motor/{robot_id}/state": MotorState;
   "event/motor/{robot_id}/torque_changed": TorqueChanged;
+  "stream/pick_and_place/{robot_id}/state": TaskState;
+  "stream/pick_and_place/{robot_id}/step_result": TaskStepResult;
+  "stream/pick_and_place/{robot_id}/trace": TaskTrace;
   "stream/scan/{robot_id}/build_progress": BuildProgress;
   "stream/scene3d/{robot_id}/cloud": Scene3dCloud;
-  "stream/task/{robot_id}/state": TaskState;
-  "stream/task/{robot_id}/step_result": TaskStepResult;
-  "stream/task/{robot_id}/tree": TaskTree;
 };
 
 export const ServiceKey = {
@@ -887,6 +887,13 @@ export const ServiceKey = {
   MOTOR_CAPABILITIES: "srv/motor/{robot_id}/capabilities",
   MOTOR_GET_TOPOLOGY: "srv/motor/{robot_id}/topology",
   MOTOR_SET_TORQUE: "srv/motor/{robot_id}/set_torque",
+  PICKANDPLACE_PAUSE: "srv/pick_and_place/pause",
+  PICKANDPLACE_RESUME: "srv/pick_and_place/resume",
+  PICKANDPLACE_RUN: "srv/pick_and_place/run",
+  PICKANDPLACE_RUN_TO: "srv/pick_and_place/run_to",
+  PICKANDPLACE_STEP_ONCE: "srv/pick_and_place/step_once",
+  PICKANDPLACE_STOP: "srv/pick_and_place/stop",
+  PICKANDPLACE_TOGGLE_BREAKPOINT: "srv/pick_and_place/toggle_breakpoint",
   SCAN_BUILD: "srv/scan/build",
   SCAN_CAPTURE: "srv/scan/capture",
   SCAN_DELETE_SCAN: "srv/scan/delete_scan",
@@ -897,14 +904,6 @@ export const ServiceKey = {
   SCAN_LIST_SESSIONS: "srv/scan/list_sessions",
   SCAN_NEW_SESSION: "srv/scan/new_session",
   SCENE3D_SET_STREAM: "srv/scene3d/set_stream",
-  TASK_PAUSE: "srv/task/pause",
-  TASK_PREVIEW: "srv/task/preview",
-  TASK_RESUME: "srv/task/resume",
-  TASK_RUN: "srv/task/run",
-  TASK_RUN_TO: "srv/task/run_to",
-  TASK_STEP_ONCE: "srv/task/step_once",
-  TASK_STOP: "srv/task/stop",
-  TASK_TOGGLE_BREAKPOINT: "srv/task/toggle_breakpoint",
   WAYPOINT_ADD_TO_GROUP: "srv/waypoint/add_to_group",
   WAYPOINT_CREATE_GROUP: "srv/waypoint/create_group",
   WAYPOINT_DELETE: "srv/waypoint/delete",
@@ -938,6 +937,13 @@ export type ServiceMap = {
   "srv/motor/{robot_id}/capabilities": { req: MotorCapabilitiesRequest; res: MotorCapabilities };
   "srv/motor/{robot_id}/topology": { req: TopologyRequest; res: MotorTopology };
   "srv/motor/{robot_id}/set_torque": { req: SetTorqueRequest; res: SetTorqueResponse };
+  "srv/pick_and_place/pause": { req: ControlRequest; res: ControlResponse };
+  "srv/pick_and_place/resume": { req: ControlRequest; res: ControlResponse };
+  "srv/pick_and_place/run": { req: RunRequest; res: RunResponse };
+  "srv/pick_and_place/run_to": { req: RunToRequest; res: ControlResponse };
+  "srv/pick_and_place/step_once": { req: ControlRequest; res: ControlResponse };
+  "srv/pick_and_place/stop": { req: ControlRequest; res: ControlResponse };
+  "srv/pick_and_place/toggle_breakpoint": { req: ToggleBreakpointRequest; res: ControlResponse };
   "srv/scan/build": { req: BuildRequest; res: BuildResponse };
   "srv/scan/capture": { req: ScanCaptureRequest; res: ScanCaptureResponse };
   "srv/scan/delete_scan": { req: DeleteScanRequest; res: DeleteScanResponse };
@@ -948,14 +954,6 @@ export type ServiceMap = {
   "srv/scan/list_sessions": { req: ListSessionsRequest; res: ListSessionsResponse };
   "srv/scan/new_session": { req: NewSessionRequest; res: NewSessionResponse };
   "srv/scene3d/set_stream": { req: SetStreamRequest; res: SetStreamResponse };
-  "srv/task/pause": { req: TaskControlRequest; res: TaskControlResponse };
-  "srv/task/preview": { req: PreviewRequest; res: PreviewResponse };
-  "srv/task/resume": { req: TaskControlRequest; res: TaskControlResponse };
-  "srv/task/run": { req: TaskRunRequest; res: TaskRunResponse };
-  "srv/task/run_to": { req: RunToRequest; res: TaskControlResponse };
-  "srv/task/step_once": { req: TaskControlRequest; res: TaskControlResponse };
-  "srv/task/stop": { req: TaskControlRequest; res: TaskControlResponse };
-  "srv/task/toggle_breakpoint": { req: ToggleBreakpointRequest; res: TaskControlResponse };
   "srv/waypoint/add_to_group": { req: AddToGroupRequest; res: AddToGroupResponse };
   "srv/waypoint/create_group": { req: CreateGroupRequest; res: CreateGroupResponse };
   "srv/waypoint/delete": { req: DeleteWaypointRequest; res: DeleteWaypointResponse };

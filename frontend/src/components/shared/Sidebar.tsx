@@ -166,9 +166,10 @@ export function Sidebar() {
               Tasks
             </p>
           )}
+          {/* task 별 전용 페이지 링크 — 새 task 페이지 추가 시 여기 한 줄. */}
           <NavLink
-            to="/tasks"
-            title={collapsed ? "Tasks" : undefined}
+            to="/tasks/pick_and_place"
+            title={collapsed ? "Pick & Place" : undefined}
             className={({ isActive }) =>
               cn(
                 "flex items-center rounded-md py-2 text-sm transition-colors",
@@ -180,7 +181,7 @@ export function Sidebar() {
             }
           >
             <ListTodo className="h-4 w-4 shrink-0" />
-            {!collapsed && <span>Tasks</span>}
+            {!collapsed && <span>Pick &amp; Place</span>}
           </NavLink>
         </div>
       </nav>

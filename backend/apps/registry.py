@@ -20,7 +20,6 @@ MODULE_REGISTRY: dict[str, str] = {
     "waypoint": "modules.waypoint.module:WaypointModule",
     "detector": "modules.detector.module:DetectorModule",
     "llm": "modules.llm.module:LlmModule",
-    "task": "modules.task.module:TaskModule",
     "pick_and_place": "modules.tasks.pick_and_place.module:PickAndPlaceModule",
     "bridge": "modules.bridge.module:BridgeModule",
 }

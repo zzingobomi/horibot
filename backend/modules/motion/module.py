@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
-from scipy.spatial.transform import Rotation
+from scipy.spatial.transform import Rotation, Slerp
 
 from framework.contract.mirror import Mirror
 from framework.contract.publisher import publishes
@@ -432,22 +432,36 @@ class MotionModule:
             raise MotionRejected("motor state 아직 없음")
         assert self._kin is not None  # start() 이후만 서비스 도달
         end_pos = self._corrected_target_pos(pt, current)
-        start_pos, _ = self._kin.fk(current)
+        start_pos, start_quat = self._kin.fk(current)
         path = LinearPath(
             np.asarray(start_pos, dtype=float),
             np.asarray(end_pos, dtype=float),
         )
+        # 자세 보간(slerp) 준비 — pt.quaternion 은 **목표 자세**(경로 끝). 현재
+        # 자세(FK)에서 s 에 동기해 보간한다 (UR/ABB/MoveIt 식 MoveL). None=position
+        # -only. 자세 고정은 현재≈목표인 특수 케이스로 자연히 나온다.
+        ori_slerp = (
+            Slerp([0.0, 1.0], Rotation.from_quat([start_quat, pt.quaternion]))
+            if pt.quaternion is not None
+            else None
+        )
+
+        def _ori_at(frac: float) -> tuple[float, float, float, float] | None:
+            if ori_slerp is None:
+                return None
+            q = ori_slerp(frac).as_quat()
+            return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+
         # 경로 사전 검증 (fail-fast) — runner 는 실행 중 step IK 실패 시 그 자리
-        # 공중 정지(FAILED). 자세 고정 MoveL 은 끝점은 풀려도 중간 s 에서만 못
-        # 풀리는 경우가 실재 (2026-07-09 PnP 기울인 approach) → 시작 전 ~1cm 간격
-        # 샘플 IK 로 전 구간 검증, 안 풀리면 모션 0 으로 reject
-        # (move_j_pose 가 IK 먼저 확인하는 것과 동형).
+        # 공중 정지(FAILED). MoveL 은 끝점은 풀려도 중간 s 에서만 못 풀리는 경우가
+        # 실재 (2026-07-09 PnP 기울인 approach) → 시작 전 ~1cm 간격 샘플 IK 로 전
+        # 구간 검증(실행과 같은 slerp 자세로), 안 풀리면 모션 0 으로 reject.
         seed = list(current)
         n = max(2, int(path.total_length / 0.01))
         for i in range(1, n + 1):
             s = path.total_length * i / n
             wp = path.position_at(s)
-            sol = self._kin.ik((wp[0], wp[1], wp[2]), pt.quaternion, seed)
+            sol = self._kin.ik((wp[0], wp[1], wp[2]), _ori_at(i / n), seed)
             if sol is None:
                 raise MotionRejected(
                     f"경로 IK 실패 — 시작 {s * 100:.1f}cm 지점 도달 불가"
@@ -457,7 +471,7 @@ class MotionModule:
             raise MotionRejected("이전 motion 진행 중")
         assert self._runner is not None and self._move_done is not None
         fut = self._move_done
-        self._runner.run_cartesian(path, list(current), pt.quaternion)
+        self._runner.run_cartesian(path, list(current), pt.quaternion, start_quat)
         await self._require_done(fut, "MoveL")
         return MoveLResponse()
 

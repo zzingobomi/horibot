@@ -12,6 +12,7 @@
  * entry 별 [▶ 여기까지] (run-to-cursor). 실패 = error 박스에 사유 (backend 가
  * "다음 행동" 까지 담아 보냄 — 침묵 금지).
  */
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useService, useStream } from "@/framework";
 import { useTaskRobots } from "@/hooks/useTaskRobots";
@@ -48,6 +49,17 @@ export function TaskProgressPanel() {
   const stepOnceSvc = useService(ServiceKey.PICKANDPLACE_STEP_ONCE, robotId);
   const runToSvc = useService(ServiceKey.PICKANDPLACE_RUN_TO, robotId);
   const toggleBpSvc = useService(ServiceKey.PICKANDPLACE_TOGGLE_BREAKPOINT, robotId);
+  const previewSvc = useService(ServiceKey.PICKANDPLACE_PREVIEW, robotId);
+
+  // 실행 전 전체 단계 미리보기 (dry-run 서비스). live trace 가 생기면 그쪽이 우선.
+  const [preview, setPreview] = useState<TraceEntry[]>([]);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const onPreview = async () => {
+    setPreviewBusy(true);
+    const res = await previewSvc.call({});
+    setPreviewBusy(false);
+    setPreview((res.data as { steps?: TraceEntry[] } | null)?.steps ?? []);
+  };
 
   const st = state.value;
   const entries: TraceEntry[] = trace.value?.entries ?? [];
@@ -122,14 +134,52 @@ export function TaskProgressPanel() {
         </div>
       )}
 
-      <div className="font-mono uppercase text-muted-foreground">
-        trace ({entries.length})
+      <div className="flex items-center justify-between">
+        <span className="font-mono uppercase text-muted-foreground">
+          {entries.length === 0 && preview.length > 0
+            ? `예상 단계 (${preview.length})`
+            : `trace (${entries.length})`}
+        </span>
+        {/* 실행 전 전체 단계 미리보기 — imperative 시나리오라 dry-run 으로 수집.
+            live trace 가 없을 때만 의미 (실행 시작하면 실제 trace 가 대체). */}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={previewBusy || running || paused}
+          onClick={() => void onPreview()}
+          data-testid="task-preview"
+        >
+          {previewBusy ? "불러오는 중…" : "전체 단계 미리보기"}
+        </Button>
       </div>
+
+      {/* live trace 없음 + 미리보기 있음 → 예상 단계 목록 (회색, 미실행). */}
+      {entries.length === 0 && preview.length > 0 && (
+        <div className="flex flex-col gap-1" data-testid="task-preview-entries">
+          {preview.map((e, i) => (
+            <div
+              key={`p:${i}:${e.name}`}
+              className="flex items-center gap-2 rounded border border-zinc-800 px-2 py-1 opacity-70"
+              style={{ marginLeft: (e.depth ?? 0) * 14 }}
+              data-testid="task-preview-entry"
+            >
+              <span className="h-2 w-2 shrink-0 rounded-full bg-zinc-600" />
+              <span className="flex-1 truncate font-mono">
+                {e.title || e.name}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="flex flex-col gap-1" data-testid="task-entries">
         {entries.length === 0 ? (
-          <span className="text-muted-foreground">
-            task 대기 중… (실행하면 primitive 호출이 여기 쌓임)
-          </span>
+          preview.length > 0 ? null : (
+            <span className="text-muted-foreground">
+              task 대기 중… ([전체 단계 미리보기]로 예상 단계 확인 / 실행하면 실제
+              호출이 여기 쌓임)
+            </span>
+          )
         ) : (
           entries.map((e, i) => {
             const hasBp = breakpoints.has(e.name);

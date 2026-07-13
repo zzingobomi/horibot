@@ -699,6 +699,13 @@ export interface ListRobotsResponse {
   robot_ids: string[];
 }
 
+export interface PreviewRequest {
+}
+
+export interface PreviewResponse {
+  steps: TraceEntry[];
+}
+
 export interface RunRequest {
   pick_object: string;
   place_object?: string;
@@ -892,6 +899,7 @@ export const ServiceKey = {
   MOTOR_SET_TORQUE: "srv/motor/{robot_id}/set_torque",
   PICKANDPLACE_LIST_ROBOTS: "srv/pick_and_place/list_robots",
   PICKANDPLACE_PAUSE: "srv/pick_and_place/pause",
+  PICKANDPLACE_PREVIEW: "srv/pick_and_place/preview",
   PICKANDPLACE_RESUME: "srv/pick_and_place/resume",
   PICKANDPLACE_RUN: "srv/pick_and_place/run",
   PICKANDPLACE_RUN_TO: "srv/pick_and_place/run_to",
@@ -943,6 +951,7 @@ export type ServiceMap = {
   "srv/motor/{robot_id}/set_torque": { req: SetTorqueRequest; res: SetTorqueResponse };
   "srv/pick_and_place/list_robots": { req: ListRobotsRequest; res: ListRobotsResponse };
   "srv/pick_and_place/pause": { req: ControlRequest; res: ControlResponse };
+  "srv/pick_and_place/preview": { req: PreviewRequest; res: PreviewResponse };
   "srv/pick_and_place/resume": { req: ControlRequest; res: ControlResponse };
   "srv/pick_and_place/run": { req: RunRequest; res: RunResponse };
   "srv/pick_and_place/run_to": { req: RunToRequest; res: ControlResponse };

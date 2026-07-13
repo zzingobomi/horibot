@@ -51,6 +51,9 @@ class TaskContext:
         self._link: RunLink | None = None
         self._allowed: set[str] | None = None
         self._robot_ids: list[str] = []  # 참여 robot — on_abort STOP 대상
+        # dry-run(미리보기) — 실제 하드웨어를 구동하지 않는 실행 (step 목록 수집 등).
+        # step 은 이 플래그로 하드웨어 정착 대기 같은 부수효과만 건너뛴다.
+        self.dry: bool = False
 
     # ─── runner 가 쓰는 프로토콜 (시나리오 표면 아님) ────────────────
 

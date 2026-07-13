@@ -74,7 +74,8 @@ class RobotConfig(BaseModel):
     # type-level (<type>/motors.yaml)
     motors: list[MotorSpec] = Field(default_factory=list)
     # type-level (<type>/motion.yaml) — joint name 별 Ruckig 한계 + cartesian
-    motion_joint_limits: dict[str, JointMotionLimit] = Field(default_factory=dict)
+    motion_joint_limits: dict[str, JointMotionLimit] = Field(
+        default_factory=dict)
     cartesian_limits: CartesianLimit = Field(default_factory=CartesianLimit)
     # type-level (<type>/physical.yaml) — robot physical model (모델링 선택만).
     # 중력 sag lumped-mass 모델을 적용할 관절 (motor id). Motion sag decorator +
@@ -146,7 +147,8 @@ def _load_physical(robot_type: str, robot_dir: Path) -> list[int]:
 
 
 def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
-    raw = yaml.safe_load((robot_dir / "robots.yaml").read_text(encoding="utf-8"))
+    raw = yaml.safe_load(
+        (robot_dir / "robots.yaml").read_text(encoding="utf-8"))
     robots: dict[str, RobotConfig] = {}
     for rid, body in (raw.get("robots") or {}).items():
         rtype = body["type"]
@@ -156,7 +158,8 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
         if inst_path.exists():
             inst_raw = yaml.safe_load(inst_path.read_text(encoding="utf-8"))
             port, baud = _resolve_port(inst_raw)
-            camera_device_index = (inst_raw.get("camera") or {}).get("device_index")
+            camera_device_index = (inst_raw.get(
+                "camera") or {}).get("device_index")
         motion_joints, cartesian = _load_motion(rtype, robot_dir)
         bp = body.get("base_pose") or {}
         robots[rid] = RobotConfig(
@@ -182,15 +185,12 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
 
 
 class DriverMode(StrEnum):
-    """driver 구현 선택 — vendor(robots.yaml) 와 분리. §2.4 driver subdir swap."""
-
     REAL = "real"
     MOCK = "mock"
 
 
 class ModuleEntry(BaseModel):
     name: str
-    # robots 비면 host-level singleton, 있으면 per-robot 인스턴스
     robots: list[str] = Field(default_factory=list)
 
 
@@ -198,18 +198,10 @@ class DeploymentConfig(BaseModel):
     driver_mode: DriverMode = DriverMode.REAL
     zenoh: dict = Field(default_factory=dict)
     modules: list[ModuleEntry] = Field(default_factory=list)
-    # DB owner host (PC) 만 지정 — 공유 물리 DB URI. boot 가 process infra 싱글톤
-    # engine/session_factory 를 여기서 1번 생성 + root alembic upgrade head.
-    # Pi(motor/camera)는 없음 (DB 모듈 미배치).
     rdb_uri: str | None = None
-    # blob 저장 (calibration capture 등) — file:///path. DB owner host 만.
     object_uri: str | None = None
-    # bridge HTTP/WS 포트. 테스트는 0 (ephemeral) 으로 덮어써 실행 중인
-    # 실 backend(:8000) 와 포트 충돌 없이 공존한다.
     bridge_port: int = 8000
-    # 개발용 콘솔 (GET /dev + POST /dev/invoke). 임의 서비스를 브라우저에서
-    # 두드리는 dev 도구 — dev/LAN 배포(mock/pc)만 on, 잠긴 배포에선 off.
-    dev_console: bool = False
+    dev_console: bool = False  # 개발용 콘솔
 
 
 def load_deployment(path: Path | str) -> DeploymentConfig:

@@ -73,7 +73,9 @@ class PoseTarget(BaseModel):
     orientation:
       - quaternion=None → position-only IK (자세는 IK 가 자유롭게 선택 / MoveL 은
         seed 자세에 딸려감).
-      - 지정 → 그 자세로 IK (MoveJ 도달 가능해야 함 / MoveL 은 경로 전 구간 고정).
+      - 지정 → **목표 자세**. MoveJ 는 그 자세로 도달, MoveL 은 현재 자세 → 이
+        자세로 경로 s 에 동기해 slerp 보간 (UR/ABB/MoveIt 식 — 자세 고정은
+        현재==목표인 특수 케이스). 옛 "MoveL 경로 전 구간 고정" 의미는 폐기.
 
     tcp_offset: tcp 가 아니라 **tcp+tcp_offset(tool frame) 지점**을 이 pose 에 맞춘다
       (= 제어점/TCP 선택). grasp 에서 tcp≠파지점(단일 jaw 그리퍼) 보정용 — 그리퍼
@@ -113,9 +115,11 @@ class MoveLRequest(BaseModel):
     """TCP 를 현재 위치 → target(pose) 직선(MoveL) 이동. planner 가 MoveJ 와 달라
     (Cartesian 직선) 별 서비스. joint 직선은 무의미하므로 target 은 PoseTarget 전용.
 
-    자세 고정 = PoseTarget.quaternion 지정 (경로 전 구간 그 자세 — constant-orientation
-    MoveL, UR 등가). 첫 소비자 = PnP 접근축 진입/자세고정 승강 (2026-07-07 — 45°
-    사선 하강이 큐브를 밀던 실패에서 도입). SLERP interpolation 은 후속.
+    자세 = PoseTarget.quaternion 이 **목표 자세** — 현재 자세에서 이 자세로 경로 s
+    에 동기해 slerp 보간 (UR/ABB/MoveIt base primitive). 자세 고정은 현재==목표인
+    특수 케이스 (PnP 접근축 진입/승강이 이 경우 — 2026-07-07 45° 사선 하강이 큐브를
+    밀던 실패에서 도입). quaternion=None = position-only. KUKA ORI_TYPE 식 명시
+    모드(#JOINT 등)는 실제 필요 시 modifier 로 후속 (2026-07-13 토대 결정).
     """
 
     target: PoseTarget

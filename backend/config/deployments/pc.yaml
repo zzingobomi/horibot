@@ -7,7 +7,6 @@ driver_mode: real
 rdb_uri: "sqlite:///horibot.db"
 object_uri: "storage/blobs"
 
-# 개발용 콘솔 (GET /dev) — 집 dev 배포에서 서비스 두드리기.
 dev_console: true
 
 zenoh:

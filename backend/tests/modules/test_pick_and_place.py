@@ -192,6 +192,12 @@ async def test_scenario_with_place_branch():
         _SPEC.gripper_open_raw,  # 마지막 open = release
     ]
     assert len(ctx.calls(_MOVE_L)) == 4
+    # 계획 먼저, 실행 나중 (#2): 검출·선별(DETECT/SELECT)이 전부 끝난 뒤에야 첫
+    # 모션(MOVE_J)이 나간다 — 못 놓을 물체를 집는 일이 없도록.
+    keys = ctx.keys()
+    first_motion = keys.index(_MOVE_J)
+    planning = keys[:first_motion]
+    assert planning == [_DETECT, _SELECT, _DETECT, _SELECT]  # 집기·놓기 둘 다 계획
 
 
 async def test_scenario_detect_fail_raises_before_motion():
@@ -221,25 +227,57 @@ async def test_scenario_ik_exhausted_raises():
     assert ctx.calls(_MOVE_J) == []  # 전멸이면 모션 0
 
 
-async def test_scenario_place_detect_fail_keeps_holding():
-    """place 검출 실패 → raise (release 금지 — 물체 낙하 방지, 든 채 FAILED)."""
+async def test_scenario_place_unreachable_fails_before_pick():
+    """놓을 곳 IK 불가 → 집기 **전에** 실패 (#2). 물체를 쥔 채 멈추는 corrupt 상태를
+    막는다 — 실물 실패 로그(resolve_place IK 불가) 그대로가 회귀 시나리오.
+
+    계획 단계(집기·놓기 검출+IK)가 모션 0 이라, 놓기 IK 가 -1 이면 아무 모션도
+    나가기 전에 raise → gripper·MOVE 호출 0 (아무것도 안 집음)."""
     mod = _module_for_scenario()
     ctx = FakeContext(
         robots=[_BOT],
         specs={_BOT: _SPEC},
-        service_script=_pick_script(
-            **{
-                _DETECT: [
-                    DetectOrientedResponse(found=True, candidates=[_det()]),
-                    DetectOrientedResponse(found=False, candidates=[]),  # place 실패
-                ]
-            }
-        ),
+        service_script={
+            _DETECT: [
+                DetectOrientedResponse(found=True, candidates=[_det()]),  # 집기 검출 OK
+                DetectOrientedResponse(  # 놓기 검출 OK
+                    found=True,
+                    candidates=[_det(position=(0.25, -0.05, 0.04), height=0.04)],
+                ),
+            ],
+            _SELECT: [
+                ResolveReachableResponse(index=0),  # 집기 도달 가능
+                ResolveReachableResponse(index=-1, message="놓기 IK 전멸"),  # 놓기 불가
+            ],
+        },
     )
-    with pytest.raises(DetectionNotFound):
+    with pytest.raises(NoReachableGrasp, match="놓기 IK 전멸"):
         await mod.scenario(ctx, pick_object="white cube", place_object="red box")
-    grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
-    assert grips[-1] == _SPEC.gripper_close_raw  # release 안 함 (마지막 = close)
+    # 핵심 (#2): 물리 동작이 하나도 안 나감 — 아무것도 안 집었으니 든 채 멈춤 없음.
+    assert ctx.calls(_MOVE_J) == []
+    assert ctx.calls(_MOVE_L) == []
+    assert ctx.calls(_GRIP) == []
+
+
+async def test_preview_lists_full_steps_without_motion():
+    """PREVIEW(#1): dry-run 으로 전체 step 목록 수집 — 실 runtime·모션 없음.
+
+    imperative 시나리오라 정적 목록이 없어 canned dry-run 으로 traverse. 놓기 포함
+    최대 경로의 step title 이 실행 순서대로 나와야 (뒤집으면 목록 누락 회귀)."""
+    from modules.tasks.pick_and_place.contract import PreviewRequest
+
+    mod = _module_for_scenario()  # 빈 specs → dummy 로 채워 dry-run 진행
+    res = await mod.preview(PreviewRequest())
+
+    titles = [s.title for s in res.steps]
+    assert titles == [
+        "집기 계획", "검출", "파지 후보 선별",
+        "놓기 계획", "검출", "적치 후보 선별",
+        "집기 실행", "파지 접근", "그리퍼 열기", "하강", "그리퍼 닫기", "들어올리기",
+        "놓기 실행", "적치 접근", "내리기", "내려놓기", "후퇴",
+    ]
+    # 중첩 depth — 계획/실행은 0, 그 안 step 은 1
+    assert res.steps[0].depth == 0 and res.steps[1].depth == 1
 
 
 # ─── module wire (runner 결합 e2e) ───────────────────────────────────

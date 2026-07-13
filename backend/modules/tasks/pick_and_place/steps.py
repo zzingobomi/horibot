@@ -33,27 +33,29 @@ _GRIPPER_SETTLE_S = 1.2
 _TOP_K = 5
 
 
-# ─── scenario ─────────────────────────────────
+# ─── scenario: 계획(plan) → 실행(execute) 분리 ─────────────────────
+#
+# 순서 규약 (2026-07-13): 물리 파지 **전에** 집기·놓기 도달성을 모두 검증한다.
+# 옛 구조(집기 완주 후 놓기 검출/IK)는 놓을 곳이 도달 불가일 때 이미 물체를 쥔
+# 채 실패해 로봇이 물체를 든 채 멈추는 corrupt 상태를 만들었다 (2026-07-13
+# resolve_place IK 불가 실패). 계획 단계는 모션 0 (검출 + 배치 IK 판정뿐)이라,
+# 어느 한쪽이라도 도달 불가면 아무것도 집기 전에 실패한다.
 
 
-@step(title="집기")
-async def pick(
+@step(title="집기 계획")
+async def plan_pick(
     ctx: TaskContext, robot_id: str, prompt: str
 ) -> tuple[OrientedDetection, GraspCandidate]:
+    """검출 + 파지 후보 IK 판정 (모션 0) → 실행 가능한 파지 후보."""
     cands = await detect(ctx, robot_id, prompt)
     target = geometry.select_pick_target(cands, prompt=prompt)
     plan = geometry.plan_grasp(target)
     best = plan[await resolve_grasp(ctx, robot_id, plan)]
-    await pre_grasp(ctx, robot_id, best)
-    await open_gripper(ctx, robot_id)
-    await descend(ctx, robot_id, best)
-    await close_gripper(ctx, robot_id)
-    await lift(ctx, robot_id, best)
     return target, best
 
 
-@step(title="놓기")
-async def place(
+@step(title="놓기 계획")
+async def plan_place(
     ctx: TaskContext,
     robot_id: str,
     prompt: str,
@@ -61,15 +63,36 @@ async def place(
     held: OrientedDetection,
     grasp: GraspCandidate,
 ) -> PlaceCandidate:
+    """검출 + 적치 후보 IK 판정 (모션 0) → 실행 가능한 적치 후보. 물체 dims 는
+    검출(held)에서 오므로 물리 파지 전에도 계획 가능."""
     spots = await detect(ctx, robot_id, prompt)
     spot = geometry.select_pick_target(spots, prompt=prompt)
     pplan = geometry.plan_place(spot, held=held, lateral=grasp.lateral)
     drop = pplan[await resolve_place(ctx, robot_id, pplan)]
-    await pre_place(ctx, robot_id, drop)
-    await lower(ctx, robot_id, drop)
-    await release(ctx, robot_id)
-    await retreat(ctx, robot_id, drop)
     return drop
+
+
+@step(title="집기 실행")
+async def execute_pick(
+    ctx: TaskContext, robot_id: str, c: GraspCandidate
+) -> None:
+    """계획된 파지 후보로 실제 파지 (접근→하강→파지→들어올리기)."""
+    await pre_grasp(ctx, robot_id, c)
+    await open_gripper(ctx, robot_id)
+    await descend(ctx, robot_id, c)
+    await close_gripper(ctx, robot_id)
+    await lift(ctx, robot_id, c)
+
+
+@step(title="놓기 실행")
+async def execute_place(
+    ctx: TaskContext, robot_id: str, c: PlaceCandidate
+) -> None:
+    """계획된 적치 후보로 실제 적치 (접근→내리기→내려놓기→후퇴)."""
+    await pre_place(ctx, robot_id, c)
+    await lower(ctx, robot_id, c)
+    await release(ctx, robot_id)
+    await retreat(ctx, robot_id, c)
 
 
 # ─── planning ──────────────────────────────────────
@@ -209,4 +232,5 @@ async def _set_gripper(ctx: TaskContext, robot_id: str, *, open_: bool) -> None:
         SetGripperResponse,
         robot_id=robot_id,
     )
-    await asyncio.sleep(_GRIPPER_SETTLE_S)
+    if not ctx.dry:  # dry-run(미리보기)엔 하드웨어 정착 대기 불필요
+        await asyncio.sleep(_GRIPPER_SETTLE_S)

@@ -93,8 +93,8 @@ def test_contract_json_shape():
     assert topic_keys | service_keys == FRONTEND_EXPOSED
     # +pick_and_place STATE/TRACE/STEP_RESULT +detector DETECTIONS +DETECTIONS_ORIENTED(draft)
     assert len(data["topics"]) == 16
-    # +detector DETECT +DETECT_ORIENTED(draft) +llm PARSE +pick_and_place 8 +calibration ABORT_RUN
-    assert len(data["services"]) == 47
+    # +detector DETECT +DETECT_ORIENTED(draft) +llm PARSE +pick_and_place 9 +calibration ABORT_RUN
+    assert len(data["services"]) == 48
     # 내부 전용 payload 는 도달성으로 제외 — JointCommand 안 나옴
     iface_names = {i["name"] for i in data["interfaces"]}
     assert "JointCommand" not in iface_names
@@ -205,7 +205,7 @@ async def test_contract_json_endpoint_serves(contract_endpoint: str):
     assert set(data) == {"enums", "interfaces", "topics", "services"}
     # HTTP 로 serve 된 JSON = in-process build_contract_json 과 동일 계약
     assert len(data["topics"]) == 16  # +DETECTIONS_ORIENTED(draft)
-    assert len(data["services"]) == 47  # +DETECT_ORIENTED(draft) +ABORT_RUN +LIST_ROBOTS
+    assert len(data["services"]) == 48  # +DETECT_ORIENTED(draft) +ABORT_RUN +LIST_ROBOTS +PREVIEW
 
 
 # ─── build_contract_graph — unfiltered attribution + wiring (§5.2) ─

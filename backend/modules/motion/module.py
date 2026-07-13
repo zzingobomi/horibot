@@ -29,14 +29,16 @@ from .contract import (
     JogTcpInput,
     MotionCompleted,
     MotionFailed,
+    MotionRejected,
     Motion,
-    MoveJPoseRequest,
+    JointTarget,
     MoveJRequest,
     MoveJResponse,
     MoveLRequest,
     MoveLResponse,
-    SelectReachableRequest,
-    SelectReachableResponse,
+    PoseTarget,
+    ResolveReachableRequest,
+    ResolveReachableResponse,
     StopRequest,
     StopResponse,
     TcpSnapshotRequest,
@@ -365,68 +367,75 @@ class MotionModule:
 
     # ── services ──────────────────────────────────────────────
 
+    def _corrected_target_pos(
+        self, pt: PoseTarget, seed: list[float]
+    ) -> tuple[float, float, float]:
+        """tcp_offset 적용한 목표 위치 (base frame). None 이면 pt.position 그대로.
+
+        tcp+tcp_offset(tool frame) 지점을 pt.position 에 맞추려면 tcp 목표를
+        pose-R 만큼 역보정: IK(pose)→자세 R → position - R·tcp_offset. MoveJ/MoveL
+        공용 (제어점 보정은 planner 무관 = 목표 정의).
+        """
+        assert self._kin is not None
+        if pt.tcp_offset is None:
+            return pt.position
+        sol = self._kin.ik(pt.position, pt.quaternion, seed)
+        if sol is None:
+            raise MotionRejected("IK 실패 — pose 도달 불가 (tcp_offset 보정 전)")
+        rot, _ = self._kin.fk_to_matrix(sol)
+        base_off = np.asarray(rot) @ np.asarray(pt.tcp_offset, dtype=float)
+        corrected = np.asarray(pt.position, dtype=float) - base_off
+        return (float(corrected[0]), float(corrected[1]), float(corrected[2]))
+
     @service(Motion.Service.MOVE_J)
     async def move_j(self, req: MoveJRequest) -> MoveJResponse:
-        if len(req.target_joints) != self._dof:
-            return MoveJResponse(
-                accepted=False,
-                message=f"target_joints dof 불일치 ({len(req.target_joints)} != {self._dof})",
-            )
-        current = self._latest_arm_rad
-        if current is None:
-            return MoveJResponse(accepted=False, message="motor state 아직 없음")
-        if not self._begin_move():
-            return MoveJResponse(accepted=False, message="이전 motion 진행 중")
-        assert self._runner is not None and self._move_done is not None
-        fut = self._move_done
-        self._runner.run_joint(current, list(req.target_joints))
-        await self._require_done(fut, "MoveJ")
-        return MoveJResponse(accepted=True)
+        """관절 보간 이동 — target 이 JointTarget(관절값) 또는 PoseTarget(pose→IK).
 
-    @service(Motion.Service.MOVE_J_POSE)
-    async def move_j_pose(self, req: MoveJPoseRequest) -> MoveJResponse:
-        """목표 TCP pose → IK(현재 자세 seed, multi-restart) → 관절 공간 MoveJ.
-
-        Cartesian 직선(MoveL) 아님 — 경로가 관절 보간이라 "자세 고정한 채 이동" 이
-        강제하는 높이-의존 IK 실패가 없다. pick 접근/승강이 이걸 씀 (2026-07-07 —
-        MoveL 자세 고정 접근이 SO-101 workspace 에서 구조적으로 실패해 전환).
+        pose 는 관절 보간이라 "자세 고정한 채 직선"(MoveL)이 강제하는 높이-의존 IK
+        실패가 없다. pick 접근/승강이 pose 를 씀 (2026-07-07 — MoveL 자세 고정 접근이
+        SO-101 workspace 에서 구조적으로 실패해 전환). 거부 = raise (MotionRejected).
         """
         current = self._latest_arm_rad
         if current is None:
-            return MoveJResponse(accepted=False, message="motor state 아직 없음")
-        assert self._kin is not None  # start() 이후만 서비스 도달
-        target = self._kin.ik(req.target_position, req.target_quaternion, current)
-        if target is None:
-            return MoveJResponse(accepted=False, message="IK 실패 — pose 도달 불가")
-        if req.tool_offset is not None:
-            # tcp+tool_offset(tool frame) 을 target 에 맞춤 (grasp 파지점 보정).
-            # 첫 해의 자세로 offset 을 base 로 회전 → target 보정 후 재-IK (자세는
-            # 근처라 1회 근사로 충분). 재-IK 실패 시 offset 없는 원해로 진행.
-            rot, _ = self._kin.fk_to_matrix(target)
-            base_off = np.asarray(rot) @ np.asarray(req.tool_offset, dtype=float)
-            corrected = tuple(np.asarray(req.target_position) - base_off)
-            adjusted = self._kin.ik(corrected, req.target_quaternion, target)
-            if adjusted is not None:
-                target = adjusted
+            raise MotionRejected("motor state 아직 없음")
+        match req.target:
+            case JointTarget(joints=joints):
+                if len(joints) != self._dof:
+                    raise MotionRejected(
+                        f"joints dof 불일치 ({len(joints)} != {self._dof})"
+                    )
+                target = list(joints)
+            case PoseTarget() as pt:
+                assert self._kin is not None  # start() 이후만 서비스 도달
+                corrected = self._corrected_target_pos(pt, current)
+                sol = self._kin.ik(corrected, pt.quaternion, current)
+                if sol is None:
+                    raise MotionRejected("IK 실패 — pose 도달 불가")
+                target = sol
         if not self._begin_move():
-            return MoveJResponse(accepted=False, message="이전 motion 진행 중")
+            raise MotionRejected("이전 motion 진행 중")
         assert self._runner is not None and self._move_done is not None
         fut = self._move_done
         self._runner.run_joint(list(current), target)
-        await self._require_done(fut, "MoveJPose")
-        return MoveJResponse(accepted=True)
+        await self._require_done(fut, "MoveJ")
+        return MoveJResponse()
 
     @service(Motion.Service.MOVE_L)
     async def move_l(self, req: MoveLRequest) -> MoveLResponse:
-        """TCP 를 현재 위치 → target_position 직선 이동 (position-only v1). 완료까지 대기."""
+        """TCP 를 현재 위치 → target(pose) 직선 이동. 완료까지 대기.
+
+        target 은 PoseTarget — quaternion 지정 시 경로 전 구간 자세 고정,
+        tcp_offset 지정 시 제어점 보정한 끝점 (MoveJ 와 동일 의미)."""
+        pt = req.target
         current = self._latest_arm_rad
         if current is None:
-            return MoveLResponse(accepted=False, message="motor state 아직 없음")
+            raise MotionRejected("motor state 아직 없음")
         assert self._kin is not None  # start() 이후만 서비스 도달
+        end_pos = self._corrected_target_pos(pt, current)
         start_pos, _ = self._kin.fk(current)
         path = LinearPath(
             np.asarray(start_pos, dtype=float),
-            np.asarray(req.target_position, dtype=float),
+            np.asarray(end_pos, dtype=float),
         )
         # 경로 사전 검증 (fail-fast) — runner 는 실행 중 step IK 실패 시 그 자리
         # 공중 정지(FAILED). 자세 고정 MoveL 은 끝점은 풀려도 중간 s 에서만 못
@@ -438,25 +447,24 @@ class MotionModule:
         for i in range(1, n + 1):
             s = path.total_length * i / n
             wp = path.position_at(s)
-            sol = self._kin.ik((wp[0], wp[1], wp[2]), req.target_quaternion, seed)
+            sol = self._kin.ik((wp[0], wp[1], wp[2]), pt.quaternion, seed)
             if sol is None:
-                return MoveLResponse(
-                    accepted=False,
-                    message=f"경로 IK 실패 — 시작 {s * 100:.1f}cm 지점 도달 불가",
+                raise MotionRejected(
+                    f"경로 IK 실패 — 시작 {s * 100:.1f}cm 지점 도달 불가"
                 )
             seed = list(sol)
         if not self._begin_move():
-            return MoveLResponse(accepted=False, message="이전 motion 진행 중")
+            raise MotionRejected("이전 motion 진행 중")
         assert self._runner is not None and self._move_done is not None
         fut = self._move_done
-        self._runner.run_cartesian(path, list(current), req.target_quaternion)
+        self._runner.run_cartesian(path, list(current), pt.quaternion)
         await self._require_done(fut, "MoveL")
-        return MoveLResponse(accepted=True)
+        return MoveLResponse()
 
-    @service(Motion.Service.SELECT_REACHABLE)
-    async def select_reachable(
-        self, req: SelectReachableRequest
-    ) -> SelectReachableResponse:
+    @service(Motion.Service.RESOLVE_REACHABLE)
+    async def resolve_reachable(
+        self, req: ResolveReachableRequest
+    ) -> ResolveReachableResponse:
         """후보 그룹 배치 IK 판정 (모션 0) — 첫 '전 pose 가용' 그룹 index.
 
         IK 는 blocking(pybullet) + 그룹 다수라 to_thread — jog/stream 등 이벤트
@@ -465,7 +473,7 @@ class MotionModule:
         """
         current = self._latest_arm_rad
         if current is None:
-            return SelectReachableResponse(index=-1, message="motor state 아직 없음")
+            return ResolveReachableResponse(index=-1, message="motor state 아직 없음")
         assert self._kin is not None  # start() 이후만 서비스 도달
         kin = self._kin
         groups = req.groups
@@ -491,11 +499,11 @@ class MotionModule:
         t0 = time.perf_counter()
         idx = await asyncio.to_thread(_scan)
         logger.info(
-            "select_reachable: groups=%d → index=%d (%.2fs)",
+            "resolve_reachable: groups=%d → index=%d (%.2fs)",
             len(groups), idx, time.perf_counter() - t0,
         )
         msg = "" if idx >= 0 else "가용 그룹 없음"
-        return SelectReachableResponse(index=idx, message=msg)
+        return ResolveReachableResponse(index=idx, message=msg)
 
     @service(Motion.Service.TCP_SNAPSHOT)
     def tcp_snapshot(self, req: TcpSnapshotRequest) -> TcpState:

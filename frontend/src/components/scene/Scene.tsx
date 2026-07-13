@@ -5,7 +5,7 @@
  * - Scene object : 세계에 있는 것들 — Robot / Camera / ScanMesh. 각 객체가 자기
  *                  시각 요소를 자기 안에서 그림 (패널은 속성 토글만). 새 객체
  *                  종류 추가 = 드문 아키텍처 사건 — 여기 한 줄이 정직함.
- * - Feature overlay: 기능이 보여주는 것 — TaskResultsOverlay(topic 수명) +
+ * - Feature overlay: 기능이 보여주는 것 — TaskMarkersOverlay(topic 수명) +
  *                  ScenePartHost(패널 수명). **기능/패널 기여로는 이 파일 diff 0.**
  *
  * robot 상태(joint/TCP frame)는 Robots 가 robot 마다 자기 stream 구독
@@ -19,7 +19,7 @@ import { Robots } from "./objects/Robots";
 import { Cameras } from "./objects/Cameras";
 import { ScanMesh } from "./objects/ScanMesh";
 import { AxisFrame } from "./shared/AxisFrame";
-import { TaskResultsOverlay } from "./overlays/TaskResultsOverlay";
+import { TaskMarkersOverlay } from "./overlays/TaskMarkersOverlay";
 import { ScenePartHost } from "./overlays/ScenePartHost";
 import { DEFAULT_SCENE_OPTIONS, type SceneOptions } from "./sceneOptions";
 import type { RobotInfo } from "@/api/generated/contract";
@@ -94,7 +94,7 @@ function SceneContent({
       <ScanMesh robots={robots} focusId={focusId ?? null} />
 
       {/* ── Feature overlays — 기능이 보여주는 것 ── */}
-      <TaskResultsOverlay robots={robots} focusId={focusId ?? null} />
+      <TaskMarkersOverlay robots={robots} focusId={focusId ?? null} />
       <ScenePartHost />
 
       <OrbitControls

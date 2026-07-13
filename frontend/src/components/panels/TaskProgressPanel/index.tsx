@@ -1,11 +1,11 @@
 /**
  * TaskProgressPanel — task 진행 표시 + 디버거 (task 공통 부품).
  *
- * TRACE (primitive 호출 누적 — label/kind/status/detail) + STATE (status/
- * current_label/error/breakpoints) 로 진행을 그린다. 옛 DSL 의 TREE(사전 step
- * 목록)는 소멸 — imperative 시나리오는 실행해 봐야 경로가 정해지므로, 표시는
- * "실행된 것의 누적" + 직전 run 의 trace 가 다음 run 의 breakpoint 대상 (label
- * 은 run 간 안정 — 시나리오 코드의 label= 리터럴).
+ * TRACE (step 진입 누적 — label/depth/status/detail, 중첩은 depth 들여쓰기) +
+ * STATE (status/current_name/error/breakpoints) 로 진행을 그린다. 사전 step
+ * 목록은 없음 — imperative 시나리오는 실행해 봐야 경로가 정해지므로, 표시는
+ * "실행된 것의 누적" + 직전 run 의 trace 가 다음 run 의 breakpoint 대상 (name
+ * 은 run 간 안정 — @step 함수 이름).
  *
  * 디버거: ● dot 클릭 = TOGGLE_BREAKPOINT(label) (없는 run 중에도 미리 박기 —
  * runner 가 run 간 보존) / RUNNING 에서 [일시정지] / PAUSED 에서 [재개]·[한 스텝]·
@@ -14,15 +14,13 @@
  */
 import { Button } from "@/components/ui/button";
 import { useService, useStream } from "@/framework";
-import { useTaskRobotId } from "@/hooks/useTasks";
+import { TASK_ROBOT_ID } from "@/pages/pickAndPlaceTask";
 import {
   ServiceKey,
   TaskStatus,
   Topic,
   type TraceEntry,
 } from "@/api/generated/contract";
-
-const TASK_NAME = "pick_and_place";
 
 const STATUS_COLOR: Record<string, string> = {
   [TaskStatus.RUNNING]: "text-sky-400",
@@ -40,7 +38,7 @@ const ENTRY_DOT: Record<string, string> = {
 };
 
 export function TaskProgressPanel() {
-  const robotId = useTaskRobotId(TASK_NAME) ?? "";
+  const robotId = TASK_ROBOT_ID;
   const state = useStream(Topic.PICKANDPLACE_STATE, { robotId });
   const trace = useStream(Topic.PICKANDPLACE_TRACE, { robotId });
 
@@ -53,7 +51,7 @@ export function TaskProgressPanel() {
   const st = state.value;
   const entries: TraceEntry[] = trace.value?.entries ?? [];
   const status = st?.status ?? TaskStatus.IDLE;
-  const currentLabel = st?.current_label ?? "";
+  const currentName = st?.current_name ?? "";
   const breakpoints = new Set(st?.breakpoints ?? []);
   const running = status === TaskStatus.RUNNING;
   const paused = status === TaskStatus.PAUSED;
@@ -76,9 +74,9 @@ export function TaskProgressPanel() {
             · {st.task_name}
           </span>
         )}
-        {paused && currentLabel && (
+        {paused && currentName && (
           <span className="truncate font-mono text-amber-400">
-            ⏸ {currentLabel} 직전
+            ⏸ {st?.current_title || currentName} 직전
           </span>
         )}
       </div>
@@ -133,32 +131,39 @@ export function TaskProgressPanel() {
           </span>
         ) : (
           entries.map((e, i) => {
-            const hasBp = breakpoints.has(e.label);
-            const isCurrent = e.label === currentLabel;
+            const hasBp = breakpoints.has(e.name);
+            const isCurrent = e.name === currentName;
             return (
               <div
-                key={`${i}:${e.label}`}
+                key={`${i}:${e.name}`}
                 className={`flex items-center gap-2 rounded border px-2 py-1 ${
                   isCurrent ? "border-sky-500" : "border-zinc-700"
                 }`}
+                // 중첩 step — depth 들여쓰기 (wire 는 flat 리스트 + depth,
+                // 트리 표현은 UI 몫. 접기/펼치기는 후속 polish).
+                style={{ marginLeft: (e.depth ?? 0) * 14 }}
                 data-testid="task-entry"
               >
                 {/* dot = 상태색. 클릭 = breakpoint toggle (빨간 ring) — 같은
-                    label 은 다음 run 에서도 유효 (runner 가 run 간 보존). */}
+                    step name 은 다음 run 에서도 유효 (runner 가 run 간 보존). */}
                 <button
                   type="button"
-                  onClick={() => void toggleBpSvc.call({ label: e.label })}
+                  onClick={() => void toggleBpSvc.call({ name: e.name })}
                   title="브레이크포인트 토글"
                   data-testid="task-entry-bp"
                   className={`h-3 w-3 shrink-0 rounded-full ${ENTRY_DOT[e.status] ?? "bg-zinc-600"} ${
                     hasBp ? "ring-2 ring-red-500" : "hover:ring-2 hover:ring-zinc-500"
                   }`}
                 />
+                {/* title = 표시 문구 (한글 등), name = 식별자 — title 있으면
+                    title 이 주(主), name 은 작은 보조 (breakpoint 대상 확인용) */}
                 <span className="flex-1 truncate font-mono">
-                  {e.label}
-                  <span className="ml-1 text-[10px] text-muted-foreground">
-                    {e.kind}
-                  </span>
+                  {e.title || e.name}
+                  {e.title && (
+                    <span className="ml-1 text-[10px] text-muted-foreground">
+                      {e.name}
+                    </span>
+                  )}
                 </span>
                 {e.detail && (
                   <span
@@ -173,7 +178,7 @@ export function TaskProgressPanel() {
                 {paused && (
                   <button
                     type="button"
-                    onClick={() => void runToSvc.call({ label: e.label })}
+                    onClick={() => void runToSvc.call({ name: e.name })}
                     title="여기까지 실행 (run to cursor)"
                     data-testid="task-run-to"
                     className="font-mono text-[10px] text-zinc-500 hover:text-sky-400"

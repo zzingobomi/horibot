@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from framework.transport.protocol import RawTransport, RemoteError
 
-from .contract import RobotInfo, RobotsResponse, SystemMetrics, TaskInfo, TasksResponse
+from .contract import RobotInfo, RobotsResponse, SystemMetrics
 from .mjpeg import BOUNDARY, mjpeg_stream
 from .ws import WsConnection
 
@@ -48,14 +48,10 @@ class BridgeModule:
         robot_dir: Path | None = None,
         contract_provider: Callable[[], dict] | None = None,
         graph_provider: Callable[[], dict] | None = None,
-        tasks_provider: Callable[[], list[TaskInfo]] | None = None,
         dev_console: bool = False,
     ) -> None:
         self._transport = transport
         self._robots = robots
-        # 요청 시점 평가 — task 모듈 import(=registry 등록)가 bridge 보다 늦어도
-        # (deployment yaml 순서 무관) GET /tasks 가 전체 목록을 봄.
-        self._tasks_provider = tasks_provider
         self._host = host
         self._port = port
         self._robot_dir = robot_dir
@@ -83,13 +79,6 @@ class BridgeModule:
         @app.get("/robots")
         def get_robots() -> RobotsResponse:
             return RobotsResponse(robots=self._robots)
-
-        @app.get("/tasks")
-        def get_tasks() -> TasksResponse:
-            # task 가 자기 실행 robot 을 선언 (§2.7 task-first) — frontend 는 이
-            # 목록으로 통신 robot 을 정한다 (ambient default 로봇 없음).
-            tasks = self._tasks_provider() if self._tasks_provider else []
-            return TasksResponse(tasks=tasks)
 
         @app.get("/system")
         def get_system() -> SystemMetrics:

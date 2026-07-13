@@ -104,7 +104,7 @@ export const PANEL_CATALOG: Record<
 /**
  * robot 을 소유하는(useRobotId 계열) 패널 key 집합 ([[robot_ownership_model]]).
  * 여기 든 패널만 robot 셀렉터 탭 + robot params + Select Robot 빈 상태를 갖는다.
- * task 바인딩(useTaskRobotId) 패널(detectionCamera/pickAndPlace/taskProgress)은
+ * task 패널(detectionCamera/pickAndPlace/taskProgress — robot 은 task 페이지 상수)은
  * carve-out 이라 제외 — robot 은 task 가 정한다(§7).
  */
 export const ROBOT_OWNED_PANELS: ReadonlySet<PanelComponentKey> = new Set<PanelComponentKey>([

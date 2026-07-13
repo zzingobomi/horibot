@@ -566,7 +566,7 @@ backend framework 원칙과 같은 판정: **반복 보일러플레이트를 제
 |---|---|---|---|---|
 | **Core chrome** | 씬 자체 | 조명/grid/BASE 축/OrbitControls | [Scene.tsx](../frontend/src/components/scene/Scene.tsx) | 하드코딩 |
 | **Scene object** | 세계(하드웨어/산출물) | Robot / **Camera(frustum+cloud)** / ScanMesh | [scene/objects/](../frontend/src/components/scene/objects/) | Scene.tsx 한 줄 (드문 아키텍처 사건) |
-| **Feature overlay** | 기능 | TaskResultsOverlay(topic 수명) / **scenePart**(패널 수명) | [scene/overlays/](../frontend/src/components/scene/overlays/) + 패널 폴더 | registry `scenePart:` 한 줄 |
+| **Feature overlay** | 기능 | TaskMarkersOverlay(topic 수명) / **scenePart**(패널 수명) | [scene/overlays/](../frontend/src/components/scene/overlays/) + 패널 폴더 | registry `scenePart:` 한 줄 |
 
 공용 primitive(RobotFrame/AxisFrame/primitives/transforms)는
 [scene/shared/](../frontend/src/components/scene/shared/) — 폴더 구조가 이 표를
@@ -631,7 +631,7 @@ registry 정적 등록 (identity 안정).
 scenePart 는 Canvas 트리 렌더 → 패널 로컬 useState 는 안 넘어감. 경로 둘:
 framework hook 재구독(useStream/useMirror — module cache, 대부분) / **feature
 store**(패널 선택값 — waypointStore/scanStore 패턴). "UI 로 3D 를 제어"(토글류)도
-같은 store 경로. 인스턴스-스코프 공유 슬롯은 rule-of-three 대기.
+같은 store 경로. 인스턴스-스코프 공유 슬롯은 실 수요 생길 때 도입.
 
 ## 4. 좌표계 — 명시적 `<RobotFrame>` (auto-wrap 기각)
 

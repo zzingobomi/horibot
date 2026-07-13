@@ -10,7 +10,7 @@ import { RobotContext } from "./robotContext";
  *
  * ambient default 없음: RobotProvider(=robot 바인딩) 밖에서 robot-scoped 패널이
  * 렌더되면 버그 → 명시적 throw 로 잘못된 배치를 즉시 드러낸다. task 패널은 이
- * 훅이 아니라 task 바인딩(useTaskRobotId)에서 robot 을 얻는다(carve-out).
+ * 훅이 아니라 task 페이지 소유 상수에서 robot 을 얻는다(carve-out).
  */
 export function useRobotId(): string {
   const robotId = useContext(RobotContext);

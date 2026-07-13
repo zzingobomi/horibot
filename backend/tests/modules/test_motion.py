@@ -16,19 +16,21 @@ import pytest
 from apps.config import DriverMode, load_robots
 from apps.resolve import resolve_robot_deps
 from framework.runtime.app import Runtime
+from framework.transport.protocol import RemoteError
 from infra.transport.zenoh import ZenohTransport
 from modules.motion import units
 from modules.motion.contract import (
     JogJInput,
     JogTcpInput,
+    JointTarget,
     Motion,
-    MoveJPoseRequest,
     MoveJRequest,
     MoveJResponse,
     MoveLRequest,
     MoveLResponse,
-    SelectReachableRequest,
-    SelectReachableResponse,
+    PoseTarget,
+    ResolveReachableRequest,
+    ResolveReachableResponse,
     TcpPose,
     TcpSnapshotRequest,
     TcpState,
@@ -87,13 +89,13 @@ async def test_move_j_drives_mock_motor_to_target(stack):
     assert snap is not None, "motion 이 motor state 못 받음"
 
     target_rad = [0.1, 0.3, -0.4, 0.1, 0.2, 0.0]
-    res = await runtime.module_runtime.call(
+    # 성공 = 반환 (거부/실패는 raise — RemoteError 로 전파되는 계약)
+    await runtime.module_runtime.call(
         Motion.Service.MOVE_J,
-        MoveJRequest(target_joints=target_rad),
+        MoveJRequest(target=JointTarget(kind="joint", joints=target_rad)),
         MoveJResponse,
         robot_id=_SO101,
     )
-    assert res.accepted, res.message
 
     # trajectory → command stream → mock motor. target raw 도달까지 poll
     expected = units.joints_rad_to_raw(target_rad, arm)
@@ -120,14 +122,16 @@ def test_motion_resolve_rejects_non_prefix_arm(robot):
 
 
 async def test_move_j_rejects_wrong_dof(stack):
+    # 거부 = raise — wire 를 건너 RemoteError("MotionRejected", 사유) 로 도달
     runtime, _driver, _robot = stack
-    res = await runtime.module_runtime.call(
-        Motion.Service.MOVE_J,
-        MoveJRequest(target_joints=[0.0, 0.0, 0.0]),  # 3 != 6
-        MoveJResponse,
-        robot_id=_SO101,
-    )
-    assert not res.accepted
+    with pytest.raises(RemoteError, match="MotionRejected") as exc_info:
+        await runtime.module_runtime.call(
+            Motion.Service.MOVE_J,
+            MoveJRequest(target=JointTarget(kind="joint", joints=[0.0, 0.0, 0.0])),
+            MoveJResponse,
+            robot_id=_SO101,
+        )
+    assert "dof 불일치" in exc_info.value.message  # 사유 보존 (침묵 금지)
 
 
 async def test_tcp_snapshot_returns_fk_pose(stack):
@@ -168,13 +172,12 @@ async def test_move_l_reaches_target_position(stack):
     assert await _wait_motion_ready(runtime)
 
     home_rad = [math.radians(d) for d in (0.0, 15.0, -45.0, 85.0, -5.0, 90.0)]
-    mj = await runtime.module_runtime.call(
+    await runtime.module_runtime.call(
         Motion.Service.MOVE_J,
-        MoveJRequest(target_joints=home_rad),
+        MoveJRequest(target=JointTarget(kind="joint", joints=home_rad)),
         MoveJResponse,
         robot_id=_SO101,
     )
-    assert mj.accepted, mj.message
     await asyncio.sleep(0.2)  # 20Hz 피드백이 home 반영할 시간 (snapshot 안정화)
 
     start = await _try_snapshot(runtime)
@@ -182,13 +185,12 @@ async def test_move_l_reaches_target_position(stack):
     # 작은 직선 이동 (reach 안, base frame). +2cm x / -2cm z (하강, pick 접근 유사).
     target = (start.position[0] + 0.02, start.position[1], start.position[2] - 0.02)
 
-    res = await runtime.module_runtime.call(
+    await runtime.module_runtime.call(
         Motion.Service.MOVE_L,
-        MoveLRequest(target_position=target),
+        MoveLRequest(target=PoseTarget(kind="pose", position=target)),
         MoveLResponse,
         robot_id=_SO101,
     )
-    assert res.accepted, res.message
 
     # await 완료 후 TCP 가 target 근처 (20Hz 피드백 lag 흡수 위해 짧게 poll)
     end = None
@@ -208,30 +210,28 @@ async def test_move_l_reaches_target_position(stack):
 
 
 async def test_move_j_pose_reaches_target_via_joint_space(stack):
-    # MOVE_J_POSE: pose → IK → 관절 이동 (Cartesian 직선 아님). pick 접근/승강이 씀.
-    # home 후 target pose(위치) 로 MoveJPose → TCP 가 target 근처 도달. 자세는 IK 자유
+    # MOVE_J + PoseTarget: pose → IK → 관절 이동 (Cartesian 직선 아님). pick 접근/승강.
+    # home 후 target pose(위치) 로 MoveJ(pose) → TCP 가 target 근처 도달. 자세는 IK 자유
     # (position-only) 라 위치만 검증. MoveL 과 달리 "자세 고정 경로" 제약이 없음.
     runtime, _driver, _robot = stack
     assert await _wait_motion_ready(runtime)
 
     home_rad = [math.radians(d) for d in (0.0, 15.0, -45.0, 85.0, -5.0, 90.0)]
-    mj = await runtime.module_runtime.call(
-        Motion.Service.MOVE_J, MoveJRequest(target_joints=home_rad),
+    await runtime.module_runtime.call(
+        Motion.Service.MOVE_J, MoveJRequest(target=JointTarget(kind="joint", joints=home_rad)),
         MoveJResponse, robot_id=_SO101,
     )
-    assert mj.accepted, mj.message
     await asyncio.sleep(0.2)
 
     start = await _try_snapshot(runtime)
     assert start is not None
     target = (start.position[0] + 0.02, start.position[1], start.position[2] - 0.02)
 
-    res = await runtime.module_runtime.call(
-        Motion.Service.MOVE_J_POSE,
-        MoveJPoseRequest(target_position=target),
+    await runtime.module_runtime.call(
+        Motion.Service.MOVE_J,
+        MoveJRequest(target=PoseTarget(kind="pose", position=target)),
         MoveJResponse, robot_id=_SO101,
     )
-    assert res.accepted, res.message
 
     end = None
     err = 1.0
@@ -261,13 +261,12 @@ async def test_move_l_holds_orientation_along_tool_axis(stack):
     assert await _wait_motion_ready(runtime)
 
     home_rad = [math.radians(d) for d in (0.0, 15.0, -45.0, 85.0, -5.0, 90.0)]
-    mj = await runtime.module_runtime.call(
+    await runtime.module_runtime.call(
         Motion.Service.MOVE_J,
-        MoveJRequest(target_joints=home_rad),
+        MoveJRequest(target=JointTarget(kind="joint", joints=home_rad)),
         MoveJResponse,
         robot_id=_SO101,
     )
-    assert mj.accepted, mj.message
     await asyncio.sleep(0.2)
 
     start = await _try_snapshot(runtime)
@@ -280,14 +279,17 @@ async def test_move_l_holds_orientation_along_tool_axis(stack):
         float(start.position[2] + 0.03 * adir[2]),
     )
 
-    res = await runtime.module_runtime.call(
+    await runtime.module_runtime.call(
         Motion.Service.MOVE_L,
-        MoveLRequest(target_position=target, target_quaternion=start.quaternion),
+        MoveLRequest(
+            target=PoseTarget(
+                kind="pose", position=target, quaternion=start.quaternion
+            )
+        ),
         MoveLResponse,
         robot_id=_SO101,
         timeout=15.0,
     )
-    assert res.accepted, res.message
 
     ok = False
     pos_err = float("inf")
@@ -311,7 +313,8 @@ async def test_move_l_holds_orientation_along_tool_axis(stack):
 
 
 async def test_move_l_rejects_without_motor_state(robot):
-    # motor 없이 motion 만 → motor state 없음 → pre-flight 거부 (accepted=False, 예외 X)
+    # motor 없이 motion 만 → motor state 없음 → pre-flight 거부 = raise
+    # (RemoteError("MotionRejected", 사유) — 모션 0, 로봇 안 움직임)
     transport = ZenohTransport(_LOCAL_CFG)
     time.sleep(0.05)
     runtime = Runtime(transport)
@@ -319,13 +322,14 @@ async def test_move_l_rejects_without_motor_state(robot):
     runtime.add_module(MotionModule, robot_id=_SO101, **motion_deps)
     await runtime.start()
     try:
-        res = await runtime.module_runtime.call(
-            Motion.Service.MOVE_L,
-            MoveLRequest(target_position=(0.2, 0.0, 0.2)),
-            MoveLResponse,
-            robot_id=_SO101,
-        )
-        assert not res.accepted
+        with pytest.raises(RemoteError, match="MotionRejected") as exc_info:
+            await runtime.module_runtime.call(
+                Motion.Service.MOVE_L,
+                MoveLRequest(target=PoseTarget(kind="pose", position=(0.2, 0.0, 0.2))),
+                MoveLResponse,
+                robot_id=_SO101,
+            )
+        assert "motor state" in exc_info.value.message
     finally:
         await runtime.stop()
         transport.close()
@@ -462,7 +466,7 @@ async def test_jog_tcp_with_angular_uses_6dof_ik(stack):
     )
 
 
-async def test_select_reachable_orders_and_rejects(stack):
+async def test_resolve_reachable_orders_and_rejects(stack):
     """배치 IK 판정 계약 — (a) 불가 그룹(멀리) 건너뛰고 첫 가용 그룹 index,
     (b) 전부 불가면 -1, (c) 모션 0 (motor 명령 안 나감). 뒤집으면: early-exit
     순서를 무시하거나 불가를 가용으로 판정하면 즉시 깨짐."""
@@ -478,18 +482,18 @@ async def test_select_reachable_orders_and_rejects(stack):
     here = TcpPose(position=snap.position)
     far = TcpPose(position=(1.5, 0.0, 0.5))
     res = await runtime.module_runtime.call(
-        Motion.Service.SELECT_REACHABLE,
-        SelectReachableRequest(groups=[[far], [far, here], [here, here], [here]]),
-        SelectReachableResponse,
+        Motion.Service.RESOLVE_REACHABLE,
+        ResolveReachableRequest(groups=[[far], [far, here], [here, here], [here]]),
+        ResolveReachableResponse,
         robot_id=_SO101,
         timeout=60.0,
     )
     # group0: far 불가 / group1: far 불가 (그룹 내 전 pose 필요) / group2: 첫 가용
     assert res.index == 2, res
     res_none = await runtime.module_runtime.call(
-        Motion.Service.SELECT_REACHABLE,
-        SelectReachableRequest(groups=[[far], [far]]),
-        SelectReachableResponse,
+        Motion.Service.RESOLVE_REACHABLE,
+        ResolveReachableRequest(groups=[[far], [far]]),
+        ResolveReachableResponse,
         robot_id=_SO101,
         timeout=60.0,
     )

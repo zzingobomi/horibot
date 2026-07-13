@@ -80,10 +80,10 @@ pnpm gen:types    # 떠 있는 backend /contract.json → src/api/generated/cont
 | waypoint | waypoint/group CRUD + teach |
 | detector | prompt → base-frame 3D 후보 (GDINO/SAM2/mock driver) |
 | llm | 자연어 → pick/place 구조화 (Qwen/mock) |
-| tasks/pick_and_place | Pick&Place **task 모듈** (표준형 레퍼런스 — 검출→도달성 선별→파지→적치). 시나리오 감독은 [modules/tasks/core/](backend/modules/tasks/core/) 부품 (TaskRunner/TaskContext — 모듈 아닌 공유 라이브러리, [docs/task.md](docs/task.md)) |
-| bridge | FastAPI — WS 릴레이 + `/contract.json` + `/robots` + `/tasks` + `/dev` 콘솔 + MJPEG |
+| tasks/pick_and_place | Pick&Place **task 모듈** (표준형 레퍼런스 — 검출→도달성 선별→파지→적치). 감독은 [modules/tasks/core/](backend/modules/tasks/core/) 부품 상자 (TaskRunner=wire 무지 감독기/TaskContext/@step — 모듈 아닌 라이브러리, [docs/task.md](docs/task.md)) |
+| bridge | FastAPI — WS 릴레이 + `/contract.json` + `/robots` + `/dev` 콘솔 + MJPEG |
 
-task 터미널 실행 (frontend 없이): `uv run --no-sync python scripts/run_task.py pick_and_place --param "pick_object=white cube"` (mock in-process 부팅, :8000 미점유).
+task 터미널 실행 (frontend 없이): `uv run --no-sync python scripts/run_task.py srv/pick_and_place/run --param "pick_object=white cube"` (트리거 키 직접 — mock in-process 부팅, :8000 미점유).
 
 ### bridge wire (browser ↔ backend)
 
@@ -100,7 +100,7 @@ browser→bridge = JSON text (`subscribe`/`unsubscribe`/`publish`/`service`). br
 - **패널** = dockview + [components/panels/registry.ts](frontend/src/components/panels/registry.ts). **PANEL_CATALOG 가 title/size/scenePart 의 SSOT** — mode 파일 PANELS 는 배치 선언(`{id, component}`)만, override 는 예외 자리만 명시.
 - **robot ownership**: robot 은 패널이 소유 ([docs/frontend.md](docs/frontend.md)). **per-robot 상태(frustum/live 토글 등)는 `Record<robotId, ...>`** — 전역 bool 은 두 번째 robot 에서 오발사 (실사고 2건).
 - **씬 소유권**: Scene object(세계 — Robot/Camera/ScanMesh, 자기가 자기를 그림) vs scenePart(패널 수명 오버레이) — [docs/frontend.md](docs/frontend.md). 판별 질문 = "패널 닫으면 사라져야 하나?"
-- **라우트**: `/` Dashboard, `/robots/:id/{move|calibrate|scan|assets}`, `/tasks`, `/contract` (계약 그래프 뷰어).
+- **라우트**: `/` Dashboard, `/robots/:id/{move|calibrate|scan|assets}`, `/tasks/pick_and_place` (task 별 전용 페이지 — robot 바인딩/표시 문구는 페이지 소유 상수), `/contract` (계약 그래프 뷰어).
 
 ### robot/ (registry — type/instance 분리)
 
@@ -140,7 +140,7 @@ capture-only 세션: `start_run(kind)` (robot 당 활성 세션 1개 — stale i
 ### 프로젝트 design decision (다른 PC / 새 세션이 알아야 할 critical context)
 
 - **대원칙: 모든 작업은 UI / UX / DX 를 고려해야 완성** — 계약 구현 + 테스트 초록은 시작점일 뿐 (테스트는 "내가 짠 계약이 내가 짠 대로 도는지"만 봄, 계약 자체의 구멍은 못 잡음). 완료 보고 전 세 렌즈의 실행 체크: ① **UX — 모든 상태에서 나갈 수 있고, 실패해도 복구 가능한가**: 세션/run/task 류 상태머신은 중도 포기(abort) 경로 필수. 워크스루 = 시작→진행→정상종료→중도포기→**실패** — 각 단계마다 "여기서 실패하면?" (service 에러/timeout/WS 재연결/backend 재시작 중 세션 포함). 실패는 상태를 corrupt 하지 않고 재시도·탈출 가능한 상태로 남아야 (예: intrinsic finalize 실패 = 세션 유지 → 더 캡처 후 재시도). capability 가 다른 robot(omx=웹캠 vs so101=D405)으로도 굴려볼 것. ② **UI — 상태가 보이고 구분되는가**: 실패는 **사유 + 다음 행동**이 사용자에게 표시 ("실패"만 찍으면 반쪽). **침묵 fallback 금지** — 실패를 기본값으로 덮으면 조용한 오동작 (hand_eye snapshot 미도달 → identity fallback 사고 전례, useMirror "침묵 금지" 주석). 같은 화면의 다른 인스턴스(탭 title 등)와 구분. ③ **DX — 다음 개발자가 안전하게 확장하는가**: 토글/store/캐시 신설 시 "robot(인스턴스)별이어야 하나" 질문 — 전역에 두면 두 번째 인스턴스에서 오발사. 기본값은 SSOT 한 곳, override 는 예외 선언. 결함 발견 시 그 일반형(클래스)을 정의하고 같은 클래스를 codebase 전체 sweep, 회귀 테스트는 발견 시나리오 그대로. (기원: 2026-07-11 캘 패널 — intrinsic 0장 세션 갇힘(탈출구 부재) / omx [시야]가 so101 frustum 표시(전역 토글) — 둘 다 vitest 초록이었음)
-- **Task 아키텍처 확정 (2026-07-12, DSL 통삭제 완료)** — task = 당당한 모듈 (자기 contract/wire 소유) + `modules/tasks/core/` 프레임워크 **부품** 조합 (TaskRunner=실행 생명주기 / TaskContext·RobotHandle=도메인 접근). 상속·자동배선·@task 데코레이터·중앙 registry 전부 기각. 시나리오 규칙 둘뿐: "ctx 받는 async 함수" + "실패는 raise" (프레임워크가 FAILED+사유+Motion.STOP). 새 task = pick_and_place 복제 — 체크리스트 = [docs/task.md](docs/task.md) §3. **STOP 은 안전 의무** (로봇 세울 통로 없는 task 모듈 금지). task 페이지는 frontend 에서 task 별 전용 (공용 부품 조립).
+- **Task 아키텍처 확정 (2026-07-12 골격 + 2026-07-13 전면 개정)** — **TaskRunner = wire 무지 범용 감독기** (실행/취소/pause/step 게이트/예외→실패 — runtime·키·robot·계약 무지, 변화는 생성자 콜백 on_state/on_trace 로 통지, 안 달면 headless). **모듈이 전부 소유**: 계약(트리거+노출 결정한 조작판+진행 스트림 — 전부 손 선언), 배선, 진행 발행(콜백에 자기 발행 메서드), 트리거(서비스/@subscriber/내부 호출 — start 는 아무나 호출), 시나리오. **등록 의식 0**: registry/@task/TaskMetadata/GET /tasks 전부 없음 — task 정보 채널은 계약뿐, robot 바인딩/표시 문구는 frontend 전용 페이지 상수. **호출 표면 = ctx.call 하나** (RobotHandle 없음): robot-scoped 키는 `robot_id=` (참여 명부 검증 — 선언 밖 robot 명령 즉시 에러 = STOP 커버리지 보장), agnostic 은 req 필드 (§2.7, agnostic 에 robot_id= 주면 fail-fast). step = 저자가 `@step(title="집기")` 로 지정한 함수 (중첩 = flat trace+depth, step_once = step-into; **병렬 gather = all-stop 의미론 지원** — 회귀 테스트 잠금). 실패: 기술적 실패는 **서비스가 raise** (accepted in-band 폐기), 부정 결과(검출 0/전멸 -1)는 데이터 — 판정은 step. timeout = contract `declare_service_timeouts`. step 간 데이터 = 시나리오 변수/반환값 (ctx.data 류 blackboard 금지). 새 task = pick_and_place 복제 — [docs/task.md](docs/task.md) §3. **STOP 은 안전 의무** — 모듈 stop→cancel + on_abort 참여 robot 전원 Motion.STOP.
 - **self-play 는 폐기됨** — 본 방향은 pick_and_place + deterministic IK + 캘/자세 정확도 직접 강화. self-play 점프 제안 / 신규 기능 추가 금지.
 - **Study task 에선 industry standard 도구/플로우 우선** — RL/실험/시뮬레이션 도구 추천 시 인프라 재사용 ROI 보다 산업 표준 (MuJoCo / Isaac / PPO / Stable-Baselines3 등) 우선. "표준 단계 다 밟아보기" 자체가 study output.
 - **URDF TCP link 컨벤션** — 모든 robot type 의 URDF 는 `tcp` 이름 link 필수 (UR `tool0` 등가). 새 robot type 통합 시 wrist link 끝에 fixed joint child 로 추가 — 없으면 부팅 시 fail-fast.

@@ -9,10 +9,6 @@ import { useFrameworkStore, type ServiceEntry } from "@/framework/store";
 import { PickAndPlacePanel } from "./index";
 
 // task 는 backend 바인딩(GET /tasks)으로 robot 을 정함 — unit 에선 so101 바인딩 mock.
-vi.mock("@/hooks/useTasks", () => ({
-  useTaskRobotId: () => "so101_6dof_0",
-  useTasks: () => ({ tasks: [], loading: false, error: null }),
-}));
 
 function mockBridge(dataByKey: Record<string, unknown> = {}) {
   return vi

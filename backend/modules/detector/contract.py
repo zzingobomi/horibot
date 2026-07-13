@@ -17,6 +17,7 @@ from enum import StrEnum
 from pydantic import BaseModel
 
 from framework.contract.model import DraftModel
+from framework.contract.service import declare_service_timeouts
 
 
 class Detection(BaseModel):
@@ -133,3 +134,11 @@ class OrientedDetectionsUpdate(DraftModel):
     image_width: int
     image_height: int
     candidates: list[OrientedDetection] = []
+
+
+# ─── 서비스 기본 timeout (runtime.call 이 timeout 미지정 시 사용) ───
+
+declare_service_timeouts({
+    Detector.Service.DETECT: 30.0,  # GDINO 첫 추론이 느릴 수 있음
+    Detector.Service.DETECT_ORIENTED: 30.0,
+})

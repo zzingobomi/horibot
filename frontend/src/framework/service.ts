@@ -2,7 +2,7 @@
  * `useService` — typed call + 응답 자동 cache.
  *
  *   const moveJ = useService(ServiceKey.MOTION_MOVE_J);
- *   await moveJ.call({ target_joints });
+ *   await moveJ.call({ target: { kind: "joint", joints } });
  *
  *   const cap = useService(ServiceKey.MOTOR_CAPABILITIES);
  *   const torqueToggle = cap.data?.flags.includes("torque_toggle");

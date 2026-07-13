@@ -27,28 +27,6 @@ class SystemMetrics(BaseModel):
     mem_percent: float
 
 
-class TaskParamInfo(BaseModel):
-    """task 실행 param 1개 — 각 task 모듈 RunRequest 모델에서 자동 파생
-    (tasks/core/metadata.py). frontend 실행 폼이 이걸로 입력 UI 를 구성한다."""
-
-    name: str
-    type: str  # "str" | "int" | "float" | "bool"
-    required: bool
-    default: str = ""
-
-
-class TaskInfo(BaseModel):
-    """task registry 원소 — 참여 robot 을 task 가 선언 (frontend 는 이 목록으로
-    통신 robot 을 정함. ambient default 로봇 없음). 단팔=1개, 협동=여러 개.
-
-    run = 그 task 의 RUN 서비스 wire 키 (task 모듈마다 자기 네임스페이스)."""
-
-    name: str
-    robot_ids: list[str] = Field(default_factory=list)
-    description: str = ""
-    run: str = ""
-    params: list[TaskParamInfo] = Field(default_factory=list)
-
-
-class TasksResponse(BaseModel):
-    tasks: list[TaskInfo]
+# GET /tasks 는 2026-07-13 삭제 — task 의 정보 채널은 계약이 유일 (frontend 는
+# gen:types 로 task 의 서비스/스트림 키를 정적으로 알고, robot 바인딩/표시 문구는
+# task 전용 페이지가 소유 — "robot 은 패널이 소유" 원칙).

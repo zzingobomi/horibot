@@ -253,13 +253,13 @@ async def test_set_gripper_writes_to_driver(runtime: Runtime):
     runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
     await runtime.start()
 
-    res = await runtime.module_runtime.call(
+    # 성공 = 반환 (driver 실패는 raise — ok 필드 폐기, 2026-07-13)
+    await runtime.module_runtime.call(
         Motor.Service.SET_GRIPPER,
         SetGripperRequest(position_raw=3000),
         SetGripperResponse,
         robot_id="so101_0",
     )
-    assert res.ok is True
     # mock driver — gripper position 갱신 검증
     assert driver.read_positions()[-1] == 3000
 

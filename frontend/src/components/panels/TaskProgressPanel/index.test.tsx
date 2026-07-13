@@ -12,11 +12,7 @@ import { TaskProgressPanel } from "./index";
 const ROBOT_ID = "so101_6dof_0";
 
 // task 는 backend 바인딩(GET /tasks)으로 robot 을 정함 — unit 에선 pick_and_place →
-// so101 바인딩을 mock (패널의 계약 = "task 바인딩 robot 으로 wire").
-vi.mock("@/hooks/useTasks", () => ({
-  useTaskRobotId: () => "so101_6dof_0",
-  useTasks: () => ({ tasks: [], loading: false, error: null }),
-}));
+// so101 바인딩 = task 페이지 상수 (pickAndPlaceTask.ts).
 const TRACE_WIRE = `stream/pick_and_place/${ROBOT_ID}/trace`;
 const STATE_WIRE = `stream/pick_and_place/${ROBOT_ID}/state`;
 
@@ -37,16 +33,16 @@ function seed(
         task_name: "pick_and_place",
         entries: [
           {
-            label: "detect_pick",
-            kind: "detect_oriented",
+            name: "detect_pick",
+            depth: 1, // pick 안의 자식 step — 들여쓰기 렌더
             status: "completed",
             detail: "2개 후보",
             started_unix: 0,
             ended_unix: 1,
           },
           {
-            label: "descend",
-            kind: "move_l",
+            name: "descend",
+            depth: 1,
             status: "running",
             detail: "",
             started_unix: 1,
@@ -60,7 +56,7 @@ function seed(
         timestamp_unix: 0,
         status,
         task_name: "pick_and_place",
-        current_label: currentLabel,
+        current_name: currentLabel,
         error,
         breakpoints,
       },
@@ -107,13 +103,16 @@ afterEach(() => {
 });
 
 describe("TaskProgressPanel — TRACE 디버거", () => {
-  it("trace(store) → entry 목록 렌더 (label + kind + detail)", () => {
+  it("trace(store) → entry 목록 렌더 (label + detail + depth 들여쓰기)", () => {
     mockBridge();
     seed("running");
     const { getAllByTestId, getByText } = renderPanel();
-    expect(getAllByTestId("task-entry").length).toBe(2);
+    const entries = getAllByTestId("task-entry");
+    expect(entries.length).toBe(2);
     expect(getByText("detect_pick")).toBeTruthy();
     expect(getByText("2개 후보")).toBeTruthy(); // detector 사유/결과 보임
+    // depth=1 → 들여쓰기 (중첩 step 시각 구분)
+    expect((entries[0] as HTMLElement).style.marginLeft).toBe("14px");
   });
 
   it("dot 클릭 → TOGGLE_BREAKPOINT({label})", async () => {
@@ -129,7 +128,7 @@ describe("TaskProgressPanel — TRACE 디버거", () => {
       String(c[0]).includes("toggle_breakpoint"),
     );
     expect(calls.length).toBe(1);
-    expect(calls[0][1]).toEqual({ label: "descend" });
+    expect(calls[0][1]).toEqual({ name: "descend" });
   });
 
   it("breakpoints(state) 표시 — 해당 label dot 에 red ring", () => {
@@ -173,6 +172,6 @@ describe("TaskProgressPanel — TRACE 디버거", () => {
       fireEvent.click(queryAllByTestId("task-run-to")[1]); // descend 까지 실행
     });
     const calls = spy.mock.calls.filter((c) => String(c[0]).includes("run_to"));
-    expect(calls[0][1]).toEqual({ label: "descend" });
+    expect(calls[0][1]).toEqual({ name: "descend" });
   });
 });

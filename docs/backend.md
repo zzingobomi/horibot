@@ -20,9 +20,174 @@
 > [backend.md](backend.md) (framework §1–§14 + Module catalog §16 + Task-first §17).
 > 본 문서 = "지금 어디까지 됐고 다음 뭐 할지" 만 — 설계 결정은 여기 안 둠.
 
-## 현재 상태 (2026-07-12)
+## 현재 상태 (2026-07-13)
 
-**framework + 전 Module 가동 + Task 아키텍처 확정·구현 완료 (DSL 통삭제).**
+**framework + 전 Module 가동 + Task 아키텍처 전면 개정 완료 (@step + runner
+wire 절단 + 의식 전폐).**
+
+### 2026-07-13 (밤/2) — MoveJ 통합 (MoveJ_pose 흡수, target discriminated union)
+
+**진단 (사용자↔GPT 토론):** `MOVE_J`(관절값) / `MOVE_J_POSE`(pose→IK) 두 서비스는
+산업 로봇 관습(UR `movej(q|pose)` — 한 명령, 인자 타입으로 분기)과 어긋남. 판별
+기준은 **planner 동일성**: MoveJ vs MoveL 은 planner 가 달라(관절 보간 vs Cartesian
+직선) 못 합치지만, JointTarget vs PoseTarget 은 planner 같고 **목표 표현만** 달라
+같은 MoveJ 안이 논리적. (근거는 "산업표준이라서"가 아니라 계약 의미 — "MoveJ =
+관절 보간으로 이동" 이면 target 표현은 입력 방식일 뿐.)
+
+- **contract**: `MOVE_J_POSE` 서비스 + `MoveJPoseRequest` 삭제. `MoveTarget =
+  Annotated[JointTarget | PoseTarget, Field(discriminator="kind")]`. `MoveJRequest
+  {target: MoveTarget}` / `MoveLRequest {target: PoseTarget}` (직선은 pose 만 —
+  joint 직선 무의미). `tool_offset` → **`tcp_offset`** 개명 + **PoseTarget 로 이동**
+  (제어점 선택 = "어느 점이 target 에 닿나" = 도달 명세(Reach Spec)의 일부, goal 정의.
+  seed_joint/redundancy 같은 solver hint 는 "어떻게 푸나" 라 target 아님 — 생기면 별도
+  options 로. 판별 규칙: **다른 데 서나(→Target) vs 같은 데 다르게 가나(→options)**).
+- **handler**: `move_j` 가 `match req.target` (JointTarget→직접 / PoseTarget→IK).
+  `move_j_pose` 삭제. tcp_offset 보정은 `_corrected_target_pos` 공유 헬퍼로
+  MoveJ/MoveL 공용 (제어점 보정은 planner 무관). MoveL 도 PoseTarget 이라 tcp_offset
+  일관 지원.
+- **호출부**: steps.py `_move_j_pose`(→MOVE_J+PoseTarget)/`_move_l`(→PoseTarget),
+  frontend WaypointPanel(`{target:{kind:"joint",joints}}`), 관련 테스트 전부.
+- **kind 는 required 판별자** (default 없음) — 와이어 decode 가 kind 로 arm 선택, 타입도
+  정직하게 required (프론트 누락 footgun 방지).
+
+검증: backend `test_motion` **14 PASS**(sim — 실 IK: MoveJ joint/pose + MoveL + tcp_offset
+경로) + task/contract 비-sim **59 PASS** + ruff·pyright 0 / contract regen(MoveJPoseRequest
+소멸, JointTarget/PoseTarget 추가) / frontend tsc·lint·vitest(WaypointPanel+regen) 통과.
+
+### 2026-07-13 (밤) — STEP_RESULT/step_note/ctx.record 제거 + task-owned 마커 통로(B)
+
+**진단 (사용자):** `step_note`/`ctx.record`/`STEP_RESULT` 가 설계 논의 없이 얹힌
+채널이었음 → 우선 걷어내고, 정말 필요하면 설계부터. 로그가 필요하면 표준
+`logging.getLogger(__name__)` 로.
+
+- **제거**: `core/step.py` `step_note`+`_CURRENT_ENTRY`+`RunLink.emit_result`,
+  `core/context.py` `record`+`dump_value`, `core/runner.py` `on_result`/
+  `_notify_result`/`_Link.emit_result`, `core/contract.py` `TaskStepResult`,
+  `pick_and_place` STEP_RESULT publish/`_publish_result`, `FRONTEND_EXPOSED`
+  STEP_RESULT, 프론트 `TaskResultsOverlay`(+test). runner 콜백은 이제 `on_state/
+  on_trace` 둘. `TraceEntry.detail` 은 **실패 사유 전용**으로 축소 (성공 요약 안 채움).
+  steps.py 의 검출 수/선별 그룹 요약은 `logger.info` 로.
+- **검출 시각화는 무관/무영향**: 카메라 패널 AABB/OBB/세그는 detector 가 자기
+  스트림(DETECTIONS/DETECTIONS_ORIENTED)으로 직접 발행 (task 무관). ctx.record
+  제거와 별개 — 그대로 동작.
+- **task 고유 계획 마커(파지/적치)는 (B)로 재설계**: "시각화 데이터는 그걸 계산한
+  쪽이 소유"(detector 동형). pick_and_place 가 자기 typed 스트림 `MARKERS`
+  (`stream/pick_and_place/{robot_id}/markers`, payload `TaskMarker{label,position}`
+  + `TaskMarkers{robot_id,seq,timestamp_unix,markers[]}`) 선언·발행. 모듈이
+  scenario 에서 pick→grasp/place→drop 지점을 스냅샷(latest-wins)으로 publish,
+  프론트 `TaskMarkersOverlay` 가 구독(STATE RUNNING 전이 시 clear). 범용
+  프레임워크 미신설 — "통로가 있다"까지만, 중복 생기면 그때 헬퍼 (task-first).
+  네이밍: `...Update`(델타로 오독) 대신 `TaskMarkers`(스냅샷).
+
+검증: backend `test_task_context/test_task_runner/test_pick_and_place/
+test_contract_export/test_contract_draft` **63 PASS** + ruff·pyright 0 / contract
+regen (STEP_RESULT/TaskStepResult 소멸, MARKERS/TaskMarker(s) 추가 — fixture+
+contract.ts 재생성, gen-contract byte-동형 vitest 통과) / frontend tsc·lint(기존
+경고 1)·scene/task/detection vitest **42 PASS**. **실물 마커 표시 검증 = 다음
+hardware 세션.**
+
+### 2026-07-13 (후반) — runner wire 절단 + 등록 의식 전폐 + ctx 단일 표면
+
+**핵심 진단 (사용자):** "runner 가 wire 를 발행하는 한, 계약이 runner 의 사정이
+된다" — 하루 종일 반복된 계약↔프레임워크 엮임(entry=/params=/task_surface/
+TASK_INFO/streams=/TaskMeta)의 근본 원인. 수술 = runner 의 wire 절단.
+
+- **TaskRunner = wire 무지 범용 감독기**: runtime/키/robot payload/seq/fan-out
+  전부 제거. 변화는 생성자 **콜백 3개**(on_state/on_trace/on_result — 전부 선택,
+  안 달면 headless)로 통지 — RunState 스냅샷/TraceEntry/record 값. 콜백 예외는
+  삼키고 로그. (listener 객체/EventEmitter/TaskHost 계층 검토 후 기각 — 콜백이
+  "내부 전이 지점이 미지의 외부에 닿는" 최소 형식. 알림 코드 소유는 이미 모듈,
+  호출 지점은 전이가 일어나는 runner 내부에만 존재 가능.)
+- **진행 발행 = 모듈 소유**: 모듈이 runner 콜백에 자기 발행 메서드를 담
+  (TaskState/TaskTrace/TaskStepResult 조립 + seq + robot fan-out — 자기 계약
+  키로). payload 규약은 core/contract.py — 공용 task UI 의 전제.
+- **등록 의식 전폐**: register_task/TaskMetadata/registry/@task 데코레이터/
+  task_surface 생성기/**GET /tasks(TaskInfo/TasksResponse) 삭제**. task 의 정보
+  채널 = 계약이 유일 (frontend 는 gen:types 로 키를 정적으로 앎). robot 바인딩/
+  표시 문구 = frontend task 전용 페이지 소유 상수 (pickAndPlaceTask.ts —
+  useTasks/useTaskRobotId 삭제). 조작판(stop/pause/...) wire 노출도 **모듈 결정**
+  — 계약에 명시하고 핸들러 손코드 (runner API 를 코드에서 직접 불러도 됨).
+- **ctx 단일 호출 표면 (RobotHandle 삭제)**: 표면이 둘이면 "어느 쪽으로 부르지?"
+  가 오용을 낳음 (detector 를 robot.call 로 부른 실사고). `ctx.call(key, req,
+  res, robot_id=)` 하나 — robot-scoped 키는 robot_id= (호출마다 **참여 명부
+  검증** — 선언 밖 robot 명령 즉시 에러 = on_abort STOP 커버리지 보장), agnostic
+  은 req 필드 (§2.7. agnostic 키에 robot_id= 주면 fail-fast). `ctx.spec(robot_id)`
+  물리값. steps 시그니처 = (ctx, robot_id: str, ...) — robot 은 리터럴 id.
+- **병렬 = all-stop 의미론으로 지원** (회귀 테스트 잠금): gather 가지들 —
+  pause/breakpoint 시 전 가지가 각자 다음 경계에서 hold (공유 게이트 — gdb
+  all-stop 등가), cancel 가지 전파, depth ContextVar 가지별 독립. 미장착(additive):
+  가지 단위 step_once, current_name 복수 표시, UI robot 트랙.
+- **run_task.py = 키 직접**: `run_task.py srv/pick_and_place/run --param k=v` —
+  registry 의존 소멸, param 검증은 서비스(RunRequest)가 SSOT (오류 사유 그대로
+  출력), 스트림은 키 ns + wildcard 구독 (robots 목록 불필요).
+
+검증: backend pytest full **348 PASS** (병렬 all-stop/취소 전파/ctx 검증/headless/
+콜백 예외 격리 신규) / ruff·pyright 0 / run_task 워크스루 (중첩 trace + 서버측
+param 거부 확인) / frontend vitest 160 + lint·build + **e2e 2/2** / contract
+regen (TaskInfo/TasksResponse 소멸 확인). 유령 서버 정리 확인.
+
+### 2026-07-13 (전반) — @step 개편: 저자 지정 step + 거부=raise + contract timeout 선언
+
+**설계 (사용자↔GPT 교차 토론 수렴 — docs/task.md 상단 정본 개정):** step 을
+프레임워크 강제 primitive 에서 **저자가 @step 으로 지정하는 함수 단위**로 전환.
+계층 = 시나리오(step 나열) → @step 함수(raw service call — **contract 가 SDK**,
+client/미러 래퍼 계층 기각) → `ctx.call` → 서비스.
+
+- `core/step.py` 신설 — `@step` / `@step(title="집기")`. **name(식별자 —
+  breakpoint/run_to 키) = 함수 이름** (override 파라미터 없음 — 함수 이름이 이미
+  안정 식별자), **title = UI 표시 문구** (분리 — 문구 바뀌어도 name 안정). 필드
+  네이밍 확정 (2026-07-13 후반 토론): 식별자를 `label` 이 아니라 `name` 으로 —
+  "이 step 을 식별하는 안정적 이름" 의미가 코드/wire/frontend 전체에서 일관 (label
+  은 관례상 표시 텍스트라 혼동). wire: `TraceEntry.name/title`,
+  `TaskState.current_name/current_title`, `RunToRequest/ToggleBreakpointRequest.name`.
+  (`TaskStepResult.label` 은 ctx.record 키로 별개 개념 — 그대로 유지.) **중첩 허용**: compound step (pick/place) 안의 자식
+  step 이 trace 에 depth 로 찍힘 (wire = flat 리스트 + `TraceEntry.depth` 하나,
+  트리는 UI 들여쓰기). 게이트는 모든 진입점 = step_once 는 step-into (over 버튼
+  없음 — run_to 가 커버). 링크는 ContextVar (runner._supervise 가 bind — 병렬
+  확장 안전). run 밖 호출 = 게이트 없이 본문만 (step 함수가 그냥 async 함수로
+  테스트됨). `step_note()` 로 실행 중 detail ("3개 후보") 보존.
+- **거부 = raise (motion/motor contract 개정, wire 가시 변경)**: MOVE_J/
+  MOVE_J_POSE/MOVE_L 거부 → `MotionRejected` raise (응답에서 accepted/message
+  제거 — 빈 응답), SET_GRIPPER ok 필드 제거. 기준 확정: **예외 = 기술적 실패
+  (서비스가 raise → RemoteError), 데이터 = 부정적 유효 결과** (검출 0개,
+  RESOLVE_REACHABLE -1 유지 — 치명 판정은 step 이 NoReachableGrasp 로). task 에
+  accepted 체크 코드가 존재하지 않는 게 계약.
+- **SELECT_REACHABLE → RESOLVE_REACHABLE rename** (2026-07-13 후반): 계약이
+  "순서 = 선호 힌트(best-effort), 가용 그룹 하나 반환" — 엄격 first 보장이 아님
+  (deepening 이 속도와 맞바꾼 문서화된 트레이드오프). "Select" 는 motion 이 선택
+  정책을 소유하는 듯 오독, "First" 는 구현이 보장 않는 것을 약속 → Resolve.
+  배치 자체는 motion 이 정본 (기구학 판정 = motion 만의 지식 + in-process batch
+  성능 — 2026-07-09 원격 probe 10s 사고. 정책 = 후보·순서·전멸 판정은 task 유지).
+  frontend 미노출 서비스라 regen 불필요. FIRST/ALL/BEST 확장은 소비자 생길 때.
+- **timeout = contract 선언**: `framework.contract.service.declare_service_timeouts`
+  — 각 contract.py 가 자기 서비스 기본 timeout 선언 (motion 60s / detector 30s),
+  `runtime.call(timeout=None)` 이 template 키로 해석. 상충 재선언 = fail-fast.
+- **RobotHandle 축소**: primitive 메서드 (detect_oriented/move_l/gripper 등) 전부
+  삭제 — robot_id 주입 `call` + `spec`/`require_spec()` 만. core 의 도메인 import
+  는 Motion.STOP 하나 (안전 의무). **on_abort = 참여 robot 전원 STOP** (moved
+  추적 폐기 — 보수적 안전). `ctx.wait` 삭제 (step 안 asyncio.sleep).
+  `FakeContext` 재설계 — ScriptedRuntime (서비스 키별 응답/예외 스크립트).
+- **pick_and_place 재작성 (표준형 갱신)**: module.py `_scenario` = `steps.pick` →
+  `steps.place` 두 줄. steps.py 신설 — 한글 title 붙은 @step 14개 (compound
+  pick/place + detect/select/모션/gripper 원자 step + plain 헬퍼 _move_l 등).
+  settle(1.2s)/raw 값은 step 파일 소유. step 재사용은 실제 필요가 생길 때 공용화 (어휘집
+  선축조 금지).
+- **frontend**: contract regen (fixture+contract.ts — TraceEntry.name/title/depth,
+  TaskState.current_name/current_title, RunTo/ToggleBreakpoint.name, 빈 Move 응답),
+  TaskProgressPanel 이 `{ name }` 으로 run_to/breakpoint 호출, WaypointPanel move_j 를 res.success
+  기반으로 (accepted 소멸), TaskProgressPanel depth 들여쓰기 + title 표시
+  (접기/펼치기는 후속 polish).
+
+검증 (2026-07-13 전부 실행): backend pytest full **346 PASS** (신규: @step 게이트
+/depth/중첩 실패 경로/step-into/title/timeout 해석 등) / ruff·pyright 0 (기존
+calibration 3건도 타입 주석으로 해소) / frontend vitest **160 PASS** + lint(기존
+경고 2 외 0)·build 통과 / run_task mock 워크스루 — 중첩 trace(`pick[집기] >
+detect[검출]`)·step_note·실패 사유 조립·STOP 경로 실물 확인 (mock 은 캘 없어
+detect 0건 자연 실패 = 실패 경로 검증). **실물 완주 검증 = 다음 hardware 세션.**
+
+다음 후보: ① 실물 pick(+place) 검증 ② 두 번째 task 개밥먹기 (사용자 직접 작성 —
+표면 확정판으로) ③ trace 접기/펼치기 + 병렬 robot 트랙 UI polish ④ 가지 단위
+step_once (병렬 디버거 세밀 제어).
 
 ### 2026-07-12 — Task 아키텍처 확정 + 옛 DSL 통삭제 + Pick&Place 본 계약 승격
 
@@ -2579,8 +2744,8 @@ n8n 식 워크플로 플랫폼을 지금 만들면 팔레트가 빈 조합기.
    | 층 | 예 | 규칙 |
    |---|---|---|
    | **Day-1 primitive** | MoveJ/MoveL/Stop/Gripper/TCP pose/IK·FK/Detect Object | **처음부터 구축** (표준 산업 로봇 공통 제공) |
-   | **Domain primitive** | GraspBottle/FoldTowel | **절대 미리 안 만듦** — task 로컬 → rule of three 승격 |
-   | **Orchestration** | Loop/Retry/Parallel/비주얼 에디터 | **rule of three** (task 2개가 요구할 때) |
+   | **Domain primitive** | GraspBottle/FoldTowel | **절대 미리 안 만듦** — task 로컬, 필요 실증 시 공용 승격 |
+   | **Orchestration** | Loop/Retry/Parallel/비주얼 에디터 | 실 task 가 요구할 때 (선축조 금지) |
 
    판별 기준 2개 (둘 다 ✅ = 지금, 하나라도 ✗ = 대기): ① industry 가 표준 primitive 로
    출하하나? ② 하드웨어·대상·알고리즘 무관한 의미인가?
@@ -2621,7 +2786,7 @@ Slot/Step) 으로 유지, primitive 가 쌓여 조합이 변수가 되는 시점
   Task 규칙 하나: **await 성공 = 완료, 다음 step.** (구현: traj thread terminal 상태를
   `asyncio.Future` 로 resolve — 내부 방식은 driver 별 자유, "인터페이스 ≠ 구현".)
 - **MoveL v1 제약**: ✓ XYZ 직선 / ✗ orientation 보장 안 함 (position-only IK).
-  orientation interpolation (SLERP) = MoveL v2 — 실 task 요구 시 (rule of three).
+  orientation interpolation (SLERP) = MoveL v2 — 실 task 요구 시.
 
 ### 17.4 Task DSL 재이주 매핑 (구현 대기 — 옛 backend 자산의 v2 적응)
 

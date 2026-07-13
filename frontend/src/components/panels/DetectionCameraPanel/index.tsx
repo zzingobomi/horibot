@@ -11,12 +11,10 @@
  */
 import { CameraView } from "@/components/camera/CameraView";
 import { useStream } from "@/framework";
-import { useTaskRobotId } from "@/hooks/useTasks";
+import { TASK_ROBOT_ID } from "@/pages/pickAndPlaceTask";
 import { Topic } from "@/api/generated/contract";
 
 const STALE_MS = 8_000; // 검출 후 이 시간 지나면 오버레이 숨김 (팔 이동 대비)
-// 대상 robot 은 backend task 바인딩에서 (ambient default 아님).
-const TASK_NAME = "pick_and_place";
 
 const BEST = "#34d399"; // 최고 후보 bbox (초록)
 const REST = "#a1a1aa"; // 나머지 bbox (회색)
@@ -41,7 +39,7 @@ type OverlayCand = {
 };
 
 export function DetectionCameraPanel() {
-  const robotId = useTaskRobotId(TASK_NAME) ?? "";
+  const robotId = TASK_ROBOT_ID;
 
   const det = useStream(Topic.DETECTOR_DETECTIONS, { robotId, staleMs: STALE_MS });
   const ori = useStream(Topic.DETECTOR_DETECTIONS_ORIENTED, {

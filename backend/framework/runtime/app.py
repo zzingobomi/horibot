@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from framework.contract.envelope import ServiceRequest, ServiceResponse
 from framework.contract.mirror import MirrorState, discover_mirrors
 from framework.contract.publisher import decode_event, encode_event
-from framework.contract.service import ServiceSpec
+from framework.contract.service import ServiceSpec, resolve_service_timeout
 from framework.contract.subscriber import SubscriberSpec
 from framework.runtime.api import ModuleRuntime
 from framework.runtime.discovery import discover_services, discover_subscribers
@@ -84,9 +84,11 @@ class _TransportRuntime:
         res_cls: type[TRes],
         *,
         robot_id: str | None = None,
-        timeout: float = 5.0,
+        timeout: float | None = None,
     ) -> TRes:
         key_str = str(key)
+        # timeout 미지정 → contract 선언 기본값 (template 키 기준 — robot 확장 전)
+        resolved_timeout = resolve_service_timeout(key_str, timeout)
         if "{robot_id}" in key_str:
             if robot_id is None:
                 raise ValueError(
@@ -95,7 +97,7 @@ class _TransportRuntime:
             key_str = key_str.format(robot_id=robot_id)
 
         payload = _encode_request(req)
-        res_bytes = await self._transport.call(key_str, payload, timeout)
+        res_bytes = await self._transport.call(key_str, payload, resolved_timeout)
         return cast(TRes, _decode_response(res_cls, res_bytes))
 
 

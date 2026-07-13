@@ -21,7 +21,7 @@ class _FakeRuntime:
     def publish(self, wire_key, event) -> None:  # noqa: ANN001
         pass
 
-    async def call(self, key, req, res_cls, *, robot_id=None, timeout=5.0) -> Any:  # noqa: ANN001
+    async def call(self, key, req, res_cls, *, robot_id=None, timeout=None) -> Any:  # noqa: ANN001
         raise AssertionError("LLM 은 runtime.call 안 함")
 
 

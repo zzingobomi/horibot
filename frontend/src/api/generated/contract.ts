@@ -56,25 +56,6 @@ export interface SystemMetrics {
   mem_percent: number;
 }
 
-export interface TaskParamInfo {
-  name: string;
-  type: string;
-  required: boolean;
-  default?: string;
-}
-
-export interface TaskInfo {
-  name: string;
-  robot_ids?: string[];
-  description?: string;
-  run?: string;
-  params?: TaskParamInfo[];
-}
-
-export interface TasksResponse {
-  tasks: TaskInfo[];
-}
-
 export interface AbortRunRequest {
   run_id: number;
 }
@@ -418,13 +399,23 @@ export interface JogTcpInput {
   frame?: string;
 }
 
+export interface JointTarget {
+  kind: "joint";
+  joints: number[];
+}
+
+export interface PoseTarget {
+  kind: "pose";
+  position: [number, number, number];
+  quaternion?: [number, number, number, number] | null;
+  tcp_offset?: [number, number, number] | null;
+}
+
 export interface MoveJRequest {
-  target_joints: number[];
+  target: JointTarget | PoseTarget;
 }
 
 export interface MoveJResponse {
-  accepted: boolean;
-  message?: string;
 }
 
 export interface TcpState {
@@ -650,29 +641,39 @@ export interface SetStreamResponse {
   voxel_size: number;
 }
 
+export interface ControlRequest {
+}
+
+export interface ControlResponse {
+  ok: boolean;
+  message?: string;
+}
+
+export interface RunResponse {
+  accepted: boolean;
+  message?: string;
+}
+
+export interface RunToRequest {
+  name: string;
+}
+
 export interface TaskState {
   robot_id: string;
   seq: number;
   timestamp_unix: number;
   status: TaskStatusValue;
   task_name?: string;
-  current_label?: string;
+  current_name?: string;
+  current_title?: string;
   error?: string | null;
   breakpoints?: string[];
 }
 
-export interface TaskStepResult {
-  robot_id: string;
-  seq: number;
-  timestamp_unix: number;
-  label: string;
-  type: string;
-  value?: unknown;
-}
-
 export interface TraceEntry {
-  label: string;
-  kind: string;
+  name: string;
+  title?: string;
+  depth?: number;
   status: string;
   detail?: string;
   started_unix: number;
@@ -687,12 +688,8 @@ export interface TaskTrace {
   entries?: TraceEntry[];
 }
 
-export interface ControlRequest {
-}
-
-export interface ControlResponse {
-  ok: boolean;
-  message?: string;
+export interface ToggleBreakpointRequest {
+  name: string;
 }
 
 export interface RunRequest {
@@ -700,17 +697,16 @@ export interface RunRequest {
   place_object?: string;
 }
 
-export interface RunResponse {
-  accepted: boolean;
-  message?: string;
+export interface TaskMarker {
+  label: string;
+  position: [number, number, number];
 }
 
-export interface RunToRequest {
-  label: string;
-}
-
-export interface ToggleBreakpointRequest {
-  label: string;
+export interface TaskMarkers {
+  robot_id: string;
+  seq: number;
+  timestamp_unix: number;
+  markers?: TaskMarker[];
 }
 
 export interface AddToGroupRequest {
@@ -841,8 +837,8 @@ export const Topic = {
   MOTOR_RAW_STATE: "stream/motor/{robot_id}/raw_state",
   MOTOR_STATE: "stream/motor/{robot_id}/state",
   MOTOR_TORQUE_CHANGED: "event/motor/{robot_id}/torque_changed",
+  PICKANDPLACE_MARKERS: "stream/pick_and_place/{robot_id}/markers",
   PICKANDPLACE_STATE: "stream/pick_and_place/{robot_id}/state",
-  PICKANDPLACE_STEP_RESULT: "stream/pick_and_place/{robot_id}/step_result",
   PICKANDPLACE_TRACE: "stream/pick_and_place/{robot_id}/trace",
   SCAN_BUILD_PROGRESS: "stream/scan/{robot_id}/build_progress",
   SCENE3D_CLOUD: "stream/scene3d/{robot_id}/cloud",
@@ -861,8 +857,8 @@ export type TopicPayloadMap = {
   "stream/motor/{robot_id}/raw_state": JointState;
   "stream/motor/{robot_id}/state": MotorState;
   "event/motor/{robot_id}/torque_changed": TorqueChanged;
+  "stream/pick_and_place/{robot_id}/markers": TaskMarkers;
   "stream/pick_and_place/{robot_id}/state": TaskState;
-  "stream/pick_and_place/{robot_id}/step_result": TaskStepResult;
   "stream/pick_and_place/{robot_id}/trace": TaskTrace;
   "stream/scan/{robot_id}/build_progress": BuildProgress;
   "stream/scene3d/{robot_id}/cloud": Scene3dCloud;

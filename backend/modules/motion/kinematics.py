@@ -62,7 +62,7 @@ class Kinematics(Protocol):
         - current_joint_angles=None → 0 벡터 seed
         - target_quaternion=None → position-only IK
         - restarts=None → 구현체 default (실행용 최대 예산). 배치 판정
-          (SELECT_REACHABLE deepening) 은 작은 예산으로 probe — 불가 후보 기각
+          (RESOLVE_REACHABLE deepening) 은 작은 예산으로 probe — 불가 후보 기각
           비용이 재시작 수에 비례해서 (실패만 풀비용을 냄).
         """
         ...

@@ -6,20 +6,17 @@
  * 옛 PREVIEW 단계는 소멸 — 파싱 결과가 폼에 보이고 사용자가 수정/확인 후 실행.
  * [중지] = PICKANDPLACE_STOP (in-flight 모션 즉시 끊김 + 모터 정지 — runner 계약).
  *
- * 대상 robot 은 task 가 선언 (GET /tasks robot_ids) — useTaskRobotId. 서비스는
+ * 대상 robot = task 전용 페이지 소유 상수 (pickAndPlaceTask.ts). 서비스는
  * task 모듈 소유 (robot-agnostic 키) 지만 캐시 정체성 규약대로 robotId 를 전달.
  */
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useService } from "@/framework";
-import { useTaskRobotId } from "@/hooks/useTasks";
+import { TASK_ROBOT_ID } from "@/pages/pickAndPlaceTask";
 import { ServiceKey } from "@/api/generated/contract";
 
-const TASK_NAME = "pick_and_place";
-
 export function PickAndPlacePanel() {
-  // 미로드 시 "" — 실행 버튼 gate (robot 바인딩을 모르면 실행 안 함).
-  const robotId = useTaskRobotId(TASK_NAME) ?? "";
+  const robotId = TASK_ROBOT_ID;
 
   const parseSvc = useService(ServiceKey.LLM_PARSE_COMMAND);
   const runSvc = useService(ServiceKey.PICKANDPLACE_RUN, robotId);

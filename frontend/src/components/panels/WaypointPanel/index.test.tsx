@@ -23,7 +23,7 @@ function respond(key: string): unknown {
   if (key.includes("list_group_members")) return { waypoints: [] };
   if (key.includes("list_groups")) return { groups: [] };
   if (key.endsWith("/list")) return { waypoints: listWaypoints };
-  if (key.includes("/move_j")) return { accepted: true };
+  if (key.includes("/move_j")) return {}; // 빈 응답 — 성공 = 정상 응답 (거부는 error frame)
   if (key.includes("/teach")) {
     return {
       accepted: true,
@@ -145,8 +145,9 @@ describe("WaypointPanel", () => {
     await waitFor(() => {
       const calls = spy.mock.calls.filter((c) => String(c[0]).includes("/move_j"));
       expect(calls.length).toBeGreaterThan(0);
-      const req = calls[0][1] as { target_joints: number[] };
-      expect(req.target_joints).toEqual([0.1, 0.2, 0.3, 0, 0, 0]);
+      const req = calls[0][1] as { target: { kind: string; joints: number[] } };
+      expect(req.target.kind).toBe("joint");
+      expect(req.target.joints).toEqual([0.1, 0.2, 0.3, 0, 0, 0]);
     });
   });
 

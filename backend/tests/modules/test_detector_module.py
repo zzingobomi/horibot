@@ -44,7 +44,7 @@ class _FakeRuntime:
     def publish(self, wire_key, event):  # noqa: ANN001, D102
         self.published.append((str(wire_key), event))
 
-    async def call(self, key, req, res_cls, *, robot_id=None, timeout=5.0):
+    async def call(self, key, req, res_cls, *, robot_id=None, timeout=None):
         return self._responses[str(key)]
 
 

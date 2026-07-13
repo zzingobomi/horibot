@@ -94,7 +94,10 @@ class SetGripperRequest(BaseModel):
 
 
 class SetGripperResponse(BaseModel):
-    ok: bool
+    """빈 응답 — 성공 = 반환, driver 실패 = 예외 (RemoteError 로 전파).
+
+    옛 ok 필드는 항상 True 만 반환되던 죽은 필드 (실패는 애초에 raise 경로) —
+    2026-07-13 예외/데이터 기준 정리에서 제거."""
 
 
 # ─── stream payload (seq + timestamp_unix invariant — §8.5) ────────

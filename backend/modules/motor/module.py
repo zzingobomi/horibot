@@ -130,8 +130,8 @@ class MotorDriverModule:
 
     @service(Motor.Service.SET_GRIPPER)
     def set_gripper(self, req: SetGripperRequest) -> SetGripperResponse:
-        self._driver.set_gripper(req.position_raw)
-        return SetGripperResponse(ok=True)
+        self._driver.set_gripper(req.position_raw)  # driver 실패 = 예외 전파
+        return SetGripperResponse()
 
     # ── command subscriber (Motion → Motor, raw 위치) ─────────
 

@@ -1,20 +1,8 @@
-# v2 robot registry (lean) — identity / placement / vendor / capability 만.
-# 모터 레이아웃 = <type>/motors.yaml, instance(port/baud) = instances/<id>/instance.yaml.
-# calibration 파라미터(pose_recommend_strategy / wrist_roll_motor_id /
-# sag_joint_motor_ids)는 Calibration Module (Step E) 자리 — registry 에서 제외.
-#
 # capabilities       : move | calibrate | rgbd | gamepad
 # motor_backend      : feetech | dynamixel
 # camera_backend     : realsense | opencv
 # kinematics_backend : pybullet
-# enabled            : false = 런타임이 무시 (bridge /robots 노출 X, 모듈 boot X)
-# ("기본 로봇" 개념 없음 — robot 은 UI 라우트/task 바인딩에서 명시적으로 온다.)
 
-# base_pose = world 배치 (so101_6dof_0 = 원점 anchor — 2026-07-11 결정).
-# 산출 = scripts/cross_calibrate.py (공유 보드 크로스캘, run so101#6 + omx#5,
-# roll/pitch 잔차 1.83°) + 4점 TCP 랑데부 실측 보정 (2026-07-12: 상수 잔차
-# (+11,−27,−26)mm 를 흡수 — docs/calibration.md 검증 이력 §). 재캘 시 스크립트
-# 리포트 → 4점 검증 → 보정 순서로 갱신.
 robots:
   omx_f_0:
     type: omx_f

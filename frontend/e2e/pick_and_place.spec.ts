@@ -3,9 +3,10 @@
 // UX 워크스루 (대원칙: 모든 상태에서 나갈 수 있고, 실패는 사유+다음 행동):
 //   1. WS 연결 + PickAndPlacePanel + TaskProgressPanel 렌더
 //   2. 자연어 → 파싱 → 폼 채움 (mock LLM = white cube/blue box)
-//   3. 실행 → RUN accepted → TRACE 에 detect_pick 누적 → FAILED + 사유 표시
+//   3. 실행 → RUN accepted → TRACE 에 step 누적 (pick[집기] > detect[검출] —
+//      중첩 depth) → FAILED + 사유 표시
 //      (mock 은 캘 없음 → detector 후보 0 → 자연 실패. 완주는 실물 하드웨어)
-//   4. breakpoint(label) → 재실행 → PAUSED (detect_pick 직전 hold)
+//   4. breakpoint(label) → 재실행 → PAUSED (pick 직전 hold)
 //   5. PAUSED 에서 [중지] → STOPPED (탈출구)
 //   6. run 없는데 [중지] → 사유 표시 (침묵 금지)
 //
@@ -46,8 +47,9 @@ test.describe("Pick & Place task 페이지 e2e (mock backend)", () => {
 
     await page.getByTestId("pnp-run").click();
 
-    // RUN → runner 감독 실행 → TRACE 에 첫 primitive (detect_pick) 누적
-    await expect(page.getByTestId("task-entries")).toContainText("detect_pick", {
+    // RUN → runner 감독 실행 → TRACE 에 step 누적 (중첩 자식 detect 까지 —
+    // title="검출" 이 주 표시, label 은 보조)
+    await expect(page.getByTestId("task-entries")).toContainText("검출", {
       timeout: 10_000,
     });
     // mock 은 캘 없음 → 검출 0 → FAILED. 실패는 침묵이 아니라 사유+다음 행동.
@@ -65,17 +67,17 @@ test.describe("Pick & Place task 페이지 e2e (mock backend)", () => {
     // 1차 실행 — trace 를 만들어 breakpoint 대상(label) 확보
     await page.getByTestId("pnp-pick").fill("white cube");
     await page.getByTestId("pnp-run").click();
-    await expect(page.getByTestId("task-entries")).toContainText("detect_pick", {
+    await expect(page.getByTestId("task-entries")).toContainText("검출", {
       timeout: 10_000,
     });
     await expect(page.getByTestId("task-status")).toHaveText(/failed/i, {
       timeout: 10_000,
     });
 
-    // detect_pick 에 breakpoint (dot 클릭) — runner 가 run 간 보존
+    // 첫 entry (pick) 에 breakpoint (dot 클릭) — runner 가 run 간 보존
     await page.getByTestId("task-entry-bp").first().click();
 
-    // 2차 실행 → detect_pick 직전 hold = PAUSED
+    // 2차 실행 → pick 직전 hold = PAUSED
     await page.getByTestId("pnp-run").click();
     await expect(page.getByTestId("task-status")).toHaveText(/paused/i, {
       timeout: 10_000,

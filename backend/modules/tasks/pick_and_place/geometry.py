@@ -1,12 +1,3 @@
-"""Pick & Place 파지/적치 기하 — 전부 순수 함수 (ctx/wire 무관, pytest 단독 검증).
-
-후보 생성/보정 로직 = 2026-07-09 실기 검증본 이식 (옛 인라인 module.py). 튜닝 knob
-전부 여기 — 상수는 URDF mesh/motors 실측이지 추측값 아님 (변경 시 실물 재검증).
-
-TCP 프레임 규약 (so101_6dof.urdf 실측): x_tool=approach(손끝 방향), y_tool=조 벌림축
-(+y 쪽 = 파란 고정 조), TCP 원점 = 손끝 평면.
-"""
-
 from __future__ import annotations
 
 import math
@@ -71,7 +62,9 @@ def select_pick_target(
     ok = [c for c in cands if _MIN_HEIGHT_M <= c.height <= _MAX_HEIGHT_M]
     if not ok:
         reason = (
-            "검출 0건" if not cands else f"height prior({_MIN_HEIGHT_M}~{_MAX_HEIGHT_M}m) 통과 0"
+            "검출 0건"
+            if not cands
+            else f"height prior({_MIN_HEIGHT_M}~{_MAX_HEIGHT_M}m) 통과 0"
         )
         raise DetectionNotFound(prompt, candidates=len(cands), reason=reason)
     return max(ok, key=lambda c: c.score)
@@ -106,9 +99,7 @@ def plan_grasp(target: OrientedDetection) -> list[GraspCandidate]:
     (2026-07-09 yaw=84° 사건). 둘 다 유효 파지.
     """
     x, y, top_z = target.position
-    grasp_z = max(
-        top_z - target.height * 0.5, target.base_z + _FINGER_TABLE_CLEAR_M
-    )
+    grasp_z = max(top_z - target.height * 0.5, target.base_z + _FINGER_TABLE_CLEAR_M)
     pre_z = top_z + _APPROACH_CLEAR_M
     long_side, short_side = target.footprint
     yaw_options = (

@@ -50,6 +50,7 @@ from .contract import (
     CalibrationCaptureArtifactRecord,
     CalibrationCaptureRecord,
     CalibrationCommitted,
+    CalibrationKind,
     CalibrationPreview,
     CaptureQualityPayload,
     CaptureRequest,
@@ -89,9 +90,11 @@ _PREVIEW_HZ = 5.0
 # 캡처 세션을 여는 kind (start_run 허용 + stale cleanup + preview 라우팅 공용).
 # intrinsic = detect-only, hand_eye/cross = PnP 경로 (동일 캡처·판정, 소비만 다름
 # — hand_eye 는 offline BA, cross 는 cross_calibrate.py 합성 → robots.yaml).
-_CAPTURE_SESSION_KINDS: tuple[str, ...] = ("intrinsic", "hand_eye", "cross")
+_CAPTURE_SESSION_KINDS: tuple[CalibrationKind, ...] = (
+    "intrinsic", "hand_eye", "cross",
+)
 # PnP 캡처 세션 (preview 가 hand-eye 다양성 판정기를 공유하는 kind)
-_PNP_SESSION_KINDS: tuple[str, ...] = ("hand_eye", "cross")
+_PNP_SESSION_KINDS: tuple[CalibrationKind, ...] = ("hand_eye", "cross")
 
 
 class CalibrationRobotSpec(BaseModel):

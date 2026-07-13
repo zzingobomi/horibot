@@ -3,8 +3,8 @@
  *
  * DSL 아님: <group>/<Center> 옆에 놓이는 그냥 컴포넌트다. 쓰면 편하고 안 쓰면
  * 그만 — scenePart/layer 는 언제든 raw R3F 로 내려갈 수 있다(표현력 천장 없음,
- * [docs/frontend.md]). 렌더 모양은 TaskResultsOverlay 의
- * 검증된 marker 렌더(sphere/box/Text)의 일반화.
+ * [docs/frontend.md]). 렌더 모양은 TaskMarkersOverlay 의
+ * marker 렌더(sphere/box/Text)의 일반화.
  *
  * 좌표는 부모 frame 그대로 — robot base frame 에 놓으려면 <RobotFrame> 으로 감쌀 것.
  */

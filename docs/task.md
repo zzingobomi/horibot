@@ -12,13 +12,24 @@
 ---
 ---
 
-<!-- ═══════════ [확정 아키텍처] Task = 모듈 + core 부품 (2026-07-12 구현 완료 — 현행 정본) ═══════════ -->
+<!-- ═══════════ [확정 아키텍처] Task = 모듈 + core 부품 (2026-07-13 @step 개정 — 현행 정본) ═══════════ -->
 
 # Task 아키텍처 — task 모듈 + tasks/core 프레임워크 부품
 
-> **status: 구현 완료 (2026-07-12).** 사용자 설계 토론 수렴판 — 아래 2026-07-08
-> "중앙 TaskModule + @task registry" 안을 **대체**한다 (그 안의 실행 규약 다수는
-> 계승: cancel 기반 STOP / typed 예외 / TRACE / label 게이트 / FakeContext).
+> **status: 구현 완료 (2026-07-12 골격 + 2026-07-13 전면 개정).** 사용자 설계
+> 토론 수렴판 — 아래 2026-07-08 "중앙 TaskModule + @task registry" 안을
+> **대체**한다 (실행 규약 다수는 계승: cancel 기반 STOP / typed 예외 / TRACE /
+> FakeContext).
+>
+> **2026-07-13 개정 (2건):**
+> ① **@step** — step 을 프레임워크 강제 primitive 에서 **저자 지정 @step 함수**로.
+> client 계층 기각 ("contract 가 SDK"), 거부 = 서비스 raise, timeout = contract
+> 선언, 중첩 step 허용 (flat trace + depth).
+> ② **runner wire 절단 + 의식 전폐** — TaskRunner 는 wire(runtime/키/robot/계약)
+> 를 모르는 범용 감독기 (변화는 콜백 통지). 계약·조작판 노출·트리거·진행 발행
+> 전부 **모듈 소유**. 등록 의식(registry/@task/TaskMetadata/GET /tasks) 전부 삭제
+> — task 의 정보 채널은 계약이 유일. 핵심 진단: "runner 가 wire 를 발행하는 한
+> 계약이 runner 의 사정이 된다" — wire 절단이 모든 엮임의 근본 수술.
 
 ## 1. 지배 요구 (이 프레임워크의 존재 이유 — 기능 추가 판단 기준)
 
@@ -38,51 +49,119 @@
 
 ```
 modules/tasks/
-├── core/                     ← 프레임워크 부품 (contract.py 의 모델만 — 모듈 아님)
-│   ├── runner.py             TaskRunner — 실행 생명주기만 (robot 은 id 문자열만)
-│   ├── context.py            TaskContext/RobotHandle — 도메인 접근 + on_abort
-│   ├── contract.py           STATE/TRACE/STEP_RESULT payload 규약 (공용 UI 전제)
-│   ├── metadata.py           TaskMetadata registry → GET /tasks (params = RunRequest 파생)
-│   ├── errors.py             TaskError 계열 typed 예외
+├── core/                     ← 부품 상자 (제공하되 강제 안 함 — 모듈 아님)
+│   ├── runner.py             TaskRunner — wire 무지 범용 감독기 (콜백 통지) + RunState
+│   ├── step.py               @step 데코레이터 — 게이트/trace 경계 (저자가 step 지정)
+│   ├── context.py            TaskContext — ctx.call 단일 표면 + spec/record/on_abort
+│   ├── contract.py           payload 규약 — TaskState/TaskTrace/TaskStepResult (스트림)
+│   │                         + RunResponse/Control*/RunTo*/ToggleBreakpoint* (조작판)
+│   ├── errors.py             TaskError 계열 (도메인 판정 실패만 — 기술 실패는 서비스 raise)
 │   ├── spec.py               TaskRobotSpec (motors.yaml 투영 — resolve 주입)
-│   └── fake.py               FakeContext (실 ctx 상속 — pyright 드리프트 방지)
+│   └── fake.py               FakeContext + ScriptedRuntime (서비스 키별 응답 스크립트)
 └── pick_and_place/           ← task 모듈 표준형 (레퍼런스 구현)
-    ├── contract.py           표준 표면: srv/<task>/run|stop|pause|resume|step_once|
-    │                         run_to|toggle_breakpoint + stream/<task>/{robot_id}/
-    │                         state|trace|step_result. typed RunRequest.
-    ├── module.py             핸들러 one-liner 위임 + _scenario + TASK_INFO 등록
+    ├── contract.py           **전부 손코드, 전부 이 모듈 소유** — 트리거(RUN) +
+    │                         노출하기로 결정한 조작판 6키 + 진행 스트림 3키 + RunRequest
+    ├── module.py             부품 조립(__init__) + 진행 발행 메서드(runner 콜백) +
+    │                         트리거/조작판 핸들러 + scenario + TASK_ROBOTS 상수
+    ├── steps.py              @step 함수들 — raw service call + 도메인 판정 (task 소유)
     └── geometry.py           순수 함수 (하드웨어 없이 pytest)
 ```
 
+- **TaskRunner = wire 무지 범용 감독기.** 실행/취소/일시정지/재개/step 게이트/예외
+  →실패/상태·trace **데이터** 추적만. runtime·zenoh·키·robot·계약 무지. 변화는
+  생성자에 단 **콜백**(on_state/on_trace/on_result — 전부 선택, 안 달면 headless)
+  으로 통지 — RunState 스냅샷 + TraceEntry 리스트 + record 값. 콜백 예외는 삼키고
+  로그 (관측이 실행을 죽이면 안 됨). start(fn) 은 아무 async 함수나 받고 아무나
+  부를 수 있다 (트리거 중립 — 서비스/@subscriber/내부 호출). 조작판 API 를 wire
+  로 노출할지, 코드에서 직접 부를지(시나리오 중 조건부 pause 등)도 모듈 자유.
+- **모듈이 전부 소유**: 계약(자기 키 전부 손 선언 — 조작판 노출 여부/범위도 이
+  모듈의 결정이라 계약에 명시), 배선(__init__ 에서 runner+contexts 조립), 진행
+  발행(runner 콜백에 자기 발행 메서드 — payload 는 core 규약을 쓰면 공용 task UI
+  가 그대로 붙음), 트리거(자기 RunRequest 로 자기 핸들러 → task.start), 시나리오.
+- **등록 의식 없음**: registry/@task 데코레이터/TaskMetadata/GET /tasks 전부 삭제
+  (2026-07-13). task 의 정보 채널 = 계약 (frontend 는 gen:types 로 키를 정적으로
+  앎). robot 바인딩/표시 문구 = frontend task 전용 페이지 소유 상수
+  (pickAndPlaceTask.ts — "robot 은 패널이 소유"). CLI(run_task.py)는 트리거 키를
+  인자로 직접 받는다 — param 검증은 서비스(RunRequest)가 SSOT.
+
+- **계층 (2026-07-13)**: 시나리오(step 호출 나열 — 의도) → @step 함수(raw service
+  call + 정책 — 방법) → `ctx.call(contract)` → 서비스. **client 계층 없음 —
+  contract 가 SDK.** 1:1 래퍼 (`move_l()` 미러) 금지 — 정책/조합이 실린 의미 있는
+  동작만 @step 함수 (예: settle 포함 gripper). Request 조립 반복은 task 파일 안
+  plain 헬퍼로 (게이트 없음 — step 안에서 재사용).
+- **ctx = 이번 run 의 접점 — 호출 표면은 ctx.call 하나** (RobotHandle 삭제:
+  표면이 둘이면 "어느 쪽으로 부르지?"가 오용을 낳음). robot-scoped/agnostic 구분은
+  계약에만 산다: 키에 `{robot_id}` 있으면 `robot_id=` 인자 (**참여 명부 검증** —
+  선언 밖 robot 명령 즉시 에러, on_abort STOP 커버리지 보장), agnostic 서비스는
+  대상 robot 을 req 필드로 (§2.7 — agnostic 키에 robot_id= 를 주면 fail-fast).
+  나머지 내용물: `spec(robot_id)` 물리값 / `record` 중간값 노출 / on_abort.
+  step 간 데이터 공유 저장소 아님 — 데이터는 시나리오 지역 변수/반환값 (그냥
+  파이썬. 상태 많으면 task 소유 dataclass — ctx.data 류 blackboard 금지, 옛 DSL 병).
+- **step = 저자 지정**: `@step` / `@step(title="집기")`. **name(식별자 —
+  breakpoint/run_to 키) = 함수 이름** (override 파라미터 없음 — 코드 이름이 곧
+  안정 식별자), **title = UI 표시 문구** (한글 등 — 바뀌어도 name 불변). 같은 step
+  함수가 여러 곳(pick·place 의 detect 등)에서 불리면 name 이 공유되므로 breakpoint
+  는 그 이름의 모든 진입에 걸린다. **중첩 허용** — "함수 호출은 함수 호출이다":
+  compound step (pick = detect+select+모션들) 이 자식 step 을 부르면 trace 에 depth
+  로 찍힘. 게이트는 모든 진입점 (step_once = step-into; step-over 버튼 없음 —
+  run_to 가 형제 건너뛰기 커버). run 밖에서 부르면 게이트/trace 없이 본문만
+  (단위테스트 표면). 실행 중 진단(검출 수/선별 그룹 등)은 표준 `logging` 으로
+  (step_note 폐기 — 2026-07-13 밤). `TraceEntry.detail` 은 실패 사유 전용.
+- **실패 모델 (예외 vs 데이터)**: 예외 = 기술적 실패 — **서비스 자신이 raise**
+  (MotionRejected/MotionFailed → RemoteError(type, msg)). task 에 `if not
+  res.accepted` 체크 코드가 존재하지 않는 게 계약 (누가 잊으면 침묵 진행되던 급소
+  제거). 데이터 = 부정적이지만 유효한 결과 (검출 0개, RESOLVE_REACHABLE index=-1) —
+  치명 판정은 step 이 (NoReachableGrasp raise 등). timeout 은 각 서비스 contract.py
+  가 `declare_service_timeouts` 로 선언 — 호출부는 안 넘김.
 - **상속/자동배선/@task 데코레이터 없음** — 모듈이 `TaskRunner`/`TaskContextFactory`
-  를 **부품으로 소유** (조합). 핸들러 6~7줄은 명시적으로 씀 (grep 가능, "contract 에
-  선언한 키만 존재"). 디버거 표면은 원하는 task 만 선언. **STOP 은 안전 의무**
-  (움직이는 로봇을 세울 통로 없는 task 모듈 금지).
-- **책임 분리**: TaskRunner = 실행 생명주기만 / TaskContext = 도메인 접근 전부
-  (robot spec, primitive, **모션 보낸 robot 추적 → on_abort 시 그 robot 에만
-  Motion.STOP**) / 모듈 = wire + 시나리오 / geometry = 순수 계산.
-- **시나리오 표면**: `so101 = ctx.robot("so101_6dof_0")` — 누가 움직이는지가 변수로
-  읽힘 (리터럴 id, 상수 금지). primitive 는 게이트를 타고 (label 인자 하나, 생략 시
-  "kind#n"), escape hatch = `robot.call`(robot-scoped 자동 주입) / `ctx.call`(무관).
-  primitive 승격은 반복 관찰 후 (선제작 금지).
-- **관측**: STATE(status/current_label/error/breakpoints) / TRACE(primitive 호출
-  누적 — label/kind/status/detail, 전체 재발행) / STEP_RESULT(값 primitive 자동 +
-  `ctx.record`). breakpoint/run_to = **label** 기준, run 간 보존.
-- **멀티 robot (handover, 미설계)**: robot_ids 선언 + handle 2개 + asyncio.gather
-  까지는 현 구조로 수용. ctx 실행 모델 세부 + 모듈 간 robot lease 중재는 착수 시.
-- `@step` (관측 단위 데코레이터 — 함수명이 span 이름): 논의됨, 골격 굳은 뒤 재논의.
+  를 **부품으로 소유** (조합). 핸들러는 명시적으로 씀 (노출 = 결정이므로 계약과
+  나란히 보임). **STOP 은 안전 의무** — 모듈 stop() 이 task.cancel() (레퍼런스
+  참조), on_abort = **참여 robot 전원** Motion.STOP (moved 추적 폐기 — 안 움직인
+  robot 에 STOP 은 무해, 보수적 안전).
+- **책임 분리**: TaskRunner = 생명주기 + 게이트 + 콜백 통지 (도메인/wire 모름) /
+  TaskContext = 검증된 call + spec + on_abort (core 의 유일한 도메인 지식 =
+  Motion.STOP) / module.py = 계약·배선·발행·트리거·시나리오 / steps.py =
+  도메인 동작 / geometry = 순수 계산.
+- **시나리오 표면**: `so101 = "so101_6dof_0"` — 누가 움직이는지가 변수로 읽힘
+  (리터럴 id — ctx.call 이 참여 검증).
+- **관측**: STATE(status/current_name/current_title/error/breakpoints) /
+  TRACE(step 진입 누적 — name/title/depth/status/detail, **flat 리스트 + depth**,
+  트리 표현은 UI 들여쓰기). breakpoint/run_to = step **name** 기준, run 간 보존.
+- **시각화 산출물 (파지/적치 지점 등)**: task 가 **자기 typed 스트림**으로 발행
+  (2026-07-13 밤 확정 — "시각화 데이터는 그걸 계산한 쪽이 소유", detector
+  DETECTIONS 동형). pick_and_place = `Stream.MARKERS` + `TaskMarker{label,
+  position}`/`TaskMarkers{...markers[]}`, 모듈이 scenario 에서 스냅샷(latest-wins)
+  publish, 프론트 `TaskMarkersOverlay` 가 STATE RUNNING 전이에 clear. 범용 채널
+  (옛 ctx.record/STEP_RESULT) 미신설 — 중복 생기면 그때 헬퍼로 (task-first).
+- **멀티 robot / 병렬**: 순차 협동 = 지금 구조 그대로 (step 이 robot_id 여러 개
+  인자로, 참여 선언에 전부 나열 → 전원 STOP 커버). **병렬(asyncio.gather) =
+  all-stop 의미론으로 지원** (회귀 테스트 잠금): pause/breakpoint 시 모든 가지가
+  각자 다음 경계에서 hold (공유 게이트 — gdb all-stop 등가, 한 팔만 얼고 다른
+  팔이 도는 상황 방지), cancel 은 가지 전파, depth 는 ContextVar 상속이라 가지별
+  독립. 미장착(additive 확장): 가지 단위 step_once 선택, current_name 복수 표시,
+  UI robot 트랙 분리.
+- **step 재사용**: 중첩은 메커니즘, 재사용은 결과 — 어휘집 선축조 금지. step 은
+  task 모듈에서 시작, 공용화는 실제 필요로 판단 (기계적 횟수 규칙 아님 — 설계 판단).
 
 ## 3. 새 task 만들기 (개밥먹기 체크리스트)
 
-1. `modules/tasks/<name>/` 에 contract.py(표준 키 + typed RunRequest) / module.py
-   (runner·contexts 부품 + 핸들러 + `_scenario`) / 순수 함수 파일 — pick_and_place
-   복제가 가장 빠름.
-2. `TASK_INFO = register_task(TaskMetadata(...))` — GET /tasks 노출 (robots/설명).
-3. apps/registry.py + deployment yaml 등록. FRONTEND_EXPOSED 에 키 추가 →
+1. `modules/tasks/<name>/` 폴더 — pick_and_place 복제가 가장 빠름:
+   - **contract.py** — 전부 손코드: 트리거 키(이름 자유) + 노출하기로 결정한
+     조작판 키 + 진행 스트림 3키 + 자기 RunRequest. (조작판/스트림 req·res·payload
+     모양은 tasks/core/contract.py 공용 — 공용 task UI 가 그대로 붙음.)
+   - **module.py** — __init__ 에서 runner(+발행 콜백)/contexts 조립, stop() 에서
+     task.cancel() (**안전 의무**), 진행 발행 메서드 3개, 트리거 핸들러
+     (`task.start(self.scenario, ctx=…, robot_ids=…, **req.model_dump())`),
+     노출할 조작판 핸들러, scenario.
+   - **steps.py** — @step 함수들 (`ctx.call` + 도메인 판정). **geometry.py** — 순수 함수.
+2. apps/registry.py + deployment yaml 등록. FRONTEND_EXPOSED 에 키 추가 →
    `pnpm gen:types` (+fixture 쌍).
-4. 검증: 순수 함수 pytest → FakeContext 시나리오 (분기/실패 경로) → CLI
-   `uv run --no-sync python scripts/run_task.py <name> --param k=v` (mock, bridge
-   미점유) → 전용 페이지 (frontend — 페이지는 task 별, 부품은 공용).
+3. frontend — task 전용 페이지 (+ `<name>Task.ts` 상수: TASK_NAME/TASK_ROBOT_ID —
+   robot 바인딩/표시 문구는 페이지 소유). 페이지는 task 별, 부품은 공용.
+4. 검증: 순수 함수 pytest → step 함수 단독 (run 밖 = 평범한 async 함수) →
+   FakeContext 시나리오 (서비스 키별 스크립트 — 분기/실패 경로) → CLI
+   `uv run --no-sync python scripts/run_task.py srv/<name>/run --param k=v`
+   (mock, bridge 미점유) → 전용 페이지.
 
 ---
 ---
@@ -104,7 +183,7 @@ modules/tasks/
 
 기능 추가 기준은 하나: **"이 기능이 개발자가 반복해서 작성하는 보일러플레이트를
 제거하는가?"** 반복이 관찰되면 프레임워크 후보, 아니면 그냥 Python 코드다.
-(rule of three 는 이 기준의 한 사례. ctx 에 뭘 넣나 / helper 로 빼나 류의 분류 논쟁도
+(ctx 에 뭘 넣나 / helper 로 빼나 류의 분류 논쟁도
 이 기준으로 절차화 — 미리 taxonomy 를 만들지 않고 반복을 관찰한다.)
 
 이건 이 프로젝트가 이미 검증한 수다 — module framework 의 `@service`/`@subscriber` 가

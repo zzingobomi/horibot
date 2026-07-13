@@ -1,6 +1,6 @@
 """calibration bundle → 보정 kinematics 구성 — 소비자 공유 SSOT.
 
-소비자 2 (rule-of-three 승격, 2026-07-07):
+소비자 2 (공용 승격, 2026-07-07):
   - MotionModule (D4) — boot/live 적용 (Mirror 값)
   - ScanModule — TSDF build 시점 fresh bundle 로 저장된 raw 재계산
     ("scan 은 raw 로 저장, build 시 현재 캘로 재계산" 불변의 FK 절반)

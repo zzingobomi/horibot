@@ -2,7 +2,8 @@
 
 의미 (뒤집으면 회귀): height prior 무시 / 후보 가족(tilt×yaw×flip) 수·보정 부호 변질 /
 place 분기가 pick-only 에서 실행 / 실패가 침묵 성공 / place 검출 실패 시 release
-(물체 낙하) / RUN 동시 실행 허용.
+(물체 낙하) / RUN 동시 실행 허용 / gripper raw 가 spec 아닌 추측값 / 도달 전멸(-1)
+침묵 통과.
 """
 
 from __future__ import annotations
@@ -10,15 +11,47 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from modules.detector.contract import DetectOrientedResponse, OrientedDetection
+from modules.detector.contract import (
+    DetectOrientedResponse,
+    Detector,
+    OrientedDetection,
+)
+from modules.motion.contract import (
+    Motion,
+    MoveJResponse,
+    MoveLResponse,
+    ResolveReachableResponse,
+    StopResponse,
+)
+from modules.motor.contract import Motor, SetGripperResponse
 from modules.tasks.core.errors import DetectionNotFound, NoReachableGrasp
 from modules.tasks.core.fake import FakeContext
+from modules.tasks.core.spec import TaskRobotSpec
 from modules.tasks.core.contract import TaskState, TaskStatus
-from modules.tasks.pick_and_place import geometry
-from modules.tasks.pick_and_place.contract import ControlRequest, RunRequest
-from modules.tasks.pick_and_place.module import TASK_INFO, PickAndPlaceModule
+from modules.tasks.pick_and_place import geometry, steps
+from modules.tasks.core.contract import ControlRequest
+from modules.tasks.pick_and_place.contract import RunRequest
+from modules.tasks.pick_and_place.module import PickAndPlaceModule
 
 _BOT = "so101_6dof_0"
+
+_SPEC = TaskRobotSpec(
+    gripper_open_raw=3186,
+    gripper_close_raw=1935,
+    gripper_index=5,
+    gripper_held_threshold_raw=2100,
+)
+
+_DETECT = str(Detector.Service.DETECT_ORIENTED)
+_SELECT = str(Motion.Service.RESOLVE_REACHABLE)
+_MOVE_J = str(Motion.Service.MOVE_J)
+_MOVE_L = str(Motion.Service.MOVE_L)
+_GRIP = str(Motor.Service.SET_GRIPPER)
+
+
+@pytest.fixture(autouse=True)
+def _no_settle(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(steps, "_GRIPPER_SETTLE_S", 0.0)  # 테스트 즉시 진행
 
 
 def _det(
@@ -92,7 +125,7 @@ def test_plan_place_release_height():
     assert len(pplan) == 11 * 2 * 2
 
 
-# ─── 시나리오 (FakeContext — 하드웨어/wire 없음) ─────────────────────
+# ─── 시나리오 (FakeContext — 하드웨어/wire 없음, step 은 게이트 없이 실행) ──
 
 
 def _module_for_scenario() -> PickAndPlaceModule:
@@ -103,62 +136,89 @@ def _module_for_scenario() -> PickAndPlaceModule:
     return PickAndPlaceModule(_Rt(), {})  # type: ignore[arg-type]
 
 
+def _pick_script(**overrides) -> dict:
+    """pick 경로 성공 스크립트 — 서비스 키별 응답 (실패 주입은 overrides)."""
+    script = {
+        _DETECT: [DetectOrientedResponse(found=True, candidates=[_det()])],
+        _SELECT: [ResolveReachableResponse(index=0)],
+        _MOVE_J: [MoveJResponse()],
+        _MOVE_L: [MoveLResponse()] * 2,  # descend + lift
+        _GRIP: [SetGripperResponse()] * 2,  # open + close
+    }
+    script.update(overrides)
+    return script
+
+
 async def test_scenario_pick_only_sequence():
     mod = _module_for_scenario()
-    ctx = FakeContext(robots=[_BOT], detect_script={"white cube": [[_det()]]})
+    ctx = FakeContext(robots=[_BOT], specs={_BOT: _SPEC}, service_script=_pick_script())
 
-    await mod._scenario(ctx, pick_object="white cube")
+    await mod.scenario(ctx, pick_object="white cube")
 
-    assert ctx.kinds() == [
-        "detect_oriented", "select_reachable",
-        "move_j_pose", "gripper", "move_l", "gripper", "move_l",
+    # 서비스 호출 순서 = 검출 → 선별 → 접근 → open → 하강 → close → 들어올림
+    assert ctx.keys() == [
+        _DETECT, _SELECT, _MOVE_J, _GRIP, _MOVE_L, _GRIP, _MOVE_L,
     ]
-    labels = ctx.labels()
-    assert [lb for lb in labels if lb in ("pre_grasp", "descend", "lift")] == [
-        "pre_grasp", "descend", "lift",
-    ]
-    assert "detect_place" not in labels  # place 분기 안 탐
-    grips = [c["action"] for c in ctx.calls("gripper")]
-    assert grips == ["open", "close"]  # 든 채 종료 (release 없음)
-    assert ctx.result_log[-1][0] == "grasp"  # 파지 계획 씬 노출
+    # place 분기 안 탐 (detect 1회뿐) + 든 채 종료 (마지막 gripper = close raw)
+    grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
+    assert grips == [_SPEC.gripper_open_raw, _SPEC.gripper_close_raw]
 
 
 async def test_scenario_with_place_branch():
     mod = _module_for_scenario()
     ctx = FakeContext(
         robots=[_BOT],
-        detect_script={
-            "white cube": [[_det()]],
-            "red box": [[_det(position=(0.25, -0.05, 0.04), height=0.04)]],
+        specs={_BOT: _SPEC},
+        service_script={
+            _DETECT: [
+                DetectOrientedResponse(found=True, candidates=[_det()]),
+                DetectOrientedResponse(
+                    found=True,
+                    candidates=[_det(position=(0.25, -0.05, 0.04), height=0.04)],
+                ),
+            ],
+            _SELECT: [ResolveReachableResponse(index=0)] * 2,
+            _MOVE_J: [MoveJResponse()] * 2,  # pre_grasp + pre_place
+            _MOVE_L: [MoveLResponse()] * 4,  # descend/lift + lower/retreat
+            _GRIP: [SetGripperResponse()] * 3,  # open/close + release
         },
     )
 
-    await mod._scenario(ctx, pick_object="white cube", place_object="red box")
+    await mod.scenario(ctx, pick_object="white cube", place_object="red box")
 
-    labels = ctx.labels()
-    for lb in ("pre_place", "lower", "retreat"):
-        assert lb in labels
-    grips = [c["action"] for c in ctx.calls("gripper")]
-    assert grips == ["open", "close", "open"]  # 마지막 open = release
+    grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
+    assert grips == [
+        _SPEC.gripper_open_raw, _SPEC.gripper_close_raw,
+        _SPEC.gripper_open_raw,  # 마지막 open = release
+    ]
+    assert len(ctx.calls(_MOVE_L)) == 4
 
 
 async def test_scenario_detect_fail_raises_before_motion():
     mod = _module_for_scenario()
-    ctx = FakeContext(robots=[_BOT], detect_script={"white cube": [[]]})
+    ctx = FakeContext(
+        robots=[_BOT], specs={_BOT: _SPEC},
+        service_script={
+            _DETECT: [DetectOrientedResponse(found=False, candidates=[])],
+        },
+    )
     with pytest.raises(DetectionNotFound):
-        await mod._scenario(ctx, pick_object="white cube")
-    assert ctx.calls("move_j_pose") == []  # 검출 실패면 모션 0
+        await mod.scenario(ctx, pick_object="white cube")
+    assert ctx.calls(_MOVE_J) == []  # 검출 실패면 모션 0
 
 
 async def test_scenario_ik_exhausted_raises():
+    """RESOLVE_REACHABLE 의 -1 은 데이터 — step 이 치명 판정 (침묵 -1 통과 금지)."""
     mod = _module_for_scenario()
     ctx = FakeContext(
-        robots=[_BOT],
-        detect_script={"white cube": [[_det()]]},
-        reachable_script=[-1],
+        robots=[_BOT], specs={_BOT: _SPEC},
+        service_script=_pick_script(
+            **{_SELECT: [ResolveReachableResponse(index=-1, message="전멸")]}
+        ),
     )
-    with pytest.raises(NoReachableGrasp):
-        await mod._scenario(ctx, pick_object="white cube")
+    with pytest.raises(NoReachableGrasp, match="전멸"):
+        await mod.scenario(ctx, pick_object="white cube")
+    assert ctx.calls(_MOVE_J) == []  # 전멸이면 모션 0
 
 
 async def test_scenario_place_detect_fail_keeps_holding():
@@ -166,12 +226,20 @@ async def test_scenario_place_detect_fail_keeps_holding():
     mod = _module_for_scenario()
     ctx = FakeContext(
         robots=[_BOT],
-        detect_script={"white cube": [[_det()]], "red box": [[]]},
+        specs={_BOT: _SPEC},
+        service_script=_pick_script(
+            **{
+                _DETECT: [
+                    DetectOrientedResponse(found=True, candidates=[_det()]),
+                    DetectOrientedResponse(found=False, candidates=[]),  # place 실패
+                ]
+            }
+        ),
     )
     with pytest.raises(DetectionNotFound):
-        await mod._scenario(ctx, pick_object="white cube", place_object="red box")
-    grips = [c["action"] for c in ctx.calls("gripper")]
-    assert grips[-1] == "close"  # release 안 함
+        await mod.scenario(ctx, pick_object="white cube", place_object="red box")
+    grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
+    assert grips[-1] == _SPEC.gripper_close_raw  # release 안 함 (마지막 = close)
 
 
 # ─── module wire (runner 결합 e2e) ───────────────────────────────────
@@ -185,7 +253,7 @@ class _WireStub:
     def publish(self, wire_key: str, event: BaseModel) -> None:
         self.published.append((str(wire_key), event))
 
-    async def call(self, key, req, res_cls, *, robot_id=None, timeout=5.0):  # noqa: ANN001, ANN201
+    async def call(self, key, req, res_cls, *, robot_id=None, timeout=None):  # noqa: ANN001, ANN201
         r = self.responses.get(str(key))
         if r is None:
             raise AssertionError(f"call 스크립트 없음: {key}")
@@ -194,9 +262,8 @@ class _WireStub:
 
 async def test_module_run_reports_failure_reason_and_allows_rerun():
     rt = _WireStub()
-    rt.responses["srv/detector/detect_oriented"] = DetectOrientedResponse(
-        found=False, candidates=[]
-    )
+    rt.responses[_DETECT] = DetectOrientedResponse(found=False, candidates=[])
+    rt.responses[str(Motion.Service.STOP)] = StopResponse(ok=True)  # abort 안전 경로
     mod = PickAndPlaceModule(rt, {})  # type: ignore[arg-type]
 
     res = await mod.run(RunRequest(pick_object="white cube"))
@@ -221,9 +288,7 @@ async def test_module_control_without_run_says_why():
     assert not r.ok and r.message  # 침묵 금지
 
 
-def test_task_info_params_derive_from_run_request():
-    specs = TASK_INFO.param_specs()
-    assert [(s.name, s.type, s.required) for s in specs] == [
-        ("pick_object", "str", True),
-        ("place_object", "str", False),
-    ]
+def test_task_robots_constant_matches_scenario_binding():
+    """TASK_ROBOTS(참여 robot 상수) = scenario 의 ctx.robot 리터럴 — 어긋나면
+    run 의 허용 목록이 시나리오를 막는다 (TaskError)."""
+    assert PickAndPlaceModule.TASK_ROBOTS == ("so101_6dof_0",)

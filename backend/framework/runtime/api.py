@@ -18,6 +18,8 @@ class ModuleRuntime(Protocol):
         res_cls: type[TRes],
         *,
         robot_id: str | None = None,
-        timeout: float = 5.0,
+        timeout: float | None = None,
     ) -> Awaitable[TRes]:
+        """timeout=None → contract 선언 기본값 (declare_service_timeouts),
+        선언도 없으면 DEFAULT_SERVICE_TIMEOUT_S."""
         ...

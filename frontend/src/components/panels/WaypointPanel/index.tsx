@@ -111,10 +111,13 @@ export function WaypointPanel() {
   };
 
   // MoveJ 로 저장된 joint 자세 재현 (Ruckig trajectory).
+  // 성공 = 정상 응답, 거부/실패 = backend raise → error frame → success=false
+  // (accepted in-band 모델 폐기 — 2026-07-13 motion contract).
   const onGoto = async (wp: WaypointRecord) => {
-    const res = await moveJSvc.call({ target_joints: wp.joint_values });
-    const d = res.data as { accepted?: boolean } | null;
-    setMsg(d?.accepted ? `이동: ${wp.name}` : `이동 실패: ${res.message}`);
+    const res = await moveJSvc.call({
+      target: { kind: "joint", joints: wp.joint_values },
+    });
+    setMsg(res.success ? `이동: ${wp.name}` : `이동 실패: ${res.message}`);
   };
 
   // ── ghost 미리보기 (3D, WaypointScenePart) ─────────────────

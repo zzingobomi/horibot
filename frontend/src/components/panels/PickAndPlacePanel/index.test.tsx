@@ -8,7 +8,17 @@ import { bridge } from "@/api/bridge";
 import { useFrameworkStore, type ServiceEntry } from "@/framework/store";
 import { PickAndPlacePanel } from "./index";
 
-// task 는 backend 바인딩(GET /tasks)으로 robot 을 정함 — unit 에선 so101 바인딩 mock.
+// robot 바인딩 = task 계약 조회 (useTaskRobots → LIST_ROBOTS) — unit 에선 서비스
+// 응답 캐시 시딩으로 so101 바인딩 재현.
+const LIST_ROBOTS_SEED: Record<string, ServiceEntry> = {
+  "srv/pick_and_place/list_robots": {
+    success: true,
+    message: "",
+    data: { robot_ids: ["so101_6dof_0"] },
+    timestamp: 1,
+    pending: false,
+  },
+};
 
 function mockBridge(dataByKey: Record<string, unknown> = {}) {
   return vi
@@ -29,7 +39,11 @@ function mockBridge(dataByKey: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  useFrameworkStore.setState({ topicData: {}, serviceData: {}, bridgeConnected: true });
+  useFrameworkStore.setState({
+    topicData: {},
+    serviceData: { ...LIST_ROBOTS_SEED },
+    bridgeConnected: true,
+  });
 });
 
 afterEach(() => {

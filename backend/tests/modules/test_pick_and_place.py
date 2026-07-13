@@ -30,7 +30,7 @@ from modules.tasks.core.spec import TaskRobotSpec
 from modules.tasks.core.contract import TaskState, TaskStatus
 from modules.tasks.pick_and_place import geometry, steps
 from modules.tasks.core.contract import ControlRequest
-from modules.tasks.pick_and_place.contract import RunRequest
+from modules.tasks.pick_and_place.contract import ListRobotsRequest, RunRequest
 from modules.tasks.pick_and_place.module import PickAndPlaceModule
 
 _BOT = "so101_6dof_0"
@@ -289,6 +289,14 @@ async def test_module_control_without_run_says_why():
 
 
 def test_task_robots_constant_matches_scenario_binding():
-    """TASK_ROBOTS(참여 robot 상수) = scenario 의 ctx.robot 리터럴 — 어긋나면
-    run 의 허용 목록이 시나리오를 막는다 (TaskError)."""
+    """TASK_ROBOTS = 바인딩 SSOT (scenario 도 여기서 파생) — 값이 바뀌면 프론트
+    스트림 키/실 robot 대상이 같이 바뀌므로 명시 잠금."""
     assert PickAndPlaceModule.TASK_ROBOTS == ("so101_6dof_0",)
+
+
+async def test_list_robots_returns_task_robots():
+    """LIST_ROBOTS = 프론트가 {robot_id} 를 채우는 유일한 채널 — TASK_ROBOTS 와
+    어긋나면 프론트가 존재하지 않는 스트림을 구독한다 (침묵 무데이터)."""
+    mod = PickAndPlaceModule(_WireStub(), {})  # type: ignore[arg-type]
+    res = await mod.list_robots(ListRobotsRequest())
+    assert res.robot_ids == list(PickAndPlaceModule.TASK_ROBOTS)

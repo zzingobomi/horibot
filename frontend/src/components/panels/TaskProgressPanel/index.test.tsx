@@ -11,10 +11,21 @@ import { TaskProgressPanel } from "./index";
 
 const ROBOT_ID = "so101_6dof_0";
 
-// task 는 backend 바인딩(GET /tasks)으로 robot 을 정함 — unit 에선 pick_and_place →
-// so101 바인딩 = task 페이지 상수 (pickAndPlaceTask.ts).
+// robot 바인딩 = task 계약 조회 (useTaskRobots → LIST_ROBOTS) — unit 에선 서비스
+// 응답 캐시를 시딩해 so101 바인딩을 재현 (아래 LIST_ROBOTS_SEED).
 const TRACE_WIRE = `stream/pick_and_place/${ROBOT_ID}/trace`;
 const STATE_WIRE = `stream/pick_and_place/${ROBOT_ID}/state`;
+
+// useTaskRobots 가 읽는 캐시 키 = 서비스 키 그대로 (robotId 없음 — 캐시 규약).
+const LIST_ROBOTS_SEED: Record<string, ServiceEntry> = {
+  "srv/pick_and_place/list_robots": {
+    success: true,
+    message: "",
+    data: { robot_ids: [ROBOT_ID] },
+    timestamp: 1,
+    pending: false,
+  },
+};
 
 function seed(
   status: string,
@@ -61,7 +72,7 @@ function seed(
         breakpoints,
       },
     },
-    serviceData: {},
+    serviceData: { ...LIST_ROBOTS_SEED },
     bridgeConnected: true,
   });
 }
@@ -95,7 +106,11 @@ function renderPanel() {
 }
 
 beforeEach(() => {
-  useFrameworkStore.setState({ topicData: {}, serviceData: {}, bridgeConnected: true });
+  useFrameworkStore.setState({
+    topicData: {},
+    serviceData: { ...LIST_ROBOTS_SEED },
+    bridgeConnected: true,
+  });
 });
 
 afterEach(() => {

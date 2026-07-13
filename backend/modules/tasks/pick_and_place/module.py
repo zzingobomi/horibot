@@ -21,7 +21,14 @@ from modules.tasks.core.runner import RunState, TaskRunner
 from modules.tasks.core.spec import TaskRobotSpec
 
 from . import steps
-from .contract import PickAndPlace, RunRequest, TaskMarker, TaskMarkers
+from .contract import (
+    ListRobotsRequest,
+    ListRobotsResponse,
+    PickAndPlace,
+    RunRequest,
+    TaskMarker,
+    TaskMarkers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +99,10 @@ class PickAndPlaceModule:
         r = self.task.toggle_breakpoint(req.name)
         return ControlResponse(ok=r.ok, message=r.message)
 
+    @service(PickAndPlace.Service.LIST_ROBOTS)
+    async def list_robots(self, req: ListRobotsRequest) -> ListRobotsResponse:
+        return ListRobotsResponse(robot_ids=list(self.TASK_ROBOTS))
+
     # ─── Publishing ────
 
     def _publish_state(self, s: RunState) -> None:
@@ -145,7 +156,7 @@ class PickAndPlaceModule:
     async def scenario(
         self, ctx: TaskContext, pick_object: str, place_object: str = ""
     ) -> None:
-        so101 = "so101_6dof_0"
+        so101 = self.TASK_ROBOTS[0]
         markers: list[TaskMarker] = []
 
         held, grasp = await steps.pick(ctx, so101, pick_object)

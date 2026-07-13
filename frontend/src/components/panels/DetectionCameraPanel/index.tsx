@@ -8,10 +8,14 @@
  *
  * SVG viewBox = 검출 시점 이미지 크기, preserveAspectRatio 는 CameraView 의
  * object-contain 과 동일 정렬 (letterbox 여도 좌표 일치 — CameraView 설계 주석).
+ *
+ * 카메라 피드는 물리적으로 robot 하나에 묶이므로 task 패널이 아니라 robot-scoped
+ * 패널 — robot 은 robotOwnership(capability=rgbd, registry)이 공급 (task 바인딩
+ * 서비스와 무관).
  */
 import { CameraView } from "@/components/camera/CameraView";
 import { useStream } from "@/framework";
-import { TASK_ROBOT_ID } from "@/pages/pickAndPlaceTask";
+import { useRobotId } from "@/hooks/useRobotId";
 import { Topic } from "@/api/generated/contract";
 
 const STALE_MS = 8_000; // 검출 후 이 시간 지나면 오버레이 숨김 (팔 이동 대비)
@@ -39,7 +43,7 @@ type OverlayCand = {
 };
 
 export function DetectionCameraPanel() {
-  const robotId = TASK_ROBOT_ID;
+  const robotId = useRobotId();
 
   const det = useStream(Topic.DETECTOR_DETECTIONS, { robotId, staleMs: STALE_MS });
   const ori = useStream(Topic.DETECTOR_DETECTIONS_ORIENTED, {

@@ -14,7 +14,7 @@
  */
 import { Button } from "@/components/ui/button";
 import { useService, useStream } from "@/framework";
-import { TASK_ROBOT_ID } from "@/pages/pickAndPlaceTask";
+import { useTaskRobots } from "@/hooks/useTaskRobots";
 import {
   ServiceKey,
   TaskStatus,
@@ -38,7 +38,8 @@ const ENTRY_DOT: Record<string, string> = {
 };
 
 export function TaskProgressPanel() {
-  const robotId = TASK_ROBOT_ID;
+  // task 참여 robot (계약 조회) — 로드 전 undefined = 스트림 미확장 (데이터 없음).
+  const robotId = useTaskRobots(ServiceKey.PICKANDPLACE_LIST_ROBOTS)[0];
   const state = useStream(Topic.PICKANDPLACE_STATE, { robotId });
   const trace = useStream(Topic.PICKANDPLACE_TRACE, { robotId });
 

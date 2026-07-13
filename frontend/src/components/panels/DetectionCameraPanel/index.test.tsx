@@ -5,6 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { RobotProvider } from "@/components/shared/robotOwnership";
 import { useFrameworkStore } from "@/framework/store";
 import { DetectionCameraPanel } from "./index";
 
@@ -12,7 +13,8 @@ const ROBOT_ID = "so101_6dof_0";
 const WIRE = `stream/detector/${ROBOT_ID}/detections`;
 const WIRE_ORIENTED = `stream/detector/${ROBOT_ID}/detections_oriented`;
 
-// task 는 backend 바인딩(GET /tasks)으로 robot 을 정함 — unit 에선 so101 바인딩 mock.
+// robot-scoped 패널 (robotOwnership, capability=rgbd) — unit 에선 RobotProvider 로
+// so101 바인딩 재현 (withRobotOwnership 이 실전에서 하는 일).
 
 vi.mock("@/hooks/useRobots", () => ({
   useRobots: () => ({
@@ -111,7 +113,14 @@ function renderPanel() {
   return render(
     <MemoryRouter initialEntries={[`/robots/${ROBOT_ID}`]}>
       <Routes>
-        <Route path="/robots/:id" element={<DetectionCameraPanel />} />
+        <Route
+          path="/robots/:id"
+          element={
+            <RobotProvider robotId={ROBOT_ID}>
+              <DetectionCameraPanel />
+            </RobotProvider>
+          }
+        />
       </Routes>
     </MemoryRouter>,
   );

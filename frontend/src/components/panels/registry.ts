@@ -80,7 +80,12 @@ export const PANEL_CATALOG: Record<
   },
   // 카메라 3종 — 구분 단어를 **앞에** (좁은 탭에서 뒤가 잘려도 구분 유지).
   camera: { title: "Camera", width: 420, height: 340 },
-  detectionCamera: { title: "Detect Camera", width: 440, height: 330 },
+  detectionCamera: {
+    title: "Detect Camera",
+    width: 440,
+    height: 330,
+    requiredCapabilities: ["rgbd"], // 검출 = depth 투영 필요 (detector/module.py)
+  },
   calibrationCamera: { title: "Calib Camera", width: 420, height: 340 },
   scan: { title: "Scan", width: 320, height: 460, requiredCapabilities: ["rgbd"] },
   // 카메라 frustum 은 scenePart 가 아니라 Camera 씬 객체(scene/Cameras.tsx)가 그림
@@ -104,14 +109,16 @@ export const PANEL_CATALOG: Record<
 /**
  * robot 을 소유하는(useRobotId 계열) 패널 key 집합 ([[robot_ownership_model]]).
  * 여기 든 패널만 robot 셀렉터 탭 + robot params + Select Robot 빈 상태를 갖는다.
- * task 패널(detectionCamera/pickAndPlace/taskProgress — robot 은 task 페이지 상수)은
- * carve-out 이라 제외 — robot 은 task 가 정한다(§7).
+ * task 패널(pickAndPlace/taskProgress)은 robot 을 *고르지* 않고 task 바인딩 계약
+ * (list_robots 서비스, useTaskRobots)에서 얻으므로 제외. detectionCamera 는
+ * 카메라가 물리적으로 robot 하나에 묶이는 robot-scoped 패널이라 포함.
  */
 export const ROBOT_OWNED_PANELS: ReadonlySet<PanelComponentKey> = new Set<PanelComponentKey>([
   "robotState",
   "motion",
   "calibration",
   "camera",
+  "detectionCamera",
   "calibrationCamera",
   "scan",
   "livePointCloud",

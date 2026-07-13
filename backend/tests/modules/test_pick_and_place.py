@@ -8,6 +8,8 @@ place 분기가 pick-only 에서 실행 / 실패가 침묵 성공 / place 검출
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from pydantic import BaseModel
 
@@ -24,7 +26,7 @@ from modules.motion.contract import (
     StopResponse,
 )
 from modules.motor.contract import Motor, SetGripperResponse
-from modules.tasks.core.errors import DetectionNotFound, NoReachableGrasp
+from modules.tasks.core.errors import DetectionNotFound, NoReachableGrasp, TaskError
 from modules.tasks.core.fake import FakeContext
 from modules.tasks.core.spec import TaskRobotSpec
 from modules.tasks.core.contract import TaskState, TaskStatus
@@ -32,6 +34,13 @@ from modules.tasks.pick_and_place import geometry, steps
 from modules.tasks.core.contract import ControlRequest
 from modules.tasks.pick_and_place.contract import ListRobotsRequest, RunRequest
 from modules.tasks.pick_and_place.module import PickAndPlaceModule
+from modules.waypoint.contract import (
+    ListGroupMembersResponse,
+    ListGroupsResponse,
+    Waypoint,
+    WaypointGroupRecord,
+    WaypointRecord,
+)
 
 _BOT = "so101_6dof_0"
 
@@ -47,11 +56,38 @@ _SELECT = str(Motion.Service.RESOLVE_REACHABLE)
 _MOVE_J = str(Motion.Service.MOVE_J)
 _MOVE_L = str(Motion.Service.MOVE_L)
 _GRIP = str(Motor.Service.SET_GRIPPER)
+_LIST_GROUPS = str(Waypoint.Service.LIST_GROUPS)
+_LIST_MEMBERS = str(Waypoint.Service.LIST_GROUP_MEMBERS)
+_TS = datetime.fromtimestamp(0, UTC)
+
+
+def _search_responses(n_members: int = 1) -> dict:
+    """search 그룹 canned 응답 ('search' 그룹 + n_members 자세). detect() 가 호출마다
+    LIST_GROUPS/LIST_GROUP_MEMBERS 를 부르므로 넉넉히 반복 제공 (ScriptedRuntime 은
+    pop — 남는 항목은 무해, 빈 리스트만 에러)."""
+    grp = ListGroupsResponse(
+        groups=[WaypointGroupRecord(id=1, robot_id=_BOT, name="search")]
+    )
+    members = ListGroupMembersResponse(
+        waypoints=[
+            WaypointRecord(
+                id=i + 1,
+                robot_id=_BOT,
+                name=f"s{i}",
+                joint_values=[0.0] * 6,
+                joint_names=[],
+                created_at=_TS,
+            )
+            for i in range(n_members)
+        ]
+    )
+    return {_LIST_GROUPS: [grp] * 4, _LIST_MEMBERS: [members] * 4}
 
 
 @pytest.fixture(autouse=True)
 def _no_settle(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(steps, "_GRIPPER_SETTLE_S", 0.0)  # 테스트 즉시 진행
+    monkeypatch.setattr(steps, "_SEARCH_SETTLE_S", 0.0)  # 스윕 정착 대기 제거
 
 
 def _det(
@@ -137,11 +173,14 @@ def _module_for_scenario() -> PickAndPlaceModule:
 
 
 def _pick_script(**overrides) -> dict:
-    """pick 경로 성공 스크립트 — 서비스 키별 응답 (실패 주입은 overrides)."""
+    """pick 경로 성공 스크립트 (search 자세 1개). detect() = 스윕(LIST_GROUPS/MEMBERS
+    + 자세별 MoveJ/DETECT). MoveJ 는 스윕(search) + pre_grasp/pre_place 라 넉넉히.
+    실패 주입은 overrides."""
     script = {
-        _DETECT: [DetectOrientedResponse(found=True, candidates=[_det()])],
-        _SELECT: [ResolveReachableResponse(index=0)],
-        _MOVE_J: [MoveJResponse()],
+        **_search_responses(),
+        _DETECT: [DetectOrientedResponse(found=True, candidates=[_det()])] * 4,
+        _SELECT: [ResolveReachableResponse(index=0)] * 4,
+        _MOVE_J: [MoveJResponse()] * 8,  # search 스윕 + pre_grasp/pre_place
         _MOVE_L: [MoveLResponse()] * 2,  # descend + lift
         _GRIP: [SetGripperResponse()] * 2,  # open + close
     }
@@ -155,9 +194,12 @@ async def test_scenario_pick_only_sequence():
 
     await mod.scenario(ctx, pick_object="white cube")
 
-    # 서비스 호출 순서 = 검출 → 선별 → 접근 → open → 하강 → close → 들어올림
+    # 호출 순서 = 검색 스윕(그룹 조회→자세 MoveJ→검출) → 선별 → 접근 → open →
+    # 하강 → close → 들어올림. (search 자세 1개 기준)
     assert ctx.keys() == [
-        _DETECT, _SELECT, _MOVE_J, _GRIP, _MOVE_L, _GRIP, _MOVE_L,
+        _LIST_GROUPS, _LIST_MEMBERS, _MOVE_J, _DETECT,  # 스윕
+        _SELECT,  # 파지 후보 선별
+        _MOVE_J, _GRIP, _MOVE_L, _GRIP, _MOVE_L,  # 실행
     ]
     # place 분기 안 탐 (detect 1회뿐) + 든 채 종료 (마지막 gripper = close raw)
     grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
@@ -170,15 +212,16 @@ async def test_scenario_with_place_branch():
         robots=[_BOT],
         specs={_BOT: _SPEC},
         service_script={
+            **_search_responses(),
             _DETECT: [
-                DetectOrientedResponse(found=True, candidates=[_det()]),
-                DetectOrientedResponse(
+                DetectOrientedResponse(found=True, candidates=[_det()]),  # pick 스윕
+                DetectOrientedResponse(  # place 스윕
                     found=True,
                     candidates=[_det(position=(0.25, -0.05, 0.04), height=0.04)],
                 ),
             ],
             _SELECT: [ResolveReachableResponse(index=0)] * 2,
-            _MOVE_J: [MoveJResponse()] * 2,  # pre_grasp + pre_place
+            _MOVE_J: [MoveJResponse()] * 8,  # 스윕×2 + pre_grasp + pre_place
             _MOVE_L: [MoveLResponse()] * 4,  # descend/lift + lower/retreat
             _GRIP: [SetGripperResponse()] * 3,  # open/close + release
         },
@@ -192,29 +235,78 @@ async def test_scenario_with_place_branch():
         _SPEC.gripper_open_raw,  # 마지막 open = release
     ]
     assert len(ctx.calls(_MOVE_L)) == 4
-    # 계획 먼저, 실행 나중 (#2): 검출·선별(DETECT/SELECT)이 전부 끝난 뒤에야 첫
-    # 모션(MOVE_J)이 나간다 — 못 놓을 물체를 집는 일이 없도록.
+    # #2 불변식: 집기·놓기 도달성(RESOLVE) **둘 다** 끝난 뒤에야 첫 파지(GRIP)와
+    # 실행 모션(MOVE_L)이 나간다 — 못 놓을 물체를 집는 일이 없도록. (검색 스윕은
+    # 파지 아닌 관측이라 그 전에 MoveJ 가 있는 건 정상.)
     keys = ctx.keys()
-    first_motion = keys.index(_MOVE_J)
-    planning = keys[:first_motion]
-    assert planning == [_DETECT, _SELECT, _DETECT, _SELECT]  # 집기·놓기 둘 다 계획
+    assert keys[: keys.index(_GRIP)].count(_SELECT) == 2
+    assert keys[: keys.index(_MOVE_L)].count(_SELECT) == 2
 
 
-async def test_scenario_detect_fail_raises_before_motion():
+async def test_search_sweep_accumulates_and_selects_best_score():
+    """검색 원리 (옛 SearchWaypointGroup + SelectTarget 포팅): search 자세를 **전부**
+    돌며 후보를 **누적**하고, 첫 자세에서 안 멈추고 **누적 전체의 최고 score** 를
+    고른다. (뒤집으면 = 첫 자세서 멈추거나 pose별 최선만 보는 회귀.)"""
+    ctx = FakeContext(
+        robots=[_BOT],
+        specs={_BOT: _SPEC},
+        service_script={
+            **_search_responses(n_members=2),  # 검색 자세 2개
+            _DETECT: [
+                DetectOrientedResponse(found=True, candidates=[_det(score=0.4)]),  # 자세1 저score
+                DetectOrientedResponse(found=True, candidates=[_det(score=0.95)]),  # 자세2 고score
+            ],
+            _MOVE_J: [MoveJResponse()] * 2,  # 자세 2곳 방문
+            _SELECT: [ResolveReachableResponse(index=0)],
+        },
+    )
+    target, _grasp = await steps.plan_pick(ctx, _BOT, "white cube")
+
+    assert target.score == 0.95  # 첫 자세(0.4)서 안 멈춤 — 누적 전체 최고
+    assert len(ctx.calls(_MOVE_J)) == 2  # 모든 검색 자세 방문
+    assert len(ctx.calls(_DETECT)) == 2  # 자세마다 검출
+
+
+async def test_search_group_missing_fails_explicitly():
+    """search 그룹 없음 = 명시적 실패 (침묵 단일-뷰 폴백 금지 — 사용자가 관측 자세를
+    티칭해야 함)."""
+    ctx = FakeContext(
+        robots=[_BOT],
+        specs={_BOT: _SPEC},
+        service_script={
+            _LIST_GROUPS: [ListGroupsResponse(groups=[])],  # search 그룹 없음
+        },
+    )
+    with pytest.raises(TaskError, match="search"):
+        await mod_scenario_run(ctx)
+    assert ctx.calls(_MOVE_J) == []  # 그룹 없으면 아무 데도 안 감
+
+
+async def mod_scenario_run(ctx: FakeContext) -> None:
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+
+
+async def test_scenario_detect_fail_raises_after_search():
+    """검색 스윕을 다 돌아도 후보 0 → DetectionNotFound. 스윕(관측 MoveJ)은 돌지만
+    파지(GRIP)·실행 모션은 0 (아무것도 안 집음)."""
     mod = _module_for_scenario()
     ctx = FakeContext(
         robots=[_BOT], specs={_BOT: _SPEC},
         service_script={
-            _DETECT: [DetectOrientedResponse(found=False, candidates=[])],
+            **_search_responses(),
+            _DETECT: [DetectOrientedResponse(found=False, candidates=[])] * 4,
+            _MOVE_J: [MoveJResponse()] * 4,  # 검색 스윕
         },
     )
     with pytest.raises(DetectionNotFound):
         await mod.scenario(ctx, pick_object="white cube")
-    assert ctx.calls(_MOVE_J) == []  # 검출 실패면 모션 0
+    assert ctx.calls(_GRIP) == []  # 검출 실패면 파지 0
+    assert ctx.calls(_MOVE_L) == []  # 실행 모션 0
 
 
 async def test_scenario_ik_exhausted_raises():
-    """RESOLVE_REACHABLE 의 -1 은 데이터 — step 이 치명 판정 (침묵 -1 통과 금지)."""
+    """RESOLVE_REACHABLE 의 -1 은 데이터 — step 이 치명 판정 (침묵 -1 통과 금지).
+    스윕·선별 후 도달 전멸이면 파지 전에 실패 (GRIP·MOVE_L 0)."""
     mod = _module_for_scenario()
     ctx = FakeContext(
         robots=[_BOT], specs={_BOT: _SPEC},
@@ -224,20 +316,23 @@ async def test_scenario_ik_exhausted_raises():
     )
     with pytest.raises(NoReachableGrasp, match="전멸"):
         await mod.scenario(ctx, pick_object="white cube")
-    assert ctx.calls(_MOVE_J) == []  # 전멸이면 모션 0
+    assert ctx.calls(_GRIP) == []  # 전멸이면 파지 0
+    assert ctx.calls(_MOVE_L) == []
 
 
 async def test_scenario_place_unreachable_fails_before_pick():
     """놓을 곳 IK 불가 → 집기 **전에** 실패 (#2). 물체를 쥔 채 멈추는 corrupt 상태를
     막는다 — 실물 실패 로그(resolve_place IK 불가) 그대로가 회귀 시나리오.
 
-    계획 단계(집기·놓기 검출+IK)가 모션 0 이라, 놓기 IK 가 -1 이면 아무 모션도
-    나가기 전에 raise → gripper·MOVE 호출 0 (아무것도 안 집음)."""
+    계획 단계(집기·놓기 검출+IK)가 파지 없음이라, 놓기 IK 가 -1 이면 파지 전에
+    raise → gripper·MOVE_L(실행) 0 (아무것도 안 집음). 검색 스윕 MoveJ 는 관측이라
+    있는 게 정상."""
     mod = _module_for_scenario()
     ctx = FakeContext(
         robots=[_BOT],
         specs={_BOT: _SPEC},
         service_script={
+            **_search_responses(),
             _DETECT: [
                 DetectOrientedResponse(found=True, candidates=[_det()]),  # 집기 검출 OK
                 DetectOrientedResponse(  # 놓기 검출 OK
@@ -249,35 +344,16 @@ async def test_scenario_place_unreachable_fails_before_pick():
                 ResolveReachableResponse(index=0),  # 집기 도달 가능
                 ResolveReachableResponse(index=-1, message="놓기 IK 전멸"),  # 놓기 불가
             ],
+            _MOVE_J: [MoveJResponse()] * 4,  # 스윕×2 (관측)
         },
     )
     with pytest.raises(NoReachableGrasp, match="놓기 IK 전멸"):
         await mod.scenario(ctx, pick_object="white cube", place_object="red box")
-    # 핵심 (#2): 물리 동작이 하나도 안 나감 — 아무것도 안 집었으니 든 채 멈춤 없음.
-    assert ctx.calls(_MOVE_J) == []
+    # 핵심 (#2): 파지·실행 모션이 하나도 안 나감 — 아무것도 안 집었으니 든 채 멈춤 없음.
+    assert ctx.calls(_GRIP) == []
+    assert ctx.calls(_MOVE_L) == []
     assert ctx.calls(_MOVE_L) == []
     assert ctx.calls(_GRIP) == []
-
-
-async def test_preview_lists_full_steps_without_motion():
-    """PREVIEW(#1): dry-run 으로 전체 step 목록 수집 — 실 runtime·모션 없음.
-
-    imperative 시나리오라 정적 목록이 없어 canned dry-run 으로 traverse. 놓기 포함
-    최대 경로의 step title 이 실행 순서대로 나와야 (뒤집으면 목록 누락 회귀)."""
-    from modules.tasks.pick_and_place.contract import PreviewRequest
-
-    mod = _module_for_scenario()  # 빈 specs → dummy 로 채워 dry-run 진행
-    res = await mod.preview(PreviewRequest())
-
-    titles = [s.title for s in res.steps]
-    assert titles == [
-        "집기 계획", "검출", "파지 후보 선별",
-        "놓기 계획", "검출", "적치 후보 선별",
-        "집기 실행", "파지 접근", "그리퍼 열기", "하강", "그리퍼 닫기", "들어올리기",
-        "놓기 실행", "적치 접근", "내리기", "내려놓기", "후퇴",
-    ]
-    # 중첩 depth — 계획/실행은 0, 그 안 step 은 1
-    assert res.steps[0].depth == 0 and res.steps[1].depth == 1
 
 
 # ─── module wire (runner 결합 e2e) ───────────────────────────────────
@@ -300,6 +376,19 @@ class _WireStub:
 
 async def test_module_run_reports_failure_reason_and_allows_rerun():
     rt = _WireStub()
+    # 검색 스윕: search 그룹 1자세 → MoveJ → 검출(0건) → DetectionNotFound
+    rt.responses[_LIST_GROUPS] = ListGroupsResponse(
+        groups=[WaypointGroupRecord(id=1, robot_id=_BOT, name="search")]
+    )
+    rt.responses[_LIST_MEMBERS] = ListGroupMembersResponse(
+        waypoints=[
+            WaypointRecord(
+                id=1, robot_id=_BOT, name="s0",
+                joint_values=[0.0] * 6, joint_names=[], created_at=_TS,
+            )
+        ]
+    )
+    rt.responses[_MOVE_J] = MoveJResponse()
     rt.responses[_DETECT] = DetectOrientedResponse(found=False, candidates=[])
     rt.responses[str(Motion.Service.STOP)] = StopResponse(ok=True)  # abort 안전 경로
     mod = PickAndPlaceModule(rt, {})  # type: ignore[arg-type]

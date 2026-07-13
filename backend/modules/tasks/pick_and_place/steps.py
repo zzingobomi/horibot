@@ -10,6 +10,7 @@ from modules.detector.contract import (
     OrientedDetection,
 )
 from modules.motion.contract import (
+    JointTarget,
     Motion,
     MoveJRequest,
     MoveJResponse,
@@ -21,8 +22,16 @@ from modules.motion.contract import (
 )
 from modules.motor.contract import Motor, SetGripperRequest, SetGripperResponse
 from modules.tasks.core.context import TaskContext
-from modules.tasks.core.errors import NoReachableGrasp
+from modules.tasks.core.errors import NoReachableGrasp, TaskError
 from modules.tasks.core.step import step
+from modules.waypoint.contract import (
+    ListGroupMembersRequest,
+    ListGroupMembersResponse,
+    ListGroupsRequest,
+    ListGroupsResponse,
+    Waypoint,
+    WaypointRecord,
+)
 
 from . import geometry
 from .geometry import GraspCandidate, PlaceCandidate, Quat, Vec3
@@ -31,6 +40,11 @@ logger = logging.getLogger(__name__)
 
 _GRIPPER_SETTLE_S = 1.2
 _TOP_K = 5
+
+# 검색 자세 그룹 — 사용자가 티칭한 "search" waypoint 그룹 (robot 별). 이 자세들을
+# 모두 돌며 관측한다 (§ multi-view). 값은 로봇마다 다른 관측 시점 = 사람이 배치.
+_SEARCH_GROUP = "search"
+_SEARCH_SETTLE_S = 0.3  # MoveJ 후 카메라 흔들림 정착 대기 (검출 품질)
 
 
 # ─── scenario: 계획(plan) → 실행(execute) 분리 ─────────────────────
@@ -102,16 +116,82 @@ async def execute_place(
 async def detect(
     ctx: TaskContext, robot_id: str, prompt: str
 ) -> list[OrientedDetection]:
-    res = await ctx.call(
-        Detector.Service.DETECT_ORIENTED,
-        DetectRequest(robot_id=robot_id, prompt=prompt, top_k=_TOP_K),
-        DetectOrientedResponse,
+    """search 그룹 자세를 **전부** 돌며 검출 → 후보 **누적** (첫 자세에서 안 멈춤).
+
+    원리 (옛 SearchWaypointGroup 포팅): 단일 시점 검출은 가림/시야/각도로 놓치거나
+    오검출한다. 사람이 티칭한 여러 관측 자세를 다 돌아 후보를 모으면(모두 base frame
+    이라 비교 가능) 관측이 많아 강건하다. **선택은 안 함** — 누적만. "자세 다 돌고
+    진짜 제일 점수 높은 것" 판정은 select_pick_target 이 누적 전체에서 (max score).
+    """
+    members = await _search_waypoints(ctx, robot_id)
+    candidates: list[OrientedDetection] = []
+    for wp in members:
+        await _move_j_joints(ctx, robot_id, wp.joint_values)
+        await asyncio.sleep(_SEARCH_SETTLE_S)  # MoveJ 후 카메라 정착 (검출 품질)
+        res = await ctx.call(
+            Detector.Service.DETECT_ORIENTED,
+            DetectRequest(robot_id=robot_id, prompt=prompt, top_k=_TOP_K),
+            DetectOrientedResponse,
+        )
+        if res.candidates:
+            candidates.extend(res.candidates)
+    logger.info(
+        "detect(%s): search '%s' %d 자세 → 후보 누적 %d",
+        prompt, _SEARCH_GROUP, len(members), len(candidates),
     )
-    note = f"{len(res.candidates)}개 후보"
-    if res.message:
-        note += f" — {res.message}"
-    logger.info("detect(%s): %s", prompt, note)
-    return list(res.candidates)
+    # 진단: 후보별 실제 height/base_z (height prior 1.5~15cm 통과 여부 확인용).
+    # "통과 0" 일 때 왜인지 — 너무 얇게 읽혔나(<1.5cm) / 바닥 잘못 잡아 부풀었나(>15cm)
+    # / depth·캘 문제인가 를 이 값으로 판별한다 (D405 depth → base-frame 투영 결과).
+    for i, c in enumerate(candidates):
+        ok = geometry._MIN_HEIGHT_M <= c.height <= geometry._MAX_HEIGHT_M
+        logger.info(
+            "  후보%d: score=%.2f height=%.1fcm base_z(바닥)=%.3fm top=%.3fm "
+            "pos=(%.3f,%.3f) prior통과=%s",
+            i, c.score, c.height * 100.0, c.base_z, c.position[2],
+            c.position[0], c.position[1], ok,
+        )
+    return candidates
+
+
+async def _search_waypoints(
+    ctx: TaskContext, robot_id: str
+) -> list[WaypointRecord]:
+    """search 그룹 멤버(티칭 순서). 그룹 없음/빔 = 명시적 실패 (침묵 단일-뷰 폴백
+    금지 — 사용자가 관측 자세를 티칭해야 multi-view 검색이 성립)."""
+    groups = await ctx.call(
+        Waypoint.Service.LIST_GROUPS,
+        ListGroupsRequest(robot_id=robot_id),
+        ListGroupsResponse,
+    )
+    grp = next((g for g in groups.groups if g.name == _SEARCH_GROUP), None)
+    if grp is None or grp.id is None:
+        raise TaskError(
+            f"'{_SEARCH_GROUP}' waypoint 그룹 없음 (robot={robot_id}) — 검색 자세를 "
+            "티칭해 '검색' 그룹으로 묶은 뒤 다시 실행하세요"
+        )
+    members = await ctx.call(
+        Waypoint.Service.LIST_GROUP_MEMBERS,
+        ListGroupMembersRequest(group_row_id=grp.id),
+        ListGroupMembersResponse,
+    )
+    if not members.waypoints:
+        raise TaskError(
+            f"'{_SEARCH_GROUP}' 그룹이 비어있음 (robot={robot_id}) — 검색 자세를 "
+            "이 그룹에 추가하세요"
+        )
+    return members.waypoints
+
+
+async def _move_j_joints(
+    ctx: TaskContext, robot_id: str, joints: list[float]
+) -> None:
+    """관절값으로 MoveJ (waypoint joint_values 그대로 — WaypointPanel 이동과 동일)."""
+    await ctx.call(
+        Motion.Service.MOVE_J,
+        MoveJRequest(target=JointTarget(kind="joint", joints=list(joints))),
+        MoveJResponse,
+        robot_id=robot_id,
+    )
 
 
 @step(title="파지 후보 선별")
@@ -232,5 +312,4 @@ async def _set_gripper(ctx: TaskContext, robot_id: str, *, open_: bool) -> None:
         SetGripperResponse,
         robot_id=robot_id,
     )
-    if not ctx.dry:  # dry-run(미리보기)엔 하드웨어 정착 대기 불필요
-        await asyncio.sleep(_GRIPPER_SETTLE_S)
+    await asyncio.sleep(_GRIPPER_SETTLE_S)

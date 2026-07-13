@@ -33,9 +33,7 @@ logger = logging.getLogger(__name__)
 
 TRAJ_DT = 1.0 / 50  # 50 Hz
 _MOVEP_MIN_DIST = 1e-4
-_CART_EMA_ALPHA = 0.1
-_CART_SETTLE_STEPS = 5
-_CART_HOLD_STEPS = 25
+_CART_HOLD_STEPS = 25  # 종료 후 목표 자세 hold 틱 수 (servo 정착 여유)
 
 PublishCmdFn = Callable[[list[float]], None]
 PublishStateFn = Callable[[TrajStatus, float], None]
@@ -260,9 +258,11 @@ class TrajectoryRunner:
         inp.max_acceleration = [self._c_max_acc]
         inp.max_jerk = [self._c_max_jerk]
 
-        q_filt = list(start_angles)
-        last_raw: list[float] = list(start_angles)
-        alpha = _CART_EMA_ALPHA
+        # 명령 = seeded IK 결과를 **직접** 발행 (EMA 저역통과 없음). 옛 EMA(alpha=0.1)는
+        # Ruckig 의 매끈한 프로파일을 지연시켜 이동 끝에 3~4.5° 잔차 → 램프-snap = 비매끄러움
+        # (2026-07-13 진단). 부드러움은 jerk-limited 프로파일 + seed 연쇄(연속 IK)에서 나온다
+        # (MoveJ 동형). IK 튐이 실측되면 그때 IK 연속성을 고치지 lag 필터로 덮지 않는다.
+        q_cmd = list(start_angles)  # 직전 명령 = 다음 IK seed
 
         first_result = otg.update(inp, out)
         est_duration = out.trajectory.duration
@@ -270,8 +270,8 @@ class TrajectoryRunner:
 
         # ── 진단 샘플: 루프 안에서는 I/O 없이 메모리에만 모으고(타이밍 교란 방지)
         # 이동 종료 후 finally 에서 1회 요약 로그. (elapsed, s_cm, vel, dt_ms,
-        # per-tick 관절 max step, EMA gap) — MoveL "부드럽지 않음" 진단용.
-        diag: list[tuple[float, float, float, float, float, float]] = []
+        # per-tick 관절 max step) — MoveL 매끄러움 진단용.
+        diag: list[tuple[float, float, float, float, float]] = []
         diag_prev_cmd = list(start_angles)
         diag_prev_t = t_start
         start_pos = path.position_at(0.0)
@@ -283,48 +283,34 @@ class TrajectoryRunner:
             dt_ms = (now - diag_prev_t) * 1000.0
             diag_prev_t = now
             step_max = max(
-                (abs(a - b) for a, b in zip(q_filt, diag_prev_cmd)), default=0.0
+                (abs(a - b) for a, b in zip(q_cmd, diag_prev_cmd)), default=0.0
             )
-            diag_prev_cmd = list(q_filt)
-            gap_max = max(
-                (abs(a - b) for a, b in zip(last_raw, q_filt)), default=0.0
-            )
+            diag_prev_cmd = list(q_cmd)
             diag.append(
                 (now - t_start, out.new_position[0] * 100.0,
-                 out.new_velocity[0], dt_ms, step_max, gap_max)
+                 out.new_velocity[0], dt_ms, step_max)
             )
 
         def _ik_step(s: float) -> bool:
-            nonlocal q_filt, last_raw
+            nonlocal q_cmd
             wp_list = path.position_at(s)
             wp: Position3 = (wp_list[0], wp_list[1], wp_list[2])
             frac = s / path.total_length if path.total_length > 0 else 1.0
-            raw = self._solve_ik(wp, _orientation_at(frac), q_filt)
+            raw = self._solve_ik(wp, _orientation_at(frac), q_cmd)
             if raw is None:
                 logger.warning("%s IK 실패 | s=%.1fcm", label, s * 100)
                 return False
-            last_raw = raw
-            q_filt = [(1.0 - alpha) * qf + alpha * qr
-                      for qf, qr in zip(q_filt, raw)]
-            self._publish_cmd(q_filt)
+            q_cmd = raw
+            self._publish_cmd(q_cmd)
             return True
 
-        def _settle_to_raw() -> None:
-            nonlocal q_filt
-            for k in range(1, _CART_SETTLE_STEPS + 1):
-                if self._stop_ev.is_set():
-                    return
-                ratio = k / _CART_SETTLE_STEPS
-                self._publish_cmd([
-                    (1.0 - ratio) * qf + ratio * qr
-                    for qf, qr in zip(q_filt, last_raw)
-                ])
-                time.sleep(TRAJ_DT)
-            q_filt = list(last_raw)
+        def _hold() -> None:
+            # 프로파일이 목표에서 v=0 로 이미 매끈히 끝났으니 램프-snap 불필요 —
+            # 마지막 명령을 몇 틱 유지해 servo 가 정착하게만 한다.
             for _ in range(_CART_HOLD_STEPS):
                 if self._stop_ev.is_set():
                     return
-                self._publish_cmd(list(last_raw))
+                self._publish_cmd(list(q_cmd))
                 time.sleep(TRAJ_DT)
 
         try:
@@ -337,7 +323,7 @@ class TrajectoryRunner:
             self._publish_state(TrajStatus.RUNNING, progress)
 
             if first_result == Result.Finished:
-                _settle_to_raw()
+                _hold()
                 self._publish_state(TrajStatus.DONE, 1.0)
                 return
 
@@ -361,7 +347,7 @@ class TrajectoryRunner:
                 )
                 self._publish_state(TrajStatus.RUNNING, progress)
                 if result == Result.Finished:
-                    _settle_to_raw()
+                    _hold()
                     self._publish_state(TrajStatus.DONE, 1.0)
                     return
                 if result == Result.Error:
@@ -388,14 +374,14 @@ class TrajectoryRunner:
         end_pos: list[float],
         est_duration: float,
         ori_angle: float,
-        diag: list[tuple[float, float, float, float, float, float]],
+        diag: list[tuple[float, float, float, float, float]],
     ) -> None:
         """cartesian 이동 1건 진단 요약 (이동 종료 후 1회 — 루프 타이밍 비교란).
 
-        판별 기준: dt(목표 20ms) 지터 = Windows sleep 분해능 / EMA gap = 저역통과
-        지연·종료 snap / per-tick 관절 step = 불연속(튐) / ori = 이동 중 자세
-        재배향 총각(큰 값 = 자세가 크게 도는 MoveL — 관절 부담↑). pick&place 의 lift
-        는 start→end 의 z 가 올라가는 MoveL 로 식별 (descend 는 내려감)."""
+        판별 기준: dt(목표 20ms) 지터 = Windows sleep 분해능 / per-tick 관절 step =
+        명령 불연속(튐 = 비매끄러움) / ori = 이동 중 자세 재배향 총각(큰 값 = 자세가
+        크게 도는 MoveL — 관절 부담↑). pick&place 의 lift 는 start→end 의 z 가 올라가는
+        MoveL 로 식별 (descend 는 내려감)."""
         if not diag:
             logger.info("%s 진단: 샘플 없음 (즉시 종료)", label)
             return
@@ -403,25 +389,23 @@ class TrajectoryRunner:
         dur = diag[-1][0]
         dts = [d[3] for d in diag]
         steps = [d[4] for d in diag]
-        gaps = [d[5] for d in diag]
         logger.info(
             "%s 진단: start(%.3f,%.3f,%.3f)->end(%.3f,%.3f,%.3f)m "
             "ori=%.1f° ticks=%d dur=%.2fs(est %.2fs) | dt ms mean=%.1f max=%.1f "
-            "min=%.1f (목표 %.0f) | 관절 per-tick step max=%.4frad | "
-            "EMA gap max=%.4frad end=%.4frad",
+            "min=%.1f (목표 %.0f) | 관절 per-tick step max=%.4frad",
             label,
             start_pos[0], start_pos[1], start_pos[2],
             end_pos[0], end_pos[1], end_pos[2],
             math.degrees(ori_angle),
             n, dur, est_duration,
             sum(dts) / n, max(dts), min(dts), TRAJ_DT * 1000.0,
-            max(steps), max(gaps), gaps[-1],
+            max(steps),
         )
         if logger.isEnabledFor(logging.DEBUG):
-            for (el, s_cm, vel, dt_ms, step, gap) in diag:
+            for (el, s_cm, vel, dt_ms, step) in diag:
                 logger.debug(
-                    "%s  t=%.3f s=%.2fcm v=%.3f dt=%.1fms step=%.4f gap=%.4f",
-                    label, el, s_cm, vel, dt_ms, step, gap,
+                    "%s  t=%.3f s=%.2fcm v=%.3f dt=%.1fms step=%.4f",
+                    label, el, s_cm, vel, dt_ms, step,
                 )
 
     def _joint_loop(

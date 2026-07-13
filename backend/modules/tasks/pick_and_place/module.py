@@ -6,18 +6,6 @@ import time
 from framework.contract.publisher import publishes
 from framework.contract.service import service
 from framework.runtime.api import ModuleRuntime
-from modules.detector.contract import (
-    Detector,
-    DetectOrientedResponse,
-    OrientedDetection,
-)
-from modules.motion.contract import (
-    Motion,
-    MoveJResponse,
-    MoveLResponse,
-    ResolveReachableResponse,
-)
-from modules.motor.contract import Motor, SetGripperResponse
 from modules.tasks.core.context import TaskContext, TaskContextFactory
 from modules.tasks.core.contract import (
     ControlRequest,
@@ -29,7 +17,6 @@ from modules.tasks.core.contract import (
     ToggleBreakpointRequest,
     TraceEntry,
 )
-from modules.tasks.core.preview import Responder, collect_steps
 from modules.tasks.core.runner import RunState, TaskRunner
 from modules.tasks.core.spec import TaskRobotSpec
 
@@ -38,8 +25,6 @@ from .contract import (
     ListRobotsRequest,
     ListRobotsResponse,
     PickAndPlace,
-    PreviewRequest,
-    PreviewResponse,
     RunRequest,
     TaskMarker,
     TaskMarkers,
@@ -60,7 +45,6 @@ class PickAndPlaceModule:
         self, runtime: ModuleRuntime, robots: dict[str, TaskRobotSpec] | None = None
     ) -> None:
         self.runtime = runtime
-        self._robots = robots or {}
         self.contexts = TaskContextFactory(runtime, robots)
         self._seq = {"state": 0, "trace": 0, "markers": 0}
         self.task = TaskRunner(
@@ -119,48 +103,10 @@ class PickAndPlaceModule:
     async def list_robots(self, req: ListRobotsRequest) -> ListRobotsResponse:
         return ListRobotsResponse(robot_ids=list(self.TASK_ROBOTS))
 
-    @service(PickAndPlace.Service.PREVIEW)
-    async def preview(self, req: PreviewRequest) -> PreviewResponse:
-        """전체 step 목록 dry-run 수집 (모션 0) — 실행 전 미리보기. 항상 놓기 포함
-        최대 경로. imperative 시나리오라 정적 목록이 없어 한 번 traverse 한다."""
-        entries = await collect_steps(
-            self.scenario,
-            robot_ids=list(self.TASK_ROBOTS),
-            specs=self._robots,
-            responders=self._preview_responders(),
-            pick_object="(미리보기)",
-            place_object="(미리보기)",  # 놓기 포함 전체 경로
-        )
-        return PreviewResponse(steps=entries)
-
-    @staticmethod
-    def _preview_responders() -> dict[str, Responder]:
-        """dry-run canned 응답 — 시나리오가 부르는 서비스마다 benign 응답 (모션 0).
-
-        검출은 height prior 통과하는 canonical 후보 1개 → geometry 가 파지·적치
-        후보를 만들고, resolve 는 index 0 을 돌려줘 happy-path 전 구간을 traverse."""
-
-        def _detect(_req: object) -> DetectOrientedResponse:
-            cand = OrientedDetection(
-                prompt="preview",
-                position=(0.2, 0.0, 0.03),
-                score=0.9,
-                base_z=0.0,
-                height=0.025,  # height prior(0.015~0.15) 통과
-                grasp_yaw=0.0,
-                footprint=(0.03, 0.03),
-            )
-            return DetectOrientedResponse(found=True, candidates=[cand])
-
-        return {
-            str(Detector.Service.DETECT_ORIENTED): _detect,
-            str(Motion.Service.RESOLVE_REACHABLE): (
-                lambda _r: ResolveReachableResponse(index=0)
-            ),
-            str(Motion.Service.MOVE_J): lambda _r: MoveJResponse(),
-            str(Motion.Service.MOVE_L): lambda _r: MoveLResponse(),
-            str(Motor.Service.SET_GRIPPER): lambda _r: SetGripperResponse(),
-        }
+    # TODO(미결): 실행 전 전체 step 목록 미리보기 서비스 — 디버거 breakpoint/run-to 용.
+    # 설계 미확정 (contract.py PickAndPlace.Service 의 TODO 참조): imperative 시나리오라
+    # 정적 분석(AST)은 if/loop/동적 호출에서 깨지고, 완전 보장은 선언형 구조가 필요.
+    # 방향 확정 후 여기 핸들러 추가. (2026-07-13)
 
     # ─── Publishing ────
 

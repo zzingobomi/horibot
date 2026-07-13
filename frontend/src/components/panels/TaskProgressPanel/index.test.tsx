@@ -190,48 +190,4 @@ describe("TaskProgressPanel — TRACE 디버거", () => {
     expect(calls[0][1]).toEqual({ name: "descend" });
   });
 
-  it("전체 단계 미리보기 → PREVIEW 호출 + 예상 단계 목록 렌더 (live trace 없을 때)", async () => {
-    vi.spyOn(bridge, "callService")
-      // @ts-expect-error — 테스트 stub
-      .mockImplementation(async (key, _req, opts) => {
-        const wk = bridge.serviceCacheKey(
-          key,
-          (opts as { robotId?: string })?.robotId,
-        );
-        const isPreview = String(key).includes("/preview");
-        const entry: ServiceEntry = {
-          success: true,
-          message: "",
-          data: isPreview
-            ? {
-                steps: [
-                  { name: "plan_pick", title: "집기 계획", depth: 0, status: "running", started_unix: 0 },
-                  { name: "detect", title: "검출", depth: 1, status: "running", started_unix: 0 },
-                ],
-              }
-            : { ok: true },
-          timestamp: Date.now(),
-          pending: false,
-        };
-        useFrameworkStore.getState().setServiceData(wk, entry);
-        return entry;
-      });
-    // idle (live trace 없음) — LIST_ROBOTS 만 시딩
-    useFrameworkStore.setState({
-      topicData: {},
-      serviceData: { ...LIST_ROBOTS_SEED },
-      bridgeConnected: true,
-    });
-    const { getByTestId, getAllByTestId, getByText } = renderPanel();
-
-    await act(async () => {
-      fireEvent.click(getByTestId("task-preview"));
-    });
-
-    const items = getAllByTestId("task-preview-entry");
-    expect(items.length).toBe(2);
-    expect(getByText("집기 계획")).toBeTruthy();
-    // depth=1 은 들여쓰기
-    expect((items[1] as HTMLElement).style.marginLeft).toBe("14px");
-  });
 });

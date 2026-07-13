@@ -3,7 +3,6 @@ from __future__ import annotations
 from enum import StrEnum
 
 from framework.contract.model import StrictModel
-from modules.tasks.core.contract import TraceEntry
 
 
 class PickAndPlace:
@@ -16,7 +15,16 @@ class PickAndPlace:
         RUN_TO = "srv/pick_and_place/run_to"
         TOGGLE_BREAKPOINT = "srv/pick_and_place/toggle_breakpoint"
         LIST_ROBOTS = "srv/pick_and_place/list_robots"
-        PREVIEW = "srv/pick_and_place/preview"
+        # TODO(미결): 실행 전 전체 step 목록 미리보기 (디버거 breakpoint/run-to 는
+        # 실행 전에 대상 목록이 필요 — @step 을 지정하는 이유). 설계 미확정:
+        #   - imperative 시나리오라 실행 없이 목록을 뽑으려면 정적 분석(AST) 필요한데,
+        #     if/loop/동적·변수 함수 호출에서 순수 AST 는 깨진다 (실행 구조를 안 돌리고
+        #     정확히 아는 건 근본적으로 불가 — 정지문제급).
+        #   - 완전 보장하려면 구조를 **선언형 데이터**로 (Airflow DAG / BehaviorTree /
+        #     MoveIt Task Constructor / 옛 DSL 방식) 표현해야 함 = @step 을 선언형 구조로
+        #     전환하는 방향.
+        #   - 절충: best-effort AST(정적, 비동적 부분) + 런타임 trace(동적 부분 보완).
+        # 방향 확정 후 서비스/요청·응답 추가. (2026-07-13 논의)
 
     class Stream(StrEnum):
         STATE = "stream/pick_and_place/{robot_id}/state"
@@ -42,18 +50,6 @@ class ListRobotsResponse(StrictModel):
     robot_ids: list[str]
 
 
-class PreviewRequest(StrictModel):
-    """미리보기 요청 — 실행 전 전체 step 목록만 dry-run 으로 수집 (모션 0).
-
-    항상 놓기 포함 최대 경로를 보여준다 (전체 단계 미리보기) — 실제 파라미터는
-    canned dry-run 이라 무의미."""
-
-
-class PreviewResponse(StrictModel):
-    """dry-run 으로 수집한 전체 step 목록 (진입 순서 + depth). status 는 아직 실행
-    안 됨을 뜻하는 running placeholder — 프론트가 회색(미실행)으로 렌더."""
-
-    steps: list[TraceEntry]
 
 
 class TaskMarker(StrictModel):

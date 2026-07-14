@@ -107,6 +107,7 @@ FRONTEND_EXPOSED: set[str] = {
         PickAndPlace.Service.RUN_TO,
         PickAndPlace.Service.TOGGLE_BREAKPOINT,
         PickAndPlace.Service.LIST_ROBOTS,  # task 참여 robot 명부 — 프론트 {robot_id} 채움
+        PickAndPlace.Service.PREVIEW,  # 실행 전 정적 step 구조 — breakpoint 미리 박기
         PickAndPlace.Stream.STATE,
         PickAndPlace.Stream.TRACE,
         PickAndPlace.Stream.MARKERS,

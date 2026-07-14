@@ -1,13 +1,23 @@
 """TaskRunner — 범용 long-running 시나리오 감독기 (wire 무지, 2026-07-13 확정).
 
+두 클래스 (Mirror/MirrorState 와 같은 분리 — 2026-07-14 데코레이터 DX 통일):
+  - TaskRunner  = 클래스 바디 **선언부** (descriptor). @task.on_state /
+    @task.on_trace 로 훅을 @service/@publishes/@mirror.on_change 와 같은
+    데코레이터 리듬으로 연결한다. 선언만 가지므로 인스턴스 간 공유돼도 무해.
+  - TaskRunnerState = 인스턴스별 **감독기 본체** (_run/_breakpoints/게이트 —
+    실행 상태). descriptor __get__ 이 인스턴스 __dict__ 에 lazy 생성. 모듈
+    인스턴스 둘이 run/breakpoint 를 공유하면 "이미 실행 중" 오거부/상태 오염 —
+    Mirror 가 상태를 MirrorState 로 쪼갠 바로 그 이유.
+
 책임 (이것만): start/cancel/pause/resume/step_once/run_to/toggle_breakpoint,
 @step 진입 게이트, 예외 → FAILED + 사유 조립, 상태/trace **데이터** 추적.
 
 **wire 를 모른다** — runtime/zenoh/키/robot/계약 무지. 변화가 생기면 모듈이 달아둔
-**콜백**(on_state/on_trace — 전부 선택)을 부를 뿐이다. publish 할지,
-어떤 키/payload 로 할지는 콜백을 단 모듈의 코드 — 필요 없으면 안 달면 된다
-(headless). robot_ids 는 불투명 문자열 목록으로만 통과 (ctx 허용 목록 + 콜백에
-스냅샷으로 전달).
+**훅**(on_state/on_trace — 전부 선택)을 부를 뿐이다. publish 할지,
+어떤 키/payload 로 할지는 훅을 단 모듈의 코드 — 필요 없으면 안 달면 된다
+(headless). robot_ids 는 불투명 문자열 목록으로만 통과 (ctx 허용 목록 + 훅에
+스냅샷으로 전달). 훅 해석은 이름 지연 bind (getattr — MRO 를 타므로 서브클래스
+override 가 이긴다) — descriptor 로 바뀌어도 본체는 여전히 함수만 받는 순수 부품.
 
 실행 규약:
   - start = fire-and-monitor: asyncio.create_task 감독 시작 후 accepted 즉시 반환.
@@ -29,7 +39,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol, TypeVar, overload
 
 from framework.transport.protocol import RemoteError
 
@@ -44,6 +54,8 @@ from .contract import (
 from .step import RunLink, bind_link, reset_link
 
 logger = logging.getLogger(__name__)
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 
 @dataclass(frozen=True)
@@ -74,11 +86,9 @@ class RunState:
 class RunContext(Protocol):
     """runner 가 ctx 에 요구하는 최소 표면 — 도메인은 안 봄 (TaskContext 가 구현)."""
 
-    def bind_run(self, link: RunLink, robot_ids: list[str]) -> None:
-        ...
+    def bind_run(self, link: RunLink, robot_ids: list[str]) -> None: ...
 
-    async def on_abort(self) -> None:
-        ...
+    async def on_abort(self) -> None: ...
 
 
 class _DebugMode(Enum):
@@ -107,15 +117,7 @@ class _Run:
         return self.status in (TaskStatus.RUNNING, TaskStatus.PAUSED)
 
 
-class TaskRunner:
-    """task 모듈당 1개 보유 (부품 — 모듈이 조립).
-
-    콜백 (전부 선택 — publish 여부/방법은 모듈 결정, 안 달면 headless):
-      on_state(RunState)                          — 상태 전이마다
-      on_trace(RunState, list[TraceEntry])        — step 진입/완료/실패마다
-    콜백 예외는 삼키고 로그만 남긴다 (관측이 실행을 죽이면 안 됨).
-    """
-
+class TaskRunnerState:
     def __init__(
         self,
         *,
@@ -198,8 +200,11 @@ class TaskRunner:
         else:
             self._breakpoints.add(name)
         run = self._run
+        # 항상 통지 — run 밖 토글(프리뷰에서 미리 박기)도 UI 에 보여야 한다
+        # (침묵 금지). run 이 끝난 뒤면 최종 status 스냅샷 유지, run 자체가
+        # 없으면 IDLE 스냅샷 (robot_ids 없음 — 라우팅은 훅을 단 모듈 몫).
+        self._notify_state(run)
         if run is not None and run.active:
-            self._notify_state(run)  # breakpoints 변경 broadcast
             return ControlResult(True)
         return ControlResult(True, "다음 실행부터 적용")
 
@@ -318,9 +323,16 @@ class TaskRunner:
         entry.ended_unix = time.time()
         self._notify_trace(run)
 
-    # ─── 콜백 통지 (wire 무관 — 발행 여부/방법은 콜백을 단 모듈 몫) ──
+    # ─── 훅 통지 (wire 무관 — 발행 여부/방법은 훅을 단 모듈 몫) ──────
 
-    def _snapshot(self, run: _Run) -> RunState:
+    def _snapshot(self, run: _Run | None) -> RunState:
+        if run is None:  # run 밖 통지 (idle breakpoint 토글) — 상태는 IDLE
+            return RunState(
+                task_name="",
+                robot_ids=(),
+                status=TaskStatus.IDLE,
+                breakpoints=tuple(sorted(self._breakpoints)),
+            )
         return RunState(
             task_name=run.task_name,
             robot_ids=tuple(run.robot_ids),
@@ -331,13 +343,13 @@ class TaskRunner:
             breakpoints=tuple(sorted(self._breakpoints)),
         )
 
-    def _notify_state(self, run: _Run) -> None:
+    def _notify_state(self, run: _Run | None) -> None:
         if self._on_state is None:
             return
         try:
             self._on_state(self._snapshot(run))
         except Exception:
-            logger.exception("on_state 콜백 실패 — 실행 계속")
+            logger.exception("on_state 훅 실패 — 실행 계속")
 
     def _notify_trace(self, run: _Run) -> None:
         if self._on_trace is None:
@@ -345,13 +357,69 @@ class TaskRunner:
         try:
             self._on_trace(self._snapshot(run), list(run.trace))
         except Exception:
-            logger.exception("on_trace 콜백 실패 — 실행 계속")
+            logger.exception("on_trace 훅 실패 — 실행 계속")
+
+
+class TaskRunner:
+    def __init__(self) -> None:
+        self._attr_name: str | None = None
+        self._on_state_name: str | None = None
+        self._on_trace_name: str | None = None
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._attr_name = name
+
+    # ─── 훅 선언 (클래스 바디 — 이름만 저장, bind 는 __get__ 에서) ────
+
+    def on_state(self, fn: _F) -> _F:
+        self._on_state_name = fn.__name__
+        return fn
+
+    def on_trace(self, fn: _F) -> _F:
+        self._on_trace_name = fn.__name__
+        return fn
+
+    # ─── 인스턴스별 상태 (Mirror.__get__ 동형 — lazy, __dict__ 격리) ──
+
+    @overload
+    def __get__(self, instance: None, owner: type) -> TaskRunner: ...
+
+    @overload
+    def __get__(self, instance: Any, owner: type | None = ...) -> TaskRunnerState: ...
+
+    def __get__(
+        self, instance: Any, owner: type | None = None
+    ) -> TaskRunnerState | TaskRunner:
+        if instance is None:
+            return self
+        if self._attr_name is None:
+            raise RuntimeError(
+                f"TaskRunner descriptor missing __set_name__ "
+                f"(owner={owner}, instance={type(instance).__name__})"
+            )
+        state_key = f"_taskrunner_{self._attr_name}"
+        state = instance.__dict__.get(state_key)
+        if state is None:
+            state = TaskRunnerState(
+                on_state=(
+                    getattr(instance, self._on_state_name)
+                    if self._on_state_name
+                    else None
+                ),
+                on_trace=(
+                    getattr(instance, self._on_trace_name)
+                    if self._on_trace_name
+                    else None
+                ),
+            )
+            instance.__dict__[state_key] = state
+        return state
 
 
 class _Link:
     """@step wrapper / ctx 에 주입되는 게이트/관측 훅 — RunLink (step.py) 구현."""
 
-    def __init__(self, runner: TaskRunner, run: _Run) -> None:
+    def __init__(self, runner: TaskRunnerState, run: _Run) -> None:
         self._runner = runner
         self._run = run
 

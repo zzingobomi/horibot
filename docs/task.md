@@ -30,6 +30,14 @@
 > 전부 **모듈 소유**. 등록 의식(registry/@task/TaskMetadata/GET /tasks) 전부 삭제
 > — task 의 정보 채널은 계약이 유일. 핵심 진단: "runner 가 wire 를 발행하는 한
 > 계약이 runner 의 사정이 된다" — wire 절단이 모든 엮임의 근본 수술.
+>
+> **2026-07-14 개정 (2건):**
+> ③ **정적 프리뷰** — 실행 전 step 트리는 "실행 시뮬레이션"이 아니라 **코드 구조
+> 인덱싱** (본문을 안 돌리니 모킹 대상 자체가 소멸 — dry-run/가짜응답 계열 기각
+> 확정). §2 프리뷰 항목.
+> ④ **runner 훅 = 데코레이터 선언** — 생성자 콜백 인자를 클래스 바디
+> `@task.on_state`/`@task.on_trace` 로 (Mirror descriptor 동형 — TaskRunner 선언부
+> / TaskRunnerState 인스턴스별 본체 분리). §2 TaskRunner 항목.
 
 ## 1. 지배 요구 (이 프레임워크의 존재 이유 — 기능 추가 판단 기준)
 
@@ -50,11 +58,14 @@
 ```
 modules/tasks/
 ├── core/                     ← 부품 상자 (제공하되 강제 안 함 — 모듈 아님)
-│   ├── runner.py             TaskRunner — wire 무지 범용 감독기 (콜백 통지) + RunState
+│   ├── runner.py             TaskRunner(선언 descriptor — @task.on_state/on_trace)
+│   │                         + TaskRunnerState(인스턴스별 감독기 본체, wire 무지) + RunState
 │   ├── step.py               @step 데코레이터 — 게이트/trace 경계 (저자가 step 지정)
-│   ├── context.py            TaskContext — ctx.call 단일 표면 + spec/record/on_abort
-│   ├── contract.py           payload 규약 — TaskState/TaskTrace/TaskStepResult (스트림)
-│   │                         + RunResponse/Control*/RunTo*/ToggleBreakpoint* (조작판)
+│   │                         + 정적 표식(is_step/step_meta — 프리뷰 판정 채널)
+│   ├── preview.py            build_preview — 소스만 읽는 정적 step 트리 (실행/모킹 0)
+│   ├── context.py            TaskContext — ctx.call 단일 표면 + spec/on_abort
+│   ├── contract.py           payload 규약 — TaskState/TaskTrace (스트림) + RunResponse/
+│   │                         Control*/RunTo*/ToggleBreakpoint*/Preview* (조작판)
 │   ├── errors.py             TaskError 계열 (도메인 판정 실패만 — 기술 실패는 서비스 raise)
 │   ├── spec.py               TaskRobotSpec (motors.yaml 투영 — resolve 주입)
 │   └── fake.py               FakeContext + ScriptedRuntime (서비스 키별 응답 스크립트)
@@ -69,11 +80,37 @@ modules/tasks/
 
 - **TaskRunner = wire 무지 범용 감독기.** 실행/취소/일시정지/재개/step 게이트/예외
   →실패/상태·trace **데이터** 추적만. runtime·zenoh·키·robot·계약 무지. 변화는
-  생성자에 단 **콜백**(on_state/on_trace/on_result — 전부 선택, 안 달면 headless)
-  으로 통지 — RunState 스냅샷 + TraceEntry 리스트 + record 값. 콜백 예외는 삼키고
-  로그 (관측이 실행을 죽이면 안 됨). start(fn) 은 아무 async 함수나 받고 아무나
-  부를 수 있다 (트리거 중립 — 서비스/@subscriber/내부 호출). 조작판 API 를 wire
-  로 노출할지, 코드에서 직접 부를지(시나리오 중 조건부 pause 등)도 모듈 자유.
+  모듈이 단 **훅**(on_state/on_trace — 전부 선택, 안 달면 headless)으로 통지 —
+  RunState 스냅샷 + TraceEntry 리스트. 훅 예외는 삼키고 로그 (관측이 실행을
+  죽이면 안 됨). start(fn) 은 아무 async 함수나 받고 아무나 부를 수 있다 (트리거
+  중립 — 서비스/@subscriber/내부 호출). 조작판 API 를 wire 로 노출할지, 코드에서
+  직접 부를지(시나리오 중 조건부 pause 등)도 모듈 자유.
+- **훅 연결 = 데코레이터 선언 (2026-07-14, Mirror descriptor 동형).** 모듈 클래스
+  바디에 `task = TaskRunner()` (선언부) + 발행 메서드 위에 `@task.on_state`/
+  `@task.on_trace` — @service/@publishes/@mirror.on_change 와 같은 리듬. 데코레이터
+  는 클래스 바디 시점(인스턴스 없음)이라 **이름만** 잡고, 첫 `self.task` 접근 때
+  __get__ 이 getattr 로 bound 해석 (MRO — 서브클래스 override 승리). 실행 상태
+  (_run/_breakpoints)는 **TaskRunnerState** 로 분리해 인스턴스 __dict__ 에 lazy
+  생성 — 클래스 변수 공유로 모듈 인스턴스 둘이 run 을 공유하는 사고 차단
+  (Mirror/MirrorState 분리와 같은 이유, 회귀 테스트 잠금). TaskRunnerState 는
+  생성자 콜백도 받는다 (단독 조립/테스트/headless — 본체는 여전히 함수만 받는
+  순수 부품). 선행 확인: framework 가 이미 Mirror 로 이 결을 확립 — runner 혼자
+  새 패턴이 아님. `_publish_markers` 는 runner 이벤트가 아니라 시나리오의 도메인
+  발행이라 훅 대상 아님.
+- **실행 전 정적 프리뷰 (2026-07-14 확정 — core/preview.py).** 프리뷰는 "실행
+  시뮬레이션"이 아니라 **코드 구조 인덱싱**: "이 step 이 저 step 을 부른다"는
+  소스에 이미 적혀 있어 본문을 돌릴 이유가 없다 — 모션/검출/DB/무거운 순수 연산이
+  탈 자리도, 모킹할 대상도 없음 (**개발자 추가 규약 0** — @step 만 붙이면 끝.
+  dry-run/가짜응답/ctx 게이팅 계열은 이 전제 위반이라 기각 확정). 실행 경로 보장은
+  요구에서 제외: if/loop 는 풀지 않고 **조건부/반복 표시만**, 정적으로 못 푼
+  호출은 `<동적>` 노드로 자리 표시 (구멍이 침묵으로 안 사라짐 — 실행되면 trace 가
+  실제 진입으로 치환). step 판정 = 호출 문법이 아니라 **resolve 대상의 @step
+  표식** (await 여부 무관), 이름 해석 = inspect.getattr_static (프리뷰 중 코드
+  실행 금지). wire = TraceEntry 동형 flat+depth (`PreviewEntry` — 프리뷰↔trace
+  같은 렌더 공유). run 밖 breakpoint 토글도 STATE 발행 (IDLE 스냅샷 + 모듈
+  TASK_ROBOTS fallback) — 프리뷰에서 미리 박은 bp 가 보인다. 한계(표시하고
+  넘어감): 콜백/자료구조로 넘긴 step·중첩 def 내부·일반 헬퍼 뒤 step 은 못 봄
+  (계층 규약상 step 은 직접 호출이 정상).
 - **모듈이 전부 소유**: 계약(자기 키 전부 손 선언 — 조작판 노출 여부/범위도 이
   모듈의 결정이라 계약에 명시), 배선(__init__ 에서 runner+contexts 조립), 진행
   발행(runner 콜백에 자기 발행 메서드 — payload 는 core 규약을 쓰면 공용 task UI
@@ -149,10 +186,12 @@ modules/tasks/
    - **contract.py** — 전부 손코드: 트리거 키(이름 자유) + 노출하기로 결정한
      조작판 키 + 진행 스트림 3키 + 자기 RunRequest. (조작판/스트림 req·res·payload
      모양은 tasks/core/contract.py 공용 — 공용 task UI 가 그대로 붙음.)
-   - **module.py** — __init__ 에서 runner(+발행 콜백)/contexts 조립, stop() 에서
-     task.cancel() (**안전 의무**), 진행 발행 메서드 3개, 트리거 핸들러
+   - **module.py** — 클래스 바디에 `task = TaskRunner()` 선언 + 발행 메서드에
+     `@task.on_state`/`@task.on_trace` (훅 배선), __init__ 에서 contexts 조립,
+     stop() 에서 task.cancel() (**안전 의무**), 트리거 핸들러
      (`task.start(self.scenario, ctx=…, robot_ids=…, **req.model_dump())`),
-     노출할 조작판 핸들러, scenario.
+     노출할 조작판 핸들러 (+PREVIEW = `build_preview(self.scenario)` — 공짜),
+     scenario.
    - **steps.py** — @step 함수들 (`ctx.call` + 도메인 판정). **geometry.py** — 순수 함수.
 2. apps/registry.py + deployment yaml 등록. FRONTEND_EXPOSED 에 키 추가 →
    `pnpm gen:types` (+fixture 쌍).

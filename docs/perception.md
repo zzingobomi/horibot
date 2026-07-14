@@ -10,10 +10,137 @@
 ---
 ---
 
+<!-- ═══════════ [현행 설계 방향] 2cm 물체 범용 파지 — object-centric 재설계 (2026-07-14 논의 확정) ═══════════ -->
+
+# 2cm 물체 범용 파지 — object-centric perception 재설계
+
+> **status: 설계 방향 확정 (2026-07-14 논의), 구현 대기.** 아래 detection/grasp 방향은
+> 이 문서 뒤의 옛 "Grounded Detection 설계"(one-shot, bbox depth median, floor 기반 height)를
+> **대체하는 방향**이다. 옛 부는 역사 기록으로 남김.
+>
+> 관련 열린 문제: [backend.md](backend.md) 진행 status #1(detection height/base_z 부정확) /
+> #2(IK 도달성 오판). **#1 은 아래 재설계로 해소(floor 제거), #2 는 roadmap step 1 의 선결 버그.**
+
+## 0. 목표 (스코프 잠금)
+
+**한 변 ~2cm 물체를 집는다.** 그게 전부. 물체가 어디 있는지(책상 / 사람 손 / 다른 로봇에
+들려 공중) **가정하지 않는다.** 정밀도 기준 = "아무도 안 잡은 2cm 큐브를 집을 수 있는 수준"
+(= 지금 책상에서 되는 그 수준 — **회귀 금지**, 새 정밀도 달성이 아님). 누가 들고 있으면 물체는
+그만큼 커지므로 2cm-free 가 정밀도 상한.
+
+## 1. 왜 지금 방식이 틀렸나 — floor 의존
+
+현행 3D 투영([detector/projection.py](../backend/modules/detector/projection.py))은 물체 높이를
+`height = object_top_z − floor_z` 로 구하고, floor_z 를 **bbox 주변 ring 의 base-z 25th
+percentile**(`floor_z_and_height`)로 재추정한다. 두 가지 병:
+
+- **fragile** — ring 이 depth 이상치(책상 모서리 너머 / edge artifact) 하나만 물어도 25th
+  percentile 이 무너져 floor_z 가 −0.23m 로 튀고 → **height 19cm phantom 후보** 발생 (실물 로그).
+  같은 물체를 뷰마다 **height 0.5↔1.5cm** 로 제각각 재는 것도 top/floor 를 소표본 percentile 로
+  국소 재추정하기 때문 (두 노이즈의 차라 합쳐짐).
+- **전제 자체가 틀림** — floor 를 "잘" 계산하자는 것도 결국 **"물체가 바닥에 있다"** 는 전제에
+  갇혀 있다. 공중/손에 들린 물체엔 바닥이 없고, ring 은 바닥 대신 손·배경을 물어 더 엉망이 된다.
+
+**핵심 재프레임: floor 뺄셈은 "단일 뷰로 안 보이는 바닥을 억지로 추측하는 꼼수"였다.**
+"물체가 책상에 놓였다 치고, 책상이 여기니까 바닥은 여기일 것" 이라고 **안 보고 가정**한 것 —
+그래서 (a) 책상에 없으면 무너지고 (b) 추측이라 부정확하다.
+
+## 2. 물리적 한계 → 멀티뷰
+
+단일 카메라는 **자기를 향한 면만** 본다. 반대편·바닥·가려진 면은 depth 데이터가 애초에 없다
+(노이즈가 아니라 기하적 **occlusion** — 산업용 고급 depth 카메라도 동일, 더 좋은 센서가 안 보이는
+면을 보여주지 않음). 즉 **단일 뷰로 물체 전체 3D(특히 수직 크기)를 구하는 건 물리적으로 불가.**
+
+해법 = floor 로 추측하지 말고 **실제로 여러 각도에서 본다**:
+```
+한 번 봐선 전체 형상 불가 (occlusion — 물리 한계)
+   ↓  옆·다른 각도에서도 관측
+여러 부분 점군을 base frame 에서 융합 (뷰별 TCP pose + hand_eye 로 이미 정렬 → 쌓으면 됨)
+   ↓
+융합 점군에서 물체 크기/파지 산출
+```
+멀티뷰는 floor(추측)를 **관측**으로 대체한다 → floor 없이 되고, 더 정확하고, 공중/손도 커버.
+
+## 3. object-centric 파지 (floor-free)
+
+- **물체 3D = 물체 자기 점군에서만** (mask → depth → base 점군 → 크기/자세;
+  `base_points_from_mask` 이미 있음). `height = top − floor` **폐기** — phantom 은 floor 계산에서만
+  나오므로 floor 를 안 쓰면 그 문제 클래스 자체가 소멸.
+- **파지 = antipodal** — 평행 그리퍼는 결국 "마주 보는 두 면 + 폭이 그리퍼 안 + 손가락 닿는 표면"
+  찾기. 위치/폭/자세(yaw+접근축) 전부 물체 점군에서. 바닥/'위' 방향 무관 → 책상/손/공중 동일 로직.
+- **floor 의 강등** — detection 에서 완전히 빠지고, 남는 역할은 "하강 시 책상 충돌 회피" 하나.
+  그것도 perception 정밀 측정이 아니라 **planner 충돌 평면(cm 오차 OK, 옵션)**. 책상 없으면 안 씀.
+
+## 4. 정밀도 = closed-loop
+
+2cm 는 현재 캘(σ_t ~7.5mm)에 비해 빡빡하다. **절대좌표 open-loop 한 방 금지** —
+물체 자기 점군 기준 **상대 파지 + eye-in-hand 공통오차 상쇄 + 접근하며 재관측(close-up)** 으로
+좁힌다. 멀티뷰 파이프라인이 어차피 여러 번 보므로 자연 흡수.
+
+## 5. 충돌 (지금은 최소, 나중 설계)
+
+충돌 대상 = self / 바닥 / 다른 로봇. 재료는 있음(base_pose=[robots.yaml](../robot/robots.yaml),
+URDF, 상대 joint=subscribe)지만 **하나의 공유 충돌 월드로 통합 안 됨** (현재 pybullet 은 로봇별
+격리 클라이언트 = self-collision 만, 바닥·상대 없음). 상대 로봇은 **dynamic** 이라 스냅샷이 낡음
+→ 진짜 안전은 연속 검사/coordination 필요 = 큰 일. **그래서 뒤로 미룸.** 지금 스코프:
+
+- **so101 하나만 움직이고 omx 는 정지** → 멀티로봇 동적 충돌 전부 defer.
+- **바닥 충돌은 최소** — (a) 물체를 손에 들어 공중에 두면 바닥 부딪힐 게 없음, 또는 (b) 바닥 평면
+  하나만 넣어 그것만 체크. 큰 충돌 시스템 안 만듦.
+
+cross-robot 충돌 월드는 시스템에서 **유일하게 본질적으로 robot-scoped 를 넘는 cross-robot 관심사**
+— 소유권(motion 이 상대 mirror vs 별도 host-level 충돌 서비스)은 step 4 에서 설계.
+
+## 6. 의존 순서 + 구현 로드맵 (잠금)
+
+**뿌리 = IK 도달성 신뢰(#2).** 자동 뷰 생성도, 파지 후보 필터도 전부 "이 pose 갈 수 있냐"를
+믿을 수 있어야 성립. 지금 `resolve_reachable`/`_ik_from_seed` 는 도달 가능한 pose 를 불가로
+오판([backend.md](backend.md) #2) → 먼저 고침.
+
+```
+1. IK 도달성 버그 수정 (#2)   + 바닥·self 충돌 plane 최소
+2. so101 단독 (omx 정지) — 물체 바닥에 놓고 자동 멀티뷰 관측 + object-centric detect/grasp
+     · 바닥 충돌 최소 (평면 or 손에 들어 회피)
+     · ★ 불변식: 처음부터 floor-free(물체 점군)로 지을 것 — 그래야 step 3 이 재작성이 아님
+3. 손으로 들어(공중) 같은 grasp — object-centric 이 정말 바닥 무관인지 검증 (+ 손↔물체 세그 분리)
+4. 다른 로봇 충돌회피 (설계부터 제대로 — 공유 충돌 월드)
+5. 핸드오버 (상대가 능동적으로 건넴 + coordination)
+```
+각 단계가 집에서 독립 검증되는 increment (1:큐브 도달성 / 2:책상 파지 / 3:공중 파지 …).
+
+## 7. 재활용 vs 신규 (구현 시 참고)
+
+- **재활용** — GDINO+SAM(2D 식별·mask), `base_points_from_mask`(mask→base 점군), TCP pose·hand_eye,
+  뷰별 점군이 이미 base frame 정렬이라 융합이 "쌓기"로 됨, 기존 search sweep(= **1단계 광역 탐색**
+  용 — 타깃 멀티뷰가 아님, 아래 주의).
+- **신규** — 타깃 중심 **자동 관측 뷰 생성**(NBV-lite: 타깃 중심 호/반구 샘플 → 도달·충돌·그리퍼
+  가림 필터), 멀티뷰 점군 융합, 융합 점군 antipodal 파지 생성, closed-loop 재관측, (나중) 공유 충돌 월드.
+- **폐기** — `floor_z_and_height` 기반 height/base_z + height prior 크기창.
+
+> ⚠️ **search waypoint ≠ 타깃 멀티뷰.** search 그룹은 "물체가 어디 있나" **넓게 훑는 coverage**
+> (1단계 식별)용이라, 특정 타깃을 여러 각도로 보는 관측 자세와 목적이 다르다. 타깃 위치는 런타임에야
+> 알므로 **"타깃 중심 멀티뷰 관측"은 본질적으로 "자동 뷰 계산"과 같은 것** — 미리 티칭해둔 타깃-중심
+> 자세 세트라는 게 존재할 수 없다 (그래서 둘은 한 덩어리로 step 2 에서 신규 구현).
+
+## 8. 실물에서 확인할 것 (집 — 하드웨어 세션)
+
+- **raw depth 품질**: 물체 위에 depth 가 촘촘히 찍히나 / 구멍·노이즈인가 (object-centric 도 depth 가
+  소스라 upstream). D405 최소거리(~7cm)/각도 준수 여부.
+- **depth↔color 정렬** 전제 확인 (bbox=color 픽셀이 맞는 depth 픽셀을 가리키나 — 코드는 정렬됐다 전제만).
+- antipodal 이 D405 **부분 점군 품질**에 얼마나 견디나 (2cm 물체 점 밀도).
+- #2 진단 로깅으로 IK 기각 사유(pos/ori 잔차 / self·바닥 충돌 / 수렴)가 어느 것인지.
+
+---
+---
+
 <!-- ═══════════ [통합 원문] perception.md ═══════════ -->
 
 # Grounded Detection 설계
 
+> **status: 대체됨 (2026-07-14 — 위 [현행 설계 방향] 부가 정본).** one-shot / bbox depth
+> median / floor 기반 height / top-down 고정 yaw 는 위 object-centric + 멀티뷰 재설계로 대체.
+> 실행 규약(GDINO+SAM 2-stage, base 투영 수학)은 계승. 아래는 역사 기록.
+>
 > Open-vocabulary detection을 활용한 자연어 기반 픽업 시스템 설계 문서.
 > 사용자가 영어 텍스트로 물체를 묘사하면 그것을 찾아서 잡아오는 파이프라인.
 

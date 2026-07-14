@@ -73,6 +73,28 @@ def _detail_of(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
+# ─── 정적 introspection 표식 (preview.py 판정 채널) ──────────────────
+#
+# 프리뷰는 소스만 읽는 정적 패스 — "이 callable 이 step 인가" 를 호출 문법이
+# 아니라 이 표식으로 판정한다 (개발자는 여전히 @step 만 붙인다).
+
+_IS_STEP_ATTR = "__is_step__"
+_STEP_NAME_ATTR = "__step_name__"
+_STEP_TITLE_ATTR = "__step_title__"
+
+
+def is_step(fn: Any) -> bool:
+    """@step 선언 여부 — 정적 프리뷰(preview.build_preview)의 판정 채널."""
+    return getattr(fn, _IS_STEP_ATTR, False) is True
+
+
+def step_meta(fn: Any) -> tuple[str, str]:
+    """(name, title). @step 이 아닌 callable 은 (함수 이름, "") — 프리뷰 루트용."""
+    if is_step(fn):
+        return getattr(fn, _STEP_NAME_ATTR), getattr(fn, _STEP_TITLE_ATTR)
+    return getattr(fn, "__name__", str(fn)), ""
+
+
 @overload
 def step(fn: Callable[..., Awaitable[_T]]) -> Callable[..., Awaitable[_T]]: ...
 
@@ -120,6 +142,12 @@ def step(
             link.complete(entry)
             return result
 
+        # 정적 introspection 표식 — 런타임 게이트/trace 경로 무변경.
+        # functools.wraps 가 이미 wrapper.__wrapped__ = f 를 걸어 원본 소스
+        # (inspect.getsource) 접근을 보장한다.
+        setattr(wrapper, _IS_STEP_ATTR, True)
+        setattr(wrapper, _STEP_NAME_ATTR, step_name)
+        setattr(wrapper, _STEP_TITLE_ATTR, step_title)
         return wrapper
 
     if fn is not None:

@@ -2,23 +2,29 @@
  * TaskProgressPanel — task 진행 표시 + 디버거 (task 공통 부품).
  *
  * TRACE (step 진입 누적 — label/depth/status/detail, 중첩은 depth 들여쓰기) +
- * STATE (status/current_name/error/breakpoints) 로 진행을 그린다. 사전 step
- * 목록은 없음 — imperative 시나리오는 실행해 봐야 경로가 정해지므로, 표시는
- * "실행된 것의 누적" + 직전 run 의 trace 가 다음 run 의 breakpoint 대상 (name
- * 은 run 간 안정 — @step 함수 이름).
+ * STATE (status/current_name/error/breakpoints) 로 진행을 그린다.
  *
- * 디버거: ● dot 클릭 = TOGGLE_BREAKPOINT(label) (없는 run 중에도 미리 박기 —
- * runner 가 run 간 보존) / RUNNING 에서 [일시정지] / PAUSED 에서 [재개]·[한 스텝]·
- * entry 별 [▶ 여기까지] (run-to-cursor). 실패 = error 박스에 사유 (backend 가
- * "다음 행동" 까지 담아 보냄 — 침묵 금지).
+ * trace 가 비어 있을 땐 PREVIEW (정적 프리뷰 — backend 가 시나리오 **소스만
+ * 읽어** 뽑은 step 구조, 실행 0) 를 같은 flat+depth 렌더로 보여준다 — 실행 전에
+ * breakpoint/run_to 대상을 고를 수 있게. 프리뷰는 "존재하는 구조"지 실행 보장이
+ * 아니다: 조건부(if)/반복(loop)은 배지로 표시만 하고, <동적> 노드는 정적으로 못
+ * 푼 호출 자리 (실행이 시작되면 trace 가 실제 진입으로 채운다 — 자연 치환).
+ *
+ * 디버거: ● dot 클릭 = TOGGLE_BREAKPOINT(name) (실행 전 프리뷰에서 미리 박기
+ * 포함 — runner 가 run 간 보존 + run 밖 토글도 STATE 로 즉시 보임) / RUNNING
+ * 에서 [일시정지] / PAUSED 에서 [재개]·[한 스텝]·entry 별 [▶ 여기까지]
+ * (run-to-cursor). 실패 = error 박스에 사유 (backend 가 "다음 행동" 까지 담아
+ * 보냄 — 침묵 금지).
  */
+import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { useService, useStream } from "@/framework";
+import { useBridgeConnected, useService, useStream } from "@/framework";
 import { useTaskRobots } from "@/hooks/useTaskRobots";
 import {
   ServiceKey,
   TaskStatus,
   Topic,
+  type PreviewEntry,
   type TraceEntry,
 } from "@/api/generated/contract";
 
@@ -49,9 +55,16 @@ export function TaskProgressPanel() {
   const runToSvc = useService(ServiceKey.PICKANDPLACE_RUN_TO, robotId);
   const toggleBpSvc = useService(ServiceKey.PICKANDPLACE_TOGGLE_BREAKPOINT, robotId);
 
-  // TODO(미결): 실행 전 전체 단계 미리보기 (디버거 breakpoint/run-to 대상 목록).
-  // backend contract 의 TODO 참조 — imperative 시나리오라 실행 없이 목록 뽑는 설계
-  // (정적 AST vs 선언형 구조) 미확정. 확정되면 여기 버튼 + PREVIEW 서비스 호출 추가.
+  // 정적 프리뷰 — mount 시 1회 fetch (시나리오는 backend 재시작 전까지 불변,
+  // 캐시에 있으면 재호출 없음). timestamp 로 "시도 완료" 를 판정해 실패 시
+  // 자동 재시도 폭주를 막고, 실패는 사유 + [재시도] 로 표시 (침묵 금지).
+  const connected = useBridgeConnected();
+  const previewSvc = useService(ServiceKey.PICKANDPLACE_PREVIEW);
+  const previewCall = previewSvc.call;
+  useEffect(() => {
+    if (!connected || previewSvc.pending || previewSvc.timestamp !== 0) return;
+    void previewCall({});
+  }, [connected, previewSvc.pending, previewSvc.timestamp, previewCall]);
 
   const st = state.value;
   const entries: TraceEntry[] = trace.value?.entries ?? [];
@@ -60,6 +73,11 @@ export function TaskProgressPanel() {
   const breakpoints = new Set(st?.breakpoints ?? []);
   const running = status === TaskStatus.RUNNING;
   const paused = status === TaskStatus.PAUSED;
+
+  // trace 없음 = 아직 안 돌았음 → 정적 프리뷰가 그 자리를 채운다 (실행이
+  // 시작되면 trace 가 실제 진입으로 치환 — <동적>/조건부가 확정 이름으로).
+  const preview: PreviewEntry[] = previewSvc.data?.entries ?? [];
+  const showPreview = entries.length === 0;
 
   return (
     <div
@@ -127,13 +145,99 @@ export function TaskProgressPanel() {
       )}
 
       <div className="font-mono uppercase text-muted-foreground">
-        trace ({entries.length})
+        {showPreview ? `미리보기 (${preview.length})` : `trace (${entries.length})`}
       </div>
+      {showPreview && (
+        <span className="text-[10px] text-muted-foreground">
+          실행 전 정적 구조 — 조건부/반복은 실행 시 결정. ● 클릭 = breakpoint
+          미리 설정 (실행하면 실제 진입이 이 자리를 채움).
+        </span>
+      )}
       <div className="flex flex-col gap-1" data-testid="task-entries">
-        {entries.length === 0 ? (
-          <span className="text-muted-foreground">
-            task 대기 중… (실행하면 실제 호출이 여기 쌓임)
-          </span>
+        {showPreview ? (
+          previewSvc.pending || previewSvc.timestamp === 0 ? (
+            <span className="text-muted-foreground">미리보기 불러오는 중…</span>
+          ) : !previewSvc.success ? (
+            <div
+              className="flex items-center gap-2 rounded border border-red-800/60 bg-red-950/30 p-2 font-mono text-red-300"
+              data-testid="task-preview-error"
+            >
+              <span className="flex-1 truncate">
+                미리보기 실패: {previewSvc.message || "알 수 없는 오류"}
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void previewCall({})}
+                data-testid="task-preview-retry"
+              >
+                재시도
+              </Button>
+            </div>
+          ) : preview.length === 0 ? (
+            <span className="text-muted-foreground">표시할 step 없음</span>
+          ) : (
+            preview.map((e, i) => {
+              const hasBp = breakpoints.has(e.name);
+              return (
+                <div
+                  key={`${i}:${e.name}`}
+                  className="flex items-center gap-2 rounded border border-zinc-800 px-2 py-1"
+                  style={{ marginLeft: (e.depth ?? 0) * 14 }}
+                  data-testid="task-preview-entry"
+                >
+                  {e.dynamic ? (
+                    // <동적> = breakpoint 대상 아님 (이름 미확정) — dot 없이 자리 표식
+                    <span
+                      className="h-3 w-3 shrink-0 rounded-full border border-dashed border-zinc-500"
+                      title="정적으로 대상을 못 푼 호출 — 실행하면 실제 step 이 여기 나타남"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void toggleBpSvc.call({ name: e.name })}
+                      title="브레이크포인트 토글 (실행 전 미리 박기)"
+                      data-testid="task-preview-bp"
+                      className={`h-3 w-3 shrink-0 rounded-full bg-zinc-600 ${
+                        hasBp ? "ring-2 ring-red-500" : "hover:ring-2 hover:ring-zinc-500"
+                      }`}
+                    />
+                  )}
+                  <span className="flex-1 truncate font-mono">
+                    {e.dynamic ? e.name : e.title || e.name}
+                    {(e.dynamic ? e.title : e.title && e.name) && (
+                      <span className="ml-1 text-[10px] text-muted-foreground">
+                        {e.dynamic ? e.title : e.name}
+                      </span>
+                    )}
+                  </span>
+                  {e.conditional && (
+                    <span className="rounded bg-zinc-800 px-1 font-mono text-[10px] text-amber-300/80">
+                      조건부
+                    </span>
+                  )}
+                  {e.repeated && (
+                    <span className="rounded bg-zinc-800 px-1 font-mono text-[10px] text-sky-300/80">
+                      반복
+                    </span>
+                  )}
+                  {e.recursive && (
+                    <span className="rounded bg-zinc-800 px-1 font-mono text-[10px] text-purple-300/80">
+                      재귀
+                    </span>
+                  )}
+                  {e.unavailable && (
+                    <span
+                      className="rounded bg-zinc-800 px-1 font-mono text-[10px] text-zinc-400"
+                      title="소스 획득 불가 — 하위 step 미상"
+                    >
+                      소스 없음
+                    </span>
+                  )}
+                </div>
+              );
+            })
+          )
         ) : (
           entries.map((e, i) => {
             const hasBp = breakpoints.has(e.name);

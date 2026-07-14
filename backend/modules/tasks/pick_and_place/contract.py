@@ -15,16 +15,10 @@ class PickAndPlace:
         RUN_TO = "srv/pick_and_place/run_to"
         TOGGLE_BREAKPOINT = "srv/pick_and_place/toggle_breakpoint"
         LIST_ROBOTS = "srv/pick_and_place/list_robots"
-        # TODO(미결): 실행 전 전체 step 목록 미리보기 (디버거 breakpoint/run-to 는
-        # 실행 전에 대상 목록이 필요 — @step 을 지정하는 이유). 설계 미확정:
-        #   - imperative 시나리오라 실행 없이 목록을 뽑으려면 정적 분석(AST) 필요한데,
-        #     if/loop/동적·변수 함수 호출에서 순수 AST 는 깨진다 (실행 구조를 안 돌리고
-        #     정확히 아는 건 근본적으로 불가 — 정지문제급).
-        #   - 완전 보장하려면 구조를 **선언형 데이터**로 (Airflow DAG / BehaviorTree /
-        #     MoveIt Task Constructor / 옛 DSL 방식) 표현해야 함 = @step 을 선언형 구조로
-        #     전환하는 방향.
-        #   - 절충: best-effort AST(정적, 비동적 부분) + 런타임 trace(동적 부분 보완).
-        # 방향 확정 후 서비스/요청·응답 추가. (2026-07-13 논의)
+        # 실행 전 정적 프리뷰 (2026-07-14 확정 — tasks/core/preview.py):
+        # 소스만 읽는 구조 인덱싱이라 실행/모킹 0. breakpoint/run_to 대상을
+        # 실행 전에 보여준다. req/res 는 core 공용 (PreviewRequest/Response).
+        PREVIEW = "srv/pick_and_place/preview"
 
     class Stream(StrEnum):
         STATE = "stream/pick_and_place/{robot_id}/state"

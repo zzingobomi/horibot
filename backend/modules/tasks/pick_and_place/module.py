@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -10,6 +11,8 @@ from modules.tasks.core.context import TaskContext, TaskContextFactory
 from modules.tasks.core.contract import (
     ControlRequest,
     ControlResponse,
+    PreviewRequest,
+    PreviewResponse,
     RunResponse,
     RunToRequest,
     TaskState,
@@ -17,6 +20,7 @@ from modules.tasks.core.contract import (
     ToggleBreakpointRequest,
     TraceEntry,
 )
+from modules.tasks.core.preview import build_preview
 from modules.tasks.core.runner import RunState, TaskRunner
 from modules.tasks.core.spec import TaskRobotSpec
 
@@ -41,16 +45,16 @@ logger = logging.getLogger(__name__)
 class PickAndPlaceModule:
     TASK_ROBOTS = ("so101_6dof_0",)
 
+    # 감독기 선언 — 훅 연결은 아래 발행 메서드의 @task.on_state/@task.on_trace
+    # (@service/@publishes 와 같은 데코레이터 리듬). 실행 상태는 인스턴스별.
+    task = TaskRunner()
+
     def __init__(
         self, runtime: ModuleRuntime, robots: dict[str, TaskRobotSpec] | None = None
     ) -> None:
         self.runtime = runtime
         self.contexts = TaskContextFactory(runtime, robots)
         self._seq = {"state": 0, "trace": 0, "markers": 0}
-        self.task = TaskRunner(
-            on_state=self._publish_state,
-            on_trace=self._publish_trace,
-        )
 
     async def stop(self) -> None:
         self.task.cancel()
@@ -103,15 +107,20 @@ class PickAndPlaceModule:
     async def list_robots(self, req: ListRobotsRequest) -> ListRobotsResponse:
         return ListRobotsResponse(robot_ids=list(self.TASK_ROBOTS))
 
-    # TODO(미결): 실행 전 전체 step 목록 미리보기 서비스 — 디버거 breakpoint/run-to 용.
-    # 설계 미확정 (contract.py PickAndPlace.Service 의 TODO 참조): imperative 시나리오라
-    # 정적 분석(AST)은 if/loop/동적 호출에서 깨지고, 완전 보장은 선언형 구조가 필요.
-    # 방향 확정 후 여기 핸들러 추가. (2026-07-13)
+    @service(PickAndPlace.Service.PREVIEW)
+    async def preview(self, req: PreviewRequest) -> PreviewResponse:
+        # 정적 소스 읽기 — 시나리오/step 본문은 실행하지 않는다 (구조 인덱싱,
+        # tasks/core/preview.py). getsource 의 파일 I/O 는 이벤트 루프 밖으로.
+        entries = await asyncio.to_thread(build_preview, self.scenario)
+        return PreviewResponse(entries=entries)
 
     # ─── Publishing ────
 
+    @task.on_state
     def _publish_state(self, s: RunState) -> None:
-        for robot_id in s.robot_ids:
+        # run 밖 통지(idle breakpoint 토글)엔 robot_ids 가 없다 — 참여 명부
+        # 상수로 라우팅 (실행 전 미리 박은 breakpoint 도 UI 에 보여야 함).
+        for robot_id in s.robot_ids or self.TASK_ROBOTS:
             self.runtime.publish(
                 PickAndPlace.Stream.STATE,
                 TaskState(
@@ -127,6 +136,7 @@ class PickAndPlaceModule:
                 ),
             )
 
+    @task.on_trace
     def _publish_trace(self, s: RunState, entries: list[TraceEntry]) -> None:
         for robot_id in s.robot_ids:
             self.runtime.publish(

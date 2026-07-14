@@ -31,7 +31,11 @@ from modules.tasks.core.fake import FakeContext
 from modules.tasks.core.spec import TaskRobotSpec
 from modules.tasks.core.contract import TaskState, TaskStatus
 from modules.tasks.pick_and_place import geometry, steps
-from modules.tasks.core.contract import ControlRequest
+from modules.tasks.core.contract import (
+    ControlRequest,
+    PreviewRequest,
+    ToggleBreakpointRequest,
+)
 from modules.tasks.pick_and_place.contract import ListRobotsRequest, RunRequest
 from modules.tasks.pick_and_place.module import PickAndPlaceModule
 from modules.waypoint.contract import (
@@ -413,6 +417,34 @@ async def test_module_control_without_run_says_why():
     mod = PickAndPlaceModule(_WireStub(), {})  # type: ignore[arg-type]
     r = await mod.pause(ControlRequest())
     assert not r.ok and r.message  # 침묵 금지
+
+
+async def test_module_preview_returns_static_tree_without_wire():
+    """PREVIEW 서비스 — 실행/모킹 0 (wire stub 은 call 스크립트가 없어 호출되면
+    즉사). 트리 상세는 test_task_preview 가 잠금 — 여기선 wire 노출만 확인."""
+    mod = PickAndPlaceModule(_WireStub(), {})  # type: ignore[arg-type]
+    res = await mod.preview(PreviewRequest())
+    assert [e.name for e in res.entries if e.depth == 0] == [
+        "plan_pick", "plan_place", "execute_pick", "execute_place",
+    ]
+    assert not mod._seq["state"]  # 프리뷰는 발행/실행 상태를 건드리지 않는다
+
+
+async def test_module_toggle_breakpoint_before_run_publishes_state():
+    """run 밖 breakpoint 토글(프리뷰에서 미리 박기)이 STATE 로 보인다 — robot
+    라우팅은 참여 명부(TASK_ROBOTS) fallback (침묵 금지)."""
+    rt = _WireStub()
+    mod = PickAndPlaceModule(rt, {})  # type: ignore[arg-type]
+    r = await mod.toggle_breakpoint(ToggleBreakpointRequest(name="descend"))
+    assert r.ok and "다음 실행" in r.message
+
+    states = [e for k, e in rt.published if k.endswith("/state")]
+    assert states, "run 밖 토글이 침묵 — STATE 미발행"
+    final = states[-1]
+    assert isinstance(final, TaskState)
+    assert final.robot_id == _BOT  # robot_ids 없음 → TASK_ROBOTS fallback
+    assert final.status == TaskStatus.IDLE
+    assert final.breakpoints == ["descend"]
 
 
 def test_task_robots_constant_matches_scenario_binding():

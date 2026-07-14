@@ -20,10 +20,61 @@
 > [backend.md](backend.md) (framework §1–§14 + Module catalog §16 + Task-first §17).
 > 본 문서 = "지금 어디까지 됐고 다음 뭐 할지" 만 — 설계 결정은 여기 안 둠.
 
-## 현재 상태 (2026-07-13)
+## 현재 상태 (2026-07-14)
 
 **framework + 전 Module 가동 + Task 아키텍처 전면 개정 완료 (@step + runner
-wire 절단 + 의식 전폐).**
+wire 절단 + 의식 전폐 + 정적 프리뷰 + runner 데코레이터 DX).**
+
+### 2026-07-14 — 정적 프리뷰(#1) 확정·구현 + TaskRunner 데코레이터 DX 통일(B안)
+
+**① 미리보기(#1) 설계 확정 + 구현 — "실행 시뮬레이션"이 아니라 "코드 구조 인덱싱".**
+어제 다섯 번 갈아엎은 지점의 틀 전환 (사용자 설계 수렴): 트리를 얻으려고 본문을
+돌릴 이유가 없다 — "이 step 이 저 step 을 부른다"는 호출 관계는 **소스에 이미
+적혀 있다.** 실행 경로 보장을 요구에서 제외(분기 선택/loop 횟수는 실행 전 미지 —
+받아들임)하는 순간 정적 읽기의 약점이 결함이 아니게 됨. dry-run/가짜응답/ctx
+게이팅 계열은 전부 "개발자 추가 규약 0" 전제 위반이라 기각 확정.
+
+- **@step 에 정적 표식** (`step.py` — `__is_step__`/`__step_name__`/`__step_title__`
+  + `is_step`/`step_meta`): 런타임 게이트/trace 경로 무변경, functools.wraps 의
+  `__wrapped__` 로 원본 소스 접근.
+- **`tasks/core/preview.py` `build_preview(fn)`**: 소스 AST 에서 호출 지점 수집 →
+  이름 해석(**inspect.getattr_static — 프리뷰 중 property/descriptor 실행 금지**,
+  실행 0 보장) → resolve 된 대상의 @step 표식으로 판정 (await/호출 문법 무관 —
+  개발자가 step 을 지정하지 문법을 강제 안 함). if/match/loop 는 **풀지 않고
+  conditional/repeated 표시만**. 못 푼 호출(지역 변수/getattr/첨자)= `<동적>` 노드
+  (title 에 호출식 — 구멍이 침묵으로 안 사라짐), 지역 객체 메서드(ctx.call 류)/
+  builtin 은 무시(노이즈 차단), 재귀 = recursive 표시 후 절단, 소스 없음 =
+  unavailable. wire = **TraceEntry 동형 preorder flat + depth** (`PreviewEntry`,
+  트리 표현은 UI 몫 — 프리뷰↔trace 가 같은 렌더 공유).
+- **계약**: core `PreviewEntry/PreviewRequest/PreviewResponse`(공용 조작판 모양) +
+  pick_and_place `Service.PREVIEW` + FRONTEND_EXPOSED (services 47→48, regen 완료).
+- **프론트 TaskProgressPanel**: trace 비면 프리뷰가 그 자리 (breakpoint 미리 박기
+  dot + 조건부/반복/재귀/소스없음 배지 + `<동적>` 자리 표식 + 실패 사유·재시도).
+  실행 시작 = trace 가 실제 진입으로 자연 치환.
+- **run 밖 breakpoint 토글도 STATE 발행** (runner idle 스냅샷 + 모듈 TASK_ROBOTS
+  fallback) — 프리뷰에서 미리 박은 bp 가 침묵하지 않게.
+- 한계 (전부 표시하고 넘어감 — preview.py docstring): 콜백/자료구조로 넘긴 step,
+  중첩 def/lambda 내부, step 아닌 일반 헬퍼 뒤에 숨은 step (계층 규약상 비정상).
+
+**② TaskRunner 콜백 → 데코레이터 DX 통일 (B안 — 선행 확인 통과).** 선행 확인
+결과: framework 는 @service/@subscriber(함수 attr 태깅 + dir 스캔) 와 **Mirror
+(descriptor + `__set_name__` + 인스턴스 `__dict__` lazy state + on_change 이름
+지연 bind)** 두 결을 이미 씀 — B안(descriptor 분리)이 Mirror 와 정확히 같은 결이라
+채택. runner 혼자 새 패턴을 들고 오는 게 아님.
+
+- **TaskRunner = 선언부 descriptor** (`task = TaskRunner()` 클래스 변수 +
+  `@task.on_state`/`@task.on_trace` — 이름만 저장, `__get__` 이 getattr 로 bound
+  해석 → MRO 라 서브클래스 override 승리). **TaskRunnerState = 본체** (기존 엔진
+  그대로 — _run/_breakpoints/게이트 + 생성자 콜백 유지 = 단독 조립/headless 표면,
+  wire 무지 불변). 인스턴스별 `__dict__["_taskrunner_<name>"]` 격리 — 모듈 2개가
+  run/breakpoint 공유하는 사고 차단 (Mirror/MirrorState 분리와 같은 이유, 회귀
+  테스트 잠금). `_publish_markers` 는 runner 이벤트가 아니라 시나리오가 도메인
+  데이터로 직접 부르는 발행 — 훅으로 안 옮김 (runner 를 도메인에 노출하게 됨).
+
+검증: backend ruff·pyright 0 / fast pytest **362 PASS** (신규: preview 12 +
+descriptor 4 + module 2, contract_export 카운트 47→48 갱신) / mock 부팅 →
+contract.json fixture+gen:types regen (services 48) → **backend kill 확인** /
+frontend lint(기존 경고 1)·build·vitest **159 PASS** (패널 프리뷰 테스트 4 신규).
 
 ### 2026-07-13 (밤/3) — PnP 실물 개밥먹기: 구현분 + **열린 문제 4건 (다음 세션 최우선)**
 
@@ -48,6 +99,14 @@ multicast 로 실 로봇에 broadcast 될 수 있어 이 환경에선 안 돌림
 - 진단 로그: `detect` 가 후보별 `height/base_z/top/pos/prior통과` 를 찍음.
 
 **열린 문제 (오늘 제대로 못 푼 것 — 다음 세션 우선순위 순):**
+
+> **2026-07-14 갱신 — #1/#2 는 설계 방향 확정됨.** 긴 논의 끝에 detection 을 **object-centric
+> (물체 자기 점군 + 멀티뷰, floor 제거)** 로 재설계하기로 확정. 정본 = [perception.md](perception.md)
+> 최상단 "2cm 물체 범용 파지 — object-centric perception 재설계" §0–§8 (목표/floor 왜 틀렸나/
+> 물리한계→멀티뷰/antipodal/closed-loop/충돌 defer/구현 로드맵). **#1 은 이 재설계로 해소**
+> (floor 뺄셈 자체를 폐기하니 phantom·height 노이즈 클래스 소멸), **#2 는 로드맵 step 1 의 선결
+> 버그** (IK 도달성 신뢰가 자동 뷰/파지 필터의 뿌리). 구현 순서 = perception.md §6 로드맵.
+> 아래 원문은 그 논의의 출발점(실물 로그 근거)이라 보존.
 
 1. **검출 height/base_z 측정이 부정확 — 근본 원인 조사 필요 (threshold 낮추지 말 것).**
    실물 로그: 같은 "white small round cube" 를 search 자세마다 **height 0.5cm ↔ 1.5cm**
@@ -84,12 +143,10 @@ multicast 로 실 로봇에 broadcast 될 수 있어 이 환경에선 안 돌림
    IK 연속성을 고치는 게 정석.** 또 MoveL 루프 dt 6~28ms 지터(목표 20, Windows sleep) —
    EMA 제거 후에도 남는 별개 문제(중요도 낮음, 필요시 sleep 정밀도).
 
-4. **미리보기(#1) 설계 미정.** 실행 전 전체 step 목록(디버거 breakpoint/run-to 용)이
-   필요한데, imperative 시나리오라 (a) 정적 AST 분석은 if/loop/동적·변수 호출에서 깨지고
-   (b) 완전 보장은 선언형 구조(Airflow DAG/BehaviorTree/MoveIt Task Constructor 식)가
-   필요. 방향 미확정 → `contract.py`/`module.py`/TaskProgressPanel 에 TODO 주석만 남김.
-   (오늘 dry-run+가짜응답 `_preview_responders` 로 잘못 구현했다가, "개발자가 프리뷰용
-   보일러플레이트 쓰는 건 나쁜 DX" 반려로 전부 제거.)
+4. ~~**미리보기(#1) 설계 미정.**~~ → **해결 (2026-07-14 — 위 항목 참조).** "실행
+   보장" 요구를 "존재하는 구조 표시"로 완화하니 정적 소스 읽기로 충분해짐 —
+   실행/모킹 0, `tasks/core/preview.py`. (당시 dry-run+가짜응답 `_preview_responders`
+   는 "개발자가 프리뷰용 보일러플레이트 쓰는 건 나쁜 DX" 반려로 제거된 상태였음.)
 
 **이번 세션 진행 방식 회고 (assistant 가 오늘 반복한 잘못 — 다음 세션 먼저 읽고 반대로 할 것):**
 사용자가 하루 종일 "생각이란게 없어?", "정석이야?", "묻지마", "내 코드 아니라고 그러지마",

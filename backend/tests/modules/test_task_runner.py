@@ -1,11 +1,12 @@
-"""TaskRunner 테스트 — 생명주기 + 디버거 게이트 + 콜백 통지 (wire 무지 계약).
+"""TaskRunner 테스트 — 생명주기 + 디버거 게이트 + 훅 통지 (wire 무지 계약).
 
-runner 는 wire 를 모른다 — 콜백(on_state/on_trace) 캡처로 검증하고,
+runner 는 wire 를 모른다 — 훅(on_state/on_trace) 캡처로 검증하고,
 wire payload 조립(TaskState 발행 등)은 module 테스트(test_pick_and_place)가 검증.
 도메인 없는 @step 함수로 하드웨어/motion 없이. 의미 (뒤집으면 회귀): SUCCESS
 미도달 / cancel 이 in-flight await 못 끊음 / 실패가 침묵 / breakpoint 무시 /
 활성 중 이중 start 허용 / 중단·실패 시 on_abort 미호출 / 중첩 step 의 depth·
-게이트(step-into) 어긋남 / 콜백 미장착(headless) 실행 불가 / 콜백 예외가 run 을 죽임.
+게이트(step-into) 어긋남 / 훅 미장착(headless) 실행 불가 / 훅 예외가 run 을 죽임 /
+descriptor 선언(TaskRunner)이 인스턴스 간 실행 상태 공유 (Mirror 분리 이유 회귀).
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from framework.transport.protocol import RemoteError
 from modules.motion.contract import Motion, MoveLRequest, MoveLResponse, PoseTarget
 from modules.tasks.core.context import TaskContext
 from modules.tasks.core.errors import DetectionNotFound
-from modules.tasks.core.runner import RunState, TaskRunner
+from modules.tasks.core.runner import RunState, TaskRunner, TaskRunnerState
 from modules.tasks.core.step import step
 from modules.tasks.core.contract import TaskStatus, TraceEntry
 
@@ -43,7 +44,7 @@ class _WireStub:
 
 
 class _Obs:
-    """runner 콜백 캡처 — 실 모듈이 발행 메서드를 달듯 테스트는 기록 메서드를 담."""
+    """runner 훅 캡처 — 실 모듈이 발행 메서드를 달듯 테스트는 기록 메서드를 담."""
 
     def __init__(self) -> None:
         self.states: list[RunState] = []
@@ -69,10 +70,11 @@ class _SpyCtx(TaskContext):
 
 def _make(
     rt: _WireStub | None = None,
-) -> tuple[_WireStub, _Obs, TaskRunner, _SpyCtx]:
+) -> tuple[_WireStub, _Obs, TaskRunnerState, _SpyCtx]:
+    # 단독 조립 표면 (모듈 밖/headless) — 모듈은 TaskRunner 선언으로 얻는다.
     rt = rt or _WireStub()
     obs = _Obs()
-    runner = TaskRunner(on_state=obs.on_state, on_trace=obs.on_trace)
+    runner = TaskRunnerState(on_state=obs.on_state, on_trace=obs.on_trace)
     return rt, obs, runner, _SpyCtx(rt)
 
 
@@ -378,15 +380,20 @@ async def test_ctx_call_undeclared_robot_rejected():
     assert final.error is not None and "other_bot" in final.error
 
 
-async def test_toggle_breakpoint_without_run_says_next_run():
-    _, _, runner, _ = _make()
+async def test_toggle_breakpoint_without_run_says_next_run_and_notifies():
+    """run 밖 토글도 통지 — 프리뷰에서 미리 박은 breakpoint 가 UI 에 보여야
+    (침묵 금지). run 이 없으니 IDLE 스냅샷 + breakpoints 만 의미."""
+    _, obs, runner, _ = _make()
     r = runner.toggle_breakpoint("w0")
     assert r.ok and "다음 실행" in r.message
+    assert obs.states and obs.states[-1].status == TaskStatus.IDLE
+    assert obs.states[-1].breakpoints == ("w0",)
+    assert obs.states[-1].robot_ids == ()  # run 밖 — 라우팅은 모듈 몫
 
 
 async def test_headless_run_without_callbacks():
-    """콜백 미장착 = headless 감독 — 발행/통지 없이도 실행·종료 정상 (wire 무지 계약)."""
-    runner = TaskRunner()  # 콜백 없음
+    """훅 미장착 = headless 감독 — 발행/통지 없이도 실행·종료 정상 (wire 무지 계약)."""
+    runner = TaskRunnerState()  # 훅 없음
     ctx = _SpyCtx(_WireStub())
     assert runner.start(_noop3, ctx=ctx, robot_ids=[_BOT]).accepted
     assert runner._run is not None and runner._run.handle is not None
@@ -489,14 +496,105 @@ async def test_parallel_branches_cancel_propagates():
 
 
 async def test_callback_failure_does_not_kill_run():
-    """관측이 실행을 죽이면 안 됨 — 콜백 예외는 삼키고 run 은 SUCCESS."""
+    """관측이 실행을 죽이면 안 됨 — 훅 예외는 삼키고 run 은 SUCCESS."""
 
     def boom(*a: Any) -> None:
-        raise RuntimeError("콜백 죽음")
+        raise RuntimeError("훅 죽음")
 
-    runner = TaskRunner(on_state=boom, on_trace=boom)
+    runner = TaskRunnerState(on_state=boom, on_trace=boom)
     ctx = _SpyCtx(_WireStub())
     assert runner.start(_noop3, ctx=ctx, robot_ids=[_BOT]).accepted
     assert runner._run is not None and runner._run.handle is not None
     await runner._run.handle
     assert runner.status == TaskStatus.SUCCESS
+
+
+# ─── TaskRunner descriptor (클래스 바디 선언 — 데코레이터 DX) ─────────
+
+
+class _Mod:
+    """모듈 등가 — @task.on_state/@task.on_trace 선언 표면 (Mirror 리듬)."""
+
+    task = TaskRunner()
+
+    def __init__(self) -> None:
+        self.states: list[RunState] = []
+        self.traces: list[list[TraceEntry]] = []
+
+    @task.on_state
+    def _capture_state(self, s: RunState) -> None:
+        self.states.append(s)
+
+    @task.on_trace
+    def _capture_trace(self, s: RunState, entries: list[TraceEntry]) -> None:
+        self.traces.append(list(entries))
+
+
+async def test_descriptor_hooks_bind_to_instance():
+    """클래스 바디 데코레이터로 잡은 훅(이름 지연 bind)이 인스턴스 bound method
+    로 해석돼 통지를 받는다 — 생성자 콜백 조립 없이."""
+    mod = _Mod()
+    assert mod.task.start(_noop3, ctx=_SpyCtx(_WireStub()), robot_ids=[_BOT]).accepted
+    assert mod.task._run is not None and mod.task._run.handle is not None
+    await mod.task._run.handle
+    assert mod.states[-1].status == TaskStatus.SUCCESS
+    assert [e.name for e in mod.traces[-1]] == ["w0", "w1", "w2"]
+
+
+async def test_descriptor_instances_do_not_share_state():
+    """클래스 변수 = 선언만 공유 — 실행 상태(_run/_breakpoints)는 인스턴스별
+    (공유되면 이중 start 오거부/breakpoint 오염 — Mirror/MirrorState 분리 이유)."""
+    a, b = _Mod(), _Mod()
+    assert a.task is a.task  # 같은 인스턴스 = 같은 상태 (lazy 1회 생성)
+    assert a.task is not b.task  # 인스턴스 간 미공유
+
+    release = asyncio.Event()
+
+    async def blocked(c: TaskContext) -> None:
+        await w0()
+        await release.wait()
+
+    assert a.task.start(blocked, ctx=_SpyCtx(_WireStub()), robot_ids=[_BOT]).accepted
+    # a 실행 중에도 b 는 시작 가능 — 공유였다면 "이미 실행 중" 오거부
+    assert b.task.start(_noop3, ctx=_SpyCtx(_WireStub()), robot_ids=[_BOT]).accepted
+    a.task.toggle_breakpoint("w1")
+    assert "w1" not in b.task._breakpoints  # breakpoint 도 격리
+
+    release.set()
+    for state in (a.task, b.task):
+        assert state._run is not None and state._run.handle is not None
+        await state._run.handle
+    assert a.states[-1].status == TaskStatus.SUCCESS
+    assert b.states[-1].status == TaskStatus.SUCCESS
+
+
+async def test_descriptor_subclass_override_wins():
+    """훅 해석 = getattr (MRO) — 서브클래스가 훅 메서드를 재정의하면 파생이 이긴다."""
+
+    class _Sub(_Mod):
+        def __init__(self) -> None:
+            super().__init__()
+            self.sub_states: list[RunState] = []
+
+        def _capture_state(self, s: RunState) -> None:
+            self.sub_states.append(s)
+
+    sub = _Sub()
+    assert sub.task.start(_noop3, ctx=_SpyCtx(_WireStub()), robot_ids=[_BOT]).accepted
+    assert sub.task._run is not None and sub.task._run.handle is not None
+    await sub.task._run.handle
+    assert sub.sub_states and sub.sub_states[-1].status == TaskStatus.SUCCESS
+    assert not sub.states  # 부모 훅으로는 안 감
+
+
+async def test_descriptor_headless_without_hook_decorators():
+    """훅 미선언 클래스 — headless 로 정상 실행 (전부 선택 계약 유지)."""
+
+    class _Bare:
+        task = TaskRunner()
+
+    bare = _Bare()
+    assert bare.task.start(_noop3, ctx=_SpyCtx(_WireStub()), robot_ids=[_BOT]).accepted
+    assert bare.task._run is not None and bare.task._run.handle is not None
+    await bare.task._run.handle
+    assert bare.task.status == TaskStatus.SUCCESS

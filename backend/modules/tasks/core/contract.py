@@ -107,3 +107,38 @@ class RunToRequest(StrictModel):
 
 class ToggleBreakpointRequest(StrictModel):
     name: str  # breakpoint 대상 step name
+
+
+# ─── 실행 전 정적 프리뷰 (preview.py 가 조립 — 실행/모킹 0) ──────────
+
+
+class PreviewEntry(BaseModel):
+    """정적 프리뷰 노드 1개 — 소스에서 읽은 step 호출 구조 (실행 기록 아님).
+
+    wire 는 TraceEntry 와 같은 **preorder flat 리스트 + depth** (트리 표현은 UI
+    들여쓰기 몫) — 프리뷰와 실행 trace 가 같은 렌더링을 공유한다. 실행 관측
+    필드(status/detail/시각)는 없다: 이건 "존재하는 구조"지 실행 보장이 아니다.
+
+    conditional = if/match 분기 안 (탈지 실행 전 미확정 — 해석 않고 표시만) /
+    repeated = loop 안 (횟수 미확정) / dynamic = 정적으로 대상을 못 푼 호출
+    자리 (name "<동적>", title 에 호출식 — 구멍이 조용히 사라지지 않게) /
+    recursive = 호출 경로에 이미 있는 step (순환 — 자식 생략) /
+    unavailable = 소스 획득 불가 (자식 미상).
+    """
+
+    name: str
+    title: str = ""  # 표시 이름 — TraceEntry.title 과 동일 규약
+    depth: int = 0
+    conditional: bool = False
+    repeated: bool = False
+    dynamic: bool = False
+    recursive: bool = False
+    unavailable: bool = False
+
+
+class PreviewRequest(StrictModel):
+    """preview 공용 — task 당 시나리오 1개라 필드 없음."""
+
+
+class PreviewResponse(StrictModel):
+    entries: list[PreviewEntry] = []

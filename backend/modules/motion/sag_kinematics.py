@@ -97,3 +97,18 @@ class SagCorrectedKinematics:
 
     def self_collision(self, joint_angles: Sequence[float]) -> bool:
         return self._inner.self_collision(self._to_actual(joint_angles))
+
+    def floor_collision(self, joint_angles: Sequence[float], floor_z: float) -> bool:
+        return self._inner.floor_collision(self._to_actual(joint_angles), floor_z)
+
+    def set_obstacle_points(
+        self, points: Sequence[tuple[float, float, float]] | None
+    ) -> None:
+        self._inner.set_obstacle_points(points)
+
+    def obstacle_collision(
+        self, joint_angles: Sequence[float], *, gripper_open: bool = False
+    ) -> bool:
+        return self._inner.obstacle_collision(
+            self._to_actual(joint_angles), gripper_open=gripper_open
+        )

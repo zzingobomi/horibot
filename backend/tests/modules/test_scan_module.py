@@ -80,6 +80,15 @@ class _FakeKinematics:
     def self_collision(self, joint_angles) -> bool:  # noqa: ANN001
         return False
 
+    def floor_collision(self, joint_angles, floor_z) -> bool:  # noqa: ANN001
+        return False
+
+    def set_obstacle_points(self, points) -> None:  # noqa: ANN001
+        ...
+
+    def obstacle_collision(self, joint_angles, *, gripper_open=False) -> bool:  # noqa: ANN001
+        return False
+
 
 def _snap(fx: float) -> SnapshotResponse:
     return SnapshotResponse(
@@ -258,6 +267,15 @@ class _RecordingKin:
         return []
 
     def self_collision(self, joint_angles) -> bool:  # noqa: ANN001
+        return False
+
+    def floor_collision(self, joint_angles, floor_z) -> bool:  # noqa: ANN001
+        return False
+
+    def set_obstacle_points(self, points) -> None:  # noqa: ANN001
+        ...
+
+    def obstacle_collision(self, joint_angles, *, gripper_open=False) -> bool:  # noqa: ANN001
         return False
 
 

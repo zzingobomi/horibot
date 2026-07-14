@@ -174,22 +174,28 @@ class PickAndPlaceModule:
         so101 = self.TASK_ROBOTS[0]
         markers: list[TaskMarker] = []
 
-        # 1) 계획 — 집기·놓기 도달성을 모두 먼저 검증 (모션 0). 놓을 곳이 도달
-        # 불가면 아무것도 집기 전에 실패한다 (물체 쥔 채 멈추는 corrupt 방지).
-        held, grasp = await steps.plan_pick(ctx, so101, pick_object)
+        # 0) home 경유 자세 — 없으면 모션 0 시점에 명시적 실패 (티칭 안내).
+        home = await steps.home_waypoint(ctx, so101)
+
+        # 1) 계획 — 집기·놓기 도달성을 모두 먼저 검증 (물리 파지 0). 놓을 곳이
+        # 도달 불가면 아무것도 집기 전에 실패한다 (물체 쥔 채 멈추는 corrupt 방지).
+        held, grasp, grasp_pre = await steps.plan_pick(
+            ctx, so101, pick_object, home
+        )
         markers.append(TaskMarker(label="grasp", position=grasp.grasp))
 
-        drop = None
+        drop, drop_pre = None, None
         if place_object:
-            drop = await steps.plan_place(
-                ctx, so101, place_object, held=held, grasp=grasp
+            drop, drop_pre = await steps.plan_place(
+                ctx, so101, place_object, held=held, grasp=grasp, home=home
             )
             markers.append(TaskMarker(label="place", position=drop.place))
 
         # 계획 확정 시점에 마커 표시 (파지·적치 지점을 실행 전 미리 보여줌).
         self._publish_markers(so101, markers)
 
-        # 2) 실행 — 계획이 모두 도달 가능일 때만 물리 동작.
-        await steps.execute_pick(ctx, so101, grasp)
-        if drop is not None:
-            await steps.execute_place(ctx, so101, drop)
+        # 2) 실행 — 계획이 모두 도달 가능일 때만 물리 동작. 긴 이동은 home 경유
+        # (grasp_redesign_journey.md §5.4 — pick↔place 도달성 분리).
+        await steps.execute_pick(ctx, so101, grasp, grasp_pre, home)
+        if drop is not None and drop_pre is not None:
+            await steps.execute_place(ctx, so101, drop, drop_pre, home)

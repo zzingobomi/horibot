@@ -23,9 +23,134 @@
 ## 현재 상태 (2026-07-14)
 
 **framework + 전 Module 가동 + Task 아키텍처 전면 개정 완료 (@step + runner
-wire 절단 + 의식 전폐 + 정적 프리뷰 + runner 데코레이터 DX).**
+wire 절단 + 의식 전폐 + 정적 프리뷰 + runner 데코레이터 DX) + object-centric
+파지 §10 확정 설계(일반 형상 + 멀티뷰 antipodal) 구현 완료 (실물 검증 대기 — 집).**
 
-### 2026-07-14 — 정적 프리뷰(#1) 확정·구현 + TaskRunner 데코레이터 DX 통일(B안)
+### 2026-07-14 (3) — §10 대전환 구현: 일반 형상 + adaptive 멀티뷰 + 표면 antipodal
+
+설계 SSOT = [grasp_redesign_journey.md](grasp_redesign_journey.md) **§10** (§10.5
+keep/replace/add 그대로 구현). 아래 (2) 부의 "단일 사선 뷰 / 고정 궤도 / footprint
+파지 / height 게이트" 서술은 이 부로 **대체**됨 — (2) 의 Phase 1 게이트 골격과
+object-centric detect 는 유지.
+
+**REPLACE 구현:**
+- detector `object_metrics_from_points`: 2-percentile bottom → **z-gap 군집**
+  (`_body_bottom_z` — top 에서 5mm 빈 틈 전까지가 몸통, §10.3-F). 실물 #1
+  phantom(base_z −0.23m) 클래스의 근본 수정 — 아래-outlier 5% 회귀 테스트 잠금.
+- task `plan_grasp`: footprint(prismatic 추측) 파지 → **관측 표면 antipodal**
+  (`tasks/pick_and_place/antipodal.py` — open3d 법선, 조 축 수평 필터, 중심
+  파지 선호 정렬 + dedupe + 상한 12쌍) × tilt 0~±90 × 조 축 flip. **폭 하한
+  8mm** — 프로토타입 4mm 는 노이즈 σ1mm 의 4σ 라 단일 뷰 edge 가짜 쌍이 생김
+  (프로덕션 파이프라인 재검증에서 발견, 스코프 물체 ~2cm 라 8mm 안전).
+- `target_view_poses` 고정 궤도 6점 → **adaptive 뷰 탐색축** (`view_directions`
+  반경 0.16/0.13 × 고도 55/40/70 × 방위 spread-first 12방향 + `view_pose_groups`
+  roll 6변형 — resolve 그룹으로 묶어 첫 가용 roll 채택).
+- `observe_target` 궤도 순회 + `require_plausible_height` **폐기** →
+  **`observe_and_plan_grasp` adaptive 루프**: 검색 스윕 관측 = 공짜 멀티뷰 시드
+  → 융합 → antipodal → resolve, **서면 멈춤** (§10.3-G — sim 에서 대부분 2뷰).
+  안 서면 다음 뷰 (도달 상한 6), 끝까지 안 서면 **"안전 파지 불가" 명시 실패**
+  (NoReachableGrasp — 맹목 파지 금지, §10.4-3).
+
+**ADD 구현 (motion 게이트 확장 — RESOLVE_REACHABLE, frontend 미노출):**
+- `Kinematics.set_obstacle_points`/`obstacle_collision` (pybullet: 6mm voxel →
+  3mm 구 + 침투 2mm 임계, gripper_open=URDF 상한 벌림 후 원위치 복원 — sag
+  wrapper forward 포함).
+- 게이트 ③b **장애물 점군 충돌** (`obstacle_points`+`gripper_open` — 그리퍼가
+  물체/이웃 점군 침투 시 기각) / ④ **관절 보간 경로** (`path_from` — home→첫
+  해 경로의 self/floor/obstacle, §10.4-4 naive MoveJ 금지의 계획 시점 강제.
+  실행부는 실제로 home 경유 MoveJ) / ⑤ 기존 linear. 전멸 message 에 게이트별
+  기각 수. 장애물 lifecycle = 판정 동안만 (잔존 오염 회귀 테스트).
+- task: 뷰 이동/파지/적치 resolve 전부 `path_from=home` + 파지는
+  `obstacle_points=융합 점군+이웃(0.15m 내 다른 군집)` + `gripper_open=True`.
+  이웃 = 같은 prompt 의 다른 검출 군집만 (미관측 장애물은 실물 몫 — §10.6).
+
+**검증:** ruff/pyright 0 · fast pytest 381 PASS (신규: antipodal/뷰수식 12 ·
+z-gap 회귀 · resolve 장애물/경로 게이트 sim 2 · adaptive 관측 시나리오 6) ·
+**프로덕션 파이프라인 sim end-to-end**
+([scripts/grasp_verify/verify_production_pipeline.py](../backend/scripts/grasp_verify/verify_production_pipeline.py)
+— 실 캘 kinematics + 물리 렌더 부분 점군으로 **실제 모듈 코드** 실행):
+3위치 × 4형상(box/눕힌원기둥/구/L자) × 클린/노이즈(σ1mm+outlier3%) = **24/24
+파지 성립, 대부분 2뷰 정지**, z-gap bottom 오차 ≤10mm (구는 바닥 미관측 정직 오차).
+
+**다음 세션 (집, 실물):** ① `home` waypoint 티칭 (필수) ② 실패 위치(0.275,0.208)
+재시도 — adaptive 관측 + antipodal 채택 확인 ③ D405 근접(0.13~0.16m) depth 품질
+/ 뷰 도달 수 / 융합 점군 밀도 ④ §10.6 실물-only (파지 물리 안정성 / 재질 dropout
+/ 실 마스크 품질) ⑤ 로드맵 3 (공중 파지). 실물에서 과민하면 조정할 임계:
+antipodal 폭 하한 8mm / obstacle 침투 2mm / MoveL jump 0.35rad.
+
+### 2026-07-14 (2) — object-centric 파지 재설계 Phase 1·2 구현 (grasp_redesign_journey.md 로드맵)
+
+> ⚠️ **부분 대체 (위 (3) 부):** 이 부의 "자동 뷰 6개 궤도 / observe_target /
+> require_plausible_height / height prior" 서술은 §10 대전환으로 교체됐다.
+> Phase 1 (reachable-orientation + resolve 게이트 골격 + grasp-frame 동작) 과
+> object-centric detect (floor ring 폐기 / FUSE_ORIENTED) 는 유효.
+
+설계 SSOT = [grasp_redesign_journey.md](grasp_redesign_journey.md). 구현 규율대로
+**§7 미검증 항목을 시뮬로 먼저 짚고** (캘 적용 kinematics 재현 — FK 시연관절
+sub-mm 일치 anchor 재확인) 로드맵 1·2 를 구현. 전부 시뮬/유닛 검증 완료, **실물
+검증은 집 (아래 체크리스트)**.
+
+**§7 시뮬 선검증 결과 (구현 전):**
+- 실물 실패 케이스(큐브 0.275,0.208) 재현 — 현 top-down 가족 실질 전멸 확인.
+- 확장 가족(tilt 0~±90 + 접근축 pre)에서 **tilt 30~60 base쪽 후보가 pre+grasp
+  끝점 + pre→grasp 직선 전 구간 IK 통과**, 인접 샘플 joint jump ≤5°/cm (플립
+  없음 → jump 게이트 임계 20°/샘플 근거).
+- motors.yaml home(2048)은 joint3 URDF limit 밖 — **home 경유는 티칭 waypoint
+  `home`** 으로 확정 (motors.yaml home 재사용 금지).
+- pybullet 바닥 평면 침투 검사 의미론 확인 (base 링크 상시접촉 없음, 재호출/
+  self_collision 오염 없음).
+
+**Phase 1 — reachable-orientation 파지 + resolve 게이트 파이프라인:**
+- `tasks/pick_and_place/geometry.py`: top-down 강제 폐기 — tilt 0~±90 전체
+  probe (조 축 수평 유지 불변), **pre = grasp 의 접근축(툴 x) 후방** (월드 +z
+  폐기, plan_place 동일). 후보 13tilt×2yaw×2flip=52.
+- `motion` RESOLVE_REACHABLE 재설계 (frontend 미노출이라 wire 자유):
+  cheap→expensive 게이트 ①position-only 스크린(예산5) → ②자세 IK deepening
+  (10/40/full — 2026-07-09 벤치 계승) → ③`floor_z` 바닥 평면 충돌 (신규
+  `Kinematics.floor_collision`, base쪽 고정링크 제외) → ④`linear` 직선 경로
+  샘플 IK + jump. **응답에 `solutions`(관절 해) 동봉 — 실행부 IK 재계산 제거.**
+  전멸 message 에 게이트별 기각 수 (사유 침묵 금지).
+- MoveL 사전검증을 `_linear_path_blocker` 로 공용화 + **jump_threshold 등가
+  게이트 추가** (§8 "거의 필수급") + to_thread 화.
+- steps/시나리오: `home_waypoint`(없으면 모션 0 실패+티칭 안내) → plan →
+  execute_pick = home→pre(관절해)→open→**진입(MoveL 접근축)**→close→**후퇴(역방향)**
+  →home, execute_place = pre→삽입→release→후퇴→home. step 이름 descend/lift →
+  advance/withdraw/insert (breakpoint 이름도 변경 주의).
+- **Phase 1 시뮬 종합**: 실패 케이스가 tilt+45 후보로 0.24s 에 풀림 (pre 해 FK
+  오차 1.45mm), workspace 밖은 0.13s 사유 있는 전멸, 바닥 게이트 동작.
+
+**Phase 2 — object-centric detect + 자동 멀티뷰 융합:**
+- detector: **floor ring 추정 폐기** (`projection.floor_z_and_height` /
+  `object_top_center_base` / `z_cam_from_depth_bbox` 삭제) — position/base_z/
+  height 전부 물체 자기 점군(`base_points_from_mask`)에서
+  (`geometry.object_metrics_from_points`, z 2/98 percentile). **base_z 의미
+  변경: 주변 바닥 → 물체 아랫면.** 단일 뷰 height 는 구조적 과소 (정직) —
+  판정은 융합 후.
+- `OrientedDetection.points` (voxel 3mm 다운샘플 물체 점군, 상한 2048) — 서비스
+  응답 전용, DETECTIONS_ORIENTED 스트림에선 strip (mask bitmap 결정과 같은 근거).
+  contract regen 완료 (fixture+contract.ts, diff = points 한 필드).
+- 신규 `DETECTOR.FUSE_ORIENTED` (robot-agnostic 순수 계산): XY 군집
+  (`cluster_indices_by_xy`) → 점군 vstack → 기하 재계산. 합성 큐브 테스트로
+  "단일뷰 height≈0 → 융합 후 2.3cm 실측 복원" 잠금.
+- task: `plan_pick` = detect 스윕 → `select_target_by_score`(**height prior
+  폐기** — 스윕 단계 판정 무의미) → **`observe_target`** (hand_eye 로 타깃 중심
+  자동 뷰 6개 계산 `target_view_poses` — 반경 0.16m/고도 55·35°/base쪽 방위±40°,
+  MoveJ 거부 뷰는 스킵·비 IK 원격실패는 전파, 도달 상한 3) → **`fuse_target`**
+  (FUSE 호출 + `require_plausible_height` — height 판정은 여기서만, 사유에 관측
+  수 포함). place 는 멀티뷰 불요 (place_z 는 spot 윗면 + held.height).
+- floor 는 planner 충돌 평면으로만 강등: `floor_z = base_z − 5mm 버퍼`.
+
+**검증**: backend ruff/pyright 0 · full pytest **374 PASS** (신규: resolve 게이트
+sim 2 / geometry 접근축·뷰수식 / observe·fuse 단위 5 / FUSE 융합 2 / object-centric
+합성 점군 4) · mock 부팅→contract regen→**kill 확인** · frontend vitest 159 ·
+lint(기존 경고 1)·build green.
+
+**다음 세션 (집, 실물):** ① `home` waypoint 티칭 (필수 — 없으면 task 가 안내
+메시지로 실패) ② 큐브 실패 위치(0.275,0.208) 재시도 — tilt 후보 채택 + 진입/후퇴
+동작 확인 ③ 멀티뷰: 자동 뷰 도달 수 / D405 근접(0.16m) depth 품질 / 융합 height
+안정성 ④ grasp_redesign_journey.md §7 "실물-only" 목록 (antipodal 부분 점군 내성,
+실제 파지 성공) ⑤ 로드맵 3 (손에 들고 공중 검증). MoveL jump 게이트가 실물에서
+과민하면 임계(0.35rad/cm)를 실측으로 조정.
 
 **① 미리보기(#1) 설계 확정 + 구현 — "실행 시뮬레이션"이 아니라 "코드 구조 인덱싱".**
 어제 다섯 번 갈아엎은 지점의 틀 전환 (사용자 설계 수렴): 트리를 얻으려고 본문을
@@ -100,12 +225,15 @@ multicast 로 실 로봇에 broadcast 될 수 있어 이 환경에선 안 돌림
 
 **열린 문제 (오늘 제대로 못 푼 것 — 다음 세션 우선순위 순):**
 
-> **2026-07-14 갱신 — #1/#2 는 설계 방향 확정됨.** 긴 논의 끝에 detection 을 **object-centric
-> (물체 자기 점군 + 멀티뷰, floor 제거)** 로 재설계하기로 확정. 정본 = [perception.md](perception.md)
-> 최상단 "2cm 물체 범용 파지 — object-centric perception 재설계" §0–§8 (목표/floor 왜 틀렸나/
-> 물리한계→멀티뷰/antipodal/closed-loop/충돌 defer/구현 로드맵). **#1 은 이 재설계로 해소**
-> (floor 뺄셈 자체를 폐기하니 phantom·height 노이즈 클래스 소멸), **#2 는 로드맵 step 1 의 선결
-> 버그** (IK 도달성 신뢰가 자동 뷰/파지 필터의 뿌리). 구현 순서 = perception.md §6 로드맵.
+> **2026-07-14 갱신 — #1/#2 설계 확정 + 시뮬 재현으로 원인 규명.** detection/grasp 을
+> **object-centric(물체 점군 + 멀티뷰, floor 제거) + reachable-orientation 파지**로 재설계 확정.
+> **완결 구현 핸드오프 SSOT = [grasp_redesign_journey.md](grasp_redesign_journey.md)** (배경/문제/
+> 리서치/계획/로드맵/검증상태 + 사고 흐름 — 다른 세션에 이 문서 하나 주면 구현 가능). perception.md
+> 는 요약 포인터.
+> - **#1** = floor 뺄셈 폐기로 해소 (phantom·height 노이즈 클래스 소멸).
+> - **#2 정정**: "IK 오판" 아님 — **시뮬 캘 적용 재현(FK sub-mm 일치)으로 IK/솔버 정상 확인**,
+>   `plan_grasp` 의 **top-down 강제**가 범인 (그 리치에서 top-down 자세 자체가 도달 불가, 비스듬한
+>   접근은 됨). 로드맵 step 1 = grasp 자세를 reachable-orientation 으로 (IK 솔버는 안 건드림).
 > 아래 원문은 그 논의의 출발점(실물 로그 근거)이라 보존.
 
 1. **검출 height/base_z 측정이 부정확 — 근본 원인 조사 필요 (threshold 낮추지 말 것).**

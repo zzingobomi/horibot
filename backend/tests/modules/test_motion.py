@@ -490,6 +490,17 @@ async def test_resolve_reachable_orders_and_rejects(stack):
     )
     # group0: far 불가 / group1: far 불가 (그룹 내 전 pose 필요) / group2: 첫 가용
     assert res.index == 2, res
+    # 채택 그룹의 IK 해 반환 — 실행부 재계산 제거 계약 (grasp_redesign §5.5).
+    # 해의 FK 가 요청 pose 위치로 돌아와야 진짜 해다.
+    assert len(res.solutions) == 2
+    motion_mod = next(
+        m for m in runtime._modules if type(m).__name__ == "MotionModule"
+    )
+    import numpy as np
+
+    for sol in res.solutions:
+        pos, _ = motion_mod._kin.fk(sol)
+        assert np.linalg.norm(np.array(pos) - np.array(snap.position)) < 0.02
     res_none = await runtime.module_runtime.call(
         Motion.Service.RESOLVE_REACHABLE,
         ResolveReachableRequest(groups=[[far], [far]]),
@@ -498,6 +509,219 @@ async def test_resolve_reachable_orders_and_rejects(stack):
         timeout=60.0,
     )
     assert res_none.index == -1
+    assert res_none.solutions == []
+    assert res_none.message  # 사유 침묵 금지 (UI 표시)
+
+
+async def test_resolve_reachable_floor_and_linear_gates(stack):
+    """게이트 계약 — (a) 바닥 평면이 해 자세 링크를 침투하면 기각 (+사유 표기),
+    (b) linear=True 는 연속 pose 직선 경로까지 검증 (여기선 제자리 = 통과),
+    (c) floor 가 로봇 아래 멀리면 통과 (게이트가 정상 후보를 안 죽임)."""
+    runtime, _driver, _robot = stack
+    snap = None
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        snap = await _try_snapshot(runtime)
+        if snap is not None:
+            break
+    assert snap is not None
+    here = TcpPose(position=snap.position)
+
+    # (c) 바닥이 한참 아래 + linear — 정상 후보 통과
+    ok = await runtime.module_runtime.call(
+        Motion.Service.RESOLVE_REACHABLE,
+        ResolveReachableRequest(
+            groups=[[here, here]], floor_z=snap.position[2] - 0.5, linear=True
+        ),
+        ResolveReachableResponse,
+        robot_id=_SO101,
+        timeout=60.0,
+    )
+    assert ok.index == 0 and len(ok.solutions) == 2
+
+    # (a) 바닥 평면을 로봇 전체 위(z+1m)로 — 모든 해가 침투 → 전멸 + 사유
+    blocked = await runtime.module_runtime.call(
+        Motion.Service.RESOLVE_REACHABLE,
+        ResolveReachableRequest(groups=[[here]], floor_z=snap.position[2] + 1.0),
+        ResolveReachableResponse,
+        robot_id=_SO101,
+        timeout=60.0,
+    )
+    assert blocked.index == -1
+    assert "바닥" in blocked.message
+
+
+async def test_resolve_reachable_obstacle_and_path_gates(stack):
+    """③b/④ 게이트 계약 (grasp_redesign §10.4-3/4) — (a) 장애물 점군이 해 자세의
+    로봇을 감싸면 전멸 + 사유 표기, (b) 먼 장애물 + path_from(현재 관절 ≈ 해)은
+    통과 (게이트가 정상 후보를 안 죽임), (c) path_from dof 불일치 = 기술적 실패
+    (데이터 -1 이 아니라 raise — 잘못된 요청의 침묵 전멸 금지)."""
+    runtime, _driver, _robot = stack
+    snap = None
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        snap = await _try_snapshot(runtime)
+        if snap is not None:
+            break
+    assert snap is not None
+    here = TcpPose(position=snap.position)
+
+    # (a) 현재 TCP 를 감싸는 점군 뭉치 — 해 자세에서 침투 확실 → 전멸 + 사유
+    import numpy as np
+
+    grid = np.linspace(-0.02, 0.02, 6)
+    ball = [
+        (snap.position[0] + a, snap.position[1] + b, snap.position[2] + c)
+        for a in grid for b in grid for c in grid
+    ]
+    blocked = await runtime.module_runtime.call(
+        Motion.Service.RESOLVE_REACHABLE,
+        ResolveReachableRequest(groups=[[here]], obstacle_points=ball),
+        ResolveReachableResponse,
+        robot_id=_SO101,
+        timeout=60.0,
+    )
+    assert blocked.index == -1
+    assert "장애물" in blocked.message
+
+    # (b) 먼 장애물 + path_from=현재 관절 (경로 ≈ 제자리) → 통과 + 잔존 장애물
+    # 없음 (lifecycle — 앞 판정의 점군이 남아 이 판정을 오염하면 여기서 걸림)
+    ok = await runtime.module_runtime.call(
+        Motion.Service.RESOLVE_REACHABLE,
+        ResolveReachableRequest(
+            groups=[[here]],
+            obstacle_points=[(0.5, 0.5, 0.5)],
+            path_from=list(snap.joints),
+            gripper_open=True,
+        ),
+        ResolveReachableResponse,
+        robot_id=_SO101,
+        timeout=60.0,
+    )
+    assert ok.index == 0 and len(ok.solutions) == 1
+
+    # (c) path_from dof 불일치 → MotionRejected (RemoteError 로 전파)
+    with pytest.raises(RemoteError, match="dof"):
+        await runtime.module_runtime.call(
+            Motion.Service.RESOLVE_REACHABLE,
+            ResolveReachableRequest(groups=[[here]], path_from=[0.0]),
+            ResolveReachableResponse,
+            robot_id=_SO101,
+            timeout=60.0,
+        )
+
+
+async def test_obstacle_points_kinematics_gate(stack):
+    """Kinematics obstacle scene 계약 — 점군을 감싼 자세는 침투 판정(그리퍼 벌림
+    포함), 먼 점군/해제 후엔 False, gripper_open 검사가 이후 질의 상태를 오염하지
+    않는다 (그리퍼 원위치 복원)."""
+    runtime, _driver, _robot = stack
+    assert await _wait_motion_ready(runtime)
+    motion_mod = next(
+        m for m in runtime._modules if type(m).__name__ == "MotionModule"
+    )
+    kin = motion_mod._kin
+    assert kin is not None
+
+    joints = [0.1, 0.3, -0.4, 0.1, 0.2, 0.0]
+    pos, _ = kin.fk(joints)
+    import numpy as np
+
+    grid = np.linspace(-0.02, 0.02, 6)
+    ball = [
+        (pos[0] + a, pos[1] + b, pos[2] + c)
+        for a in grid for b in grid for c in grid
+    ]
+    kin.set_obstacle_points(ball)
+    assert kin.obstacle_collision(joints) is True
+    assert kin.obstacle_collision(joints, gripper_open=True) is True
+    before = kin.self_collision(joints)
+    # gripper_open 검사 후에도 self_collision 판정 재현 (그리퍼 복원 확인)
+    assert kin.self_collision(joints) == before
+
+    kin.set_obstacle_points([(0.6, 0.6, 0.6)])  # 먼 점군 — 통과
+    assert kin.obstacle_collision(joints) is False
+    kin.set_obstacle_points(None)  # 해제 — 점군 없음 = False
+    assert kin.obstacle_collision(joints) is False
+
+
+async def test_resolve_reachable_real_grasp_plan_ik_passes(stack):
+    """★ 프로덕션 서비스 경로 e2e — 실 URDF IK 가 실 grasp 후보에서 진짜 풀리나.
+
+    verify_production_pipeline.py 는 게이트를 스크립트가 재현했다 (kin.ik 직접
+    호출). 여기서는 **실제 MotionModule 의 resolve_reachable 서비스**에 **실
+    antipodal → plan_grasp 후보 그룹**을 던진다 — steps.try_plan_grasp 가 던지는
+    것과 동일한 인자(floor_z / linear / obstacle_points=점군 / gripper_open /
+    path_from). "로직만 짜고 IK 는 canned 로 넘어간 것 아니냐"를 실행으로 닫는다.
+
+    합성 큐브(양쪽 옆면 + 윗면)를 워크스페이스 안(0.24,0.10)에 놓고 실 antipodal
+    쌍 → 후보 가족 → 서비스. index≥0 이면 실 IK 가 그 후보를 실제로 풀었다는
+    뜻이고, solutions FK 가 grasp pose 위치로 복귀해야 진짜 해다.
+    """
+    import numpy as np
+
+    from modules.tasks.pick_and_place import antipodal, geometry
+
+    runtime, _driver, _robot = stack
+    assert await _wait_motion_ready(runtime)
+    snap = None
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        snap = await _try_snapshot(runtime)
+        if snap is not None:
+            break
+    assert snap is not None
+
+    # 합성 큐브 점군 — 옆면 ±x(간격 2.2cm) + 윗면. object-centric 관측 흉내.
+    cx, cy, base_z, top_z = 0.24, 0.10, -0.045, -0.022
+    ys = np.linspace(cy - 0.011, cy + 0.011, 12)
+    zs = np.linspace(base_z, top_z, 12)
+    xs = np.linspace(cx - 0.011, cx + 0.011, 12)
+    pts: list[tuple[float, float, float]] = []
+    for x in (cx + 0.011, cx - 0.011):
+        for y in ys:
+            for z in zs:
+                pts.append((float(x), float(y), float(z)))
+    for x in xs:
+        for y in ys:
+            pts.append((float(x), float(y), top_z))
+    cloud = np.array(pts, dtype=float)
+
+    # 실 antipodal → 실 plan_grasp (canned 아님 — 실제 선택기/기하)
+    pairs = antipodal.horizontal_antipodal_pairs(cloud)
+    assert pairs, "합성 큐브에서 antipodal 쌍 0 — 선택기 자체가 안 돎"
+    plan = geometry.plan_grasp(pairs)
+    assert plan
+
+    # 실 resolve_reachable 서비스 — steps.try_plan_grasp 와 동일 인자
+    res = await runtime.module_runtime.call(
+        Motion.Service.RESOLVE_REACHABLE,
+        ResolveReachableRequest(
+            groups=geometry.grasp_ik_groups(plan),
+            floor_z=base_z - 0.005,
+            linear=True,
+            obstacle_points=[tuple(p) for p in cloud],
+            gripper_open=True,
+            path_from=list(snap.joints),
+        ),
+        ResolveReachableResponse,
+        robot_id=_SO101,
+        timeout=60.0,
+    )
+    assert res.index >= 0, (
+        f"실 URDF IK 가 grasp 후보 {len(plan)}개 전멸 — {res.message}"
+    )
+    # solutions FK 가 후보 pre/grasp pose 로 복귀해야 진짜 해 (재계산 없이 실행부가 씀)
+    motion_mod = next(
+        m for m in runtime._modules if type(m).__name__ == "MotionModule"
+    )
+    chosen = plan[res.index]
+    assert len(res.solutions) == 2
+    for sol, want in zip(res.solutions, (chosen.pre, chosen.grasp)):
+        pos, _ = motion_mod._kin.fk(sol)
+        assert np.linalg.norm(np.array(pos) - np.array(want)) < 0.02, (
+            f"IK 해 FK 가 목표 pose 와 어긋남: {pos} != {want}"
+        )
 
 
 async def _try_snapshot(runtime) -> TcpState | None:

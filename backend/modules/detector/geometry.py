@@ -22,8 +22,8 @@ import cv2
 import numpy as np
 
 
-# 윗면 band 선택 규약 — projection.object_top_center_base 와 동일 (base_z 상위
-# percentile 기준 band). OBB 는 파지 접근면(윗면) 단면이 의미: mask 픽셀 전부를 쓰면
+# 윗면 band 선택 규약 (base_z 상위 percentile 기준 band — object_metrics 의
+# position 도 같은 band). OBB 는 파지 접근면(윗면) 단면이 의미: mask 픽셀 전부를 쓰면
 # 비스듬한 시점에서 옆면 + mask 경계의 배경(테이블) bleed + boundary depth 노이즈가
 # base XY 에 깔려 footprint 를 부풀리고 yaw 를 비튼다 (2026-07-09 실물 확인 — 근접
 # 사선 샷 OBB 크게 skew / 탑다운 샷 정상 = 윗면 아래 오염 증거).
@@ -100,6 +100,96 @@ def obb_corners(obb: Obb, z: float) -> np.ndarray:
     )
     xy = local @ rot.T + np.array([cx, cy])
     return np.column_stack([xy, np.full(4, z)])
+
+
+# object-centric 기하 — top 은 percentile(이상치 한두 점 컷), bottom 은 z-gap 군집.
+# floor(주변 링) 추정 폐기의 대체 (grasp_redesign_journey.md §5.1 — 물체 자기
+# 점군에서만 잰다: 책상이 없어도(공중/손) 성립, 추측이 아니라 관측).
+_Z_HI_PERCENTILE = 98.0
+# z-gap 군집 (§10.3-F): top 에서 아래로 이 크기 이상의 빈 z 틈을 만나면 그 아래는
+# 물체 몸통이 아니다 (mask 경계 flying-pixel/배경 누출 outlier). 옛 2-percentile
+# bottom 은 아래-outlier 3~5% 에 끌려 base_z −0.2m phantom 을 만들었다 (실물 #1
+# 사고 재현·수정 — sim 검증: outlier 10% + 노이즈 + bleed 에도 base_z 안정).
+_BODY_Z_GAP_M = 0.005
+
+
+def _body_bottom_z(z: np.ndarray, top_z: float) -> float:
+    """top_z 에서 아래로 연속(_BODY_Z_GAP_M 이내)인 z 군집의 바닥."""
+    zs = np.sort(z[z <= top_z])[::-1]  # top 이하만, 위→아래
+    if zs.size == 0:
+        return top_z
+    gaps = zs[:-1] - zs[1:]
+    cut = np.nonzero(gaps > _BODY_Z_GAP_M)[0]
+    return float(zs[cut[0]] if cut.size else zs[-1])
+
+
+def object_metrics_from_points(
+    pts_base: np.ndarray,
+) -> tuple[tuple[float, float, float], float, float] | None:
+    """물체 base 점군 → (윗면 중심 position, base_z(물체 바닥), height).
+
+    전부 물체 자기 점군에서 — 주변 바닥 추정 없음. base_z = top 에서 이어지는
+    z 군집의 바닥 (_body_bottom_z — 아래로 떨어진 outlier 봉우리 절단),
+    height = top − bottom. **단일 뷰(위에서)는 옆면 depth 가 없어 height 가
+    구조적으로 과소** — 멀티뷰 융합 점군이 입력일 때 비로소 실 height.
+    충분성 판정은 소비자(파지가 서는가 — height 하드게이트 아님, §10.4-6).
+    점 3개 미만 = None.
+    """
+    if pts_base is None or len(pts_base) < 3:
+        return None
+    z = pts_base[:, 2]
+    top_z = float(np.percentile(z, _Z_HI_PERCENTILE))
+    bottom_z = _body_bottom_z(z, top_z)
+    top = top_face_points(pts_base)
+    if top is None:
+        return None
+    center = top.mean(axis=0)
+    position = (float(center[0]), float(center[1]), top_z)
+    return position, bottom_z, max(0.0, top_z - bottom_z)
+
+
+def voxel_downsample(pts_base: np.ndarray, voxel_m: float = 0.003) -> np.ndarray:
+    """점군 voxel 다운샘플 (voxel 당 centroid) — wire 용 축소.
+
+    2cm 급 물체 표면이면 수백 점으로 떨어진다 (원본 mask 점군 수천~수만).
+    결정적 (정렬된 unique key 순서) — 같은 입력 같은 출력.
+    """
+    keys = np.floor(pts_base / voxel_m).astype(np.int64)
+    _, inverse, counts = np.unique(
+        keys, axis=0, return_inverse=True, return_counts=True
+    )
+    sums = np.zeros((len(counts), 3), dtype=np.float64)
+    np.add.at(sums, inverse, pts_base)
+    return sums / counts[:, None]
+
+
+def cluster_indices_by_xy(
+    positions: list[tuple[float, float, float]], eps_m: float
+) -> list[list[int]]:
+    """위치 XY 근접(eps_m)으로 인덱스 군집 — 멀티뷰 관측을 같은 물체로 묶는다.
+
+    관측 수가 수십 수준이라 단순 greedy 연결 (단일-링크). base frame 이라 뷰 간
+    좌표가 이미 정렬돼 있음 → 거리 비교만으로 동일 물체 판정.
+    """
+    n = len(positions)
+    parent = list(range(n))
+
+    def find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            dx = positions[i][0] - positions[j][0]
+            dy = positions[i][1] - positions[j][1]
+            if (dx * dx + dy * dy) ** 0.5 <= eps_m:
+                parent[find(i)] = find(j)
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    return list(groups.values())
 
 
 def mask_contour(mask: np.ndarray) -> np.ndarray | None:

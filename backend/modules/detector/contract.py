@@ -21,13 +21,14 @@ from framework.contract.service import declare_service_timeouts
 
 
 class Detection(BaseModel):
-    """검출 후보 — base frame 3D 위치 + 기하 prior 속성 (§17.5, v1 GroundedDetection 포팅).
+    """검출 후보 — base frame 3D 위치 + 기하 속성 (object-centric, 2026-07-14 재설계).
 
-    position: 물체 **윗면 중심** base frame (m). base_z: 물체 **주변 책상/바닥** 의 base-z
-      (bbox 외곽 ring depth percentile). height: 물체 높이 = position[2] - base_z. §17.5
-      ② "height/base_z" 로 예상 범위 밖 후보 reject (confidence 무관 — 예: 테이블 큐브 vs
-      바닥 천). GraspPolicy 가 base_z + height 로 옆면 grasp z 계산 (§17.5 순수 계산).
-      예상 범위 임계는 실물 tuning (§17.5 "스코어링 = 집 하드웨어"). score: 신뢰도 0..1.
+    position: 물체 **윗면 중심** base frame (m) — 물체 자기 점군(mask→depth→base)의
+      윗면 band centroid. base_z: 물체 **아랫면**의 base-z (자기 점군 z 하위
+      percentile — 옛 "주변 책상 ring floor 추정" 폐기: 책상 없어도(공중/손) 성립,
+      추측이 아니라 관측. grasp_redesign_journey.md §5.1). height = 윗면 − 아랫면.
+      ⚠ 단일 뷰는 옆면 depth 가 없어 height 구조적 과소 — 실 height 판정은 멀티뷰
+      융합(FUSE_ORIENTED) 결과에서만 의미. score: 신뢰도 0..1.
     bbox_2d: 검출 시점 color 이미지의 픽셀 bbox (x1,y1,x2,y2) — frontend 카메라
       오버레이용 (DetectionsUpdate.image_width/height 기준 좌표).
     """
@@ -67,6 +68,11 @@ class Detector:
         # /dev 로 shape(deg/rad, footprint 정확도) 굳으면 Detection 에 필드 승격 후 DETECT
         # 로 흡수 (DraftModel → StrictModel). §17.5 회전 파지.
         DETECT_ORIENTED = "srv/detector/detect_oriented"
+        # [DRAFT] 멀티뷰 관측 융합 — 여러 뷰의 OrientedDetection(points 포함)을
+        # 같은 물체끼리 군집 → 점군 합쳐 기하 재계산 (실 height 는 여기서만 —
+        # 단일 뷰는 옆면 depth 부재로 과소). 순수 계산 (camera/모델 무관) — 뷰
+        # 이동/수집 흐름은 소비자(task) 소유, 기하 산출은 detector 소유.
+        FUSE_ORIENTED = "srv/detector/fuse_oriented"
 
     class Stream(StrEnum):
         # robot-scoped 키 — payload robot_id 로 framework 라우팅 (host-level 발행,
@@ -94,7 +100,8 @@ class DetectResponse(BaseModel):
 class OrientedDetection(DraftModel):
     """[DRAFT] Detection + OBB(grasp yaw / footprint). 아직 shape 미확정 (extra=allow).
 
-    Detection 의 모든 필드 + base frame 회전 파지 정보. /dev 로 검증할 열린 질문:
+    Detection 의 모든 필드 + base frame 회전 파지 정보 (base_z/height 의미는
+    Detection docstring — object-centric, 자기 점군). /dev 로 검증할 열린 질문:
       grasp_yaw: base Z 회전 rad([-π/2,π/2)) — deg/rad·부호 규약 실물 확인 대상.
       footprint: (long, short) m — mask 윗면 band vs 전체 점군 어느 쪽이 정확한지 tuning.
     굳으면 Detection 에 필드 승격 + base 를 StrictModel 로 교체 (빠뜨린 필드 fail-fast).
@@ -113,12 +120,40 @@ class OrientedDetection(DraftModel):
     # 안 실음 — 폴리곤(점 수십 개)만 (backend.md 결정). depth 부족 등으로 없으면 None.
     obb_2d: list[tuple[float, float]] | None = None
     mask_contour: list[tuple[float, float]] | None = None
+    # 물체 base 점군 (voxel 다운샘플, m) — 멀티뷰 융합(FUSE_ORIENTED) 소스.
+    # **서비스 응답에만** 실림 — DETECTIONS_ORIENTED 오버레이 스트림에선 None
+    # (mask bitmap 을 wire 스트림에 안 싣는 결정과 같은 근거: 요청자만 받는다).
+    points: list[tuple[float, float, float]] | None = None
 
 
 class DetectOrientedResponse(DraftModel):
     """[DRAFT] detect_oriented 결과 — DETECT_ORIENTED. shape 굳으면 DetectResponse 로 흡수."""
 
     found: bool
+    candidates: list[OrientedDetection] = []
+    message: str = ""
+
+
+class FuseOrientedRequest(DraftModel):
+    """[DRAFT] 멀티뷰 관측 융합 — 같은 prompt 로 여러 뷰에서 모은 후보들.
+
+    입력 후보의 points(base 점군)가 융합 소스 — points 없는 후보는 위치 군집에만
+    기여. base frame 이라 뷰 간 정렬이 이미 돼 있음 (쌓기만 하면 됨, §5.2).
+    """
+
+    candidates: list[OrientedDetection]
+    # 같은 물체 판정 XY 반경 (m) — 관측 위치가 이 안이면 한 물체로 군집.
+    cluster_eps_m: float = 0.04
+
+
+class FuseOrientedResponse(DraftModel):
+    """[DRAFT] 군집별 융합 결과 (score desc — score = 군집 내 최대).
+
+    융합 후보의 position/base_z/height/footprint/grasp_yaw 는 합친 점군에서
+    재계산 — height 가 비로소 실측 (옆면이 다른 뷰에서 채워짐). 뷰 종속 필드
+    (bbox_2d/obb_2d/mask_contour)는 None.
+    """
+
     candidates: list[OrientedDetection] = []
     message: str = ""
 
@@ -141,4 +176,5 @@ class OrientedDetectionsUpdate(DraftModel):
 declare_service_timeouts({
     Detector.Service.DETECT: 30.0,  # GDINO 첫 추론이 느릴 수 있음
     Detector.Service.DETECT_ORIENTED: 30.0,
+    Detector.Service.FUSE_ORIENTED: 10.0,  # 순수 계산 (점군 수천 수준)
 })

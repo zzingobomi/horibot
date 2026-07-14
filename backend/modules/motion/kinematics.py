@@ -80,3 +80,35 @@ class Kinematics(Protocol):
     def self_collision(self, joint_angles: Sequence[float]) -> bool:
         """주어진 자세에서 self-collision 여부."""
         ...
+
+    def floor_collision(self, joint_angles: Sequence[float], floor_z: float) -> bool:
+        """주어진 자세에서 수평 바닥 평면(z=floor_z, base frame)을 침투하는지.
+
+        planner 충돌 게이트 최소형 (grasp_redesign_journey.md §5.7 — 바닥은 평면
+        하나). base 쪽 고정 링크는 제외 — 로봇이 그 평면 위에 설치돼 있어 상시
+        접촉이 상수 (검출 floor_z 오차 ±cm 에 전 후보 영구 기각 방지).
+        """
+        ...
+
+    def set_obstacle_points(
+        self, points: Sequence[tuple[float, float, float]] | None
+    ) -> None:
+        """장애물 점군(base frame, m) scene 설정 — obstacle_collision 의 대상.
+
+        관측 점군(물체/이웃)이 소스 (grasp_redesign_journey.md §10.4-3 그리퍼↔
+        물체 충돌 게이트). None/빈 = 해제. 배치 판정(RESOLVE_REACHABLE) lifecycle:
+        판정 시작에 set → 다수 자세 검사 → 끝나면 반드시 해제 (잔존 시 이후
+        판정이 남의 물체에 기각되는 침묵 오동작).
+        """
+        ...
+
+    def obstacle_collision(
+        self, joint_angles: Sequence[float], *, gripper_open: bool = False
+    ) -> bool:
+        """주어진 자세에서 로봇 링크가 설정된 장애물 점군을 침투하는지.
+
+        gripper_open=True 면 chain 밖 movable 관절(그리퍼 조)을 URDF 상한
+        (= 벌림 — so101 규약: 양수가 open)에 두고 검사 — 파지 접근은 조를 벌린
+        채라 그 부피가 실 충돌 형상. 점군 미설정이면 False.
+        """
+        ...

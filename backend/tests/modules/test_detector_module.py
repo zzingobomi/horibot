@@ -119,13 +119,15 @@ async def test_detect_returns_topk_base_positions():
     best = res.candidates[0]
     # 중앙 균일 윗면 → 윗면 픽셀 centroid ≈ (cx,cy), Z_cam=0.3; hand_eye=I; base t=[0,0,0.5]
     # → base ≈ [0,0,0.8]. (centroid 는 픽셀 그리드 중심이라 bbox 중심과 0.5px≈0.25mm 차 —
-    #  균일 블록에선 무해. object_top_center_base = 윗면 실측 중심.)
+    #  균일 블록에선 무해. position = 물체 점군 윗면 band 실측 중심.)
     assert np.allclose(best.position, [0.0, 0.0, 0.8], atol=1e-3), best.position
     assert best.prompt == "cube"
     assert best.score == 0.95
-    # base_z/height 필드 전파 + 불변식 (ring floor_z/height 수치는 projection unit test).
+    # object-centric 불변식: base_z = 자기 점군 바닥, height = top − bottom.
+    # (균일 평면 mock 이라 단일 뷰 height ≈ 0 — 과소가 정직, 실측은 융합 후.)
     assert isinstance(best.base_z, float) and isinstance(best.height, float)
     assert best.height == max(0.0, best.position[2] - best.base_z)
+    assert best.height < 0.005
 
     # 2등 후보 = 우상 (score 낮음) — Top-K 누적 확인
     second = res.candidates[1]
@@ -221,3 +223,74 @@ async def test_start_triggers_backend_preload():
     await mod._preload_task  # 백그라운드 preload 완료 대기
     assert backend.preloaded
     await mod.stop()
+
+
+# ─── FUSE_ORIENTED (멀티뷰 융합 — 순수 계산) ─────────────────────────
+
+
+def _obs(
+    position: tuple[float, float, float],
+    points: list[tuple[float, float, float]],
+    score: float = 0.9,
+) -> OrientedDetection:
+    return OrientedDetection(
+        prompt="cube", position=position, score=score,
+        base_z=position[2], height=0.0, grasp_yaw=0.0,
+        footprint=(0.02, 0.02), points=points,
+    )
+
+
+def _cube_face(
+    cx: float, cy: float, top_z: float, height: float, *, top: bool,
+    edge: float = 0.02, n: int = 8,
+) -> list[tuple[float, float, float]]:
+    """윗면(top=True) 또는 +x 옆면 점군 — 한 뷰가 보는 면."""
+    xs = np.linspace(-edge / 2, edge / 2, n)
+    out = []
+    for a in xs:
+        for b in xs if top else np.linspace(top_z - height, top_z, n):
+            if top:
+                out.append((cx + a, cy + b, top_z))
+            else:
+                out.append((cx + edge / 2, cy + a, float(b)))
+    return out
+
+
+async def test_fuse_oriented_merges_views_and_recovers_height():
+    """서로 다른 뷰(윗면만 / 옆면 포함) 관측을 융합해 실 height 복원 + 멀리
+    떨어진 다른 물체는 별 군집. 단일 뷰 height≈0 → 융합 후 2.3cm (§5.2 핵심)."""
+    from modules.detector.contract import FuseOrientedRequest
+
+    mod = DetectorModule(_FakeRuntime({}), MockDetectorBackend())
+    top_view = _obs((0.2, 0.1, -0.022), _cube_face(0.2, 0.1, -0.022, 0.023, top=True))
+    side_view = _obs(
+        (0.205, 0.102, -0.022), _cube_face(0.2, 0.1, -0.022, 0.023, top=False)
+    )
+    other = _obs((0.5, -0.3, 0.05), _cube_face(0.5, -0.3, 0.05, 0.04, top=True))
+
+    res = await mod.fuse_oriented(
+        FuseOrientedRequest(candidates=[top_view, side_view, other])
+    )
+    assert len(res.candidates) == 2  # 큐브 군집 + 다른 물체
+    cube = min(
+        res.candidates, key=lambda c: (c.position[0] - 0.2) ** 2 + (c.position[1] - 0.1) ** 2
+    )
+    assert abs(cube.height - 0.023) < 4e-3, cube.height  # 옆면이 채워져 실측
+    assert abs(cube.base_z - (-0.045)) < 4e-3, cube.base_z
+    assert cube.points  # 융합 점군 동봉 (재융합/디버그 가능)
+
+
+async def test_fuse_oriented_empty_and_pointless():
+    from modules.detector.contract import FuseOrientedRequest
+
+    mod = DetectorModule(_FakeRuntime({}), MockDetectorBackend())
+    empty = await mod.fuse_oriented(FuseOrientedRequest(candidates=[]))
+    assert empty.candidates == [] and empty.message
+
+    # 점군 없는 관측만 — 융합 불가, 빈 결과 + 사유
+    no_pts = OrientedDetection(
+        prompt="cube", position=(0.2, 0.1, 0.0), score=0.9, base_z=0.0,
+        height=0.0, grasp_yaw=0.0, footprint=(0.02, 0.02),
+    )
+    res = await mod.fuse_oriented(FuseOrientedRequest(candidates=[no_pts]))
+    assert res.candidates == [] and "점군" in res.message

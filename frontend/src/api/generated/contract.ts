@@ -321,6 +321,7 @@ export interface OrientedDetection {
   bbox_2d?: [number, number, number, number] | null;
   obb_2d?: [number, number][] | null;
   mask_contour?: [number, number][] | null;
+  points?: [number, number, number][] | null;
 }
 
 /** @draft 탐색 단계 계약 — 타입 미확정 (필드 추가/변경 가능). */

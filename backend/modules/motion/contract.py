@@ -137,23 +137,55 @@ class TcpPose(BaseModel):
 
 
 class ResolveReachableRequest(BaseModel):
-    """후보 pose 그룹 중 '그룹 내 전 pose IK 가용'인 그룹 하나를 resolve.
+    """후보 pose 그룹 중 '그룹 내 전 pose 가용'인 그룹 하나를 resolve.
 
     계약: **순서 = 선호 힌트 (best-effort)** — 가급적 앞쪽 그룹을 반환하지만
-    엄격한 first 보장은 아님 (구현이 예산 계단식 deepening 으로 속도와 맞바꿈 —
-    앞 그룹이 어려운 해면 뒤의 쉬운 가용 그룹이 먼저 잡힐 수 있다). 선호가
-    보장이어야 하는 소비자가 나타나면 그때 별도 질의 (FIRST/ALL/BEST) 신설.
+    엄격한 first 보장은 아님 (구현이 cheap→expensive 게이트 파이프라인 —
+    싼 게이트를 전 그룹에 먼저 돌리므로, 앞 그룹이 어려운 해면 뒤의 쉬운 가용
+    그룹이 먼저 잡힐 수 있다). 선호가 보장이어야 하는 소비자가 나타나면 그때
+    별도 질의 (FIRST/ALL/BEST) 신설.
 
     그룹 예 = [pre_grasp, grasp] (같은 자세로 접근+파지 둘 다 풀려야 실행 가능).
-    IK 만 — 로봇은 안 움직임. 그룹 내 seed 연쇄 (앞 pose 해 → 다음 pose seed,
-    가까운 pose 는 1발 수렴) + 가용 그룹에서 early-exit.
+    판정 전용 — 로봇은 안 움직임. 게이트 (grasp_redesign_journey.md §5.5/§10.4,
+    cheap→expensive — 뒤 게이트일수록 비싸고, 앞 게이트가 후보를 걸러 비용 절감):
+      ① 위치 스크린 (position-only 소예산 IK — workspace 밖 즉시 기각)
+      ② 전 pose 자세 IK (예산 점증 deepening — 실패 기각을 싸게)
+      ③ floor_z 지정 시 바닥 평면 충돌 (해 자세의 로봇 링크 침투 기각)
+      ③b obstacle_points 지정 시 장애물 점군 충돌 — 해 자세에서 로봇(그리퍼
+         gripper_open 반영)이 관측 점군(물체/이웃)을 침투하면 기각 (§10.4-3
+         그리퍼↔물체 충돌 게이트 — 맹목 파지 차단, fail-safe)
+      ④ path_from 지정 시 그 관절 자세 → 첫 pose 해까지 관절 보간 경로의
+         self/floor/obstacle 충돌 (§10.4-4 — naive MoveJ 가 물체/바닥을 스치는
+         실행 시점 사고를 계획 시점 기각으로. 실행부는 path_from 자세에서 MoveJ
+         하는 계약)
+      ⑤ linear 지정 시 그룹 내 연속 pose 사이 직선 경로 실현성
+         (MoveL 실행 전제 — 샘플 IK + 인접 해 joint jump 검사. 끝점만 풀리고
+         중간이 안 풀리는 실행 시점 거부를 계획 시점으로 앞당김)
     """
 
     groups: list[list[TcpPose]]  # 순서 = 선호도 (힌트)
+    # 바닥 평면 z (base frame) — planner 충돌 게이트 (옵션, cm 오차 OK).
+    # None = 바닥 게이트 없음 (공중/손 위 물체 등 지지면 무관 시나리오).
+    floor_z: float | None = None
+    # True = 그룹 내 연속 pose 를 MoveL(직선)로 이을 전제 — 경로 게이트 ⑤ 활성.
+    linear: bool = False
+    # 장애물 점군 (base frame, m) — 관측 점군(타깃 자신 + 이웃). 게이트 ③b 활성.
+    # None/빈 = 게이트 없음.
+    obstacle_points: list[tuple[float, float, float]] | None = None
+    # ③b/④ 검사 시 그리퍼 조를 벌린 자세(URDF 상한)로 둘지 — 파지 접근은 조를
+    # 벌린 채라 그 부피가 실 충돌 형상 (관측 이동 등 비파지 판정은 False).
+    gripper_open: bool = False
+    # 관절 자세 (rad, dof) — 게이트 ④ 활성: 여기서 첫 pose 해까지 관절 보간
+    # 경로가 충돌 없어야 채택. 실행부가 실제로 이 자세에서 MoveJ 한다는 계약
+    # (pick_and_place 는 home 경유가 그 자세).
+    path_from: list[float] | None = None
 
 
 class ResolveReachableResponse(BaseModel):
     index: int  # 가용 그룹 index (선호 순서 best-effort), 가용 없으면 -1 (= 데이터)
+    # 채택 그룹의 pose 별 IK 해 (rad, index≥0 일 때 그룹 pose 수와 동일) —
+    # 실행부가 재계산 없이 이 관절값으로 이동 (판정 해 == 실행 해 보장, §5.5).
+    solutions: list[list[float]] = []
     message: str = ""
 
 

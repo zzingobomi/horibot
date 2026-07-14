@@ -36,6 +36,15 @@ IK_RESTARTS = 200
 # 모든 robot type URDF 는 `tcp` 라는 link 를 가져야 함 (UR tool0 패턴, fail-fast).
 TCP_LINK_NAME = "tcp"
 
+# ── 장애물 점군 게이트 (grasp_redesign_journey.md §10.4-3) ──────────
+# 관측 점군은 표면 샘플 — voxel 대표점마다 작은 구를 놓아 "표면을 뚫고 들어가는"
+# 링크를 잡는다. 조 안쪽 면 설계 여유(FIXED_JAW_CLEAR 5mm)와 depth 노이즈(σ~1mm)
+# 사이: 반경 3mm 구 + 침투 2mm 임계 → 정상 파지(표면과 5mm 여유)는 +2mm 마진으로
+# 통과, 물체 관통(표면점 중심 1mm 이내 진입)은 기각.
+_OBSTACLE_VOXEL_M = 0.006
+_OBSTACLE_RADIUS_M = 0.003
+_OBSTACLE_PENETRATION_M = 0.002
+
 
 class PybulletKinematics:
     """PyBullet DIRECT 모드 기구학. Kinematics Protocol 만족."""
@@ -58,6 +67,11 @@ class PybulletKinematics:
         self._movable_ranges: list[float] = []
         # chain joint 의 movable result vector 내 위치
         self._chain_in_movable: list[int] = []
+        # 바닥 평면 body (floor_collision 게이트) — 첫 사용 시 lazy 생성
+        self._plane = -1
+        # 장애물 점군 body 들 (obstacle_collision 게이트) — set_obstacle_points 관리
+        self._obstacle_bodies: list[int] = []
+        self._obstacle_shape = -1  # 공유 구 collision shape (1회 생성)
 
     def initialize(self) -> None:
         with self._lock:
@@ -244,6 +258,111 @@ class PybulletKinematics:
         with self._lock:
             self._set_chain(list(joint_angles))
             return self._self_collision_unlocked()
+
+    def floor_collision(self, joint_angles: Sequence[float], floor_z: float) -> bool:
+        """수평 바닥 평면(z=floor_z) 침투 검사 — planner 충돌 게이트 최소형.
+
+        평면은 별도 body 라 self-collision(robot↔robot 질의)/IK 에 영향 없음.
+        base 쪽 고정 링크(첫 체인 관절 이전)는 제외 — 로봇이 그 평면 위에 설치돼
+        상시 접촉이 상수 (검출 floor_z 의 ±cm 오차로 전 자세가 영구 기각되는 것
+        방지). 링크 index 는 URDF 트리 순서라 체인 첫 관절 index 미만 = base 쪽.
+        """
+        self._require_init()
+        with self._lock:
+            if self._plane == -1:
+                col = p.createCollisionShape(
+                    p.GEOM_PLANE, physicsClientId=self._client
+                )
+                self._plane = p.createMultiBody(
+                    baseCollisionShapeIndex=col,
+                    basePosition=(0.0, 0.0, floor_z),
+                    physicsClientId=self._client,
+                )
+            else:
+                p.resetBasePositionAndOrientation(
+                    self._plane,
+                    (0.0, 0.0, floor_z),
+                    (0.0, 0.0, 0.0, 1.0),
+                    physicsClientId=self._client,
+                )
+            self._set_chain(list(joint_angles))
+            p.performCollisionDetection(physicsClientId=self._client)
+            contacts = p.getContactPoints(
+                bodyA=self._robot, bodyB=self._plane, physicsClientId=self._client
+            )
+            first_moving = self._chain_indices[0]
+            return any(c[8] < 0.0 and c[3] >= first_moving for c in contacts)
+
+    def set_obstacle_points(
+        self, points: Sequence[tuple[float, float, float]] | None
+    ) -> None:
+        self._require_init()
+        with self._lock:
+            for body in self._obstacle_bodies:
+                p.removeBody(body, physicsClientId=self._client)
+            self._obstacle_bodies.clear()
+            if not points:
+                return
+            centers = self._voxel_centroids(np.asarray(points, dtype=float))
+            if self._obstacle_shape == -1:
+                self._obstacle_shape = p.createCollisionShape(
+                    p.GEOM_SPHERE,
+                    radius=_OBSTACLE_RADIUS_M,
+                    physicsClientId=self._client,
+                )
+            for c in centers:
+                self._obstacle_bodies.append(
+                    p.createMultiBody(
+                        baseCollisionShapeIndex=self._obstacle_shape,
+                        basePosition=(float(c[0]), float(c[1]), float(c[2])),
+                        physicsClientId=self._client,
+                    )
+                )
+
+    def obstacle_collision(
+        self, joint_angles: Sequence[float], *, gripper_open: bool = False
+    ) -> bool:
+        self._require_init()
+        with self._lock:
+            if not self._obstacle_bodies:
+                return False
+            self._set_chain(list(joint_angles))
+            gripper_idx = [
+                i for i in self._movable_indices if i not in self._chain_indices
+            ]
+            if gripper_open:
+                # URDF 상한 = 벌림 (so101 gripper_jaw upper=1.746 — 양수 open 규약)
+                for gi in gripper_idx:
+                    upper = self._movable_upper[self._movable_indices.index(gi)]
+                    p.resetJointState(
+                        self._robot, gi, upper, physicsClientId=self._client
+                    )
+            try:
+                p.performCollisionDetection(physicsClientId=self._client)
+                for body in self._obstacle_bodies:
+                    contacts = p.getContactPoints(
+                        bodyA=self._robot, bodyB=body, physicsClientId=self._client
+                    )
+                    if any(c[8] < -_OBSTACLE_PENETRATION_M for c in contacts):
+                        return True
+                return False
+            finally:
+                if gripper_open:  # 그리퍼를 URDF zero 로 복원 — self_collision/IK
+                    for gi in gripper_idx:  # 등 다른 질의의 전제 상태 오염 방지
+                        p.resetJointState(
+                            self._robot, gi, 0.0, physicsClientId=self._client
+                        )
+
+    @staticmethod
+    def _voxel_centroids(pts: np.ndarray) -> np.ndarray:
+        """점군 → voxel 당 centroid — 장애물 body 수 상한 (수천 점 → 수백 구)."""
+        keys = np.floor(pts / _OBSTACLE_VOXEL_M).astype(np.int64)
+        _, inverse, counts = np.unique(
+            keys, axis=0, return_inverse=True, return_counts=True
+        )
+        sums = np.zeros((len(counts), 3), dtype=np.float64)
+        np.add.at(sums, inverse, pts)
+        return sums / counts[:, None]
 
     def close(self) -> None:
         if p.isConnected(self._client):

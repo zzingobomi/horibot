@@ -10,125 +10,153 @@
 ---
 ---
 
-<!-- ═══════════ [현행 설계 방향] 2cm 물체 범용 파지 — object-centric 재설계 (2026-07-14 논의 확정) ═══════════ -->
+<!-- ═══════════ [현행 설계 방향 + 구현 계획] 2cm 물체 범용 파지 — object-centric 재설계 (2026-07-14) ═══════════ -->
 
-# 2cm 물체 범용 파지 — object-centric perception 재설계
+# 2cm 물체 범용 파지 — 재설계 계획 (object-centric, research-backed)
 
-> **status: 설계 방향 확정 (2026-07-14 논의), 구현 대기.** 아래 detection/grasp 방향은
-> 이 문서 뒤의 옛 "Grounded Detection 설계"(one-shot, bbox depth median, floor 기반 height)를
-> **대체하는 방향**이다. 옛 부는 역사 기록으로 남김.
+> **📌 완결 SSOT = [grasp_redesign_journey.md](grasp_redesign_journey.md)** — 배경/문제/리서치/
+> 계획/로드맵/검증상태 + 사고 흐름을 **자체 완결 구현 핸드오프**로 담았다 (다른 세션에 그 문서
+> 하나 주고 구현). **갱신은 journey 를 정본으로** 하고, 아래는 perception 도메인 독자를 위한
+> **요약 포인터**다 (내용이 갈리면 journey 가 이긴다).
 >
-> 관련 열린 문제: [backend.md](backend.md) 진행 status #1(detection height/base_z 부정확) /
-> #2(IK 도달성 오판). **#1 은 아래 재설계로 해소(floor 제거), #2 는 roadmap step 1 의 선결 버그.**
+> **status: 계획 확정, 구현 대기 (2026-07-14).** 진단은 시뮬로 재현·검증(캘 적용 FK 가 실물 TCP
+> sub-mm 일치), 방향은 필드 표준 대조. 이 재설계가 detection/grasp 정본이며 뒤의 옛 "Grounded
+> Detection 설계"(one-shot / bbox depth median / floor 기반 height / top-down 고정)를 **대체**한다.
+>
+> 관련 열린 문제: [backend.md](backend.md) #1(detection height/base_z 부정확) /
+> #2("IK 도달성 오판"). **§1.2 에서 #2 정정**: IK 는 정상이었고 top-down 강제가 범인.
+>
+> ⚠️ **구현 전 §5 미검증 항목부터 시뮬로 짚고, 해피케이스만 보고 "됐다" 하지 말 것.**
 
 ## 0. 목표 (스코프 잠금)
 
-**한 변 ~2cm 물체를 집는다.** 그게 전부. 물체가 어디 있는지(책상 / 사람 손 / 다른 로봇에
-들려 공중) **가정하지 않는다.** 정밀도 기준 = "아무도 안 잡은 2cm 큐브를 집을 수 있는 수준"
-(= 지금 책상에서 되는 그 수준 — **회귀 금지**, 새 정밀도 달성이 아님). 누가 들고 있으면 물체는
-그만큼 커지므로 2cm-free 가 정밀도 상한.
+**한 변 ~2cm 물체를 집어서 어딘가 둔다.** 그게 전부. 물체가 어디 있는지(책상 / 사람 손 /
+다른 로봇에 들려 공중) **가정하지 않는다.** 정밀도 기준 = "아무도 안 잡은 2cm 큐브를 집을 수
+있는 수준"(= 지금 책상에서 되는 그 수준 — **회귀 금지**, 새 정밀도 달성 아님). 누가 들고 있으면
+물체는 그만큼 커지므로 2cm-free 가 정밀도 상한.
 
-## 1. 왜 지금 방식이 틀렸나 — floor 의존
+## 1. 현재 코드의 문제점 (진단 — 시뮬 재현 + 필드 대조)
 
-현행 3D 투영([detector/projection.py](../backend/modules/detector/projection.py))은 물체 높이를
-`height = object_top_z − floor_z` 로 구하고, floor_z 를 **bbox 주변 ring 의 base-z 25th
-percentile**(`floor_z_and_height`)로 재추정한다. 두 가지 병:
+### 1.1 뿌리 하나: "물체는 책상 위에 있다" 전제 → 세 증상
 
-- **fragile** — ring 이 depth 이상치(책상 모서리 너머 / edge artifact) 하나만 물어도 25th
-  percentile 이 무너져 floor_z 가 −0.23m 로 튀고 → **height 19cm phantom 후보** 발생 (실물 로그).
-  같은 물체를 뷰마다 **height 0.5↔1.5cm** 로 제각각 재는 것도 top/floor 를 소표본 percentile 로
-  국소 재추정하기 때문 (두 노이즈의 차라 합쳐짐).
-- **전제 자체가 틀림** — floor 를 "잘" 계산하자는 것도 결국 **"물체가 바닥에 있다"** 는 전제에
-  갇혀 있다. 공중/손에 들린 물체엔 바닥이 없고, ring 은 바닥 대신 손·배경을 물어 더 엉망이 된다.
+별개 버그 셋이 아니라 **한 전제**에서 갈라졌다. object-centric 으로 가면 셋이 동시에 사라진다.
 
-**핵심 재프레임: floor 뺄셈은 "단일 뷰로 안 보이는 바닥을 억지로 추측하는 꼼수"였다.**
-"물체가 책상에 놓였다 치고, 책상이 여기니까 바닥은 여기일 것" 이라고 **안 보고 가정**한 것 —
-그래서 (a) 책상에 없으면 무너지고 (b) 추측이라 부정확하다.
+| 증상 | 코드 | 못박힌 가정 |
+| --- | --- | --- |
+| height/base_z 부정확·phantom(−0.23m) | `floor_z_and_height` = bbox ring 25th pct 로 바닥 재추정 후 `top−floor` | 바닥이 있다 |
+| grasp IK 전멸 | `plan_grasp` = `_TOPDOWN` 가족(수직±tilt 40°)만 생성 | 위에서 접근 |
+| lift 이상 | `pre` 가 `grasp` 바로 위(월드 z) + MoveL 수직 상승 | 위로 들어올림 |
 
-## 2. 물리적 한계 → 멀티뷰
+### 1.2 #2 정정 — "IK 오판"이 아니라 top-down 강제 (시뮬 재현으로 확정)
 
-단일 카메라는 **자기를 향한 면만** 본다. 반대편·바닥·가려진 면은 depth 데이터가 애초에 없다
-(노이즈가 아니라 기하적 **occlusion** — 산업용 고급 depth 카메라도 동일, 더 좋은 센서가 안 보이는
-면을 보여주지 않음). 즉 **단일 뷰로 물체 전체 3D(특히 수직 크기)를 구하는 건 물리적으로 불가.**
+`scratchpad/ik_diag.py` 로 실물 실패 케이스(큐브 (0.275,0.208), 44 후보 전멸)를 **캘 적용
+kinematics(link_offset+sag+joint_offset)로 재현**. 결과:
 
-해법 = floor 로 추측하지 말고 **실제로 여러 각도에서 본다**:
+- **충실성**: 캘 적용 FK(시연관절) = (0.241,0.178,−0.034) ≈ 실물 리포트 TCP (0.241,0.179,−0.033), sub-mm.
+- **솔버 정상**: 시연 pose 는 FK→IK 왕복 성공. IK 버그 아님.
+- **위치는 되는데 자세가 안 됨**: 큐브 위치에서 position-only IK 는 전 z 성공, **top-down 자세는 전 z 실패.**
+- **정량**: 그 위치의 자연 도달 자세는 top-down 에서 **~141° 떨어짐**, top-down±tilt 0~90° 전부 불가.
+- **reachable 자세는 존재**(`scratchpad/grasp_reach.py`): **tilt 30~60° / base 쪽 접근**이면 도달 OK
+  (56 중 7). 즉 이 작은 팔은 그 리치에서 **손목을 수직으로 못 세울 뿐**, 비스듬히는 잡는다.
+
+→ 결론: **IK/솔버는 멀쩡. `plan_grasp` 의 top-down 강제가 유일한 범인.** [backend.md](backend.md) #2 의
+"도달 가능한 pose 를 불가로 오판" 프레임은 폐기 (top-down pose 는 진짜 불가, 시연은 다른 자세로 간 것).
+
+### 1.3 `resolve_reachable` 냄새 (벤치로 확인 — 단, naive 개선은 회귀)
+
+[motion/module.py](../backend/modules/motion/module.py) `resolve_reachable` 의 `for budget in
+(10,40,None)` 은 겉으로 냄새(매직 staircase + "선호순서 양보" 자백 주석 + `kin.ik` 이 성공해도
+early-exit 없이 closest-solution 까지 다 도는 미스매치의 반창고). **그러나 `scratchpad/resolve_bench.py`
+결과가 naive 수정을 반증**:
+
+| 케이스 | 현재(deepening) | 린(단일패스 early-exit, b=200) |
+| --- | --- | --- |
+| 실패 많은 스캔 | 419 IK / 208ms | **4275 IK / 2116ms (10× 악화)** |
+| reachable 앞정렬 | 100 IK / 57ms | 14 IK / 7ms |
+
+early-exit 은 **성공에만** 이득 (실패 pose 는 예산을 끝까지 돎). deepening 의 "싼 예산 먼저"가
+실패를 싸게 만드는 게 실제로 옳다. **진짜 문제는 staircase 자체가 아니라, "cheap→expensive
+게이팅" 원리가 매직넘버로 굳고 미래(충돌 게이트)를 못 담는 형태**라는 것.
+
+### 1.4 MoveL — 끝점만 보장, 경로/자세 미보장
+
+`descend`/`lift` 는 MoveL(Cartesian 직선)인데 **끝점 IK 만 확인**된다. 직선 상 중간점 실현성,
+접근 중 자세 고정 여부는 코드에 보장이 없다 (§2 에서 이게 표준 함정임 확인).
+
+## 2. 리서치 — 필드는 어떻게 푸나 (표준 대조)
+
+우리 재설계 방향이 표준과 일치함을 확인하고, **우리가 안 넣은 표준 장치**도 드러남:
+
+- **pick 모션 구조** = OMPL(관절공간)로 pre-grasp → Cartesian LIN 으로 직선 접근 → Cartesian
+  으로 후퇴. 우리 세그먼트 계획과 동일. ([MoveIt pick&place](https://moveit.github.io/moveit_task_constructor/tutorials/pick-and-place.html))
+- **grasp 을 reachability 로 필터**가 명시 표준 단계 (MoveIt Grasps). 확장 = **reachability
+  map / inverse reachability map**: FK 를 미리 대량 계산해 도달 가능 SE(3)+manipulability 를
+  저장 → 요청마다 즉시 스크린 (라이브 IK 스윕 대체 = 빠른 resolve). ([MoveIt Grasps](https://moveit.picknik.ai/main/doc/examples/moveit_grasps/moveit_grasps_tutorial.html), [reachability-aware grasp](https://arxiv.org/pdf/1910.06404), [IRM](https://www.researchgate.net/publication/273131725_Stance_Selection_for_Humanoid_Grasping_Tasks_by_Inverse_Reachability_Maps))
+- **Cartesian(MoveL) 실현성** = "각 점 IK 가 풀려도 직선 이동은 보장 안 됨"이 필드 명제.
+  `compute_cartesian_path` 는 **달성 fraction(0~1)** 반환 → fraction≈1.0 요구가 표준. low fraction
+  원인 = 특이점 근접/joint-jump/orientation 불가, **jump_threshold** 로 급플립 차단. IK 솔버 품질도
+  갈림(KDL 특이점 실패 → **TRAC-IK** 로 해결 흔함) — 우리 pybullet DLS 도 후보. ([cartesian fraction](https://groups.google.com/g/moveit-users/c/wsxMwps2V4w), [singularity/cartesian](https://docs.picknik.ai/how_to/robotics_applications/cartesian_path_following/))
+- **object-centric + 핸드오버** = 이미 풀린 연구 영역: Contact-GraspNet(점군 6-DoF grasp, 관측 점에
+  rooting), SDF 로 도달 불가 grasp 빠른 스크린, 양 로봇 reachability SDF 로 핸드오버 교환 자세 선택. ([Contact-GraspNet](https://arxiv.org/abs/2103.14127), [reachability-aware handover](https://link.springer.com/article/10.1007/s10514-025-10201-y))
+
+## 3. 해결 원리 (설계 방향)
+
+1. **object-centric 측정** — 물체 3D 는 물체 자기 점군(mask→depth→base, `base_points_from_mask`)에서만.
+   `height=top−floor` 폐기. floor 는 detection 에서 제거, **planner 충돌 평면(cm 오차 OK, 옵션)** 으로만 강등.
+2. **멀티뷰로 occlusion 극복** — 단일 뷰는 물리적으로 전체 3D 불가. 타깃을 여러 각도로 관측해
+   base frame 점군 융합(이미 정렬 → 쌓기). **타깃 중심 멀티뷰 = 자동 뷰 계산**과 한 덩어리
+   (미리 티칭한 타깃-중심 자세는 존재 불가; search waypoint 는 1단계 광역 탐색용이라 별개).
+3. **reachable-orientation 파지** — top-down 강제 폐기. 조 축 수평(옆면 파지 성립) 유지 + **접근
+   자세는 그 위치에서 도달 가능한 것 중 선택**. antipodal(마주 보는 두 면). 스크린은 reachability
+   map(§2) 로 빠르게 → 살아남은 소수만 전체 IK 검증.
+4. **grasp 프레임 상대 동작** — 접근/후퇴는 **접근축** 기준(월드 +z 아님), 긴 이동은 **관절공간
+   home 경유**(pick↔place 도달성 분리). 세그먼트:
+   `home→pre: MoveJ(pose)` / `pre→grasp: MoveL(접근축, 자세 고정)` / `grasp→retract: MoveL` /
+   `retract→home→place-pre: MoveJ(joint/pose)` / `place 삽입·후퇴: MoveL`.
+   **MoveL 은 fraction 검사 + jump_threshold, 짧게** (경계 팔이라 중간점 깨질 수 있음).
+5. **resolve = cheap→expensive 필터** — 후보를 likelihood 순으로, **싼 게이트부터**(도달성 스크린 →
+   (미래)충돌 → 비싼 전체 IK/경로) 통과시켜 첫 합격 채택. deepening 의 "싼 것 먼저" 정신은 계승,
+   매직 staircase 는 이 원리로 대체. **충돌 게이트가 나중에 한 칸으로 끼워질 자리를 비워둠.**
+   `resolve` 는 index 말고 **IK 해(joint)를 반환**(실행부 재계산 제거). seed = 현재 관절.
+6. **정밀도 = closed-loop** — 2cm 는 캘(σ_t~7.5mm) 대비 빡빡 → 절대 open-loop 금지. 물체 점군
+   상대 파지 + eye-in-hand 공통오차 상쇄 + 접근하며 재관측. 멀티뷰가 여러 번 보므로 자연 흡수.
+7. **충돌은 지금 최소** — so101 단독/omx 정지로 멀티로봇 동적 충돌 defer. 바닥은 (a)손에 들어 회피
+   or (b)평면 하나. cross-robot 공유 충돌 월드(base_pose+URDF+live joint)는 재료는 있으나 dynamic
+   coordination 이 커서 뒤로 (step 4 설계).
+
+## 4. 구현 로드맵 (phase — 의존 순서, 각 phase 독립 검증)
+
 ```
-한 번 봐선 전체 형상 불가 (occlusion — 물리 한계)
-   ↓  옆·다른 각도에서도 관측
-여러 부분 점군을 base frame 에서 융합 (뷰별 TCP pose + hand_eye 로 이미 정렬 → 쌓으면 됨)
-   ↓
-융합 점군에서 물체 크기/파지 산출
+1. grasp 자세를 reachable-orientation 으로 (top-down 강제 제거)
+     + resolve 를 cheap→expensive 필터로(충돌 자리 예약, 해 반환) + 바닥·self 충돌 plane 최소
+     → 이걸로 #2("IK 전멸")가 풀린다. (IK 솔버는 안 건드림 — 정상 확인됨)
+2. so101 단독(omx 정지) 물체 바닥 — 자동 멀티뷰 관측 + object-centric detect/grasp
+     ★ 불변식: 처음부터 floor-free(물체 점군)로. 검증만 책상에서.  → #1 해소
+3. 손으로 들어(공중) 검증 — object-centric 이 진짜 바닥 무관인지 (+ 손↔물체 세그 분리)
+4. cross-robot 충돌 (설계부터 — 공유 충돌 월드; reachability SDF 스크린 검토)
+5. 핸드오버 (상대 능동 건넴 + reachability-aware 교환 자세 + coordination)
 ```
-멀티뷰는 floor(추측)를 **관측**으로 대체한다 → floor 없이 되고, 더 정확하고, 공중/손도 커버.
 
-## 3. object-centric 파지 (floor-free)
+## 5. 검증 상태 (정직하게 — 뭘 확인했고 뭘 안 했나)
 
-- **물체 3D = 물체 자기 점군에서만** (mask → depth → base 점군 → 크기/자세;
-  `base_points_from_mask` 이미 있음). `height = top − floor` **폐기** — phantom 은 floor 계산에서만
-  나오므로 floor 를 안 쓰면 그 문제 클래스 자체가 소멸.
-- **파지 = antipodal** — 평행 그리퍼는 결국 "마주 보는 두 면 + 폭이 그리퍼 안 + 손가락 닿는 표면"
-  찾기. 위치/폭/자세(yaw+접근축) 전부 물체 점군에서. 바닥/'위' 방향 무관 → 책상/손/공중 동일 로직.
-- **floor 의 강등** — detection 에서 완전히 빠지고, 남는 역할은 "하강 시 책상 충돌 회피" 하나.
-  그것도 perception 정밀 측정이 아니라 **planner 충돌 평면(cm 오차 OK, 옵션)**. 책상 없으면 안 씀.
+- **시뮬 검증됨**: top-down 근본원인(§1.2) / reachable 자세 존재 / resolve 벤치(§1.3).
+- **미검증 — 지금 시뮬로 가능 (구현 전 먼저)**:
+  1. **MoveL 직선 중간점 IK 실현성** (지금까지 끝점만 봄) — 경계 근처라 실패 가능. fraction 측정.
+  2. **MoveL 이 접근 중 자세 고정인가 slerp 회전인가** ([backend.md](backend.md) #3 slerp 기록) — 코드 확인.
+  3. **진짜 못 집는 오브젝트** → resolve 전멸 → task 가 깔끔히 실패·탈출하나.
+  4. pre·grasp·그 사이 경로 **셋 다** (지금 끝점 2개만).
+  5. 특이점 근처 MoveL 튐 (EMA 제거 후 미검증과 연결).
+- **실물-only (집)**: raw depth 품질(D405 최소거리~7cm/각도) / depth↔color 정렬 전제 / antipodal 이
+  부분 점군에 견디나 / 실제 파지 성공.
 
-## 4. 정밀도 = closed-loop
+## 6. 채택 판단 필요 (우리 규모에 — cargo-cult 금지)
 
-2cm 는 현재 캘(σ_t ~7.5mm)에 비해 빡빡하다. **절대좌표 open-loop 한 방 금지** —
-물체 자기 점군 기준 **상대 파지 + eye-in-hand 공통오차 상쇄 + 접근하며 재관측(close-up)** 으로
-좁힌다. 멀티뷰 파이프라인이 어차피 여러 번 보므로 자연 흡수.
+§2 표준을 **전부 넣는 게 아니라** 우리 use case(SO-101, study, 단일 팔)에서 정당화되는지 따진다:
 
-## 5. 충돌 (지금은 최소, 나중 설계)
-
-충돌 대상 = self / 바닥 / 다른 로봇. 재료는 있음(base_pose=[robots.yaml](../robot/robots.yaml),
-URDF, 상대 joint=subscribe)지만 **하나의 공유 충돌 월드로 통합 안 됨** (현재 pybullet 은 로봇별
-격리 클라이언트 = self-collision 만, 바닥·상대 없음). 상대 로봇은 **dynamic** 이라 스냅샷이 낡음
-→ 진짜 안전은 연속 검사/coordination 필요 = 큰 일. **그래서 뒤로 미룸.** 지금 스코프:
-
-- **so101 하나만 움직이고 omx 는 정지** → 멀티로봇 동적 충돌 전부 defer.
-- **바닥 충돌은 최소** — (a) 물체를 손에 들어 공중에 두면 바닥 부딪힐 게 없음, 또는 (b) 바닥 평면
-  하나만 넣어 그것만 체크. 큰 충돌 시스템 안 만듦.
-
-cross-robot 충돌 월드는 시스템에서 **유일하게 본질적으로 robot-scoped 를 넘는 cross-robot 관심사**
-— 소유권(motion 이 상대 mirror vs 별도 host-level 충돌 서비스)은 step 4 에서 설계.
-
-## 6. 의존 순서 + 구현 로드맵 (잠금)
-
-**뿌리 = IK 도달성 신뢰(#2).** 자동 뷰 생성도, 파지 후보 필터도 전부 "이 pose 갈 수 있냐"를
-믿을 수 있어야 성립. 지금 `resolve_reachable`/`_ik_from_seed` 는 도달 가능한 pose 를 불가로
-오판([backend.md](backend.md) #2) → 먼저 고침.
-
-```
-1. IK 도달성 버그 수정 (#2)   + 바닥·self 충돌 plane 최소
-2. so101 단독 (omx 정지) — 물체 바닥에 놓고 자동 멀티뷰 관측 + object-centric detect/grasp
-     · 바닥 충돌 최소 (평면 or 손에 들어 회피)
-     · ★ 불변식: 처음부터 floor-free(물체 점군)로 지을 것 — 그래야 step 3 이 재작성이 아님
-3. 손으로 들어(공중) 같은 grasp — object-centric 이 정말 바닥 무관인지 검증 (+ 손↔물체 세그 분리)
-4. 다른 로봇 충돌회피 (설계부터 제대로 — 공유 충돌 월드)
-5. 핸드오버 (상대가 능동적으로 건넴 + coordination)
-```
-각 단계가 집에서 독립 검증되는 increment (1:큐브 도달성 / 2:책상 파지 / 3:공중 파지 …).
-
-## 7. 재활용 vs 신규 (구현 시 참고)
-
-- **재활용** — GDINO+SAM(2D 식별·mask), `base_points_from_mask`(mask→base 점군), TCP pose·hand_eye,
-  뷰별 점군이 이미 base frame 정렬이라 융합이 "쌓기"로 됨, 기존 search sweep(= **1단계 광역 탐색**
-  용 — 타깃 멀티뷰가 아님, 아래 주의).
-- **신규** — 타깃 중심 **자동 관측 뷰 생성**(NBV-lite: 타깃 중심 호/반구 샘플 → 도달·충돌·그리퍼
-  가림 필터), 멀티뷰 점군 융합, 융합 점군 antipodal 파지 생성, closed-loop 재관측, (나중) 공유 충돌 월드.
-- **폐기** — `floor_z_and_height` 기반 height/base_z + height prior 크기창.
-
-> ⚠️ **search waypoint ≠ 타깃 멀티뷰.** search 그룹은 "물체가 어디 있나" **넓게 훑는 coverage**
-> (1단계 식별)용이라, 특정 타깃을 여러 각도로 보는 관측 자세와 목적이 다르다. 타깃 위치는 런타임에야
-> 알므로 **"타깃 중심 멀티뷰 관측"은 본질적으로 "자동 뷰 계산"과 같은 것** — 미리 티칭해둔 타깃-중심
-> 자세 세트라는 게 존재할 수 없다 (그래서 둘은 한 덩어리로 step 2 에서 신규 구현).
-
-## 8. 실물에서 확인할 것 (집 — 하드웨어 세션)
-
-- **raw depth 품질**: 물체 위에 depth 가 촘촘히 찍히나 / 구멍·노이즈인가 (object-centric 도 depth 가
-  소스라 upstream). D405 최소거리(~7cm)/각도 준수 여부.
-- **depth↔color 정렬** 전제 확인 (bbox=color 픽셀이 맞는 depth 픽셀을 가리키나 — 코드는 정렬됐다 전제만).
-- antipodal 이 D405 **부분 점군 품질**에 얼마나 견디나 (2cm 물체 점 밀도).
-- #2 진단 로깅으로 IK 기각 사유(pos/ori 잔차 / self·바닥 충돌 / 수렴)가 어느 것인지.
+- **reachability map precompute** vs 라이브 IK 스윕 — 후보 적으면 라이브도 빠를 수 있음. 값어치 판단.
+- **TRAC-IK 도입** vs pybullet DLS 유지 — 특이점 실측 문제 나오면.
+- **Contact-GraspNet(학습)** vs 기하 antipodal — study 는 기하부터, 필요 시 학습 승격.
+- **compute_cartesian_path 등가(fraction/jump_threshold)** 를 우리 MoveL 에 도입 — 이건 거의 필수급.
 
 ---
 ---

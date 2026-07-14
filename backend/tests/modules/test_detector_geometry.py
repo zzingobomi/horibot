@@ -130,3 +130,112 @@ def test_mask_contour_rectangle():
 
 def test_mask_contour_empty_none():
     assert mask_contour(np.zeros((10, 10), dtype=bool)) is None
+
+
+# ─── object-centric 기하 (2026-07-14 재설계 — floor ring 추정 폐기) ──
+
+
+def _cube_view_points(
+    cx: float, cy: float, top_z: float, height: float, *, side: str | None,
+    edge: float = 0.02, n: int = 12,
+) -> np.ndarray:
+    """한 뷰에서 보이는 큐브 점군 합성 — 윗면 + (보이면) 옆면 1개.
+
+    단일 뷰의 물리 한계(가려진 면은 depth 없음)를 그대로 흉내: side=None 이면
+    윗면만 (top-down), side="x" 면 +x 옆면이 보임 (사선 뷰).
+    """
+    xs = np.linspace(-edge / 2, edge / 2, n)
+    gx, gy = np.meshgrid(xs, xs)
+    top = np.stack(
+        [gx.ravel() + cx, gy.ravel() + cy, np.full(n * n, top_z)], axis=1
+    )
+    if side is None:
+        return top
+    zs = np.linspace(top_z - height, top_z, n)
+    gy2, gz = np.meshgrid(xs, zs)
+    face = np.stack(
+        [np.full(n * n, cx + edge / 2), gy2.ravel() + cy, gz.ravel()], axis=1
+    )
+    return np.vstack([top, face])
+
+
+def test_object_metrics_single_view_underestimates_height():
+    """단일 top-down 뷰(윗면만)는 height≈0 — 옆면 depth 부재의 물리 한계를
+    기하가 정직하게 반영해야 (여기서 바닥을 '추측'해 height 를 만들면 회귀 —
+    그 추측이 옛 floor ring 이고 phantom −0.23m 사고의 뿌리)."""
+    from modules.detector.geometry import object_metrics_from_points
+
+    pts = _cube_view_points(0.2, 0.1, top_z=-0.022, height=0.023, side=None)
+    m = object_metrics_from_points(pts)
+    assert m is not None
+    position, base_z, height = m
+    assert abs(position[0] - 0.2) < 1e-3 and abs(position[1] - 0.1) < 1e-3
+    assert abs(position[2] + 0.022) < 1e-3
+    assert height < 0.005  # 윗면만 → 두께 없음 (과소가 정직)
+
+
+def test_object_metrics_fused_views_recover_height():
+    """멀티뷰 융합(윗면 + 옆면)이 실 height/base_z 를 복원 — floor 추정 없이
+    물체 자기 점군만으로. grasp_redesign_journey.md §5.1-2 의 핵심 주장."""
+    from modules.detector.geometry import object_metrics_from_points
+
+    top_view = _cube_view_points(0.2, 0.1, -0.022, 0.023, side=None)
+    side_view = _cube_view_points(0.2, 0.1, -0.022, 0.023, side="x")
+    fused = np.vstack([top_view, side_view])
+    m = object_metrics_from_points(fused)
+    assert m is not None
+    position, base_z, height = m
+    assert abs(height - 0.023) < 3e-3, height  # 실 높이 복원
+    assert abs(base_z - (-0.045)) < 3e-3, base_z  # 물체 바닥 = top - height
+    assert abs(position[2] + 0.022) < 2e-3  # 윗면 z 유지
+
+
+def test_object_metrics_zgap_cuts_below_outliers():
+    """실물 #1 phantom 회귀 (§10.3-F) — mask 경계 flying-pixel/배경 누출이 물체
+    **한참 아래** 점 봉우리를 만들어도 base_z 가 안 끌려간다. 옛 2-percentile
+    bottom 은 outlier 3~5% 에 base_z −0.2m / height 20cm phantom (실물 로그
+    일치) — z-gap 군집(top 에서 이어지는 z 덩어리만 몸통)이 수정."""
+    from modules.detector.geometry import object_metrics_from_points
+
+    body = _cube_view_points(0.2, 0.1, top_z=-0.022, height=0.023, side="x")
+    rng = np.random.default_rng(0)
+    n_out = max(3, int(len(body) * 0.05))  # 5% 아래-outlier
+    outliers = np.stack(
+        [
+            0.2 + rng.normal(0, 0.02, n_out),
+            0.1 + rng.normal(0, 0.02, n_out),
+            rng.uniform(-0.30, -0.12, n_out),  # 물체보다 한참 아래 (phantom 영역)
+        ],
+        axis=1,
+    )
+    m = object_metrics_from_points(np.vstack([body, outliers]))
+    assert m is not None
+    position, base_z, height = m
+    assert abs(base_z - (-0.045)) < 3e-3, base_z  # 물체 바닥 유지 — phantom 없음
+    assert abs(height - 0.023) < 3e-3, height
+    assert abs(position[2] + 0.022) < 2e-3
+
+
+def test_voxel_downsample_reduces_and_preserves_extent():
+    from modules.detector.geometry import voxel_downsample
+
+    pts = _cube_view_points(0.0, 0.0, 0.0, 0.02, side="x", n=40)
+    ds = voxel_downsample(pts, voxel_m=0.003)
+    assert len(ds) < len(pts)
+    # 범위 보존 (기하 재계산 소스로 유효)
+    for axis in range(3):
+        assert abs(ds[:, axis].min() - pts[:, axis].min()) < 0.003
+        assert abs(ds[:, axis].max() - pts[:, axis].max()) < 0.003
+
+
+def test_cluster_indices_by_xy_groups_same_object():
+    from modules.detector.geometry import cluster_indices_by_xy
+
+    positions = [
+        (0.20, 0.10, 0.0),  # 물체 A 뷰1
+        (0.21, 0.11, 0.0),  # 물체 A 뷰2 (1.4cm 옆 — 같은 물체)
+        (0.35, -0.2, 0.0),  # 물체 B
+    ]
+    groups = cluster_indices_by_xy(positions, eps_m=0.04)
+    as_sets = sorted(sorted(g) for g in groups)
+    assert as_sets == [[0, 1], [2]]

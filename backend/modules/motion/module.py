@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Callable
@@ -41,6 +42,7 @@ from .contract import (
     ResolveReachableResponse,
     StopRequest,
     StopResponse,
+    TcpPose,
     TcpSnapshotRequest,
     TcpState,
     TrajState,
@@ -57,6 +59,76 @@ _TCP_STATE_HZ = 20.0
 # Jog 입력이 0.2초 이상 끊기면 새 Jog로 간주하고,
 # 현재 인코더 위치를 기준(ref)으로 다시 잡아 이전 기준과의 오차 누적을 방지한다.
 _JOG_IDLE_RESET_S = 0.2
+
+# ── 직선(MoveL) 경로 실현성 검증 상수 ──────────────────────────
+# 샘플 간격 — 끝점은 풀려도 중간 s 에서만 못 풀리는 경우가 실재 (2026-07-09).
+_PATH_STEP_M = 0.01
+# 인접 샘플 해 사이 관절 도약 상한 — MoveIt jump_threshold 등가. 정상 추종은
+# 1cm 당 ≤5° (2026-07-14 시뮬 실측), 구성 플립(특이점 근접)은 수십°~180° 로
+# 불연속 — 20° 는 정상의 4배 마진이면서 플립을 확실히 자름.
+_PATH_MAX_JUMP_RAD = 0.35  # ≈20°
+
+# ── resolve_reachable 게이트 예산 ─────────────────────────────
+# cheap→expensive (grasp_redesign_journey.md §5.5): 실패 기각 비용 = 예산에
+# 비례하므로 싼 게이트를 전 그룹에 먼저. 아래 IK 예산 점증은 2026-07-09 벤치
+# 근거 (가용 자세 median 8회 수렴 / 단일 풀예산 패스는 실패 케이스 10× 악화).
+_SCREEN_IK_BUDGET = 5  # ① position-only 위치 스크린
+_IK_BUDGETS = (10, 40, None)  # ② 자세 IK deepening (None = 실행용 풀예산)
+_PATH_IK_BUDGET = 10  # ⑤ 경로 샘플 IK — 보수적 소예산 (미수렴 = 후보 기각)
+# ④ 관절 보간 경로 샘플 간격 — 최대 관절 이동 기준 (IK 없음, 충돌 검사만이라
+# 촘촘해도 싸다. 5° 면 SO-101 링크 끝 이동 ~수 mm 단위 해상도).
+_JOINT_PATH_STEP_RAD = math.radians(5.0)
+
+
+def _linear_path_blocker(
+    kin: Kinematics,
+    p0: tuple[float, float, float],
+    q0: tuple[float, float, float, float] | None,
+    p1: tuple[float, float, float],
+    q1: tuple[float, float, float, float] | None,
+    seed: list[float],
+    *,
+    restarts: int | None = None,
+) -> str | None:
+    """직선 p0→p1 (자세 q0→q1 slerp 동기) 을 _PATH_STEP_M 간격 IK 로 검증.
+
+    막히면 사유 문자열 (사용자 표시용), 전 구간 통과면 None. 검증 = 실행과 같은
+    보간 (MoveL 의 위치 lerp + 자세 slerp) — 검증 통과 == 실행 가능 이 성립해야
+    "계획 시점 기각" 이 의미 있음. 인접 샘플 해 사이 관절 도약(구성 플립)도 기각
+    (jump_threshold 등가 — 끝점만 보면 플립 경로가 통과해 실행 중 팔이 튐).
+    blocking (IK) — 호출자가 to_thread 책임.
+    """
+    start = np.asarray(p0, dtype=float)
+    delta = np.asarray(p1, dtype=float) - start
+    length = float(np.linalg.norm(delta))
+    ori_slerp = (
+        Slerp([0.0, 1.0], Rotation.from_quat([q0, q1]))
+        if q0 is not None and q1 is not None
+        else None
+    )
+
+    def _quat_at(frac: float) -> tuple[float, float, float, float] | None:
+        if ori_slerp is not None:
+            q = ori_slerp(frac).as_quat()
+            return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+        return q1  # q0 미상(None)이면 목표 자세 고정 / q1=None 은 position-only
+
+    n = max(2, int(length / _PATH_STEP_M))
+    chain = list(seed)
+    for i in range(1, n + 1):
+        frac = i / n
+        wp = start + delta * frac
+        sol = kin.ik((wp[0], wp[1], wp[2]), _quat_at(frac), chain, restarts)
+        if sol is None:
+            return f"시작 {length * frac * 100:.1f}cm 지점 IK 불가"
+        jump = max(abs(a - b) for a, b in zip(sol, chain))
+        if jump > _PATH_MAX_JUMP_RAD:
+            return (
+                f"시작 {length * frac * 100:.1f}cm 지점 관절 도약 "
+                f"{math.degrees(jump):.0f}° — 구성 플립 (특이점 근접)"
+            )
+        chain = list(sol)
+    return None
 
 
 @publishes(
@@ -424,8 +496,9 @@ class MotionModule:
     async def move_l(self, req: MoveLRequest) -> MoveLResponse:
         """TCP 를 현재 위치 → target(pose) 직선 이동. 완료까지 대기.
 
-        target 은 PoseTarget — quaternion 지정 시 경로 전 구간 자세 고정,
-        tcp_offset 지정 시 제어점 보정한 끝점 (MoveJ 와 동일 의미)."""
+        자세 = pt.quaternion 이 **목표 자세** — 현재 자세(FK)에서 경로 s 에 동기해
+        slerp 보간 (UR/ABB/MoveIt 식, 자세 고정은 현재≈목표인 특수 케이스).
+        None = position-only. tcp_offset 은 제어점 보정한 끝점 (MoveJ 와 동일)."""
         pt = req.target
         current = self._latest_arm_rad
         if current is None:
@@ -437,36 +510,23 @@ class MotionModule:
             np.asarray(start_pos, dtype=float),
             np.asarray(end_pos, dtype=float),
         )
-        # 자세 보간(slerp) 준비 — pt.quaternion 은 **목표 자세**(경로 끝). 현재
-        # 자세(FK)에서 s 에 동기해 보간한다 (UR/ABB/MoveIt 식 MoveL). None=position
-        # -only. 자세 고정은 현재≈목표인 특수 케이스로 자연히 나온다.
-        ori_slerp = (
-            Slerp([0.0, 1.0], Rotation.from_quat([start_quat, pt.quaternion]))
-            if pt.quaternion is not None
-            else None
-        )
-
-        def _ori_at(frac: float) -> tuple[float, float, float, float] | None:
-            if ori_slerp is None:
-                return None
-            q = ori_slerp(frac).as_quat()
-            return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
-
         # 경로 사전 검증 (fail-fast) — runner 는 실행 중 step IK 실패 시 그 자리
         # 공중 정지(FAILED). MoveL 은 끝점은 풀려도 중간 s 에서만 못 풀리는 경우가
-        # 실재 (2026-07-09 PnP 기울인 approach) → 시작 전 ~1cm 간격 샘플 IK 로 전
-        # 구간 검증(실행과 같은 slerp 자세로), 안 풀리면 모션 0 으로 reject.
-        seed = list(current)
-        n = max(2, int(path.total_length / 0.01))
-        for i in range(1, n + 1):
-            s = path.total_length * i / n
-            wp = path.position_at(s)
-            sol = self._kin.ik((wp[0], wp[1], wp[2]), _ori_at(i / n), seed)
-            if sol is None:
-                raise MotionRejected(
-                    f"경로 IK 실패 — 시작 {s * 100:.1f}cm 지점 도달 불가"
-                )
-            seed = list(sol)
+        # 실재 (2026-07-09 PnP 기울인 approach) → 시작 전 샘플 IK + 구성 플립
+        # (jump) 검증, 안 풀리면 모션 0 으로 reject. blocking → to_thread
+        # (jog/stream 이벤트 루프 안 굶김 — resolve_reachable 과 동일 이유).
+        kin = self._kin
+        blocker = await asyncio.to_thread(
+            _linear_path_blocker,
+            kin,
+            (start_pos[0], start_pos[1], start_pos[2]),
+            start_quat if pt.quaternion is not None else None,
+            end_pos,
+            pt.quaternion,
+            list(current),
+        )
+        if blocker is not None:
+            raise MotionRejected(f"경로 IK 실패 — {blocker}")
         if not self._begin_move():
             raise MotionRejected("이전 motion 진행 중")
         assert self._runner is not None and self._move_done is not None
@@ -479,11 +539,17 @@ class MotionModule:
     async def resolve_reachable(
         self, req: ResolveReachableRequest
     ) -> ResolveReachableResponse:
-        """후보 그룹 배치 IK 판정 (모션 0) — 첫 '전 pose 가용' 그룹 index.
+        """후보 그룹 가용성 판정 (모션 0) — cheap→expensive 게이트 파이프라인.
 
-        IK 는 blocking(pybullet) + 그룹 다수라 to_thread — jog/stream 등 이벤트
-        루프를 안 굶김. 그룹 내 seed 연쇄(앞 해 → 다음 seed) → 가까운 pose 는
-        1발 수렴, 실패 그룹만 restart 풀비용.
+        게이트 순서 = 계약 docstring (contract.py ResolveReachableRequest):
+        ① 위치 스크린 → ② 자세 IK deepening → ③ 바닥 충돌 → ③b 장애물 점군
+        충돌 → ④ 관절 보간 경로 → ⑤ 직선 경로. 싼 게이트를 전 그룹에 먼저
+        돌려 불가 그룹 기각을 싸게 (deepening 의 "싼 예산 먼저" 정신 계승 —
+        2026-07-09 벤치: 단일 풀예산 패스는 실패 케이스 10× 악화). 미래
+        cross-robot 충돌 게이트는 ③b 옆에 낀다.
+
+        채택 그룹의 IK 해를 반환 — 실행부가 재계산 없이 그 관절로 이동 (판정
+        해 == 실행 해). IK 는 blocking(pybullet) + 그룹 다수라 to_thread.
         """
         current = self._latest_arm_rad
         if current is None:
@@ -491,33 +557,155 @@ class MotionModule:
         assert self._kin is not None  # start() 이후만 서비스 도달
         kin = self._kin
         groups = req.groups
+        has_obstacles = bool(req.obstacle_points)
+        if req.path_from is not None and len(req.path_from) != self._dof:
+            raise MotionRejected(
+                f"path_from dof 불일치 ({len(req.path_from)} != {self._dof})"
+            )
 
-        def _scan() -> int:
-            # iterative deepening — 불가 그룹 기각 비용 = restart 예산에 비례
-            # (실패만 풀비용). 가용 자세는 median 8회에 걸림 (2026-07-09 실측)
-            # → 예산 10 의 1차 패스가 대부분 해결, 못 찾으면 예산 올려 재스캔.
-            # trade-off: 1차에서 뒤 그룹이 먼저 잡히면 (앞 그룹이 40회짜리 난해
-            # 해였을 때) 선호 순서가 미세하게 양보됨 — 속도와 맞바꾼 것.
-            for budget in (10, 40, None):  # None = IK_RESTARTS (실행용 풀예산)
-                for gi, group in enumerate(groups):
-                    seed = list(current)
-                    for pose in group:
-                        sol = kin.ik(pose.position, pose.quaternion, seed, budget)
-                        if sol is None:
-                            break
-                        seed = list(sol)
-                    else:
-                        return gi
-            return -1
+        def _screen(group: list[TcpPose]) -> bool:
+            # ① position-only 소예산 — 위치 자체가 workspace 밖이면 자세는 볼
+            # 것도 없다 (자세 실패의 대다수가 여기서 싸게 걸러지진 않지만,
+            # 완전 범위 밖 후보를 풀예산까지 끌고 가는 것을 차단).
+            seed = list(current)
+            for pose in group:
+                sol = kin.ik(pose.position, None, seed, _SCREEN_IK_BUDGET)
+                if sol is None:
+                    return False
+                seed = list(sol)
+            return True
+
+        def _solve(
+            group: list[TcpPose], budget: int | None
+        ) -> list[list[float]] | None:
+            # ② 전 pose 자세 IK — seed 연쇄 (앞 해 → 다음 seed, 가까운 pose 는
+            # 1발 수렴). 실패 그룹만 restart 예산 풀비용.
+            seed = list(current)
+            sols: list[list[float]] = []
+            for pose in group:
+                sol = kin.ik(pose.position, pose.quaternion, seed, budget)
+                if sol is None:
+                    return None
+                sols.append(sol)
+                seed = list(sol)
+            return sols
+
+        def _floor_blocked(sols: list[list[float]]) -> bool:
+            # ③ 바닥 평면 충돌 — 해 자세에서 로봇 링크 침투 기각. 해(구성)
+            # 종속이라 엄밀히는 다른 IK 가지가 통과할 수도 있으나, 6DOF 전체
+            # 자세 IK 의 가지는 소수 + 후보 가족이 넓어 보수 기각이 싸다.
+            if req.floor_z is None:
+                return False
+            return any(kin.floor_collision(s, req.floor_z) for s in sols)
+
+        def _obstacle_blocked(sols: list[list[float]]) -> bool:
+            # ③b 장애물 점군 충돌 — 그리퍼(벌림 반영)가 관측 점군을 침투하는
+            # 후보 기각 (§10.4-3). 점군은 _scan 진입 시 1회 로드.
+            if not has_obstacles:
+                return False
+            return any(
+                kin.obstacle_collision(s, gripper_open=req.gripper_open)
+                for s in sols
+            )
+
+        def _joint_path_blocked(sols: list[list[float]]) -> bool:
+            # ④ path_from → 첫 pose 해 관절 보간 경로 — naive MoveJ 가 바닥/
+            # 물체를 스치는 것을 계획 시점 기각 (§10.4-4). IK 없음 (충돌만).
+            if req.path_from is None:
+                return False
+            qa = np.asarray(req.path_from, dtype=float)
+            qb = np.asarray(sols[0], dtype=float)
+            n = max(2, int(math.ceil(float(np.max(np.abs(qb - qa)))
+                                     / _JOINT_PATH_STEP_RAD)))
+            for k in range(1, n + 1):
+                q = [float(v) for v in qa + (qb - qa) * (k / n)]
+                if kin.self_collision(q):
+                    return True
+                if req.floor_z is not None and kin.floor_collision(q, req.floor_z):
+                    return True
+                if has_obstacles and kin.obstacle_collision(
+                    q, gripper_open=req.gripper_open
+                ):
+                    return True
+            return False
+
+        def _linear_blocked(group: list[TcpPose], sols: list[list[float]]) -> bool:
+            # ⑤ 연속 pose 사이 직선 실현성 — MoveL 실행 전제 (끝점만 보면 중간
+            # 실패가 실행 시점에 터짐 — 그 거부를 계획 시점으로 앞당김).
+            if not req.linear:
+                return False
+            for k in range(len(group) - 1):
+                blocker = _linear_path_blocker(
+                    kin,
+                    group[k].position,
+                    group[k].quaternion,
+                    group[k + 1].position,
+                    group[k + 1].quaternion,
+                    sols[k],
+                    restarts=_PATH_IK_BUDGET,
+                )
+                if blocker is not None:
+                    return True
+            return False
+
+        def _scan() -> tuple[int, list[list[float]], str]:
+            alive = [gi for gi in range(len(groups)) if _screen(groups[gi])]
+            if not alive:
+                return -1, [], f"전 후보({len(groups)}) 위치가 workspace 밖"
+            rejected: set[int] = set()  # ③~⑤ 확정 기각 (예산과 무관한 불가)
+            gate_rejects = {"floor": 0, "obstacle": 0, "joint_path": 0, "path": 0}
+            for budget in _IK_BUDGETS:
+                for gi in alive:
+                    if gi in rejected:
+                        continue
+                    sols = _solve(groups[gi], budget)
+                    if sols is None:
+                        continue  # 예산 부족일 수 있음 — 다음 단계 재시도
+                    if _floor_blocked(sols):
+                        rejected.add(gi)
+                        gate_rejects["floor"] += 1
+                        continue
+                    if _obstacle_blocked(sols):
+                        rejected.add(gi)
+                        gate_rejects["obstacle"] += 1
+                        continue
+                    if _joint_path_blocked(sols):
+                        rejected.add(gi)
+                        gate_rejects["joint_path"] += 1
+                        continue
+                    if _linear_blocked(groups[gi], sols):
+                        rejected.add(gi)
+                        gate_rejects["path"] += 1
+                        continue
+                    return gi, sols, ""
+            return -1, [], (
+                f"가용 그룹 없음 — 위치 통과 {len(alive)}/{len(groups)}, "
+                f"자세 IK 실패 {len(alive) - len(rejected)}, "
+                f"바닥 충돌 기각 {gate_rejects['floor']}, "
+                f"장애물(그리퍼↔물체) 기각 {gate_rejects['obstacle']}, "
+                f"이동 경로 기각 {gate_rejects['joint_path']}, "
+                f"직선 경로 기각 {gate_rejects['path']}"
+            )
+
+        def _scan_with_obstacles() -> tuple[int, list[list[float]], str]:
+            # 장애물 점군 lifecycle — 판정 동안만 scene 에 존재 (잔존 = 이후
+            # 판정 오염). 미지정이면 set 호출 자체를 안 함 (fake kin 호환).
+            if not has_obstacles:
+                return _scan()
+            kin.set_obstacle_points(req.obstacle_points)
+            try:
+                return _scan()
+            finally:
+                kin.set_obstacle_points(None)
 
         t0 = time.perf_counter()
-        idx = await asyncio.to_thread(_scan)
+        idx, sols, msg = await asyncio.to_thread(_scan_with_obstacles)
         logger.info(
-            "resolve_reachable: groups=%d → index=%d (%.2fs)",
-            len(groups), idx, time.perf_counter() - t0,
+            "resolve_reachable: groups=%d floor_z=%s linear=%s → index=%d (%.2fs)%s",
+            len(groups), req.floor_z, req.linear, idx,
+            time.perf_counter() - t0, f" [{msg}]" if msg else "",
         )
-        msg = "" if idx >= 0 else "가용 그룹 없음"
-        return ResolveReachableResponse(index=idx, message=msg)
+        return ResolveReachableResponse(index=idx, solutions=sols, message=msg)
 
     @service(Motion.Service.TCP_SNAPSHOT)
     def tcp_snapshot(self, req: TcpSnapshotRequest) -> TcpState:

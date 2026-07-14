@@ -182,23 +182,32 @@ def test_pick_and_place_scenario_tree():
     entries = build_preview(mod.scenario)
 
     assert _rows(entries) == [
+        ("home_waypoint", 0),
         ("plan_pick", 0),
         ("detect", 1),
-        ("resolve_grasp", 1),
+        ("observe_and_plan_grasp", 1),
+        ("try_plan_grasp", 2),  # 스윕 관측 시드로 첫 성립 검사
+        ("fuse_target", 3),
+        ("go_home", 2),  # 뷰 간 이동 = home 경유 (§10.4-4)
+        ("try_plan_grasp", 2),  # 뷰 추가 후 재검사 (adaptive 루프)
+        ("fuse_target", 3),
         ("plan_place", 0),
         ("detect", 1),
         ("resolve_place", 1),
         ("execute_pick", 0),
+        ("go_home", 1),
         ("pre_grasp", 1),
         ("open_gripper", 1),
-        ("descend", 1),
+        ("advance", 1),
         ("close_gripper", 1),
-        ("lift", 1),
+        ("withdraw", 1),
+        ("go_home", 1),
         ("execute_place", 0),
         ("pre_place", 1),
-        ("lower", 1),
+        ("insert", 1),
         ("release", 1),
         ("retreat", 1),
+        ("go_home", 1),
     ]
     by_row = {(e.name, e.depth): e for e in entries}
     # place 경로는 `if place_object:` / `if drop is not None:` 안 — 조건부 표시

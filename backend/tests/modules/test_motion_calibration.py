@@ -140,6 +140,14 @@ class _RecordingKin:
     def self_collision(self, joint_angles) -> bool:
         return False
 
+    def floor_collision(self, joint_angles, floor_z) -> bool:
+        return False
+
+    def set_obstacle_points(self, points) -> None: ...
+
+    def obstacle_collision(self, joint_angles, *, gripper_open=False) -> bool:
+        return False
+
 
 def test_sag_fk_calls_inner_with_actual_angles(urdf_copy: Path, arm):
     names = [s.name for s in arm]

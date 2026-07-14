@@ -109,6 +109,9 @@ explicit = true
 [tool.ruff]
 line-length = 88
 target-version = "py311"
+# grasp_verify = object-centric 파지 재설계 sim 검증/프로토타입 (docs §10) — 프로덕션
+# 아님, scratch 품질이라 lint 규칙 면제. 확정 설계·현재 코드는 docs/grasp_redesign_journey.md.
+extend-exclude = ["scripts/grasp_verify"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

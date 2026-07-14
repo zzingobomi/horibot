@@ -221,61 +221,102 @@ def grasp_ik_groups(plan: list[GraspCandidate]) -> list[list[TcpPose]]:
     ]
 
 
-def _oriented_family(
-    yaw_options: tuple[tuple[float, float], ...],
-) -> list[tuple[str, Rotation, float]]:
-    """tilt × yaw × flip 자세 가족 — (label, rot, across). place 접근 후보용."""
-    out: list[tuple[str, Rotation, float]] = []
-    for tilt_deg in _TILTS_DEG:
-        for yaw_base, across in yaw_options:
-            for flip in (0.0, math.pi):  # 조 대칭 — 180° flip 은 적치 등가
-                rot = (
-                    Rotation.from_euler("z", yaw_base + flip)
-                    * _TOPDOWN
-                    * Rotation.from_euler("y", math.radians(tilt_deg))
-                )
-                label = (
-                    f"tilt={tilt_deg:+d} yaw={math.degrees(yaw_base):.0f} "
-                    f"flip={math.degrees(flip):.0f}"
-                )
-                out.append((label, rot, across))
-    return out
+# 놓기 yaw 후보 — 정렬 가족 우선, 자유 가족 폴백 (2026-07-14 실물 진단):
+# 놓기 yaw 는 본질적으로 자유(물체를 어느 방향으로 내려놓아도 됨)이고 상자 방위
+# 정렬은 **선호**일 뿐이다. 그런데 SO-101 은 한 지점에서 닿는 손목 자세가 희박해
+# — 집기는 antipodal 쌍이 조 방향을 수십 개 공급(쌍 10×flip 2×tilt 13=260)해서
+# 그물이 넓은데, 놓기를 yaw 2개로 못 박으면 "위치 통과 26/26, 자세 IK 실패 26"
+# (실물 로그 — 지점은 닿는데 내민 방향이 전부 사각). 그래서 두 가족:
+# ① 정렬 = 상자 방위 + {0,180,90,270}° (180° 는 위치 등가지만 조·롤 방향이 달라
+#   IK 가 다른 별개 자세 — 등가로 보고 떨군 게 커버리지 반토막 회귀였다)
+# ② 자유 = 30° 격자의 나머지 8방향 — 정렬 전멸 시에만 (도달이 정렬을 이긴다).
+_PLACE_ALIGNED_YAW_OFFSETS_DEG = (0.0, 180.0, 90.0, 270.0)
+_PLACE_FREE_YAW_OFFSETS_DEG = (
+    30.0, -30.0, 60.0, -60.0, 120.0, -120.0, 150.0, -150.0
+)
+# 놓기 tilt 사다리 — 파지(13단)보다 성기게 (perf, 2026-07-14 실측): 전멸 가족은
+# 전 그룹이 풀예산 IK 를 태워 후보 수에 정비례로 느리다 (52+104 gr → 도합 수 분).
+# resolve 는 "첫 통과" 를 고르므로 15° 해상도보다 도달 띠 커버(0~±60°)가 본질 —
+# ±15 랑간 제거, ±75/±90(수평 삽입 = 상자 상면 쓸기 위험)도 놓기에선 제외.
+# 실측 채택 이력: 파지 +30 / 놓기 +45 — 전부 이 사다리 안.
+_PLACE_TILTS_DEG = (0, 30, -30, 45, -45, 60, -60)
 
 
 def plan_place(
     spot: OrientedDetection, *, held: OrientedDetection, lateral: float
 ) -> list[PlaceCandidate]:
-    """적치 후보 생성 — spot 상면 중심 위에 held 물체 바닥이 오는 TCP 자리.
+    """적치 후보 (정렬 가족) — spot 상면 중심 위에 held 물체가 오는 TCP 자리.
 
-    TCP 는 파지 시 held 중간 높이 부근을 물었으므로 release z = spot 상면 +
-    held/2 + 여유. lateral = 파지 때 확정된 보정값 재사용 (물체가 TCP 에 그
-    오프셋으로 매달림) — 같은 tool-frame 오프셋을 적용해야 물체가 spot 위에 온다.
+    파지와 **딱 두 가지만 다르다** (2026-07-14 재설계 → 같은 날 실물 2회 정정):
+    (1) 조로 옆면을 무는 antipodal 없음 — 상자 가운데로 간다 (lateral 오프셋만
+        재사용: 물체가 TCP 에 이 오프셋으로 매달려 있어 물체 중심을 상자 중심에
+        맞추려면 적용 필요). (2) yaw 는 antipodal 쌍 방향이 아니라 **상자 방위
+        (spot.grasp_yaw)** 기준 — 삐뚤어진 상자면 그 방향으로.
+
+    **tilt 는 파지와 같은 0~±60° 도달 띠** (_PLACE_TILTS_DEG — 정정 1: 소각 ±30
+    상한이 SO-101 top-down 사각지대 §3.2 에 꽂혀 전멸 / 사다리는 perf 로 성기게).
+    **yaw 는 정렬 4방향** (정정 2: 2방향은 자세 그물이 너무 성겨 위치가 닿아도
+    자세 전멸 — 상수 주석). 순서가 곧 선호: 수직(0°)·정렬(0°/180°) 먼저. 이
+    가족이 전멸하면 소비자가 plan_place_free 로 폴백 (도달 판정은 motion resolve).
+
+    release z = spot 상면 + held/2 + 여유 (TCP 가 파지 시 held 중간 높이를 물었음).
     """
+    return _place_candidates(
+        spot, held=held, lateral=lateral,
+        yaw_offsets_deg=_PLACE_ALIGNED_YAW_OFFSETS_DEG,
+    )
+
+
+def plan_place_free(
+    spot: OrientedDetection, *, held: OrientedDetection, lateral: float
+) -> list[PlaceCandidate]:
+    """적치 후보 (자유 yaw 가족) — 정렬 가족 전멸 시 폴백 (30° 격자 나머지 8방향).
+
+    정렬은 선호일 뿐 — 닿는 자유 yaw 가 안 닿는 정렬 yaw 를 이긴다 (놓기 실패로
+    task 전체가 죽는 것보다 삐딱하게라도 상자 위에 놓는 게 낫다)."""
+    return _place_candidates(
+        spot, held=held, lateral=lateral,
+        yaw_offsets_deg=_PLACE_FREE_YAW_OFFSETS_DEG,
+    )
+
+
+def _place_candidates(
+    spot: OrientedDetection,
+    *,
+    held: OrientedDetection,
+    lateral: float,
+    yaw_offsets_deg: tuple[float, ...],
+) -> list[PlaceCandidate]:
     sx, sy, spot_top_z = spot.position
     place_z = spot_top_z + held.height * 0.5 + _PLACE_DROP_CLEAR_M
     approach_dist = _APPROACH_CLEAR_M + held.height * 0.5
-    # 적치 yaw 는 자유 (물체를 어느 방향으로 놓아도 됨) — 0/90° 가족만 probe.
-    yaw_options = ((0.0, 0.0), (math.pi / 2, 0.0))
 
     out: list[PlaceCandidate] = []
-    for label, rot, _ in _oriented_family(yaw_options):
-        off = rot.apply([0.0, lateral, 0.0])
-        qx, qy, qz, qw = (float(v) for v in rot.as_quat())
-        px, py = sx + float(off[0]), sy + float(off[1])
-        # pre = place 에서 접근축 후방 (plan_grasp 와 동일 원리 — §5.4)
-        ax, ay, az = (float(v) for v in rot.apply([1.0, 0.0, 0.0]))
-        out.append(
-            PlaceCandidate(
-                label=label,
-                pre=(
-                    px - ax * approach_dist,
-                    py - ay * approach_dist,
-                    place_z - az * approach_dist,
-                ),
-                place=(px, py, place_z),
-                quat=(qx, qy, qz, qw),
+    for tilt_deg in _PLACE_TILTS_DEG:  # 수직(0°) 먼저 (선호), 성긴 사다리 (perf)
+        for off_deg in yaw_offsets_deg:  # 정렬 가까운 순 (선호)
+            yaw = spot.grasp_yaw + math.radians(off_deg)
+            rot = (
+                Rotation.from_euler("z", yaw)
+                * _TOPDOWN
+                * Rotation.from_euler("y", math.radians(tilt_deg))
             )
-        )
+            off = rot.apply([0.0, lateral, 0.0])
+            qx, qy, qz, qw = (float(v) for v in rot.as_quat())
+            px, py = sx + float(off[0]), sy + float(off[1])
+            # pre = place 에서 접근축 후방 (tilt=0 이면 곧 월드 +z 바로 위)
+            ax, ay, az = (float(v) for v in rot.apply([1.0, 0.0, 0.0]))
+            out.append(
+                PlaceCandidate(
+                    label=f"tilt={tilt_deg:+d} yaw={math.degrees(yaw):.0f}",
+                    pre=(
+                        px - ax * approach_dist,
+                        py - ay * approach_dist,
+                        place_z - az * approach_dist,
+                    ),
+                    place=(px, py, place_z),
+                    quat=(qx, qy, qz, qw),
+                )
+            )
     return out
 
 

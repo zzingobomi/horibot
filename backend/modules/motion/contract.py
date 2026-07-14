@@ -296,5 +296,9 @@ class MotionFailed(RuntimeError):
 declare_service_timeouts({
     Motion.Service.MOVE_J: 60.0,  # trajectory 완료까지 await (joint/pose 공통)
     Motion.Service.MOVE_L: 60.0,
-    Motion.Service.RESOLVE_REACHABLE: 60.0,  # 그룹 다수 × IK restart 예산
+    # 그룹 다수(파지 260/적치 104) × IK restart 예산 — 실측: 정상 260그룹 ~수십 초,
+    # 유령 중복 backend CPU 경합 시 104그룹 74s 로 60s 캡을 스침 (2026-07-14).
+    # 경합의 본질 해결은 프로세스 위생이지만 캡은 싸게 넓혀둔다 (전멸 가족은
+    # 모든 그룹이 풀예산 IK 를 태워 최악이 성공 케이스보다 느리다).
+    Motion.Service.RESOLVE_REACHABLE: 120.0,
 })

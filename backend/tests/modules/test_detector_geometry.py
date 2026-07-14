@@ -239,3 +239,26 @@ def test_cluster_indices_by_xy_groups_same_object():
     groups = cluster_indices_by_xy(positions, eps_m=0.04)
     as_sets = sorted(sorted(g) for g in groups)
     assert as_sets == [[0, 1], [2]]
+
+
+def test_align_and_merge_views_corrects_systematic_view_bias():
+    """멀티뷰 정합 회귀 (2026-07-14 실물 사고 그대로): 같은 큐브가 뷰마다 base
+    좌표 ~3.3cm 어긋나게 관측됨 (자세별 FK bias) → naive vstack 은 25mm 큐브를
+    50×64mm 얼룩으로 만들어 가짜 w=31mm antipodal 쌍(허공 파지)의 재료가 됐다.
+    중심차 정렬 병합은 footprint 를 실물 크기로 유지해야 한다 (bias 는 검출
+    position 에 그대로 실린다 — position = 자기 점군 centroid). 뒤집으면 깨짐."""
+    from modules.detector.geometry import align_and_merge_views
+
+    edge = 0.022
+    v1 = _cube_view_points(0.259, 0.120, 0.037, 0.022, side="x", edge=edge)
+    bias = np.array([-0.015, 0.029, 0.004])  # 실물 후보0↔후보1 오프셋 재현
+    v2 = v1 + bias
+    centers = [
+        (0.259, 0.120, 0.037),
+        (0.259 + float(bias[0]), 0.120 + float(bias[1]), 0.037 + float(bias[2])),
+    ]
+    merged = align_and_merge_views([v1, v2], centers)
+    assert len(merged) == len(v1) + len(v2)  # 병합 (제외 없음)
+    # 병합 후에도 실물 크기 (naive vstack 이면 y-span ≈ 22+29 = 51mm)
+    assert (merged[:, 1].max() - merged[:, 1].min()) < edge + 0.008
+    assert (merged[:, 0].max() - merged[:, 0].min()) < edge + 0.008

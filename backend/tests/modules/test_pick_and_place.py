@@ -217,14 +217,38 @@ def test_select_target_by_score():
 
 
 def test_plan_place_release_height():
-    spot = _det(position=(0.25, -0.05, 0.04), height=0.04)
+    spot = _det(position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3)
     held = _det(height=0.023)
     pplan = geometry.plan_place(spot, held=held, lateral=0.008)
     # release z = spot 상면 + held/2 + 여유(0.005) — 물체 바닥이 상면에 닿게
     assert pplan[0].place[2] == pytest.approx(0.04 + 0.023 / 2 + 0.005)
-    # tilt=0 pre = place 에서 접근축 후방 (0.06 + held 반높이)
+    # tilt=0(첫 후보) = 순수 수직 하강: pre 가 place 바로 위 (x,y 동일, z 만 위로)
+    assert pplan[0].pre[0] == pytest.approx(pplan[0].place[0])
+    assert pplan[0].pre[1] == pytest.approx(pplan[0].place[1])
     assert pplan[0].pre[2] == pytest.approx(pplan[0].place[2] + 0.06 + 0.023 / 2)
-    assert len(pplan) == 13 * 2 * 2
+    # 7 tilt × 4 정렬 yaw — tilt 는 0~±60° 도달 띠 (소각 상한 = top-down 사각
+    # 전멸 / 13단 풀사다리 = 전멸 가족 풀예산 IK 로 분 단위 지연, 둘 다 실물),
+    # yaw 는 0/180/90/270° 4방향 (180° 는 조·롤 방향이 다른 별개 IK — 2방향으로
+    # 줄이면 "위치 통과·자세 전멸" 실물 회귀, 2026-07-14). 수직·정렬이 첫 후보.
+    assert len(pplan) == 7 * 4
+    assert pplan[0].label == "tilt=+0 yaw=17"  # 수직 + 정렬 최우선
+    # yaw 는 상자 방위(grasp_yaw=0.3rad≈17°) 기준 — 하드코딩 0/90° 아님.
+    for deg in (17, 107, 197, 287):  # 정렬 가족 4방향 전부
+        assert any(f"yaw={deg}" in c.label for c in pplan)
+
+
+def test_plan_place_free_family_disjoint_yaws():
+    """자유 yaw 가족 (정렬 전멸 폴백) — 30° 격자의 나머지 8방향 × 13 tilt.
+    정렬과 겹치면 헛 IK (전멸 가족은 그룹당 풀예산 소모), 뒤집으면 = 커버리지
+    구멍 or 중복 낭비."""
+    spot = _det(position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3)
+    held = _det(height=0.023)
+    aligned = geometry.plan_place(spot, held=held, lateral=0.008)
+    free = geometry.plan_place_free(spot, held=held, lateral=0.008)
+    assert len(free) == 7 * 8
+    assert free[0].label == "tilt=+0 yaw=47"  # 정렬에 가장 가까운 자유 yaw 먼저
+    yaw_of = lambda c: c.label.split("yaw=")[1]  # noqa: E731
+    assert {yaw_of(c) for c in aligned} & {yaw_of(c) for c in free} == set()
 
 
 # ─── adaptive 관측·파지 성립 (step 직접 — FakeContext) ────────────────
@@ -639,17 +663,85 @@ async def test_scenario_place_unreachable_fails_before_pick():
             ],
             _SELECT: [
                 _resolve_ok(),  # 집기 도달 가능
-                ResolveReachableResponse(index=-1, message="놓기 IK 전멸"),  # 놓기 불가
+                # 놓기 불가 — 정렬 + 자유 yaw 두 가족 다 전멸
+                ResolveReachableResponse(index=-1, message="놓기 IK 전멸"),
+                ResolveReachableResponse(index=-1, message="놓기 IK 전멸"),
             ],
             # 스윕(pick) → 스윕(place)
             _MOVE_J: [MoveJResponse()] * 2,
         },
     )
-    with pytest.raises(NoReachableGrasp, match="놓기 IK 전멸"):
+    with pytest.raises(NoReachableGrasp, match="놓을 자리 도달 불가"):
         await mod.scenario(ctx, pick_object="white cube", place_object="red box")
     # 핵심 (#2): 파지·실행 모션이 하나도 안 나감 — 아무것도 안 집었으니 든 채 멈춤 없음.
     assert ctx.calls(_GRIP) == []
     assert ctx.calls(_MOVE_L) == []
+
+
+async def test_plan_place_falls_back_to_reachable_spot():
+    """놓기 타깃 = 점수 1등에 무조건 커밋하지 않고 **닿는 첫 spot** 채택 (실물 버그
+    회귀: 점수 최고인 선반 위 통(도달 불가)에 커밋해 실패, 테이블 박스(도달 가능)를
+    버림). 점수 높은 unreachable → 낮지만 reachable 로 폴백. 뒤집으면 = 점수-only
+    커밋 회귀."""
+    high_far = _det(score=0.80, position=(0.15, 0.10, 0.22), base_z=0.20)  # 선반 위
+    low_near = _det(score=0.73, position=(0.24, -0.11, 0.03), base_z=0.005)  # 테이블
+    ctx = FakeContext(
+        robots=[_BOT],
+        specs={_BOT: _SPEC},
+        service_script={
+            **_search_responses(),
+            _DETECT: [
+                DetectOrientedResponse(found=True, candidates=[high_far, low_near])
+            ],
+            _SELECT: [  # spot 점수순: high_far 정렬·자유 전멸 → low_near 정렬 가용
+                ResolveReachableResponse(index=-1, message="선반 위 IK 전멸"),
+                ResolveReachableResponse(index=-1, message="선반 위 IK 전멸"),
+                _resolve_ok(),
+            ],
+            _MOVE_J: [MoveJResponse()],  # place 스윕 1자세
+        },
+    )
+    held = _det(height=0.023)
+    grasp = geometry.GraspCandidate(
+        label="stub", pre=(0, 0, 0), grasp=(0, 0, 0),
+        quat=(0, 0, 0, 1), lateral=0.008,
+    )
+    chosen, _pre = await steps.plan_place(
+        ctx, _BOT, "blue box", held=held, grasp=grasp, home=_home_record()
+    )
+    # 채택된 놓기 자리 = 테이블 박스(low_near) 위 — 선반(high_far) 아님
+    assert chosen.place[2] == pytest.approx(0.03 + 0.023 / 2 + 0.005)
+    # resolve 소비 = 선반(정렬+자유 전멸 2회) → 테이블(정렬 채택 1회)
+    assert len(ctx.calls(_SELECT)) == 3
+
+
+async def test_plan_place_falls_back_to_free_yaw_family():
+    """한 spot 안에서 정렬 yaw 전멸 → 자유 yaw 폴백 (실물 회귀: 위치 통과 26/26
+    자세 IK 전멸 — 정렬 yaw 그물이 성겨 지점은 닿는데 자세를 못 찾음). 뒤집으면
+    = 정렬 전멸이 곧 spot 포기(삐딱하게라도 놓기 상실) 회귀."""
+    ctx = FakeContext(
+        robots=[_BOT],
+        specs={_BOT: _SPEC},
+        service_script={
+            **_search_responses(),
+            _DETECT: [DetectOrientedResponse(found=True, candidates=[_det()])],
+            _SELECT: [
+                ResolveReachableResponse(index=-1, message="정렬 yaw 전멸"),
+                _resolve_ok(),  # 자유 yaw 가족에서 성립
+            ],
+            _MOVE_J: [MoveJResponse()],
+        },
+    )
+    grasp = geometry.GraspCandidate(
+        label="stub", pre=(0, 0, 0), grasp=(0, 0, 0),
+        quat=(0, 0, 0, 1), lateral=0.008,
+    )
+    chosen, _pre = await steps.plan_place(
+        ctx, _BOT, "cube", held=_det(height=0.023), grasp=grasp,
+        home=_home_record(),
+    )
+    assert len(ctx.calls(_SELECT)) == 2  # 정렬 → 자유 두 가족 순차
+    assert chosen.label == "tilt=+0 yaw=47"  # 자유 가족 첫 후보 (index=0)
 
 
 # ─── module wire (runner 결합 e2e) ───────────────────────────────────

@@ -101,9 +101,45 @@ sub-mm 일치 anchor 재확인) 로드맵 1·2 를 구현. 전부 시뮬/유닛 
   self_collision 오염 없음).
 
 **Phase 1 — reachable-orientation 파지 + resolve 게이트 파이프라인:**
-- `tasks/pick_and_place/geometry.py`: top-down 강제 폐기 — tilt 0~±90 전체
+- `tasks/pick_and_place/geometry.py`: (파지) top-down 강제 폐기 — tilt 0~±90 전체
   probe (조 축 수평 유지 불변), **pre = grasp 의 접근축(툴 x) 후방** (월드 +z
-  폐기, plan_place 동일). 후보 13tilt×2yaw×2flip=52.
+  폐기). 파지 후보 13tilt×2yaw×2flip=52.
+  - **놓기 (2026-07-14 재설계 + 같은 날 실물 2회 정정)**: 파지와 **딱 두 가지만
+    다르다** — ① antipodal 옆면 물기 없음(상자 가운데로, lateral 오프셋만 재사용)
+    ② yaw 는 쌍 방향이 아니라 **상자 방위(spot.grasp_yaw)** 기준. 나머지는 파지와
+    같은 폭으로 뿌린다 — 좁힌 게 두 번 다 실물 전멸의 원인:
+    - 정정 1: tilt 소각(±30) 제한 → SO-101 top-down±40° 사각지대(§3.2)에 전멸.
+      tilt 는 파지와 동일 0~±90° (수직 먼저 = 선호, 도달 판정은 resolve).
+    - 정정 2: yaw 2방향(0/90°) → "위치 통과 26/26, **자세 IK 실패 26**" — 지점은
+      닿는데 방향 그물이 성겨 자세를 못 찾음. 집기가 되는 이유 = antipodal 쌍이
+      yaw 를 수십 개 공급(쌍10×flip2×tilt13=260 vs 놓기 26). 180° flip 은 위치
+      등가지만 조·롤이 달라 **IK 가 다른 별개 자세**. → **yaw 두 가족**: 정렬
+      (상자 방위 0/180/90/270°, 13tilt×4=52) 우선, 전멸 시 자유(30° 격자 나머지
+      8방향, 13tilt×8=104) 폴백 — 도달이 정렬(선호)을 이긴다 (`plan_place` /
+      `plan_place_free`, steps 가족 루프).
+    타깃 선택도 점수-only 커밋이 아니라 **닿는 첫 spot** 채택(`steps.plan_place`
+    점수순 spot 루프 + `resolve_place` non-raising) — 점수 최고가 workspace 밖
+    (예: 선반 위)이면 닿는 대안으로 폴백해 "집었는데 못 놓는" 제거. RESOLVE_REACHABLE
+    timeout 60→120s (전멸 가족은 전 그룹 풀예산 IK — 최악이 성공보다 느림 + 유령
+    중복 backend CPU 경합 74s 실측). perf: place tilt 사다리는 성기게
+    (0/±30/±45/±60 — 15° 랑간·±75/90 제거, 후보 52+104→28+56) + task 로그에
+    resolve/detect elapsed 초 기록.
+  - **멀티뷰 융합 정합 (2026-07-14 심야, 허공 파지 사고)**: 뷰(관측 자세)마다 검출
+    base 좌표가 **계통적으로 1.5~3.3cm** 어긋난다 (3 run 재현 — STS3215 백래시
+    ±0.87°/sag FK 오차가 손목 구성마다 다르게 투영, 캘 σ 7.5mm 밖). naive vstack
+    융합이 25mm 큐브를 50×64mm 얼룩으로 만들어 가짜 antipodal 쌍(w=31mm)이 허공을
+    물었다 (디버그 PLY 로 확정 — debug/detect/ 세션 폴더). 수정 =
+    `detector/geometry.align_and_merge_views`: 멤버별 **중심차 평행이동** 정렬
+    (ref=medoid, 검출 position 이 자기 점군 centroid 라 bias 를 그대로 담음 →
+    중심차 = bias 추정치). **ICP 는 기각** — 상보 면 관측(윗면 뷰+옆면 뷰)은
+    겹침이 작아 point-to-point ICP 가 면을 끌어당겨 height 붕괴
+    (test_fuse_oriented_merges_views 가 잡음). 알려진 갭 (다음 작업 후보):
+    ① **파지 성공 검증 미배선** — `TaskRobotSpec.gripper_held_threshold_raw` 가
+    정의만 되고 소비자 0 (SET_GRIPPER 는 쓰기 전용, 도달 위치 readback 계약 없음)
+    → 허공을 물어도 task 가 태연히 놓기까지 진행. motor 계약 확장 필요
+    (SET_GRIPPER 응답에 settle 후 실측 raw 동봉 or 스냅샷 서비스 신설).
+    ② 동일 물체 2개가 3cm 내 인접 시 중심 정렬이 phantom 병합 (grasp 은 ref 실물을
+    조준하므로 물리적으론 잡히나 이웃이 장애물 목록에서 빠짐).
 - `motion` RESOLVE_REACHABLE 재설계 (frontend 미노출이라 wire 자유):
   cheap→expensive 게이트 ①position-only 스크린(예산5) → ②자세 IK deepening
   (10/40/full — 2026-07-09 벤치 계승) → ③`floor_z` 바닥 평면 충돌 (신규

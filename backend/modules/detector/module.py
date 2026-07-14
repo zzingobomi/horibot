@@ -60,9 +60,37 @@ from .drivers.protocol import Bbox, DetectorBackend
 
 logger = logging.getLogger(__name__)
 
-# detect_oriented 디버그 덤프 — SAM mask 원본 픽셀 알파 오버레이 PNG (draft 단계).
-# 패널 오버레이는 contour 폴리곤 근사라 세그멘테이션 정밀 확인은 이 파일로.
+# detect_oriented 디버그 덤프 — SAM mask 원본 픽셀 알파 오버레이 PNG + 후보 점군
+# PLY + 메트릭 txt (draft 단계). 패널 오버레이는 contour 폴리곤 근사라 세그멘테이션·
+# 점군·base_z/height 정밀 확인은 이 파일들로. 예전엔 마지막 1장만 overwrite 였으나
+# (검색 스윕 여러 뷰/집기·놓기 구분 불가) → **backend 세션마다 폴더**를 새로 파고
+# 매 호출을 순번으로 쌓는다 (collision 없음, 흐름 그대로 재생). 2026-07-14.
 _DEBUG_DIR = Path("debug")
+_DETECT_DUMP_ROOT = _DEBUG_DIR / "detect"
+
+
+def _slug(text: str, limit: int = 40) -> str:
+    """파일명 안전 슬러그 — 영숫자/·-_ 만, 공백은 _ (프롬프트 구분용)."""
+    out = "".join(c if c.isalnum() or c in "-_" else "_" for c in text.strip())
+    return (out[:limit] or "unnamed").strip("_")
+
+
+def _write_ply(path: Path, points: list[tuple[float, float, float]]) -> None:
+    """ASCII PLY 점군 저장 — MeshLab/CloudCompare 로 base_z/height/모양 육안 확인.
+
+    Open3D 로드 없이(무거움) 직접 기록 — voxel 다운샘플된 점(수백~2048)이라 가볍다.
+    """
+    lines = [
+        "ply",
+        "format ascii 1.0",
+        f"element vertex {len(points)}",
+        "property float x",
+        "property float y",
+        "property float z",
+        "end_header",
+    ]
+    lines.extend(f"{x:.5f} {y:.5f} {z:.5f}" for x, y, z in points)
+    path.write_text("\n".join(lines) + "\n")
 
 # 서비스 응답에 싣는 물체 점군 상한 — voxel 다운샘플(3mm) 후에도 큰 물체(천 등)는
 # 수만 점이 될 수 있어 stride 로 추가 축소 (융합 기하에 이 밀도면 충분).
@@ -130,6 +158,9 @@ class DetectorModule:
         self._backend = backend
         self._preload_task: asyncio.Task[None] | None = None
         self._detections_seq = 0
+        # 디버그 덤프 — backend 세션마다 폴더 1개, 매 호출(detect/fuse)을 순번으로 쌓음.
+        self._dump_dir = _DETECT_DUMP_ROOT / time.strftime("%Y%m%d_%H%M%S")
+        self._dump_seq = 0
 
     async def start(self) -> None:
         logger.info("DetectorModule start (host-level)")
@@ -349,9 +380,16 @@ class DetectorModule:
     async def fuse_oriented(self, req: FuseOrientedRequest) -> FuseOrientedResponse:
         """[DRAFT] 멀티뷰 관측 융합 — 순수 계산 (camera/모델/robot 무관).
 
-        위치 XY 군집 → 군집 점군 vstack (base frame 이라 정렬 이미 됨 — §5.2)
-        → object-centric 기하 재계산. 단일 뷰에서 안 보이던 옆면이 다른 뷰
-        점군으로 채워져 height 가 비로소 실측이 된다.
+        위치 XY 군집 → **뷰 간 정합(중심차 평행이동)** → 병합 → object-centric
+        기하 재계산. 단일 뷰에서 안 보이던 옆면이 다른 뷰 점군으로 채워져
+        height 가 실측이 된다.
+
+        naive vstack 폐기 (2026-07-14 실물 사고): base frame 이라도 뷰 간 검출
+        위치가 **계통적으로 1.5~3.3cm** 어긋난다 (스윕 자세별 재현 — STS3215
+        백래시 ±0.87°/sag 가 손목 구성마다 다르게 먹는 FK 오차, 캘 σ 7.5mm 밖).
+        그냥 겹치면 25mm 큐브가 50×64mm 얼룩이 되고, 얼룩에서 뽑은 가짜
+        antipodal 쌍(w=31mm)이 허공을 물었다. 정합 방식·ICP 기각 근거 =
+        geometry.align_and_merge_views docstring.
         """
         if not req.candidates:
             return FuseOrientedResponse(candidates=[], message="입력 후보 없음")
@@ -362,13 +400,15 @@ class DetectorModule:
         skipped = 0
         for idx in clusters:
             members = [req.candidates[i] for i in idx]
-            pts_list = [
-                np.asarray(m.points, dtype=float) for m in members if m.points
-            ]
-            if not pts_list:
+            with_pts = [m for m in members if m.points]
+            if not with_pts:
                 skipped += 1  # 점군 없는 관측만으로는 기하 재계산 불가
                 continue
-            pts = np.vstack(pts_list)
+            # 정합 병합 — 뷰별 중심차 평행이동 (근거는 geometry 함수 docstring)
+            pts = geometry.align_and_merge_views(
+                [np.asarray(m.points, dtype=float) for m in with_pts],
+                [m.position for m in with_pts],
+            )
             metrics = geometry.object_metrics_from_points(pts)
             obb = geometry.obb_from_base_points(geometry.top_face_points(pts))
             if metrics is None or obb is None:
@@ -391,8 +431,27 @@ class DetectorModule:
                 )
             )
         fused.sort(key=lambda c: c.score, reverse=True)
+        # 디버그: 융합 점군 덤프 — 멀티뷰가 실제로 옆면을 채웠는지 육안 확인용
+        # (단일 뷰 PLY 와 나란히 놓고 비교). 실패해도 서비스는 무사.
+        if fused:
+            try:
+                prefix = self._next_dump_prefix("fuse", fused[0].prompt)
+                for i, c in enumerate(fused):
+                    if c.points:
+                        _write_ply(Path(f"{prefix}_c{i}.ply"), c.points)
+                logger.info(
+                    "fuse_oriented 디버그 덤프: %s (군집 %d)", prefix, len(fused)
+                )
+            except Exception:
+                logger.exception("fuse_oriented 디버그 덤프 실패 (서비스 영향 없음)")
         msg = f"점군 없는 군집 {skipped}개 제외" if skipped else ""
         return FuseOrientedResponse(candidates=fused, message=msg)
+
+    def _next_dump_prefix(self, kind: str, prompt: str) -> Path:
+        """세션 폴더 안 다음 순번 파일 prefix (예: .../0007_det_blue_box). mkdir 포함."""
+        self._dump_dir.mkdir(parents=True, exist_ok=True)
+        self._dump_seq += 1
+        return self._dump_dir / f"{self._dump_seq:04d}_{kind}_{_slug(prompt)}"
 
     def _dump_debug_image(
         self,
@@ -400,13 +459,16 @@ class DetectorModule:
         oriented: list[OrientedDetection],
         rows: list[tuple[np.ndarray, list[tuple[float, float]] | None]],
     ) -> None:
-        """SAM mask 알파 오버레이(원본 픽셀) + bbox + OBB + yaw 를 그린 PNG 저장.
+        """검출 1회 덤프 — mask 알파 오버레이+bbox+OBB+yaw PNG, 후보별 점군 PLY,
+        메트릭 txt. 세션 폴더에 순번으로 쌓고(검색 스윕 여러 뷰/집기·놓기 다 보존),
+        빠른 확인용 detect_oriented_last.png 도 함께 overwrite.
 
         패널 오버레이는 contour 폴리곤 근사 — 세그멘테이션이 실제로 어떻게 됐는지
-        픽셀 단위 확인은 이 파일 (draft 디버그). 마지막 호출 1장 overwrite.
+        픽셀 단위 확인은 PNG, base_z/height/모양은 PLY, 수치는 txt (draft 디버그).
         """
         canvas = img_bgr.copy()
-        for det, (mask, obb_2d) in zip(oriented, rows, strict=True):
+        lines: list[str] = [f"prompt={oriented[0].prompt if oriented else ''}"]
+        for i, (det, (mask, obb_2d)) in enumerate(zip(oriented, rows, strict=True)):
             tint = canvas.copy()
             tint[mask] = (239, 70, 217)  # fuchsia (BGR) — 패널 contour 색과 통일
             canvas = cv2.addWeighted(tint, 0.35, canvas, 0.65, 0)
@@ -418,7 +480,7 @@ class DetectorModule:
                 cv2.polylines(canvas, [pts], True, (11, 158, 245), 3)
                 cv2.putText(
                     canvas,
-                    f"yaw {np.degrees(det.grasp_yaw):.0f}deg "
+                    f"c{i} yaw {np.degrees(det.grasp_yaw):.0f}deg "
                     f"{det.footprint[0] * 1000:.0f}x{det.footprint[1] * 1000:.0f}mm",
                     (int(obb_2d[0][0]), max(int(obb_2d[0][1]) - 8, 16)),
                     cv2.FONT_HERSHEY_SIMPLEX,
@@ -426,10 +488,22 @@ class DetectorModule:
                     (11, 158, 245),
                     2,
                 )
-        _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-        out = _DEBUG_DIR / "detect_oriented_last.png"
-        cv2.imwrite(str(out), canvas)
-        logger.info("detect_oriented 디버그 덤프: %s", out.resolve())
+            lines.append(
+                f"c{i}: score={det.score:.2f} base_z={det.base_z:.3f}m "
+                f"height={det.height * 100:.1f}cm "
+                f"pos=({det.position[0]:.3f},{det.position[1]:.3f},"
+                f"{det.position[2]:.3f}) footprint="
+                f"{det.footprint[0] * 1000:.0f}x{det.footprint[1] * 1000:.0f}mm "
+                f"points={len(det.points or [])}"
+            )
+        prefix = self._next_dump_prefix("det", oriented[0].prompt if oriented else "")
+        cv2.imwrite(f"{prefix}.png", canvas)
+        prefix.with_name(prefix.name + ".txt").write_text("\n".join(lines) + "\n")
+        for i, det in enumerate(oriented):  # 후보별 점군 (base frame, m)
+            if det.points:
+                _write_ply(Path(f"{prefix}_c{i}.ply"), det.points)
+        cv2.imwrite(str(_DEBUG_DIR / "detect_oriented_last.png"), canvas)
+        logger.info("detect_oriented 디버그 덤프: %s.png (+PLY/txt)", prefix)
 
     def _publish_detections(
         self,

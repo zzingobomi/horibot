@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 
 import numpy as np
 
@@ -33,7 +34,11 @@ from modules.motion.contract import (
 )
 from modules.motor.contract import Motor, SetGripperRequest, SetGripperResponse
 from modules.tasks.core.context import TaskContext
-from modules.tasks.core.errors import NoReachableGrasp, TaskError
+from modules.tasks.core.errors import (
+    DetectionNotFound,
+    NoReachableGrasp,
+    TaskError,
+)
 from modules.tasks.core.step import step
 from modules.waypoint.contract import (
     ListGroupMembersRequest,
@@ -119,16 +124,52 @@ async def plan_place(
 
     적치엔 멀티뷰 불요 — place_z 는 spot **윗면**(단일 뷰로 실측)과 held(융합
     완료)의 height 에서 나온다. 물체 dims 는 검출(held)에서 오므로 물리 파지
-    전에도 계획 가능."""
+    전에도 계획 가능.
+
+    **도달성 우선 선택 (2026-07-14)**: 점수 1등에 무조건 커밋하지 않는다. 검출된
+    적치 spot 을 점수순으로 돌며 **팔이 실제로 닿는 첫 spot** 을 채택 (파지의
+    도달성 판정과 대칭). 같은 물체가 여럿(예: 선반 위 통 vs 테이블 박스)일 때
+    점수 최고가 workspace 밖이어도 닿는 대안으로 자동 폴백 — "집었는데 못 놓는"
+    상황(닿는 자리가 있는데 안 닿는 자리에 커밋)을 구조적으로 제거.
+
+    spot 마다 yaw 두 가족 순차 (geometry 상수 주석 — SO-101 은 자세 그물이 성기면
+    위치가 닿아도 자세 전멸): ① 정렬(상자 방위 0/180/90/270°) ② 전멸 시 자유
+    (30° 격자 나머지) — 삐딱하게라도 놓는 게 task 실패보다 낫다."""
     spots = await detect(ctx, robot_id, prompt)
-    spot = geometry.select_target_by_score(spots, prompt=prompt)
-    pplan = geometry.plan_place(spot, held=held, lateral=grasp.lateral)
-    idx, sols = await resolve_place(
-        ctx, robot_id, pplan,
-        floor_z=spot.base_z - _FLOOR_GATE_MARGIN_M,
-        home=home,
+    if not spots:
+        raise DetectionNotFound(prompt, candidates=0, reason="검출 0건")
+    ranked = sorted(spots, key=lambda s: s.score, reverse=True)
+    for spot in ranked:
+        for family, pplan in (
+            ("정렬", geometry.plan_place(spot, held=held, lateral=grasp.lateral)),
+            ("자유", geometry.plan_place_free(
+                spot, held=held, lateral=grasp.lateral)),
+        ):
+            got = await resolve_place(
+                ctx, robot_id, pplan,
+                floor_z=spot.base_z - _FLOOR_GATE_MARGIN_M,
+                home=home,
+            )
+            if got is not None:
+                idx, sols = got
+                logger.info(
+                    "plan_place(%s): spot 채택 score=%.2f base_z=%.3fm "
+                    "pos=(%.3f,%.3f) — %s yaw %s (후보 %d건 중)",
+                    prompt, spot.score, spot.base_z, spot.position[0],
+                    spot.position[1], pplan[idx].label, family, len(ranked),
+                )
+                return pplan[idx], sols[0]
+            logger.info(
+                "plan_place(%s): spot score=%.2f pos=(%.3f,%.3f) %s yaw %d후보 "
+                "전멸 — %s", prompt, spot.score, spot.position[0],
+                spot.position[1], family, len(pplan),
+                "자유 yaw 폴백" if family == "정렬" else "다음 spot",
+            )
+    raise NoReachableGrasp(
+        f"놓을 자리 도달 불가 — '{prompt}' 후보 {len(ranked)}건 모두 팔이 닿지 "
+        "않습니다 (정렬+자유 yaw 전부 시도 — workspace 밖이거나 주변이 막힘). "
+        "상자를 로봇 쪽으로 옮기거나 주변 장애물을 치운 뒤 다시 실행하세요"
     )
-    return pplan[idx], sols[0]
 
 
 @step(title="집기 실행")
@@ -186,6 +227,7 @@ async def detect(
     이라 비교 가능) 관측이 많아 강건하다. **선택은 안 함** — 누적만. "자세 다 돌고
     진짜 제일 점수 높은 것" 판정은 select_target_by_score 가 누적 전체에서.
     """
+    t0 = time.monotonic()
     members = await _search_waypoints(ctx, robot_id)
     candidates: list[OrientedDetection] = []
     for wp in members:
@@ -199,8 +241,9 @@ async def detect(
         if res.candidates:
             candidates.extend(res.candidates)
     logger.info(
-        "detect(%s): search '%s' %d 자세 → 후보 누적 %d",
+        "detect(%s): search '%s' %d 자세 → 후보 누적 %d (%.1fs)",
         prompt, _SEARCH_GROUP, len(members), len(candidates),
+        time.monotonic() - t0,
     )
     # 진단: 후보별 object-centric 기하 (물체 자기 점군 기준 — 단일 뷰 height 는
     # 옆면 depth 부재로 과소가 정상 — 파지 성립 검사가 멀티뷰 융합 후 심판).
@@ -390,6 +433,7 @@ async def try_plan_grasp(
         )
         return None
     plan = geometry.plan_grasp(pairs)
+    t0 = time.monotonic()
     res = await ctx.call(
         Motion.Service.RESOLVE_REACHABLE,
         ResolveReachableRequest(
@@ -403,17 +447,18 @@ async def try_plan_grasp(
         ResolveReachableResponse,
         robot_id=robot_id,
     )
+    resolve_s = time.monotonic() - t0
     if res.index < 0:
         logger.info(
-            "try_plan_grasp(%s): 쌍 %d/후보 %d 전멸 — %s",
-            prompt, len(pairs), len(plan), res.message,
+            "try_plan_grasp(%s): 쌍 %d/후보 %d 전멸 (resolve %.1fs) — %s",
+            prompt, len(pairs), len(plan), resolve_s, res.message,
         )
         return None
     logger.info(
         "try_plan_grasp(%s): group %d 채택 — %s (쌍 %d, height=%.1fcm "
-        "base_z=%.3f)",
+        "base_z=%.3f, resolve %.1fs)",
         prompt, res.index, plan[res.index].label, len(pairs),
-        fused.height * 100.0, fused.base_z,
+        fused.height * 100.0, fused.base_z, resolve_s,
     )
     return fused, plan[res.index], res.solutions[0]
 
@@ -518,12 +563,16 @@ async def resolve_place(
     *,
     floor_z: float,
     home: WaypointRecord,
-) -> tuple[int, list[list[float]]]:
-    """게이트 판정 (위치→자세→바닥→home→pre 관절 경로→pre↔place 직선) — 모션 0.
+) -> tuple[int, list[list[float]]] | None:
+    """한 spot 의 적치 후보 게이트 판정 (위치→자세→바닥→home→pre 관절 경로→
+    pre↔place 직선) — 모션 0. 닿는 그룹 있으면 (index, solutions), 없으면 None.
 
-    linear=True: 삽입(pre→place)이 MoveL 이므로 끝점만 풀리고 중간이 막히는
-    후보를 계획 시점에 기각. path_from=home: execute_place 가 home 에서 pre 로
-    MoveJ 하는 계약 (§10.4-4)."""
+    None = 이 spot 은 도달 불가 (부정 데이터 — 호출부가 다음 spot 으로 폴백).
+    최종 실패 판정(모든 spot 소진)은 호출부 plan_place 가 raise. linear=True:
+    삽입(pre→place)이 MoveL 이므로 끝점만 풀리고 중간이 막히는 후보를 계획
+    시점에 기각. path_from=home: execute_place 가 home 에서 pre 로 MoveJ 하는
+    계약 (§10.4-4)."""
+    t0 = time.monotonic()
     res = await ctx.call(
         Motion.Service.RESOLVE_REACHABLE,
         ResolveReachableRequest(
@@ -535,9 +584,14 @@ async def resolve_place(
         ResolveReachableResponse,
         robot_id=robot_id,
     )
+    resolve_s = time.monotonic() - t0
     if res.index < 0:
-        raise NoReachableGrasp(res.message)
-    logger.info("resolve_place: group %d — %s", res.index, plan[res.index].label)
+        logger.info("resolve_place: 도달 불가 (%.1fs) — %s", resolve_s, res.message)
+        return None
+    logger.info(
+        "resolve_place: group %d — %s (%.1fs)",
+        res.index, plan[res.index].label, resolve_s,
+    )
     return res.index, res.solutions
 
 

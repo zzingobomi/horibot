@@ -184,12 +184,10 @@ def test_pick_and_place_scenario_tree():
     assert _rows(entries) == [
         ("home_waypoint", 0),
         ("plan_pick", 0),
-        ("detect", 1),
+        ("detect", 1),  # search 스윕 = 찾기(coarse)만
         ("observe_and_plan_grasp", 1),
-        ("try_plan_grasp", 2),  # 스윕 관측 시드로 첫 성립 검사
-        ("fuse_target", 3),
-        ("go_home", 2),  # 뷰 간 이동 = home 경유 (§10.4-4)
-        ("try_plan_grasp", 2),  # 뷰 추가 후 재검사 (adaptive 루프)
+        ("go_home", 2),  # close 뷰 간 이동 = home 경유 (§10.4-4)
+        ("try_plan_grasp", 2),  # close 뷰 후 파지 성립 검사 (adaptive 루프)
         ("fuse_target", 3),
         ("plan_place", 0),
         ("detect", 1),

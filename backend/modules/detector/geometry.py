@@ -202,24 +202,26 @@ def align_and_merge_views(
     투영, 자세별 재현 확인). naive vstack 은 25mm 큐브를 50×64mm 얼룩으로 만들어
     가짜 antipodal 쌍(w=31mm → 허공 파지)의 재료가 됐다.
 
-    정렬 = 멤버별 중심차 평행이동 (ref = medoid 관측 — 극단 bias 뷰를 기준 삼는
-    것 방지). 검출 position 은 그 뷰 점군 자신의 윗면 band centroid 라 뷰 bias 가
-    position 에 그대로 실린다 → 중심차가 곧 bias 추정치 (별도 정합 계산 불요).
+    정렬 = 멤버별 중심차 평행이동으로 **뷰 평균(anchor=mean(centers))** 에 모은다.
+    검출 position 은 그 뷰 점군 자신의 윗면 band centroid 라 뷰 bias 가 position
+    에 그대로 실린다 → 중심차가 곧 bias 추정치 (별도 정합 계산 불요). **평균 앵커
+    가 medoid 앵커를 대체한 이유**(2026-07-14 실물 2차): medoid 는 뷰 하나의 bias
+    를 통째로 물려받아 — 뷰 추가마다 융합 중심이 2.5cm 휘청, 파지가 큐브 끝을
+    스침. 평균은 뷰별 bias 를 1/√N 로 줄이고 view-set 이 바뀌어도 안정적이다.
     ICP 미세정합은 **기각**: 상보적 면 관측(윗면 뷰 + 옆면 뷰)은 겹침이 작아
     point-to-point ICP 가 면을 서로 끌어당겨 height 를 붕괴시킨다
     (test_fuse_oriented_merges_views_and_recovers_height 가 잡은 실패 모드).
 
-    한계(정직): 절대 위치는 ref 뷰의 bias 를 그대로 진다 (±1~2cm — 조 벌림 대비
-    허용 범위, 기존 성공 파지 2회와 같은 전제). 잔여 오차 = 뷰별 윗면 가시 영역
-    차이가 만드는 centroid 편차 (수 mm — 캘 σ 급). 목적은 상대 형상의 일관성.
+    한계(정직): 평균해도 뷰 bias 가 한쪽으로 쏠렸으면 잔차가 남는다 (관측 3cm
+    산포 → 4뷰 평균 시 ~0.7cm). 이건 캘/백래시 절대정확도 바닥이라 융합으로
+    더 못 짜낸다 — sub-3cm 물체 안정 파지는 캘 개선이나 close-loop 이 별도 필요.
     """
     if len(clouds) == 1:
         return clouds[0]
     c = np.asarray(centers, dtype=float)
-    dists = np.linalg.norm(c[:, None, :] - c[None, :, :], axis=-1).sum(axis=1)
-    medoid = int(np.argmin(dists))
+    anchor = c.mean(axis=0)  # 뷰 추정 평균 — 단일 뷰 bias 를 1/√N 로 줄임
     return np.vstack(
-        [cloud + (c[medoid] - c[i]) for i, cloud in enumerate(clouds)]
+        [cloud + (anchor - c[i]) for i, cloud in enumerate(clouds)]
     )
 
 

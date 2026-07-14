@@ -26,6 +26,32 @@
 wire 절단 + 의식 전폐 + 정적 프리뷰 + runner 데코레이터 DX) + object-centric
 파지 §10 확정 설계(일반 형상 + 멀티뷰 antipodal) 구현 완료 (실물 검증 대기 — 집).**
 
+### 2026-07-14 (4) — 실물 pick&place 디버깅 (집, 실 SO-101+D405)
+
+pick&place 실물 첫 굴림 세션. 여러 실패를 debug 덤프(신규)로 뿌리까지 추적 —
+아래 순서로 벗겨짐 (각각 회귀 test 잠금):
+- **놓기 재설계**: ① 타깃 = 점수-only → **닿는 첫 spot 폴백**(선반 위 통 버리고 테이블
+  박스) ② 자세 = top-down 강제 폐기 → 파지와 같은 tilt 도달 띠(사각지대 §3.2) ③ yaw
+  2방향 → **정렬 4 + 자유 8 가족**(2방향은 위치 닿아도 자세 전멸). place tilt 사다리
+  성기게(perf) + RESOLVE timeout 60→120s.
+- **멀티뷰 융합 정합**: naive vstack → **뷰 중심차 평행이동 + 평균 앵커**(뷰마다 검출
+  1.5~3.3cm 어긋남 = 백래시 FK 오차). ICP 는 상보 면서 height 붕괴로 기각.
+- **디버그 덤프 강화**: `debug/detect/{세션}/` 순번 PNG + 후보/융합 점군 PLY + 메트릭
+  txt (overwrite 1장 폐기). base_z/얼룩/스미어 육안 판별 — 위 진단 전부 이걸로.
+- **찾기/집기 분리 (핵심, 사용자 지적)**: `observe_and_plan_grasp` 가 **search 스윕
+  (멀리서 찾기) 관측으로 파지까지 판정**하던 조기 종료를 제거. search = coarse 위치만,
+  **파지는 close 뷰 관측만 융합**해 세운다 (스윕 시드 배제). 멀티뷰를 넣은 목적 복원.
+
+**열린 근본 (다음 세션 최우선)**: 팔 절대정확도(백래시/FK ~1-2cm) ≈ 큐브 크기(2.5cm)
+라 open-loop 파지가 구조적으로 아슬. Z 안정 + XY 3cm 산포가 증거. **진짜 답 = eye-in-hand
+공통오차 상쇄**(검출을 집기 접근 자세에서 → 검출·실행이 같은 FK bias 공유해 상쇄) — D405
+손목 장착이라 자연스러움. 확인용 repeatability 체크(같은 자세 ×N vs 다른 자세) 먼저.
+부수: `gripper_held_threshold_raw` 소비자 0(허공 물어도 진행) — motor 계약 확장 필요.
+
+**HW 사고**: pick&place 중 PC 2회 하드다운. 원인 = ① 유령 중복 backend(`apps.main` 2개
+= CPU 경합 74s) ② 저가 PSU(Aone Storm 600LF)가 GPU 스파이크 못 버팀. 임시 `nvidia-smi
+-pl 120`(RTX 3060 170→120W). 진단 근거 = Kernel-Power 41 (Bugcheck=0 + PowerButton=0).
+
 ### 2026-07-14 (3) — §10 대전환 구현: 일반 형상 + adaptive 멀티뷰 + 표면 antipodal
 
 설계 SSOT = [grasp_redesign_journey.md](grasp_redesign_journey.md) **§10** (§10.5

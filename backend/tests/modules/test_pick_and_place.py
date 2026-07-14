@@ -254,90 +254,102 @@ def test_plan_place_free_family_disjoint_yaws():
 # ─── adaptive 관측·파지 성립 (step 직접 — FakeContext) ────────────────
 
 
-async def test_observe_seeds_from_sweep_and_stands_without_views():
-    """검색 스윕 관측(여러 자세에서 같은 물체)이 멀티뷰 시드 — 융합 점군에서
-    파지가 서면 **추가 뷰 이동 0** 으로 계획 완료 (§10.3-G adaptive 정지)."""
+async def test_observe_uses_close_view_not_sweep_seed():
+    """search 스윕은 '찾기'(coarse)만 — 파지는 close 뷰 관측에서 (2026-07-14 재구성).
+    스윕 검출을 파지 융합에 넣지 않고, coarse 를 겨냥해 뷰를 찍어(MOVE_J) 그 close
+    관측만 융합해 파지를 세운다. 옛 "스윕 시드만으로 파지 성립+뷰 이동 0" 조기
+    종료(멀리서 본 걸로 파지 결정 → 큐브 끝 스침)의 회귀 잠금."""
     coarse = _det()
-    near = _det(score=0.7, position=(0.21, 0.06, 0.023))  # 1.4cm — 같은 물체
-    far = _det(score=0.99, position=(0.4, 0.3, 0.02), points=_cloud(False))
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={
-            _CAL_BUNDLE: [_hand_eye_bundle()],
-            _FUSE: [_fuse_full()],
-            _SELECT: [_resolve_ok()],
-        },
-    )
-    fused, grasp, pre = await steps.observe_and_plan_grasp(
-        ctx, _BOT, [coarse, near, far], coarse, "white cube", _home_record()
-    )
-    assert pre == [0.1] * 6  # resolve 해 그대로 (재계산 금지 — §5.5)
-    assert ctx.calls(_MOVE_J) == []  # 추가 뷰 이동 0
-
-    # 융합 입력 = coarse + 근접 관측만 (far 는 다른 물체 — 배제)
-    fuse_req = ctx.calls(_FUSE)[0]["req"]
-    assert len(fuse_req.candidates) == 2
-    assert fuse_req.candidates[0] is coarse
-
-    # 파지 resolve 게이트 계약 (§10.4-3): 직선 경로 + 바닥 + 그리퍼 벌림 충돌
-    # + home→pre 관절 경로, 장애물 = 융합 점군(+이웃)
-    sel = ctx.calls(_SELECT)[0]["req"]
-    assert sel.linear is True
-    assert sel.floor_z == pytest.approx(0.0 - 0.005)
-    assert sel.gripper_open is True
-    assert sel.path_from == _HOME_JOINTS
-    assert sel.obstacle_points  # 융합 점군이 장애물로 들어감
-    # far(이웃 반경 0.15m 밖 아님 — 0.32m 밖이라 제외) 점군은 안 섞임
-    assert len(sel.obstacle_points) == len(_cloud(True))
-
-
-async def test_observe_adds_views_until_grasp_stands():
-    """단일 뷰 점군(쌍 0)으로 시작 → 뷰 방향 1 도달 불가(스킵) → 뷰 방향 2 에서
-    관측 추가 → 융합 점군에 마주 보는 면이 생겨 파지 성립. 뷰 이동은 home 경유
-    + resolve 가 반환한 관절 해 (§10.4-4 naive MoveJ 금지)."""
-    coarse = _det(points=_cloud(False))
-    near = _det(score=0.7, position=(0.21, 0.06, 0.023), points=_cloud(False))
+    sweep_near = _det(score=0.7, position=(0.21, 0.06, 0.023))  # 스윕 또 다른 관측
+    close = _det(score=0.8, position=(0.205, 0.052, 0.024))  # 뷰에서 찍은 close 관측
     view_sol = [0.3] * 6
     ctx = FakeContext(
         robots=[_BOT],
         specs={_BOT: _SPEC},
         service_script={
             _CAL_BUNDLE: [_hand_eye_bundle()],
-            _FUSE: [_fuse_half(), _fuse_full()],  # 시드=쌍0 → 뷰 추가 후 성립
             _SELECT: [
-                ResolveReachableResponse(index=-1, message="뷰 도달 불가"),
-                ResolveReachableResponse(index=2, solutions=[view_sol]),
+                ResolveReachableResponse(index=0, solutions=[view_sol]),  # 뷰 도달
                 _resolve_ok(),  # 파지 성립
             ],
             _MOVE_J: [MoveJResponse()] * 2,  # home 경유 + 뷰 이동
-            _DETECT: [DetectOrientedResponse(found=True, candidates=[near])],
+            _DETECT: [DetectOrientedResponse(found=True, candidates=[close])],
+            _FUSE: [_fuse_full()],
+        },
+    )
+    fused, grasp, pre = await steps.observe_and_plan_grasp(
+        ctx, _BOT, [coarse, sweep_near], coarse, "white cube", _home_record()
+    )
+    assert pre == [0.1] * 6  # resolve 해 그대로 (재계산 금지 — §5.5)
+    # 핵심: 스윕 시드 없이 close 뷰를 찍었다 (MOVE_J = home 경유 + 뷰 이동)
+    assert [c["req"].target.joints for c in ctx.calls(_MOVE_J)] == [
+        _HOME_JOINTS, view_sol,
+    ]
+    # 파지 융합 입력 = close 관측만 — 스윕의 coarse/sweep_near 는 안 들어감
+    fuse_req = ctx.calls(_FUSE)[0]["req"]
+    assert [c.position for c in fuse_req.candidates] == [close.position]
+    assert coarse not in fuse_req.candidates
+    assert sweep_near not in fuse_req.candidates
+
+    # 파지 resolve 게이트 계약 (§10.4-3): 직선 + 바닥 + 그리퍼 벌림 + home 경로.
+    # SELECT[0]=뷰 스크린, [1]=파지 게이트.
+    grasp_sel = ctx.calls(_SELECT)[1]["req"]
+    assert grasp_sel.linear is True and grasp_sel.gripper_open is True
+    assert grasp_sel.floor_z == pytest.approx(0.0 - 0.005)
+    assert grasp_sel.path_from == _HOME_JOINTS
+    assert grasp_sel.obstacle_points  # 융합 점군이 장애물로
+
+
+async def test_observe_accumulates_close_views_until_grasp_stands():
+    """close 뷰 방향1 도달 불가(스킵) → 뷰2 관측 1개(한쪽 면, 쌍0)로는 안 섬 →
+    뷰3 관측 추가 → 융합에 마주 보는 면이 생겨 파지 성립. 파지 융합 입력은 close
+    관측만 누적(스윕 시드 없음). 뷰 이동 = home 경유 + resolve 해 (§10.4-4)."""
+    coarse = _det()
+    c1 = _det(score=0.8, position=(0.205, 0.052, 0.024))  # 뷰2 close 관측
+    c2 = _det(score=0.8, position=(0.198, 0.048, 0.023))  # 뷰3 close 관측
+    vs1, vs2 = [0.3] * 6, [0.35] * 6
+    ctx = FakeContext(
+        robots=[_BOT],
+        specs={_BOT: _SPEC},
+        service_script={
+            _CAL_BUNDLE: [_hand_eye_bundle()],
+            _FUSE: [_fuse_half(), _fuse_full()],  # 1뷰=쌍0 → 2뷰=성립
+            _SELECT: [
+                ResolveReachableResponse(index=-1, message="뷰 도달 불가"),  # 뷰1 스킵
+                ResolveReachableResponse(index=0, solutions=[vs1]),  # 뷰2 도달
+                ResolveReachableResponse(index=0, solutions=[vs2]),  # 뷰3 도달
+                _resolve_ok(),  # 파지 성립
+            ],
+            _MOVE_J: [MoveJResponse()] * 4,  # (home 경유 + 뷰)×2
+            _DETECT: [
+                DetectOrientedResponse(found=True, candidates=[c1]),
+                DetectOrientedResponse(found=True, candidates=[c2]),
+            ],
         },
     )
     fused, grasp, pre = await steps.observe_and_plan_grasp(
         ctx, _BOT, [coarse], coarse, "white cube", _home_record()
     )
     assert pre == [0.1] * 6
-    # 호출 순서: 융합(쌍0 — resolve 없이 반려) → 뷰 resolve ×2 → home → 뷰
-    # MoveJ → 검출 → 융합 → 파지 resolve
+    # 호출 순서: 뷰1 resolve(-1 스킵) → 뷰2 resolve → home → 뷰 MoveJ → 검출 →
+    # 융합(쌍0) → 뷰3 resolve → home → 뷰 MoveJ → 검출 → 융합(성립) → 파지 resolve
     assert ctx.keys() == [
-        _CAL_BUNDLE, _FUSE, _SELECT, _SELECT, _MOVE_J, _MOVE_J, _DETECT,
-        _FUSE, _SELECT,
+        _CAL_BUNDLE, _SELECT, _SELECT, _MOVE_J, _MOVE_J, _DETECT, _FUSE,
+        _SELECT, _MOVE_J, _MOVE_J, _DETECT, _FUSE, _SELECT,
     ]
-    # 뷰 resolve 계약: roll 변형 그룹 (그룹당 pose 1) + floor + 장애물(관측 점군)
-    # + home 경로 게이트. 파지가 아니므로 gripper_open/linear 없음.
+    # 뷰 resolve 계약: roll 그룹(그룹당 pose 1) + floor + home 경로, 파지 아님.
     view_req = ctx.calls(_SELECT)[0]["req"]
     assert len(view_req.groups) == 6 and all(len(g) == 1 for g in view_req.groups)
-    assert view_req.floor_z == pytest.approx(0.0 - 0.005)
+    assert view_req.gripper_open is False and view_req.linear is False
     assert view_req.path_from == _HOME_JOINTS
-    assert view_req.obstacle_points and view_req.gripper_open is False
-    assert view_req.linear is False
-    # 뷰 이동 = home 경유 후 resolve 해 그대로
-    mjs = [c["req"].target.joints for c in ctx.calls(_MOVE_J)]
-    assert mjs == [_HOME_JOINTS, view_sol]
-    # 융합 #2 입력 = coarse + 새 관측
-    fuse2 = ctx.calls(_FUSE)[1]["req"]
-    assert len(fuse2.candidates) == 2 and fuse2.candidates[1] is near
+    # 뷰 이동 = home 경유 후 resolve 해 그대로 (도달한 뷰2/뷰3)
+    assert [c["req"].target.joints for c in ctx.calls(_MOVE_J)] == [
+        _HOME_JOINTS, vs1, _HOME_JOINTS, vs2,
+    ]
+    # 파지 융합 입력 = close 관측만 누적 (c1,c2) — 스윕 없음
+    assert [c.position for c in ctx.calls(_FUSE)[1]["req"].candidates] == [
+        c1.position, c2.position,
+    ]
 
 
 async def test_observe_exhausted_fails_explicitly(_two_view_dirs):
@@ -363,19 +375,28 @@ async def test_observe_exhausted_fails_explicitly(_two_view_dirs):
 async def test_observe_grasp_gate_exhausted_keeps_observing_then_fails(
     _two_view_dirs,
 ):
-    """antipodal 쌍은 있으나 resolve 전멸(-1) = 부정 데이터 → 관측을 더 시도,
-    끝까지 안 서면 명시 실패. -1 을 침묵 통과(맹목 파지)하면 회귀."""
-    coarse = _det(points=_cloud(True))
+    """close 뷰에서 antipodal 쌍은 있으나 파지 resolve 전멸(-1) = 부정 데이터 →
+    관측을 더 시도, 끝까지 안 서면 명시 실패. -1 을 침묵 통과(맹목 파지)하면 회귀.
+    (뷰는 도달 성공시켜야 파지 게이트가 돈다.)"""
+    coarse = _det()
+    c = _det(score=0.8, position=(0.205, 0.052, 0.024))
+    vs = [0.3] * 6
     ctx = FakeContext(
         robots=[_BOT],
         specs={_BOT: _SPEC},
         service_script={
             _CAL_BUNDLE: [_hand_eye_bundle()],
-            _FUSE: [_fuse_full()],
+            _FUSE: [_fuse_full(), _fuse_full()],  # 뷰마다 쌍 있음
             _SELECT: [
-                ResolveReachableResponse(index=-1, message="전멸"),  # 파지 게이트
-                ResolveReachableResponse(index=-1),  # 뷰 방향 1
-                ResolveReachableResponse(index=-1),  # 뷰 방향 2
+                ResolveReachableResponse(index=0, solutions=[vs]),  # 뷰1 도달
+                ResolveReachableResponse(index=-1, message="전멸"),  # 파지 게이트1
+                ResolveReachableResponse(index=0, solutions=[vs]),  # 뷰2 도달
+                ResolveReachableResponse(index=-1, message="전멸"),  # 파지 게이트2
+            ],
+            _MOVE_J: [MoveJResponse()] * 4,
+            _DETECT: [
+                DetectOrientedResponse(found=True, candidates=[c]),
+                DetectOrientedResponse(found=True, candidates=[c]),
             ],
         },
     )
@@ -383,10 +404,11 @@ async def test_observe_grasp_gate_exhausted_keeps_observing_then_fails(
         await steps.observe_and_plan_grasp(
             ctx, _BOT, [coarse], coarse, "white cube", _home_record()
         )
-    # 첫 resolve 는 파지 시도 (gripper_open) — 이후는 뷰 스크리닝
-    sels = ctx.calls(_SELECT)
-    assert sels[0]["req"].gripper_open is True
-    assert all(not s["req"].gripper_open for s in sels[1:])
+    # 뷰 스크린(gripper_open False)과 파지 게이트(True)가 번갈아 — 파지 -1 은
+    # 데이터라 다음 뷰로 계속 (침묵 통과 아님).
+    assert [s["req"].gripper_open for s in ctx.calls(_SELECT)] == [
+        False, True, False, True,
+    ]
 
 
 async def test_observe_requires_hand_eye():
@@ -428,8 +450,9 @@ def _module_for_scenario() -> PickAndPlaceModule:
 
 
 def _pick_script(**overrides) -> dict:
-    """pick 경로 성공 스크립트 (search 자세 1개, 스윕 관측 융합만으로 파지 성립
-    — 추가 뷰 0). 시나리오 = home 조회 → 스윕 → 융합 → 파지 성립 → 실행."""
+    """pick 경로 성공 스크립트 (search 자세 1개 → coarse, close 뷰 1개서 파지 성립).
+    시나리오 = home 조회 → 스윕(찾기) → close 뷰 도달·검출·융합 → 파지 성립 → 실행.
+    _SELECT 순서 = 뷰 스크린 → 파지 게이트 (→ place resolve)."""
     script = {
         **_search_responses(),
         _CAL_BUNDLE: [_hand_eye_bundle()] * 2,
@@ -439,9 +462,8 @@ def _pick_script(**overrides) -> dict:
             )
         ] * 4,
         _FUSE: [_fuse_full()] * 2,
-        _SELECT: [_resolve_ok()] * 4,
-        # MoveJ 소비 순서: 스윕 1 → 실행 (home/pre/home)
-        _MOVE_J: [MoveJResponse()] * 8,
+        _SELECT: [_resolve_ok()] * 4,  # 뷰 도달 + 파지 (+ place)
+        _MOVE_J: [MoveJResponse()] * 10,  # 스윕 + 뷰(home+이동) + 실행
         _MOVE_L: [MoveLResponse()] * 4,  # advance/withdraw (+ insert/retreat)
         _GRIP: [SetGripperResponse()] * 3,  # open + close (+ release)
     }
@@ -455,33 +477,32 @@ async def test_scenario_pick_only_sequence():
 
     await mod.scenario(ctx, pick_object="white cube")
 
-    # 호출 순서 = home 조회 → 검색 스윕(그룹 조회→자세 MoveJ→검출) → 관측·파지
-    # (hand_eye 조회 → 융합 → 파지 resolve — 스윕 관측만으로 성립, 뷰 이동 0) →
-    # 실행: home 경유 → pre 접근(관절 해) → open → 진입 → close → 후퇴 → home.
+    # 호출 순서 = home 조회 → 검색 스윕(찾기: 그룹→자세 MoveJ→검출) → 관측·파지
+    # (hand_eye 조회 → 뷰 도달 resolve → home 경유+뷰 MoveJ → close 검출 → 융합 →
+    # 파지 resolve) → 실행: home 경유 → pre 접근 → open → 진입 → close → 후퇴 → home.
     assert ctx.keys() == [
         _LIST_WP,  # home waypoint 조회 (모션 0)
-        _LIST_GROUPS, _LIST_MEMBERS, _MOVE_J, _DETECT,  # 스윕
-        _CAL_BUNDLE, _FUSE, _SELECT,  # 관측 융합 + 파지 성립 (adaptive 정지)
+        _LIST_GROUPS, _LIST_MEMBERS, _MOVE_J, _DETECT,  # 스윕(찾기)
+        _CAL_BUNDLE, _SELECT, _MOVE_J, _MOVE_J, _DETECT, _FUSE, _SELECT,  # close 관측·파지
         _MOVE_J, _MOVE_J, _GRIP, _MOVE_L, _GRIP, _MOVE_L, _MOVE_J,  # 실행
     ]
-    # place 분기 안 탐 (detect 1회뿐) + 든 채 종료 (마지막 gripper = close raw)
+    # place 분기 안 탐 + 든 채 종료 (마지막 gripper = close raw)
     grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
     assert grips == [_SPEC.gripper_open_raw, _SPEC.gripper_close_raw]
 
-    # resolve 게이트 계약: floor_z = 융합 base_z − 버퍼, linear + 그리퍼 벌림
-    # 충돌 + home 경로 게이트 활성 (§10.4-3)
-    sel = ctx.calls(_SELECT)[0]["req"]
+    # 파지 게이트(§10.4-3) = SELECT[1] (SELECT[0]=뷰 스크린): floor_z = 융합 base_z
+    # − 버퍼, linear + 그리퍼 벌림 충돌 + home 경로 게이트.
+    sel = ctx.calls(_SELECT)[1]["req"]
     assert sel.linear is True
     assert sel.floor_z == pytest.approx(0.0 - 0.005)
     assert sel.gripper_open is True and sel.path_from == _HOME_JOINTS
     assert sel.obstacle_points
     # pre 접근 = resolve 가 반환한 관절 해 그대로 (실행부 IK 재계산 금지 — §5.5).
-    # MoveJ 순서: [스윕, home, pre, home] — pre 는 index 2.
-    pre_req = ctx.calls(_MOVE_J)[2]["req"]
+    # MoveJ 순서: [스윕, 뷰-home, 뷰-이동, 실행-home, pre, 실행-home] — pre 는 index 4.
+    pre_req = ctx.calls(_MOVE_J)[4]["req"]
     assert pre_req.target.kind == "joint" and pre_req.target.joints == [0.1] * 6
-    # home 경유 = 티칭 waypoint 관절값
-    home_req = ctx.calls(_MOVE_J)[1]["req"]
-    assert home_req.target.joints == _HOME_JOINTS
+    # home 경유 = 티칭 waypoint 관절값 (뷰 이동 전 home = index 1)
+    assert ctx.calls(_MOVE_J)[1]["req"].target.joints == _HOME_JOINTS
 
 
 async def test_scenario_with_place_branch():
@@ -494,7 +515,10 @@ async def test_scenario_with_place_branch():
             _CAL_BUNDLE: [_hand_eye_bundle()] * 2,
             _FUSE: [_fuse_full()] * 2,
             _DETECT: [
-                DetectOrientedResponse(  # pick 스윕
+                DetectOrientedResponse(  # pick 스윕(찾기)
+                    found=True, candidates=[_det(points=_cloud(False))]
+                ),
+                DetectOrientedResponse(  # pick close 뷰
                     found=True, candidates=[_det(points=_cloud(False))]
                 ),
                 DetectOrientedResponse(  # place 스윕
@@ -502,9 +526,8 @@ async def test_scenario_with_place_branch():
                     candidates=[_det(position=(0.25, -0.05, 0.04), height=0.04)],
                 ),
             ],
-            _SELECT: [_resolve_ok()] * 2,
-            # 스윕(pick) → 스윕(place) + 실행 (home×3 + pre×2)
-            _MOVE_J: [MoveJResponse()] * 8,
+            _SELECT: [_resolve_ok()] * 3,  # pick 뷰 도달 + pick 파지 + place resolve
+            _MOVE_J: [MoveJResponse()] * 10,
             _MOVE_L: [MoveLResponse()] * 4,  # advance/withdraw + insert/retreat
             _GRIP: [SetGripperResponse()] * 3,  # open/close + release
         },
@@ -518,51 +541,45 @@ async def test_scenario_with_place_branch():
         _SPEC.gripper_open_raw,  # 마지막 open = release
     ]
     assert len(ctx.calls(_MOVE_L)) == 4
-    # 관절 이동 = 스윕×2 + home 경유×3 (pick 진입 전 / 든 채 이송 / place 후)
-    # + pre 접근×2 = 7
-    assert len(ctx.calls(_MOVE_J)) == 7
-    # 적치 resolve 도 home 경로 게이트 (execute_place 가 home→pre MoveJ 계약)
-    place_sel = ctx.calls(_SELECT)[1]["req"]
+    # 관절 이동 = pick 스윕(1) + close 뷰 home+이동(2) + place 스윕(1) +
+    # execute_pick home×2+pre(3) + execute_place pre+home(2) = 9
+    assert len(ctx.calls(_MOVE_J)) == 9
+    # 적치 resolve = SELECT[2] (뷰·파지 뒤): home 경로 게이트 + linear
+    place_sel = ctx.calls(_SELECT)[2]["req"]
     assert place_sel.path_from == _HOME_JOINTS and place_sel.linear is True
-    # #2 불변식: 집기·놓기 도달성(RESOLVE) **둘 다** 끝난 뒤에야 첫 파지(GRIP)와
-    # 실행 모션(MOVE_L)이 나간다 — 못 놓을 물체를 집는 일이 없도록. (검색 스윕은
-    # 파지 아닌 관측이라 그 전에 MoveJ 가 있는 건 정상.)
+    # #2 불변식: 집기·놓기 도달성(RESOLVE)이 **전부** 끝난 뒤에야 첫 파지(GRIP)와
+    # 실행 모션(MOVE_L)이 나간다 — 못 놓을 물체를 집는 일이 없도록. 계획 단계
+    # RESOLVE = pick 뷰(1) + pick 파지(1) + place(1) = 3, 전부 GRIP/MOVE_L 앞.
     keys = ctx.keys()
-    assert keys[: keys.index(_GRIP)].count(_SELECT) == 2
-    assert keys[: keys.index(_MOVE_L)].count(_SELECT) == 2
+    assert keys[: keys.index(_GRIP)].count(_SELECT) == 3
+    assert keys[: keys.index(_MOVE_L)].count(_SELECT) == 3
 
 
 async def test_search_sweep_accumulates_and_selects_best_score():
     """검색 원리 (옛 SearchWaypointGroup + SelectTarget 포팅): search 자세를 **전부**
-    돌며 후보를 **누적**하고, 첫 자세에서 안 멈추고 **누적 전체의 최고 score** 를
-    고른다. (뒤집으면 = 첫 자세서 멈추거나 pose별 최선만 보는 회귀.)"""
+    돌며 후보를 **누적**하고, select_target_by_score 가 누적 전체의 최고 score 를
+    고른다 (첫 자세서 안 멈춤). search 는 '찾기' 전용 — 파지는 이후 close 관측이
+    판단(observe_and_plan_grasp)하므로 여기선 detect+선택만 검증."""
     ctx = FakeContext(
         robots=[_BOT],
         specs={_BOT: _SPEC},
         service_script={
             **_search_responses(n_members=2),  # 검색 자세 2개
-            _CAL_BUNDLE: [_hand_eye_bundle()],
-            _FUSE: [_fuse_full()],
             _DETECT: [
                 DetectOrientedResponse(found=True, candidates=[_det(score=0.4)]),
                 DetectOrientedResponse(found=True, candidates=[_det(score=0.95)]),
             ],
             _MOVE_J: [MoveJResponse()] * 2,  # 스윕 자세 2곳
-            _SELECT: [_resolve_ok()],
         },
     )
-    target, _grasp, _pre = await steps.plan_pick(
-        ctx, _BOT, "white cube", _home_record()
-    )
+    cands = await steps.detect(ctx, _BOT, "white cube")
 
-    assert target.score == 0.9  # 융합 결과 (canned) — 실패 아님이 요점
-    # coarse(관측 융합 입력의 첫 항목) = 누적 전체 최고 score — 첫 자세(0.4)서
-    # 안 멈춤. 같은 물체의 저score 관측도 융합 입력에 들어간다 (공짜 멀티뷰 시드).
-    fuse_req = ctx.calls(_FUSE)[0]["req"]
-    assert fuse_req.candidates[0].score == 0.95
-    assert len(fuse_req.candidates) == 2
-    assert len(ctx.calls(_MOVE_J)) == 2  # 스윕만 — 추가 뷰 이동 0
+    assert len(ctx.calls(_MOVE_J)) == 2  # 두 자세 다 돎 (첫서 안 멈춤)
     assert len(ctx.calls(_DETECT)) == 2  # 스윕 자세마다 검출
+    assert [c.score for c in cands] == [0.4, 0.95]  # 누적 (선택 안 함)
+    # 선택 = 누적 전체 최고 score (첫 자세 0.4 아님)
+    coarse = geometry.select_target_by_score(cands, prompt="white cube")
+    assert coarse.score == 0.95
 
 
 async def test_search_group_missing_fails_explicitly():
@@ -627,7 +644,7 @@ async def test_scenario_ik_exhausted_raises(_two_view_dirs):
             **{
                 _SELECT: [
                     ResolveReachableResponse(index=-1, message="전멸")
-                ] * 3  # 파지 1 + 뷰 2방향
+                ] * 3  # 뷰 2방향 전멸(도달 불가) — close 뷰를 못 찍어 파지 미성립
             }
         ),
     )
@@ -653,22 +670,26 @@ async def test_scenario_place_unreachable_fails_before_pick():
             _CAL_BUNDLE: [_hand_eye_bundle()],
             _FUSE: [_fuse_full()],
             _DETECT: [
-                DetectOrientedResponse(  # 집기 검출 OK
+                DetectOrientedResponse(  # 집기 스윕(찾기)
                     found=True, candidates=[_det(points=_cloud(False))]
                 ),
-                DetectOrientedResponse(  # 놓기 검출 OK
+                DetectOrientedResponse(  # 집기 close 뷰
+                    found=True, candidates=[_det(points=_cloud(False))]
+                ),
+                DetectOrientedResponse(  # 놓기 스윕
                     found=True,
                     candidates=[_det(position=(0.25, -0.05, 0.04), height=0.04)],
                 ),
             ],
             _SELECT: [
-                _resolve_ok(),  # 집기 도달 가능
+                ResolveReachableResponse(index=0, solutions=[[0.3] * 6]),  # 집기 뷰 도달
+                _resolve_ok(),  # 집기 파지 성립
                 # 놓기 불가 — 정렬 + 자유 yaw 두 가족 다 전멸
                 ResolveReachableResponse(index=-1, message="놓기 IK 전멸"),
                 ResolveReachableResponse(index=-1, message="놓기 IK 전멸"),
             ],
-            # 스윕(pick) → 스윕(place)
-            _MOVE_J: [MoveJResponse()] * 2,
+            # 집기 스윕(1) + close 뷰 home+이동(2) + 놓기 스윕(1)
+            _MOVE_J: [MoveJResponse()] * 4,
         },
     )
     with pytest.raises(NoReachableGrasp, match="놓을 자리 도달 불가"):

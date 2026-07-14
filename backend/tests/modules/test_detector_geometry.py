@@ -262,3 +262,23 @@ def test_align_and_merge_views_corrects_systematic_view_bias():
     # 병합 후에도 실물 크기 (naive vstack 이면 y-span ≈ 22+29 = 51mm)
     assert (merged[:, 1].max() - merged[:, 1].min()) < edge + 0.008
     assert (merged[:, 0].max() - merged[:, 0].min()) < edge + 0.008
+
+
+def test_align_and_merge_views_anchors_on_mean_not_single_view():
+    """앵커 = 뷰 평균 (medoid 단일 뷰 아님) — 한 뷰의 bias 를 통째 물면 융합 중심이
+    뷰 추가마다 휘청여 큐브 끝을 스친다 (2026-07-14 실물). 대칭 점군(centroid=center)
+    으로 앵커 위치를 정확히 검증: 바깥 outlier 뷰 하나가 있어도 결과 중심은
+    평균에 앉는다. 뒤집으면(medoid/한 뷰) = 중심이 그 뷰로 끌려가 깨짐."""
+    from modules.detector.geometry import align_and_merge_views
+
+    # 대칭 격자(옆면 없음) → 각 cloud 의 centroid == 넘긴 center
+    def block(cx, cy):
+        xs = np.linspace(-0.01, 0.01, 6)
+        gx, gy = np.meshgrid(xs, xs)
+        return np.stack([gx.ravel() + cx, gy.ravel() + cy, np.zeros(36)], axis=1)
+
+    centers = [(0.20, 0.10, 0.0), (0.21, 0.11, 0.0), (0.28, 0.10, 0.0)]  # 3번째 outlier
+    merged = align_and_merge_views([block(*c[:2]) for c in centers], centers)
+    mean_xy = np.mean([c[:2] for c in centers], axis=0)  # (0.23, 0.1033)
+    assert abs(merged[:, 0].mean() - mean_xy[0]) < 1e-6
+    assert abs(merged[:, 1].mean() - mean_xy[1]) < 1e-6

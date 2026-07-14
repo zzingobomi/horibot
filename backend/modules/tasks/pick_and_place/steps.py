@@ -307,17 +307,19 @@ async def observe_and_plan_grasp(
     prompt: str,
     home: WaypointRecord,
 ) -> tuple[OrientedDetection, GraspCandidate, list[float]]:
-    """adaptive 멀티뷰 (§10.4-1) — 관측을 누적하며 매번 파지 성립을 검사, 서면
-    멈춘다 (sim: 2~4뷰). 안 서면 다음 뷰는 spread-first 방위 (§10.3-B — antipodal
-    은 마주 보는 면 관측이 필요해 벌어진 방위부터).
+    """close 타깃 관측만으로 파지 계획 (2026-07-14 재구성 — 찾기/집기 분리).
 
-    - 관측 자세 스크리닝 = motion resolve: IK+self 만이 아니라 **floor + 물체/이웃
-      점군 충돌까지** (§10.3-H 원인 (1) 의 수정). roll 변형을 그룹으로 묶어 첫
-      가용 roll 채택.
-    - 뷰 간 이동 = home 경유 + resolve ④ 경로 게이트(path_from=home) — naive
-      MoveJ 금지 (§10.3-H 원인 (2), §10.4-4).
-    - 도달 불가 뷰 방향 = 스킵 (부정 데이터). 상한까지 봐도 파지가 안 서면
-      사유 있는 명시 실패 (§10.4-3 "안전 파지 불가" — 맹목 파지 금지).
+    **search 스윕은 '찾기' 전용** — coarse 위치만 주고 파지 계획엔 안 쓴다. 스윕
+    관측은 멀리서 광역으로 본 것이라 자세별 FK 오차(백래시 ~1-2cm)가 크고, 그걸로
+    파지점을 정하면 오차가 그대로 파지에 실려 빗나간다 (실물 2026-07-14: 옛 "검색
+    스윕 관측만으로 파지 성립" 조기 종료가 close 뷰를 건너뛰어 큐브 끝을 스침 —
+    멀티뷰를 넣은 목적 자체가 무력화됐던 버그). 그래서 coarse 를 겨냥해 **물체
+    근처 close 뷰를 찍고 그것만 융합**해 파지를 세운다.
+
+    adaptive: close 뷰를 spread-first 방위(§10.3-B antipodal 은 마주 보는 면 필요)
+    로 누적하며 매번 파지 성립 검사, 서면 멈춘다 (sim: 2~4뷰). 관측 스크리닝 =
+    motion resolve (IK+self+floor+이웃 점군 충돌). 뷰 간 이동 = home 경유
+    (§10.4-4). 상한까지 봐도 안 서면 사유 있는 실패 (§10.4-3 맹목 파지 금지).
     """
     bundle = await ctx.call(
         Calibration.Service.SNAPSHOT_BUNDLE,
@@ -330,23 +332,12 @@ async def observe_and_plan_grasp(
         )
     he = bundle.hand_eye.result_data
 
-    # 검색 스윕이 이미 여러 자세에서 본 타깃 관측 = 공짜 멀티뷰 시드.
-    observations = [coarse] + [
-        c
-        for c in cands
-        if c is not coarse
-        and _xy_dist(c.position, coarse.position) <= _VIEW_MATCH_RADIUS_M
-    ]
+    # 이웃(장애물)만 스윕에서 재사용 — 충돌 회피는 파지 정밀도 불요. 파지 융합
+    # 시드로는 스윕 검출을 **안** 쓴다 (far 뷰 FK 오차가 파지점에 실리는 것 차단).
     neighbors = _neighbor_points(cands, coarse)
     floor_z = coarse.base_z - _FLOOR_GATE_MARGIN_M
 
-    found = await try_plan_grasp(
-        ctx, robot_id, observations, neighbors, prompt, home
-    )
-    if found is not None:
-        logger.info("observe_and_plan_grasp(%s): 검색 스윕 관측만으로 파지 성립", prompt)
-        return found
-
+    observations: list[OrientedDetection] = []  # close 뷰만 누적 (스윕 시드 없음)
     reached = 0
     for radius, elev, az in geometry.view_directions(coarse.position):
         if reached >= _VIEW_MAX_REACHED:
@@ -382,8 +373,8 @@ async def observe_and_plan_grasp(
         )
         if near is None:
             logger.info(
-                "observe_and_plan_grasp: 뷰 %d(고도 %.0f° 방위 %.0f°)에서 타깃 "
-                "미검출 — 새 정보 없음", reached, elev, math.degrees(az),
+                "observe_and_plan_grasp: close 뷰 %d(고도 %.0f° 방위 %.0f°)에서 "
+                "타깃 미검출 — 새 정보 없음", reached, elev, math.degrees(az),
             )
             continue
         observations.append(near)
@@ -392,16 +383,16 @@ async def observe_and_plan_grasp(
         )
         if found is not None:
             logger.info(
-                "observe_and_plan_grasp(%s): 추가 뷰 %d/관측 %d건에서 파지 성립",
+                "observe_and_plan_grasp(%s): close 뷰 %d/관측 %d건에서 파지 성립",
                 prompt, reached, len(observations),
             )
             return found
 
     raise NoReachableGrasp(
-        f"안전 파지 불가 — '{prompt}' 관측 {len(observations)}건(추가 뷰 {reached}"
-        f"/{_VIEW_MAX_REACHED})으로도 실행 가능한 antipodal 파지가 안 섰습니다. "
-        "물체가 workspace 경계이거나 주변이 빽빽할 수 있습니다 — 물체를 로봇 "
-        "쪽으로 옮기거나 주변을 비운 뒤 다시 실행하세요"
+        f"안전 파지 불가 — '{prompt}' close 관측 {len(observations)}건(도달 뷰 "
+        f"{reached}/{_VIEW_MAX_REACHED})으로 실행 가능한 antipodal 파지가 안 "
+        "섰습니다. 물체가 workspace 경계이거나 주변이 빽빽할 수 있습니다 — 물체를 "
+        "로봇 쪽으로 옮기거나 주변을 비운 뒤 다시 실행하세요"
     )
 
 

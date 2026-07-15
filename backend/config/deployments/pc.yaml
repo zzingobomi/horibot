@@ -26,3 +26,4 @@ modules:
   - name: llm
   - name: pick_and_place
   - name: bridge
+  - name: logcollector   # 중앙 로그 수집 (log/** → debug/logs/) — PC 에만

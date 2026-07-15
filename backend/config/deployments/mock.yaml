@@ -33,3 +33,4 @@ modules:
   - name: llm
   - name: pick_and_place
   - name: bridge
+  - name: logcollector   # 단일 머신 = 이 머신이 중앙 → 로그 파일 생성 (logs/)

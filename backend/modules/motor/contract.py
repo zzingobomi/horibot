@@ -14,6 +14,9 @@ class Motor:
         SET_TORQUE = "srv/motor/{robot_id}/set_torque"
         REBOOT = "srv/motor/{robot_id}/reboot"
         SET_GRIPPER = "srv/motor/{robot_id}/set_gripper"
+        # point-in-time raw state snapshot (request/reply). 20Hz stream 과 별개 —
+        # task 가 ctx.call 로 정착 후 실제 도달 위치/부하를 되읽는 자리 (파지 판정).
+        READ_STATE = "srv/motor/{robot_id}/read_state"
 
     class Stream(StrEnum):
         RAW_STATE = "stream/motor/{robot_id}/raw_state"  # 20Hz kinematic (JointState)
@@ -98,6 +101,10 @@ class SetGripperResponse(BaseModel):
 
     옛 ok 필드는 항상 True 만 반환되던 죽은 필드 (실패는 애초에 raise 경로) —
     2026-07-13 예외/데이터 기준 정리에서 제거."""
+
+
+class ReadStateRequest(BaseModel):
+    """point-in-time raw state 조회 — 인자 없음 (응답 = JointState snapshot)."""
 
 
 # ─── stream payload (seq + timestamp_unix invariant — §8.5) ────────

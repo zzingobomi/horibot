@@ -76,10 +76,14 @@ def load_configs(
 
 
 async def run(host: str, config_dir: Path = _CONFIG_DIR) -> None:
+    from infra.logging.publisher import attach_log_publisher, detach_log_publisher
     from infra.transport.zenoh import ZenohTransport
 
     deploy, robots = load_configs(host, config_dir)
     transport = ZenohTransport(deploy.zenoh)
+    # transport 준비 직후 발행 핸들러 부착 — 이 host 의 모든 모듈 로그가 콘솔과
+    # 함께 log/{host} 로도 나간다 (docs/logging.md §1). 중앙 PC 의 logcollector 가 수집.
+    log_publisher = attach_log_publisher(transport, host)
     runtime = build_runtime(deploy, robots, transport)
 
     await runtime.start()
@@ -100,6 +104,9 @@ async def run(host: str, config_dir: Path = _CONFIG_DIR) -> None:
     finally:
         logger.info("Runtime stopping — host=%s", host)
         await runtime.stop()
+        # transport.close 전에 발행 핸들러 제거 — 닫힌 세션으로 발행 시도 방지.
+        # (runtime.stop 까지의 shutdown 로그는 아직 발행됨.)
+        detach_log_publisher(log_publisher)
         transport.close()
         logger.info("Runtime stopped — host=%s", host)
 
@@ -112,7 +119,11 @@ def main() -> None:
         help="deployment yaml 이름 (mock / pc / pi_hori1 / ...)",
     )
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     asyncio.run(run(args.host))
 
 

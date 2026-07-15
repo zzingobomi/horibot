@@ -31,11 +31,20 @@ from modules.motion.contract import (
     ResolveReachableRequest,
     ResolveReachableResponse,
     TcpPose,
+    TcpSnapshotRequest,
+    TcpState,
 )
-from modules.motor.contract import Motor, SetGripperRequest, SetGripperResponse
+from modules.motor.contract import (
+    JointState,
+    Motor,
+    ReadStateRequest,
+    SetGripperRequest,
+    SetGripperResponse,
+)
 from modules.tasks.core.context import TaskContext
 from modules.tasks.core.errors import (
     DetectionNotFound,
+    GraspFailed,
     NoReachableGrasp,
     TaskError,
 )
@@ -189,8 +198,15 @@ async def execute_pick(
     await pre_grasp(ctx, robot_id, pre_joints)
     await open_gripper(ctx, robot_id)
     await advance(ctx, robot_id, c)
+    # arm 이 실제로 목표 파지 자세에 도달했나 (계획 vs 도달 오차 로깅 — 실패 시
+    # "arm 미도달 / 기하 오류 / 그리퍼 미물림" 레이어 분리).
+    await _log_reached_tcp(ctx, robot_id, expected=c.grasp, phase="grasp 도달")
     await close_gripper(ctx, robot_id)
+    # 파지 판정 ①: close 직후 물었나. 빈 파지면 raise → withdraw/place 진행 안 함.
+    await verify_grasp(ctx, robot_id, phase="close 직후", grasp_label=c.label)
     await withdraw(ctx, robot_id, c)
+    # 파지 판정 ②: 들어올린 뒤에도 물고 있나 (이송 중 미끄러짐/낙하 포착 — hole #4).
+    await verify_grasp(ctx, robot_id, phase="withdraw 후", grasp_label=c.label)
     await go_home(ctx, robot_id, home)
 
 
@@ -208,6 +224,9 @@ async def execute_place(
     시작 자세가 일정하고 카메라 시야에서 팔이 빠진다."""
     await pre_place(ctx, robot_id, pre_joints)
     await insert(ctx, robot_id, c)
+    # 파지 판정 ③: 내려놓기 직전에도 물고 있나 (이송 중 놓쳤으면 여기서 실패 —
+    # 빈 손으로 release 하는 허위 성공 방지).
+    await verify_grasp(ctx, robot_id, phase="적치 직전", grasp_label=c.label)
     await release(ctx, robot_id)
     await retreat(ctx, robot_id, c)
     await go_home(ctx, robot_id, home)
@@ -591,6 +610,7 @@ async def resolve_place(
 
 @step(title="home 경유")
 async def go_home(ctx: TaskContext, robot_id: str, home: WaypointRecord) -> None:
+    logger.info("go_home robot=%s → '%s'", robot_id, home.name)
     await _move_j_joints(ctx, robot_id, home.joint_values)
 
 
@@ -599,18 +619,21 @@ async def pre_grasp(
     ctx: TaskContext, robot_id: str, pre_joints: list[float]
 ) -> None:
     # resolve 가 반환한 관절 해 그대로 — 실행부 IK 재계산 없음 (§5.5)
+    logger.info("pre_grasp robot=%s → joints=%s", robot_id, _fmt_joints(pre_joints))
     await _move_j_joints(ctx, robot_id, pre_joints)
 
 
 @step(title="진입")
 async def advance(ctx: TaskContext, robot_id: str, c: GraspCandidate) -> None:
     # pre→grasp 접근축 직선 (자세 동일 → slerp 가 자세 고정으로 수렴)
+    logger.info("advance robot=%s → grasp %s [%s]", robot_id, _fmt(c.grasp), c.label)
     await _move_l(ctx, robot_id, c.grasp, c.quat)
 
 
 @step(title="후퇴")
 async def withdraw(ctx: TaskContext, robot_id: str, c: GraspCandidate) -> None:
     # grasp→pre 접근축 역방향 — 월드 +z 들어올리기 폐기 (§5.4)
+    logger.info("withdraw robot=%s → pre %s", robot_id, _fmt(c.pre))
     await _move_l(ctx, robot_id, c.pre, c.quat)
 
 
@@ -618,16 +641,19 @@ async def withdraw(ctx: TaskContext, robot_id: str, c: GraspCandidate) -> None:
 async def pre_place(
     ctx: TaskContext, robot_id: str, pre_joints: list[float]
 ) -> None:
+    logger.info("pre_place robot=%s → joints=%s", robot_id, _fmt_joints(pre_joints))
     await _move_j_joints(ctx, robot_id, pre_joints)
 
 
 @step(title="삽입")
 async def insert(ctx: TaskContext, robot_id: str, c: PlaceCandidate) -> None:
+    logger.info("insert robot=%s → place %s", robot_id, _fmt(c.place))
     await _move_l(ctx, robot_id, c.place, c.quat)
 
 
 @step(title="적치 후퇴")
 async def retreat(ctx: TaskContext, robot_id: str, c: PlaceCandidate) -> None:
+    logger.info("retreat robot=%s → pre %s", robot_id, _fmt(c.pre))
     await _move_l(ctx, robot_id, c.pre, c.quat)
 
 
@@ -644,6 +670,86 @@ async def close_gripper(ctx: TaskContext, robot_id: str) -> None:
 @step(title="내려놓기")
 async def release(ctx: TaskContext, robot_id: str) -> None:
     await _set_gripper(ctx, robot_id, open_=True)
+
+
+# ─── 파지 판정 (물었나/놓쳤나) ────────────────────────────
+
+
+def _gripper_holding(achieved_raw: int, spec) -> bool:  # noqa: ANN001 — TaskRobotSpec
+    """물었나 판정 (벤더 무관). close 명령했는데 물체가 막아 **완전히 못 닫힘** =
+    물림. 방향 무관하게 |achieved − close| 로 "닫힘에서 얼마나 벌어졌나"를 본다:
+    그 gap 이 held margin(=|threshold − close|, resolve.py 에서 15% range)보다 크면
+    물체가 조 사이에 있는 것. gap≈0(close 도달) = 빈 파지.
+
+    한계(실물 튜닝 대상, 로그로 근거 확보): 임계보다 얇은 물체는 false negative /
+    물체 없이 어중간히 stall 하면 false positive → load·기대폭 신호는 로그에 병기.
+    """
+    margin = abs(spec.gripper_held_threshold_raw - spec.gripper_close_raw)
+    gap = abs(achieved_raw - spec.gripper_close_raw)
+    return gap > margin
+
+
+@step(title="파지 확인")
+async def verify_grasp(
+    ctx: TaskContext, robot_id: str, *, phase: str, grasp_label: str = ""
+) -> None:
+    """실제 그리퍼 도달 위치로 물림 판정 — 빈 파지/놓침이면 GraspFailed raise.
+
+    단일 시점·단일 신호의 허점(못 잡았는데 잡음/잡았다 놓침)을 줄이려 execute 가
+    여러 시점(close 직후·withdraw 후·적치 직전)에서 이걸 부른다. 판정 근거(도달
+    raw / close / threshold / load / 계획 폭)를 **전부 로깅** → 실패 시 원인분석 +
+    실물 임계값 튜닝 데이터. fail-closed: 물림 확신 못 하면 실패로 기운다."""
+    spec = ctx.spec(robot_id)
+    state = await ctx.call(
+        Motor.Service.READ_STATE, ReadStateRequest(), JointState, robot_id=robot_id
+    )
+    gi = spec.gripper_index
+    achieved = state.positions_raw[gi]
+    load = (
+        state.loads_raw[gi]
+        if state.loads_raw is not None and gi < len(state.loads_raw)
+        else None
+    )
+    held = _gripper_holding(achieved, spec)
+    logger.info(
+        "verify_grasp[%s] robot=%s grip achieved=%d (close=%d open=%d held_thr=%d "
+        "load=%s) 계획폭=%s → %s",
+        phase, robot_id, achieved, spec.gripper_close_raw, spec.gripper_open_raw,
+        spec.gripper_held_threshold_raw, load, grasp_label or "?",
+        "HELD" if held else "EMPTY",
+    )
+    if not held:
+        raise GraspFailed(
+            phase=phase,
+            achieved_raw=achieved,
+            close_raw=spec.gripper_close_raw,
+            load_raw=load,
+        )
+
+
+async def _log_reached_tcp(
+    ctx: TaskContext, robot_id: str, *, expected: Vec3, phase: str
+) -> None:
+    """도달 TCP snapshot 로깅 — 계획 vs 실제 위치 오차. 실패 시 "arm 이 목표에
+    도달했나"를 "기하가 틀렸나"와 분리하는 진단 신호 (침묵 X, 서비스 실패해도
+    파지 흐름은 계속 — 로깅은 부수)."""
+    try:
+        tcp = await ctx.call(
+            Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
+            robot_id=robot_id,
+        )
+    except Exception as e:  # 로깅 실패가 파지를 막지 않게
+        logger.warning("_log_reached_tcp[%s] TCP snapshot 실패: %s", phase, e)
+        return
+    a = tcp.position
+    dx, dy, dz = a[0] - expected[0], a[1] - expected[1], a[2] - expected[2]
+    err_mm = math.sqrt(dx * dx + dy * dy + dz * dz) * 1000.0
+    logger.info(
+        "reached[%s] robot=%s 계획=(%.3f,%.3f,%.3f) 도달=(%.3f,%.3f,%.3f) "
+        "오차=%.1fmm",
+        phase, robot_id, expected[0], expected[1], expected[2],
+        a[0], a[1], a[2], err_mm,
+    )
 
 
 # ─── internal helpers ──
@@ -665,6 +771,9 @@ async def _move_l(
 async def _set_gripper(ctx: TaskContext, robot_id: str, *, open_: bool) -> None:
     spec = ctx.spec(robot_id)
     raw = spec.gripper_open_raw if open_ else spec.gripper_close_raw
+    logger.info(
+        "gripper robot=%s → %s (raw=%d)", robot_id, "OPEN" if open_ else "CLOSE", raw
+    )
     await ctx.call(
         Motor.Service.SET_GRIPPER,
         SetGripperRequest(position_raw=raw),
@@ -672,3 +781,11 @@ async def _set_gripper(ctx: TaskContext, robot_id: str, *, open_: bool) -> None:
         robot_id=robot_id,
     )
     await asyncio.sleep(_GRIPPER_SETTLE_S)
+
+
+def _fmt(pos: Vec3) -> str:
+    return f"({pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f})"
+
+
+def _fmt_joints(joints: list[float]) -> str:
+    return "[" + ",".join(f"{j:.3f}" for j in joints) + "]"

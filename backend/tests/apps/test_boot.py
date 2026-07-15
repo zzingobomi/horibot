@@ -79,6 +79,7 @@ def test_load_deployment_mock():
         "llm",
         "pick_and_place",
         "bridge",
+        "logcollector",  # 단일 머신 = 중앙 → 로그 파일 (docs/logging.md)
     }
     assert deploy.rdb_uri == "sqlite:///:memory:"  # DB owner host
 

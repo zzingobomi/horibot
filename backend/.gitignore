@@ -8,3 +8,6 @@ autogen_tmp.db
 storage_v2/
 # detect_oriented 디버그 덤프 (modules/detector/module.py _DEBUG_DIR)
 debug/
+# 중앙 로그 수집 (modules/logcollector — docs/logging.md). 머신별 + 14일 rolling +
+# 무한 증가라 push 대상 아님. debug/ 와 분리 (라이프사이클 다름 — 보존 vs scratch).
+logs/

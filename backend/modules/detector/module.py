@@ -477,12 +477,14 @@ class DetectorModule:
         depth: np.ndarray | None = None,
         depth_scale: float = 0.001,
     ) -> None:
-        """검출 1회 덤프 — mask 알파 오버레이+bbox+OBB+yaw PNG, 후보별 점군 PLY,
-        메트릭 txt. 세션 폴더에 순번으로 쌓고(검색 스윕 여러 뷰/집기·놓기 다 보존),
+        """검출 1회 덤프 — mask 알파 오버레이+bbox+OBB+yaw PNG, 후보별 점군 PLY.
+        세션 폴더에 순번으로 쌓고(검색 스윕 여러 뷰/집기·놓기 다 보존),
         빠른 확인용 detect_oriented_last.png 도 함께 overwrite.
 
         패널 오버레이는 contour 폴리곤 근사 — 세그멘테이션이 실제로 어떻게 됐는지
-        픽셀 단위 확인은 PNG, base_z/height/모양은 PLY, 수치는 txt (draft 디버그).
+        픽셀 단위 확인은 PNG, base_z/height/모양은 PLY. 후보 수치 메트릭은 **로그**
+        (중앙 파일로 수렴)와 `.json` 구조화 사본에 남고, 옛 `.txt` 세 번째 사본은
+        폐기했다 (docs/logging.md §3-B).
 
         **raw 계측(2026-07-15)**: PLY 는 base 변환·다운샘플 후라 센서 원본을 못 되짚는다.
         depth 편향 vs 캘/프레임 오차를 나중에 분리·정량하려면 원본이 있어야 해서
@@ -492,7 +494,7 @@ class DetectorModule:
         (grasping.md §3). proj/depth 없으면 raw 는 건너뜀.
         """
         canvas = img_bgr.copy()
-        lines: list[str] = [f"prompt={oriented[0].prompt if oriented else ''}"]
+        cand_summ: list[str] = []
         for i, (det, (mask, obb_2d)) in enumerate(zip(oriented, rows, strict=True)):
             tint = canvas.copy()
             tint[mask] = (239, 70, 217)  # fuchsia (BGR) — 패널 contour 색과 통일
@@ -513,7 +515,7 @@ class DetectorModule:
                     (11, 158, 245),
                     2,
                 )
-            lines.append(
+            cand_summ.append(
                 f"c{i}: score={det.score:.2f} base_z={det.base_z:.3f}m "
                 f"height={det.height * 100:.1f}cm "
                 f"pos=({det.position[0]:.3f},{det.position[1]:.3f},"
@@ -523,7 +525,14 @@ class DetectorModule:
             )
         prefix = self._next_dump_prefix("det", oriented[0].prompt if oriented else "")
         cv2.imwrite(f"{prefix}.png", canvas)
-        prefix.with_name(prefix.name + ".txt").write_text("\n".join(lines) + "\n")
+        # 후보 메트릭 = 로그 서사(중앙 파일 수렴, host/시각 자동 각인) + .json 구조화
+        # 사본. 옛 .txt 세 번째 사본은 폐기 (docs/logging.md §3-B).
+        logger.info(
+            "detect_oriented 후보 %d개 (prompt=%r): %s",
+            len(oriented),
+            oriented[0].prompt if oriented else "",
+            " | ".join(cand_summ) if cand_summ else "없음",
+        )
         for i, det in enumerate(oriented):  # 후보별 점군 (base frame, m)
             if det.points:
                 _write_ply(Path(f"{prefix}_c{i}.ply"), det.points)
@@ -531,7 +540,7 @@ class DetectorModule:
         # (센서 depth 편향 vs 캘/프레임 오차 분리용 — docstring/§6.)
         self._dump_debug_raw(prefix, img_bgr, oriented, rows, proj, depth, depth_scale)
         cv2.imwrite(str(_DEBUG_DIR / "detect_oriented_last.png"), canvas)
-        logger.info("detect_oriented 디버그 덤프: %s.png (+PLY/txt/raw)", prefix)
+        logger.info("detect_oriented 디버그 덤프: %s.png (+PLY/raw)", prefix)
 
     def _dump_debug_raw(
         self,

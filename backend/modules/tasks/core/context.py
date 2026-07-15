@@ -33,7 +33,6 @@ from modules.motion.contract import Motion, StopRequest, StopResponse
 
 from .errors import TaskError
 from .spec import TaskRobotSpec
-from .step import RunLink
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +47,13 @@ class TaskContext:
     ) -> None:
         self.runtime = runtime  # 날것 escape hatch — 검증 없음, 최후 수단
         self._specs = robots or {}
-        self._link: RunLink | None = None
         self._allowed: set[str] | None = None
         self._robot_ids: list[str] = []  # 참여 robot — on_abort STOP 대상
 
     # ─── runner 가 쓰는 프로토콜 (시나리오 표면 아님) ────────────────
 
-    def bind_run(self, link: RunLink, robot_ids: list[str]) -> None:
-        """run 시작 시 runner 가 관측 훅 주입 + 참여 robot 설정."""
-        self._link = link
+    def bind_run(self, robot_ids: list[str]) -> None:
+        """run 시작 시 runner 가 참여 robot 설정 (on_abort STOP 대상)."""
         self._allowed = set(robot_ids) if robot_ids else None
         self._robot_ids = list(robot_ids)
 

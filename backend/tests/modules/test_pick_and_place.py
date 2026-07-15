@@ -36,8 +36,9 @@ from modules.motion.contract import (
     MoveLResponse,
     ResolveReachableResponse,
     StopResponse,
+    TcpState,
 )
-from modules.motor.contract import Motor, SetGripperResponse
+from modules.motor.contract import JointState, Motor, SetGripperResponse
 from modules.tasks.core.contract import (
     ControlRequest,
     PreviewRequest,
@@ -45,7 +46,12 @@ from modules.tasks.core.contract import (
     TaskStatus,
     ToggleBreakpointRequest,
 )
-from modules.tasks.core.errors import DetectionNotFound, NoReachableGrasp, TaskError
+from modules.tasks.core.errors import (
+    DetectionNotFound,
+    GraspFailed,
+    NoReachableGrasp,
+    TaskError,
+)
 from modules.tasks.core.fake import FakeContext
 from modules.tasks.core.spec import TaskRobotSpec
 from modules.tasks.pick_and_place import geometry, steps
@@ -76,6 +82,8 @@ _SELECT = str(Motion.Service.RESOLVE_REACHABLE)
 _MOVE_J = str(Motion.Service.MOVE_J)
 _MOVE_L = str(Motion.Service.MOVE_L)
 _GRIP = str(Motor.Service.SET_GRIPPER)
+_READ_STATE = str(Motor.Service.READ_STATE)
+_TCP_SNAP = str(Motion.Service.TCP_SNAPSHOT)
 _LIST_WP = str(Waypoint.Service.LIST)
 _LIST_GROUPS = str(Waypoint.Service.LIST_GROUPS)
 _LIST_MEMBERS = str(Waypoint.Service.LIST_GROUP_MEMBERS)
@@ -94,6 +102,31 @@ def _home_record() -> WaypointRecord:
 def _home_responses() -> dict:
     """'home' waypoint canned 응답 — 시나리오가 맨 앞에서 조회."""
     return {_LIST_WP: [ListWaypointsResponse(waypoints=[_home_record()])] * 2}
+
+
+_HELD_RAW = 2400  # gap=|2400-1935|=465 > margin |2100-1935|=165 → HELD
+_EMPTY_RAW = _SPEC.gripper_close_raw  # close 도달 = 빈 파지
+
+
+def _joint_state(gripper_raw: int, *, load: int | None = None) -> JointState:
+    """READ_STATE canned 응답 — 그리퍼 자리에 도달 raw 를 심는다 (물림/빈 파지)."""
+    pos = [0] * 6
+    pos[_SPEC.gripper_index] = gripper_raw
+    loads = None
+    if load is not None:
+        loads = [0] * 6
+        loads[_SPEC.gripper_index] = load
+    return JointState(
+        robot_id=_BOT, seq=0, timestamp_unix=0.0,
+        positions_raw=pos, velocities_raw=None, loads_raw=loads,
+    )
+
+
+def _tcp(position: tuple[float, float, float] = (0.2, 0.05, 0.023)) -> TcpState:
+    return TcpState(
+        robot_id=_BOT, seq=0, timestamp_unix=0.0, position=position,
+        quaternion=(0.0, 0.0, 0.0, 1.0), joint_names=[], joints=[],
+    )
 
 
 def _resolve_ok(index: int = 0) -> ResolveReachableResponse:
@@ -466,6 +499,8 @@ def _pick_script(**overrides) -> dict:
         _MOVE_J: [MoveJResponse()] * 10,  # 스윕 + 뷰(home+이동) + 실행
         _MOVE_L: [MoveLResponse()] * 4,  # advance/withdraw (+ insert/retreat)
         _GRIP: [SetGripperResponse()] * 3,  # open + close (+ release)
+        _TCP_SNAP: [_tcp()] * 2,  # grasp 도달 로깅
+        _READ_STATE: [_joint_state(_HELD_RAW)] * 3,  # 파지 판정 (close/withdraw/place)
     }
     script.update(overrides)
     return script
@@ -484,7 +519,10 @@ async def test_scenario_pick_only_sequence():
         _LIST_WP,  # home waypoint 조회 (모션 0)
         _LIST_GROUPS, _LIST_MEMBERS, _MOVE_J, _DETECT,  # 스윕(찾기)
         _CAL_BUNDLE, _SELECT, _MOVE_J, _MOVE_J, _DETECT, _FUSE, _SELECT,  # close 관측·파지
-        _MOVE_J, _MOVE_J, _GRIP, _MOVE_L, _GRIP, _MOVE_L, _MOVE_J,  # 실행
+        # 실행: home 경유 → pre → open → 진입 → TCP도달로깅 → close → 파지판정 →
+        # 후퇴 → 파지판정 → home
+        _MOVE_J, _MOVE_J, _GRIP, _MOVE_L, _TCP_SNAP, _GRIP, _READ_STATE,
+        _MOVE_L, _READ_STATE, _MOVE_J,
     ]
     # place 분기 안 탐 + 든 채 종료 (마지막 gripper = close raw)
     grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
@@ -530,6 +568,8 @@ async def test_scenario_with_place_branch():
             _MOVE_J: [MoveJResponse()] * 10,
             _MOVE_L: [MoveLResponse()] * 4,  # advance/withdraw + insert/retreat
             _GRIP: [SetGripperResponse()] * 3,  # open/close + release
+            _TCP_SNAP: [_tcp()] * 1,  # grasp 도달 로깅
+            _READ_STATE: [_joint_state(_HELD_RAW)] * 3,  # 파지판정 close/withdraw/적치
         },
     )
 
@@ -865,3 +905,114 @@ async def test_list_robots_returns_task_robots():
     mod = PickAndPlaceModule(_WireStub(), {})  # type: ignore[arg-type]
     res = await mod.list_robots(ListRobotsRequest())
     assert res.robot_ids == list(PickAndPlaceModule.TASK_ROBOTS)
+
+
+# ─── 파지 판정 (물었나/놓쳤나) — 구멍당 테스트 ──────────────────────────
+# 의미 (뒤집으면 회귀): 못 잡았는데 성공처럼 진행(침묵 성공) / 잡았다 이송 중
+# 놓쳤는데 계속 진행 / 판정이 단일 시점·단일 신호로 허점 노출. 각 구멍 = 테스트 1개.
+# 실물 stall/부하 매핑은 sim 이 못 줌 — 여기선 "신호가 주어졌을 때 판정·흐름이
+# 옳은가"만 결정적으로 잠근다 (실물 임계값은 특성화 루틴 + 로그로 튜닝).
+
+
+def _grasp_candidate() -> geometry.GraspCandidate:
+    return geometry.GraspCandidate(
+        label="pair0 tilt=0 flip=+ w=22mm",
+        pre=(0.18, 0.05, 0.06), grasp=(0.20, 0.05, 0.02),
+        quat=(0.0, 0.0, 0.0, 1.0), lateral=0.01,
+    )
+
+
+def test_gripper_holding_judgment():
+    # margin = |held_thr - close| = |2100-1935| = 165.
+    assert steps._gripper_holding(_HELD_RAW, _SPEC) is True  # gap 465 > 165
+    assert steps._gripper_holding(_EMPTY_RAW, _SPEC) is False  # close 도달 = 빈 파지
+    # 임계보다 얇은 물체 = 못 잡음 판정 (false-negative 한계 — 실물 로그로 튜닝).
+    thin = _SPEC.gripper_close_raw + 100  # gap 100 < margin 165
+    assert steps._gripper_holding(thin, _SPEC) is False
+
+
+def test_position_only_cannot_catch_false_stall():
+    """알려진 한계 박제: 물체 없이 어중간히 stall 하면 위치 판정은 HELD 로 오판
+    (false-positive). load 를 로그에 병기해 실물에서 load 게이트 추가로 튜닝하는
+    게 해법 — 지금은 위치 단일 신호의 한계를 명시적으로 잠근다."""
+    false_stall = _SPEC.gripper_held_threshold_raw + 200
+    assert steps._gripper_holding(false_stall, _SPEC) is True  # 못 거름 (한계)
+
+
+async def test_verify_grasp_empty_raises_with_reason():
+    ctx = FakeContext(
+        robots=[_BOT], specs={_BOT: _SPEC},
+        service_script={_READ_STATE: [_joint_state(_EMPTY_RAW, load=3)]},
+    )
+    with pytest.raises(GraspFailed) as ei:
+        await steps.verify_grasp(ctx, _BOT, phase="close 직후", grasp_label="w=22mm")
+    # 사유 문자열이 "무엇을/다음 행동" 을 담는다 (침묵 금지)
+    assert "파지 실패" in str(ei.value) and "close 직후" in str(ei.value)
+    assert ei.value.achieved_raw == _EMPTY_RAW
+
+
+async def test_verify_grasp_held_passes():
+    ctx = FakeContext(
+        robots=[_BOT], specs={_BOT: _SPEC},
+        service_script={_READ_STATE: [_joint_state(_HELD_RAW, load=280)]},
+    )
+    await steps.verify_grasp(ctx, _BOT, phase="close 직후")  # raise 안 함
+    assert len(ctx.calls(_READ_STATE)) == 1
+
+
+async def test_execute_pick_empty_grasp_stops_before_withdraw():
+    """핵심 회귀 (어제 사고): 빈 파지면 close 직후 판정에서 실패 → 후퇴/적치로
+    진행 안 함. 예전엔 판정이 없어 빈 손으로 조용히 성공했다."""
+    ctx = FakeContext(
+        robots=[_BOT], specs={_BOT: _SPEC},
+        service_script={
+            _MOVE_J: [MoveJResponse()] * 3,
+            _GRIP: [SetGripperResponse()] * 2,
+            _MOVE_L: [MoveLResponse()] * 2,
+            _TCP_SNAP: [_tcp()],
+            _READ_STATE: [_joint_state(_EMPTY_RAW)],  # close 직후 = 빈 파지
+        },
+    )
+    with pytest.raises(GraspFailed) as ei:
+        await steps.execute_pick(
+            ctx, _BOT, _grasp_candidate(), [0.1] * 6, _home_record()
+        )
+    assert ei.value.phase == "close 직후"
+    # 진입(advance) MOVE_L 1회만 — 후퇴(withdraw)로 진행 안 함
+    assert len(ctx.calls(_MOVE_L)) == 1
+    assert len(ctx.calls(_READ_STATE)) == 1  # close 에서 즉시 실패
+
+
+async def test_execute_pick_drop_after_lift_detected():
+    """구멍 #4 (잡았다 놓침): close 직후엔 물렸지만 withdraw 후 놓친 경우 —
+    다중 체크포인트가 withdraw 시점에서 잡아낸다 (단일 시점이면 못 잡음)."""
+    ctx = FakeContext(
+        robots=[_BOT], specs={_BOT: _SPEC},
+        service_script={
+            _MOVE_J: [MoveJResponse()] * 3,
+            _GRIP: [SetGripperResponse()] * 2,
+            _MOVE_L: [MoveLResponse()] * 2,
+            _TCP_SNAP: [_tcp()],
+            # close = 물림 → 통과, withdraw = 놓침 → 실패
+            _READ_STATE: [_joint_state(_HELD_RAW), _joint_state(_EMPTY_RAW)],
+        },
+    )
+    with pytest.raises(GraspFailed) as ei:
+        await steps.execute_pick(
+            ctx, _BOT, _grasp_candidate(), [0.1] * 6, _home_record()
+        )
+    assert ei.value.phase == "withdraw 후"
+    assert len(ctx.calls(_READ_STATE)) == 2  # close 통과 후 withdraw 에서 실패
+
+
+async def test_scenario_empty_grasp_fails_and_stops():
+    """end-to-end: 빈 파지 → 시나리오 GraspFailed → runner 가 FAILED + Motion.STOP.
+    '못 집었는데 성공' 침묵 실패가 이제 명시적 실패 + 안전정지로 드러난다."""
+    ctx = FakeContext(
+        robots=[_BOT], specs={_BOT: _SPEC},
+        service_script={**_pick_script(), _READ_STATE: [_joint_state(_EMPTY_RAW)]},
+    )
+    with pytest.raises(GraspFailed):
+        await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    # 빈 파지 판정 후 place/withdraw 진행 안 함 — advance MOVE_L 1회만
+    assert len(ctx.calls(_MOVE_L)) == 1

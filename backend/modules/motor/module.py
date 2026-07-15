@@ -29,6 +29,7 @@ from .contract import (
     MotorCapabilities,
     MotorState,
     MotorTopology,
+    ReadStateRequest,
     RebootRequest,
     RebootResponse,
     SetGripperRequest,
@@ -72,6 +73,9 @@ class MotorDriverModule:
 
         # state stream seq counter (§8.5 invariant)
         self._seq = 0
+        # 20Hz loop 가 읽은 최신 JointState 캐시 — READ_STATE 가 반환 (추가 driver
+        # 접근 0 → 시리얼 버스 동시접근 회피. 정착 후 조회라 ≤50ms staleness 무해).
+        self._latest_state: JointState | None = None
         self._driver_state_seq = 0
         self._state_task: asyncio.Task[None] | None = None
         self._driver_state_task: asyncio.Task[None] | None = None
@@ -133,6 +137,16 @@ class MotorDriverModule:
         self._driver.set_gripper(req.position_raw)  # driver 실패 = 예외 전파
         return SetGripperResponse()
 
+    @service(Motor.Service.READ_STATE)
+    def read_state(self, req: ReadStateRequest) -> JointState:
+        # 20Hz loop 가 채운 최신 snapshot 을 반환 (fresh driver read 안 함 —
+        # 버스 동시접근 회피). loop 이 아직 한 번도 안 돈 이른 부팅에서만 None.
+        if self._latest_state is None:
+            raise RuntimeError(
+                f"raw state 아직 없음 (state loop 미기동) robot_id={self.robot_id}"
+            )
+        return self._latest_state
+
     # ── command subscriber (Motion → Motor, raw 위치) ─────────
 
     @subscriber(Motor.Stream.COMMAND)
@@ -189,6 +203,7 @@ class MotorDriverModule:
                         loads_raw=loads,
                     )
                     self._seq += 1
+                    self._latest_state = event  # READ_STATE snapshot 소스
                     self.runtime.publish(Motor.Stream.RAW_STATE, event)
                 except Exception:
                     logger.exception(

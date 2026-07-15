@@ -51,7 +51,7 @@ from .contract import (
     TaskStatus,
     TraceEntry,
 )
-from .step import RunLink, bind_link, reset_link
+from .step import bind_link, reset_link
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ class RunState:
 class RunContext(Protocol):
     """runner 가 ctx 에 요구하는 최소 표면 — 도메인은 안 봄 (TaskContext 가 구현)."""
 
-    def bind_run(self, link: RunLink, robot_ids: list[str]) -> None: ...
+    def bind_run(self, robot_ids: list[str]) -> None: ...
 
     async def on_abort(self) -> None: ...
 
@@ -156,7 +156,7 @@ class TaskRunnerState:
             task_name=task_name or getattr(fn, "__name__", "task").lstrip("_"),
         )
         run.gate.set()  # set = 진행, clear = hold
-        ctx.bind_run(_Link(self, run), list(robot_ids))
+        ctx.bind_run(list(robot_ids))
         self._run = run
         self._notify_state(run)  # RUNNING 진입
         self._notify_trace(run)  # 빈 trace — 이전 run 표시 clear
@@ -424,7 +424,10 @@ class TaskRunner:
 
 
 class _Link:
-    """@step wrapper / ctx 에 주입되는 게이트/관측 훅 — RunLink (step.py) 구현."""
+    """@step wrapper 가 ContextVar 로 보는 게이트/관측 훅 — RunLink (step.py) 구현.
+
+    _supervise 가 bind_link 로 심고, @step wrapper 가 enter/complete/fail 을 호출.
+    (ctx 로는 주입하지 않는다 — ctx 는 참여 robot 만 받는다, 2026-07-15 정리.)"""
 
     def __init__(self, runner: TaskRunnerState, run: _Run) -> None:
         self._runner = runner

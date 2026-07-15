@@ -196,13 +196,16 @@ def test_pick_and_place_scenario_tree():
         ("go_home", 1),
         ("pre_grasp", 1),
         ("open_gripper", 1),
-        ("advance", 1),
+        ("advance", 1),  # _log_reached_tcp 는 @step 아님 — 트리 미표시
         ("close_gripper", 1),
+        ("verify_grasp", 1),  # 파지 판정 ① close 직후
         ("withdraw", 1),
+        ("verify_grasp", 1),  # 파지 판정 ② withdraw 후 (놓침 포착)
         ("go_home", 1),
         ("execute_place", 0),
         ("pre_place", 1),
         ("insert", 1),
+        ("verify_grasp", 1),  # 파지 판정 ③ 적치 직전
         ("release", 1),
         ("retreat", 1),
         ("go_home", 1),

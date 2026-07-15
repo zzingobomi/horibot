@@ -169,6 +169,10 @@ def resolve_host_deps(
             deps["contract_provider"] = _contract_provider
             deps["graph_provider"] = _graph_provider
         return deps
+    if name == "logcollector":
+        # dep 없음 — raw transport 만 필요하고 그건 add_module 이 파라미터 이름
+        # `transport` 로 자동 주입 (bridge 와 동일 경로). deployment yaml 로 배치.
+        return {}
     raise NotImplementedError(f"host-level resolve 미지원 module: {name!r}")
 
 

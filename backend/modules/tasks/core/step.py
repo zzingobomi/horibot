@@ -62,11 +62,6 @@ def reset_link(token: Token[RunLink | None]) -> None:
     _ACTIVE_LINK.reset(token)
 
 
-def active_link() -> RunLink | None:
-    """run 에 바인딩된 링크 (없으면 None) — ctx.record 등이 사용."""
-    return _ACTIVE_LINK.get()
-
-
 def _detail_of(exc: BaseException) -> str:
     if isinstance(exc, asyncio.CancelledError):
         return "중단됨"

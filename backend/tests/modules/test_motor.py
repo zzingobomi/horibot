@@ -30,6 +30,7 @@ from modules.motor.contract import (
     MotorKind,
     MotorState,
     MotorTopology,
+    ReadStateRequest,
     RebootRequest,
     RebootResponse,
     SetGripperRequest,
@@ -262,6 +263,69 @@ async def test_set_gripper_writes_to_driver(runtime: Runtime):
     )
     # mock driver — gripper position 갱신 검증
     assert driver.read_positions()[-1] == 3000
+
+
+# ─── 4c. READ_STATE — point-in-time snapshot (파지 판정 소스) ──────────
+
+
+async def test_read_state_returns_latest_snapshot(runtime: Runtime):
+    """READ_STATE = 20Hz loop 가 채운 최신 JointState 반환 (fresh driver read 아님).
+    파지 판정이 정착 후 실제 그리퍼 도달 위치를 ctx.call 로 되읽는 경로."""
+    driver = MockMotorBackend(_layout(6, True))
+    runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
+    await runtime.start()
+
+    # state loop 이 한 번 이상 돌아 캐시가 찰 때까지
+    for _ in range(50):
+        try:
+            res = await runtime.module_runtime.call(
+                Motor.Service.READ_STATE, ReadStateRequest(), JointState,
+                robot_id="so101_0",
+            )
+            break
+        except Exception:
+            await asyncio.sleep(0.05)
+    else:
+        raise AssertionError("READ_STATE 캐시 안 참")
+    assert len(res.positions_raw) == 7  # 6 + gripper
+    assert all(p == 2048 for p in res.positions_raw)  # mock 초기 중심
+
+
+async def test_read_state_reflects_gripper_hold_simulation(runtime: Runtime):
+    """mock 파지 시뮬 seam — 물체에 걸려 stall 한 그리퍼 readback + 부하를 흉내.
+    이게 있어야 파지 판정 분기가 fake-green 아니라 실제로 돈다 (구멍 테스트 토대)."""
+    driver = MockMotorBackend(_layout(6, True))
+    driver.simulate_gripper_hold(position_raw=2400, load_raw=280)  # 물림 흉내
+    runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
+    await runtime.start()
+
+    async def _read() -> JointState:
+        return await runtime.module_runtime.call(
+            Motor.Service.READ_STATE, ReadStateRequest(), JointState,
+            robot_id="so101_0",
+        )
+
+    res: JointState | None = None
+    for _ in range(50):
+        try:
+            res = await _read()
+            if res.positions_raw[-1] == 2400:
+                break
+        except Exception:
+            res = None
+        await asyncio.sleep(0.05)
+    assert res is not None and res.positions_raw[-1] == 2400  # stall 위치 readback
+    assert res.loads_raw is not None and res.loads_raw[-1] == 280  # 부하 신호
+
+    # 시뮬 해제 = 낙하 흉내 → readback 이 명령값(초기 2048)으로 복귀
+    driver.simulate_gripper_hold(position_raw=None)
+    for _ in range(50):
+        res = await _read()
+        if res.positions_raw[-1] == 2048:
+            break
+        await asyncio.sleep(0.05)
+    assert res.positions_raw[-1] == 2048
+    assert res.loads_raw is None
 
 
 # ─── 4b. command stream (Motion → Motor, raw 위치) ───────

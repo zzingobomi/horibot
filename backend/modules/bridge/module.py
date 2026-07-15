@@ -4,13 +4,13 @@ import asyncio
 import contextlib
 import logging
 import socket
+import threading
 import time
 
 from pathlib import Path
 from typing import Callable, Generator
 
 import msgspec
-import psutil
 import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,11 +18,16 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from framework.transport.protocol import RawTransport, RemoteError
+from framework.contract.publisher import decode_event
+from framework.transport.protocol import Handle, RawTransport, RemoteError
+from modules.host_monitor.contract import HostMetrics, HostMonitor
 
-from .contract import RobotInfo, RobotsResponse, SystemMetrics
+from .contract import HostsResponse, HostStatus, RobotInfo, RobotsResponse
 from .mjpeg import BOUNDARY, mjpeg_stream
 from .ws import WsConnection
+
+# host_monitor 발행 후 이 시간 넘게 안 들어오면 offline (발행 1Hz → 여유롭게 5s).
+_HOST_ONLINE_TIMEOUT_S = 5.0
 
 _DEV_CONSOLE_HTML = Path(__file__).parent / "dev_console.html"
 
@@ -61,6 +66,13 @@ class BridgeModule:
         self._graph_cache: dict | None = None
         self._dev_console = dev_console
 
+        # host_monitor fan-in 집계 — 여러 host 가 stream/host_monitor/metrics 로 발행,
+        # 여기 한 구독자가 payload.host 로 demux (§3.4.1). 콜백은 zenoh 워커 스레드,
+        # GET /hosts 는 FastAPI 스레드 → lock 으로 dict 동시접근 보호.
+        self._host_metrics: dict[str, HostMetrics] = {}
+        self._host_lock = threading.Lock()
+        self._host_sub: Handle | None = None
+
         self._app = self._build_app()
         self._server: uvicorn.Server | None = None
         self._serve_task: asyncio.Task[None] | None = None
@@ -80,12 +92,23 @@ class BridgeModule:
         def get_robots() -> RobotsResponse:
             return RobotsResponse(robots=self._robots)
 
-        @app.get("/system")
-        def get_system() -> SystemMetrics:
-            return SystemMetrics(
-                cpu_percent=psutil.cpu_percent(interval=None),
-                mem_percent=psutil.virtual_memory().percent,
-            )
+        @app.get("/hosts")
+        def get_hosts() -> HostsResponse:
+            # host_monitor fan-in 스냅샷 → online/age 파생 (payload timestamp 기준).
+            now = time.time()
+            with self._host_lock:
+                metrics = list(self._host_metrics.values())
+            hosts = [
+                HostStatus(
+                    host=m.host,
+                    cpu_percent=m.cpu_percent,
+                    mem_percent=m.mem_percent,
+                    age_s=max(0.0, now - m.timestamp_unix),
+                    online=(now - m.timestamp_unix) < _HOST_ONLINE_TIMEOUT_S,
+                )
+                for m in sorted(metrics, key=lambda m: m.host)
+            ]
+            return HostsResponse(hosts=hosts)
 
         # TODO: 추후 모듈별 fragment 빌드 산출물 + merge 방식으로 분산 환경에 대비해야 할듯
         @app.get("/contract.json")
@@ -182,6 +205,18 @@ class BridgeModule:
     def port(self) -> int:
         return self._port
 
+    # ── host_monitor fan-in ───────────────────────────────────
+
+    def _on_host_metrics(self, payload: bytes) -> None:
+        # zenoh 워커 스레드 — 디코드 실패해도 bridge 무사 (침묵 아님: 로그).
+        try:
+            m = decode_event(HostMetrics, payload)
+        except Exception:
+            logger.exception("host_monitor payload 디코드 실패")
+            return
+        with self._host_lock:
+            self._host_metrics[m.host] = m
+
     # ── lifecycle ─────────────────────────────────────────────
 
     async def start(self) -> None:
@@ -218,7 +253,19 @@ class BridgeModule:
             raise RuntimeError(f"Bridge uvicorn 시작 실패 port={self._port}")
         logger.info("Bridge serving http://%s:%d", self._host, self._port)
 
+        # host_monitor fan-in 구독 — bind 성공(fast-fail 통과) 후 배선. 여러 host 가
+        # 한 키로 발행, payload.host 로 demux (§3.4.1).
+        self._host_sub = self._transport.subscribe(
+            HostMonitor.Stream.METRICS, self._on_host_metrics
+        )
+
     async def stop(self) -> None:
+        if self._host_sub is not None:
+            try:
+                self._host_sub.undeclare()
+            except Exception:
+                pass
+            self._host_sub = None
         server = self._server
         if server is not None:
             server.should_exit = True

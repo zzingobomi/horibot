@@ -93,7 +93,7 @@ async def _run(args: argparse.Namespace) -> int:
     from infra.transport.zenoh import ZenohTransport
 
     transport = ZenohTransport(deploy.zenoh)
-    runtime = build_runtime(deploy, robots, transport)
+    runtime = build_runtime(deploy, robots, transport, host=args.deploy)
     exit_code = 1
     try:
         await runtime.start()

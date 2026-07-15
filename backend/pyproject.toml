@@ -10,6 +10,7 @@ dependencies = [
     "msgspec>=0.18.0",
     "numpy>=1.26.0",
     "pyyaml>=6.0",
+    "psutil>=6.0.0",
 ]
 
 [dependency-groups]
@@ -53,7 +54,6 @@ pc = [
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
     "websockets>=13.0",
-    "psutil>=6.0.0",
     "opencv-python-headless>=4.10.0,<5",
     "zstandard>=0.22.0",
     "sqlalchemy>=2.0.0",

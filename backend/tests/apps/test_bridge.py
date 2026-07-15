@@ -1,4 +1,4 @@
-"""Bridge module C1a 검증 — HTTP helper (`/robots` / `/system`) + boot 배선.
+"""Bridge module C1a 검증 — HTTP helper (`/robots` / `/hosts`) + boot 배선.
 
 검증:
 - registry / resolve_host_deps (RobotConfig → RobotInfo 변환)
@@ -11,7 +11,9 @@ mock.yaml 은 안 건드림 (motor/camera e2e 테스트를 uvicorn 포트에 안
 
 from __future__ import annotations
 
+import asyncio
 import socket
+import time
 
 from pathlib import Path
 from typing import cast
@@ -154,10 +156,48 @@ async def test_static_robot_mount_serves_urdf(bridge_url: str):
     assert "<robot" in res.text
 
 
-async def test_get_system(bridge_url: str):
-    async with httpx.AsyncClient() as client:
-        res = await client.get(f"{bridge_url}/system")
-    assert res.status_code == 200
-    body = res.json()
-    assert "cpu_percent" in body
-    assert "mem_percent" in body
+async def test_get_hosts_fan_in_and_staleness():
+    """GET /hosts = host_monitor fan-in 집계. 여러 host 가 한 키로 발행 → bridge 가
+    payload.host 로 demux (§3.4.1). stale(오래된 timestamp) → offline 파생."""
+    from framework.contract.publisher import encode_event
+    from modules.host_monitor.contract import HostMetrics, HostMonitor
+
+    transport = ZenohTransport(_LOCAL_CFG)
+    runtime = Runtime(transport)
+    deps = resolve_host_deps("bridge", _robots(), _mock_bridge_deploy())
+    bridge = runtime.add_module(BridgeModule, host="127.0.0.1", **deps)
+    await runtime.start()
+    url = f"http://127.0.0.1:{bridge.port}"
+    try:
+        now = time.time()
+        samples = [
+            HostMetrics(host="pc", seq=0, timestamp_unix=now,
+                        cpu_percent=12.0, mem_percent=40.0),
+            HostMetrics(host="pi_hori1", seq=0, timestamp_unix=now,
+                        cpu_percent=5.0, mem_percent=30.0),
+            HostMetrics(host="pi_hori2", seq=0, timestamp_unix=now - 100.0,
+                        cpu_percent=0.0, mem_percent=0.0),  # stale → offline
+        ]
+        for m in samples:
+            transport.publish(str(HostMonitor.Stream.METRICS), encode_event(m))
+
+        hosts: dict = {}
+        for _ in range(60):
+            async with httpx.AsyncClient() as client:
+                res = await client.get(f"{url}/hosts")
+            hosts = {h["host"]: h for h in res.json()["hosts"]}
+            if len(hosts) >= 3:
+                break
+            await asyncio.sleep(0.05)
+
+        # 여러 publisher 가 한 키로 → 구독자 하나가 전부 fan-in
+        assert set(hosts) == {"pc", "pi_hori1", "pi_hori2"}
+        assert hosts["pc"]["online"] is True
+        assert hosts["pc"]["cpu_percent"] == 12.0
+        assert hosts["pi_hori1"]["online"] is True
+        # stale = offline (침묵 아님: age_s 로 사유 표시)
+        assert hosts["pi_hori2"]["online"] is False
+        assert hosts["pi_hori2"]["age_s"] > 50
+    finally:
+        await runtime.stop()
+        transport.close()

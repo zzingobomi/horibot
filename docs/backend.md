@@ -1615,6 +1615,21 @@ key lookup helper 박지 X — key 가 use site (publish 첫 인자 / `@subscrib
 
 큰 ndarray fanout 만 의미 있는 절감 (~4% × N CPU). 단 framework 두 갈래 (Transport 두 impl + resolver + behavior 일관성) 유지 비용보다 작음. **Zenoh 단일 + derived read model 패턴** (§3.5) 으로 카메라 ~13% CPU 도달 — 추가 7-8% 는 측정 후 진짜 bottleneck 으로 드러나면 그때 박음.
 
+#### 3.4.1 subscribe = payload-only + 인스턴스 정체성 규약 (2026-07-15 확정, 전체 근거 docs/logging.md §10)
+
+**`subscribe(key, cb)` 의 콜백은 payload(bytes) 만 받는다 — 매칭된 concrete key 는 안 준다.** 이건 결함이 아니라 원칙:
+
+- **need-driven projection** — `subscribe` 는 이미 Zenoh Sample 의 timestamp/kind/encoding/attachment 를 다 버린다. "봉투 완전 전달" 은 이 프로젝트의 가치가 아니다 (그러면 저 필드들도 다 노출해야 하는 reductio). 각 메서드는 자기 목적에 필요한 것만 노출.
+- **인스턴스 정체성(robot_id/host 등)은 레코드(payload)에 자기완결로 담고**, wire key 는 라우팅 전용 (publisher 가 박음). 파일/DB 에 앉은 레코드가 key 없이도 자기완결 (영속/재생 안전). robot-scoped 는 §2.7 의 `{robot_id}` (payload 필드에서 publish 가 파생), host-scoped 로그는 `log/{host}` (host 는 레코드에도 각인).
+
+**동적 발견은 liveliness 가 이미 key 를 나른다.** `subscribe_liveliness(key, cb)` 콜백은 `(concrete key, alive)` 를 준다 (Mirror 가 이 패턴). 즉 "지금 무엇이 살아있나" 는 별도 key-나르는 채널로 이미 풀려 있어, **데이터 평면 subscribe 가 발견 목적으로 key 를 나를 이유가 원리적으로 없다.**
+
+**인스턴스→데이터 상관 패턴 = enumerate → concrete 구독**: 인스턴스 목록을 레지스트리(robots.yaml)/DB list/liveliness 로 먼저 얻고, **concrete key** 로 구독한다 (wildcard demux 아님). 브라우저가 `/robots` 로 robot 목록 얻어 robot별 concrete stream 구독하는 게 정본. 새 per-instance 텔레메트리(host CPU/mem 등)도 이 패턴을 미러링 (host 레지스트리 → host별 concrete 키).
+
+**미래 B (스키마 무지 wildcard 소비자 — packet recorder / MCAP·Foxglove, §7 defer):** 이게 정말 필요해지면 **`subscribe` 를 바꾸지 말고**, liveliness 동형의 **별도 key-나르는 capture 채널을 additive 로 추가**한다. 드물고(단일 능력) + 구조적으로 다르고 + 고립된 소비자를 위해 정착된 공유 경로를 변형하지 않는다 — 그마저 Zenoh-native 캡처 대안이 먼저. (logging.md §10.6 의 "subscribe 확장" 문구는 이 additive 방침으로 대체 — 2026-07-15 재평가.)
+
+> **일반 규칙**: 드물고+구조적으로 다르고+고립된 소비자가 공통 경로보다 더 요구하면 → 공유 경로 변형 X, **additive 특수 채널** 추가 (transport 의 subscribe vs subscribe_liveliness 가 이미 이 모양).
+
 ### 3.5 Derived read model Module — decode dedup 패턴
 
 framework primitive 가 아닌 **Module 패턴**. 큰 payload (카메라 JPEG, depth zstd) 의 decode 가 N consumer × decode 비용으로 누적되는 문제를 푸는 표준 형태. framework 는 모름 — 그저 일반 Module + `@subscriber` + `publish` + `@service`.

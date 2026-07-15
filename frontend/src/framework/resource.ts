@@ -3,7 +3,7 @@
  *
  *   const { robots } = useResource<RobotsResponse>("/robots").data ?? {};
  *
- *   const { data: metrics } = useResource<SystemMetrics>("/system", { poll: 5000 });
+ *   const { data: hosts } = useResource<HostsResponse>("/hosts", { poll: 2000 });
  *
  * - module-scoped cache — 동일 path 호출 자동 sync (cross-component)
  * - select 로 derived 변환 (memo 불필요)

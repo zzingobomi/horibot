@@ -23,6 +23,7 @@ MODULE_REGISTRY: dict[str, str] = {
     "pick_and_place": "modules.tasks.pick_and_place.module:PickAndPlaceModule",
     "bridge": "modules.bridge.module:BridgeModule",
     "logcollector": "modules.logcollector.module:LogCollectorModule",
+    "host_monitor": "modules.host_monitor.module:HostMonitorModule",
 }
 
 

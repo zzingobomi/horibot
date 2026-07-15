@@ -23,6 +23,8 @@ def build_runtime(
     deploy: DeploymentConfig,
     robots: dict[str, RobotConfig],
     transport: Transport,
+    *,
+    host: str = "",
 ) -> Runtime:
     runtime = Runtime(transport)
 
@@ -59,7 +61,7 @@ def build_runtime(
                 logger.info("add_module %s robot_id=%s", entry.name, rid)
         else:
             deps = resolve_host_deps(
-                entry.name, robots, deploy, runtime, session_factory
+                entry.name, robots, deploy, runtime, session_factory, host=host
             )
             runtime.add_module(mod_cls, **deps)
             logger.info("add_module %s (host-level)", entry.name)
@@ -84,7 +86,7 @@ async def run(host: str, config_dir: Path = _CONFIG_DIR) -> None:
     # transport 준비 직후 발행 핸들러 부착 — 이 host 의 모든 모듈 로그가 콘솔과
     # 함께 log/{host} 로도 나간다 (docs/logging.md §1). 중앙 PC 의 logcollector 가 수집.
     log_publisher = attach_log_publisher(transport, host)
-    runtime = build_runtime(deploy, robots, transport)
+    runtime = build_runtime(deploy, robots, transport, host=host)
 
     await runtime.start()
     logger.info("Runtime started — host=%s modules=%d", host, len(deploy.modules))

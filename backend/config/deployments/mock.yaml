@@ -34,3 +34,4 @@ modules:
   - name: pick_and_place
   - name: bridge
   - name: logcollector   # 단일 머신 = 이 머신이 중앙 → 로그 파일 생성 (logs/)
+  - name: host_monitor   # 이 host CPU/mem 발행 (bridge 가 집계 → 대시보드)

@@ -19,7 +19,7 @@ from framework.runtime.snapshot import (
     build_module_contracts_from_classes,
     build_snapshot_from_classes,
 )
-from modules.bridge.contract import RobotsResponse, SystemMetrics
+from modules.bridge.contract import HostsResponse, RobotsResponse
 from modules.calibration.contract import Calibration
 from modules.detector.contract import Detector
 from modules.llm.contract import Llm
@@ -117,7 +117,7 @@ FRONTEND_EXPOSED: set[str] = {
 # HTTP endpoint 응답 모델.
 # Zenoh 키 기반 탐색으로는 찾을 수 없어 별도 seed로 등록한다.
 # (task 스트림 payload 는 tasks/core/contract.py 정의 — 키 payload 로 도달됨)
-FRONTEND_EXPOSED_MODELS: set[type] = {RobotsResponse, SystemMetrics}
+FRONTEND_EXPOSED_MODELS: set[type] = {RobotsResponse, HostsResponse}
 
 
 # ─── Public ──────────────────────────────────────────────────────

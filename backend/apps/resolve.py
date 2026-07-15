@@ -39,6 +39,8 @@ def resolve_host_deps(
     deploy: DeploymentConfig,
     runtime: Any | None = None,
     session_factory: sessionmaker[Session] | None = None,
+    *,
+    host: str = "",
 ) -> dict[str, Any]:
     if name == "detector":
         return {"backend": _detector_backend(deploy)}
@@ -173,6 +175,9 @@ def resolve_host_deps(
         # dep 없음 — raw transport 만 필요하고 그건 add_module 이 파라미터 이름
         # `transport` 로 자동 주입 (bridge 와 동일 경로). deployment yaml 로 배치.
         return {}
+    if name == "host_monitor":
+        # host = deployment `--host` (payload 에 각인 → bridge fan-in demux, §3.4.1).
+        return {"host": host}
     raise NotImplementedError(f"host-level resolve 미지원 module: {name!r}")
 
 

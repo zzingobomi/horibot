@@ -99,7 +99,7 @@ def test_contract_json_shape():
     iface_names = {i["name"] for i in data["interfaces"]}
     assert "JointCommand" not in iface_names
     # HTTP seed 모델은 포함 (reachability 로 안 잡히지만 seed)
-    assert {"RobotsResponse", "SystemMetrics", "RobotInfo"} <= iface_names
+    assert {"RobotsResponse", "HostsResponse", "HostStatus", "RobotInfo"} <= iface_names
     # name-conflict prefix (camera.CapabilitiesRequest 존재 → motor 것 prefix)
     assert "MotorCapabilitiesRequest" in iface_names
     # payload 타입은 TS 문자열로 이미 해소 (서버가 실 Python type 을 아니까)
@@ -224,7 +224,7 @@ def _built_graph() -> dict:
 def test_graph_nodes_are_contentful_modules_only():
     graph = _built_graph()
     ids = {m["id"] for m in graph["modules"]}
-    # contract 있는 module — bridge (relay, contract 0) 는 node 제외
+    # contract 있는 module — bridge/logcollector (relay/collector, contract 0) 는 제외
     assert ids == {
         "MotorDriverModule",
         "MotionModule",
@@ -237,6 +237,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "DetectorModule",
         "LlmModule",
         "PickAndPlaceModule",  # task family (modules/tasks/pick_and_place), host-level
+        "HostMonitorModule",  # @publishes(METRICS) — host-level
     }
     assert "BridgeModule" not in ids
     by_id = {m["id"]: m for m in graph["modules"]}
@@ -253,6 +254,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "WaypointModule",
         "LlmModule",
         "PickAndPlaceModule",  # task family — robot-agnostic (host당 1)
+        "HostMonitorModule",  # 각 host 발행 — robot 무관 (host-level)
     }
     for mid in host_level:
         assert by_id[mid]["robot_scoped"] is False, mid
@@ -412,5 +414,6 @@ async def test_contract_graph_endpoint_serves(graph_endpoint: str):
         "DetectorModule",
         "LlmModule",
         "PickAndPlaceModule",  # task family (modules/tasks/pick_and_place), host-level
+        "HostMonitorModule",  # @publishes(METRICS) — host-level
     }
     assert len(data["edges"]) >= 4

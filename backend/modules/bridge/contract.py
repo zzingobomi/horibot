@@ -22,9 +22,22 @@ class RobotsResponse(BaseModel):
     robots: list[RobotInfo]
 
 
-class SystemMetrics(BaseModel):
+class HostStatus(BaseModel):
+    """대시보드용 한 host 상태 — bridge 가 host_monitor stream 을 fan-in 집계.
+
+    online = 최근 발행(staleness) 여부. 옛 `/system`(bridge host 1대 psutil)을
+    대체 — 분산 각 host 를 host_monitor 가 발행하고 bridge 가 payload.host 로 모은다.
+    """
+
+    host: str
     cpu_percent: float
     mem_percent: float
+    online: bool
+    age_s: float  # 마지막 수신 후 경과(초) — offline 판정/표시 근거
+
+
+class HostsResponse(BaseModel):
+    hosts: list[HostStatus]
 
 
 # GET /tasks 는 2026-07-13 삭제 — task 의 정보 채널은 계약이 유일 (frontend 는

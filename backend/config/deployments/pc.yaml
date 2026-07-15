@@ -27,3 +27,4 @@ modules:
   - name: pick_and_place
   - name: bridge
   - name: logcollector   # 중앙 로그 수집 (log/** → debug/logs/) — PC 에만
+  - name: host_monitor   # 이 host CPU/mem 발행 (bridge 가 fan-in 집계 → 대시보드)

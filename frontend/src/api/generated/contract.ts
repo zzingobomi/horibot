@@ -39,6 +39,18 @@ export interface BasePoseInfo {
   yaw_deg?: number;
 }
 
+export interface HostStatus {
+  host: string;
+  cpu_percent: number;
+  mem_percent: number;
+  online: boolean;
+  age_s: number;
+}
+
+export interface HostsResponse {
+  hosts: HostStatus[];
+}
+
 export interface RobotInfo {
   id: string;
   type: string;
@@ -49,11 +61,6 @@ export interface RobotInfo {
 
 export interface RobotsResponse {
   robots: RobotInfo[];
-}
-
-export interface SystemMetrics {
-  cpu_percent: number;
-  mem_percent: number;
 }
 
 export interface AbortRunRequest {

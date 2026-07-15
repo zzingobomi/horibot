@@ -15,3 +15,4 @@ zenoh:
 modules:
   - name: camera
     robots: [so101_6dof_0]
+  - name: host_monitor   # 이 host CPU/mem 발행 (PC bridge 가 fan-in)

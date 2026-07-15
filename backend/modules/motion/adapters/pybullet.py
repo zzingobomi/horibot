@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 IK_MAX_ITER = 100
 IK_TOLERANCE = 1e-4
 IK_POS_ERROR_LIMIT = 0.01
+# 바닥충돌 안전여유 — 관통(거리<0)만이 아니라 바닥에서 이 거리 이내로 그리퍼
+# 링크(몸통 포함)가 접근하면 기각. 그리퍼 몸통이 바닥을 "스치는"(관통 아닌 접촉)
+# 파지를 막는다 (2026-07-15: 몸통이 바닥 닿았는데 관통-only 체크가 통과시킨 사고).
+FLOOR_MARGIN_M = 0.006
 # seed 1회로 수렴 못 하면 random restart (PyBullet 은 seed 에서 출발하는 local
 # 솔버라 해가 존재해도 놓침 — "도달 가능한데 IK 실패" 방지). restart 중 seed 에
 # 가장 가까운 해 선택 → motion 연속성 유지.
@@ -286,12 +290,16 @@ class PybulletKinematics:
                     physicsClientId=self._client,
                 )
             self._set_chain(list(joint_angles))
-            p.performCollisionDetection(physicsClientId=self._client)
-            contacts = p.getContactPoints(
-                bodyA=self._robot, bodyB=self._plane, physicsClientId=self._client
+            # getClosestPoints(distance=margin) = 관통뿐 아니라 margin 이내 근접까지
+            # 반환 (c[8]=거리, 음수=관통). 그리퍼 몸통이 바닥을 스치는 것도 잡는다.
+            contacts = p.getClosestPoints(
+                bodyA=self._robot,
+                bodyB=self._plane,
+                distance=FLOOR_MARGIN_M,
+                physicsClientId=self._client,
             )
             first_moving = self._chain_indices[0]
-            return any(c[8] < 0.0 and c[3] >= first_moving for c in contacts)
+            return any(c[8] < FLOOR_MARGIN_M and c[3] >= first_moving for c in contacts)
 
     def set_obstacle_points(
         self, points: Sequence[tuple[float, float, float]] | None

@@ -35,7 +35,7 @@ class DetectionNotFound(TaskError):
 
 class NoReachableGrasp(TaskError):
     """실행 가능한 접근 후보 없음 — 도달(IK) 전멸이거나 안전(바닥/그리퍼↔물체
-    충돌) 전멸 (grasp_redesign_journey.md §10.4-3 "안전 파지 불가" 명시 실패).
+    충돌) 전멸 (grasping.md §1 "안전 파지 불가" 명시 실패).
 
     RESOLVE_REACHABLE 의 index=-1 은 **데이터** (부정적이지만 유효한 결과) —
     그걸 치명으로 판정해 raise 하는 것은 시나리오/step 의 몫.

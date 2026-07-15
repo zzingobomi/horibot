@@ -36,7 +36,7 @@ IK_RESTARTS = 200
 # 모든 robot type URDF 는 `tcp` 라는 link 를 가져야 함 (UR tool0 패턴, fail-fast).
 TCP_LINK_NAME = "tcp"
 
-# ── 장애물 점군 게이트 (grasp_redesign_journey.md §10.4-3) ──────────
+# ── 장애물 점군 게이트 (grasping.md §1) ──────────
 # 관측 점군은 표면 샘플 — voxel 대표점마다 작은 구를 놓아 "표면을 뚫고 들어가는"
 # 링크를 잡는다. 조 안쪽 면 설계 여유(FIXED_JAW_CLEAR 5mm)와 depth 노이즈(σ~1mm)
 # 사이: 반경 3mm 구 + 침투 2mm 임계 → 정상 파지(표면과 5mm 여유)는 +2mm 마진으로

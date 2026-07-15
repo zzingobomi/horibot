@@ -14,10 +14,9 @@
 
 # 2cm 물체 범용 파지 — 재설계 계획 (object-centric, research-backed)
 
-> **📌 완결 SSOT = [grasp_redesign_journey.md](grasp_redesign_journey.md)** — 배경/문제/리서치/
-> 계획/로드맵/검증상태 + 사고 흐름을 **자체 완결 구현 핸드오프**로 담았다 (다른 세션에 그 문서
-> 하나 주고 구현). **갱신은 journey 를 정본으로** 하고, 아래는 perception 도메인 독자를 위한
-> **요약 포인터**다 (내용이 갈리면 journey 가 이긴다).
+> **📌 파지 SSOT = [grasping.md](grasping.md)** — 설계/근본원인/해결/검증/히스토리 통합.
+> **갱신은 grasping.md 를 정본으로** 하고, 아래는 perception 도메인 독자를 위한
+> **요약 포인터**다 (내용이 갈리면 grasping.md 가 이긴다).
 >
 > **status: 계획 확정, 구현 대기 (2026-07-14).** 진단은 시뮬로 재현·검증(캘 적용 FK 가 실물 TCP
 > sub-mm 일치), 방향은 필드 표준 대조. 이 재설계가 detection/grasp 정본이며 뒤의 옛 "Grounded

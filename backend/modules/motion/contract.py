@@ -146,7 +146,7 @@ class ResolveReachableRequest(BaseModel):
     별도 질의 (FIRST/ALL/BEST) 신설.
 
     그룹 예 = [pre_grasp, grasp] (같은 자세로 접근+파지 둘 다 풀려야 실행 가능).
-    판정 전용 — 로봇은 안 움직임. 게이트 (grasp_redesign_journey.md §5.5/§10.4,
+    판정 전용 — 로봇은 안 움직임. 게이트 (grasping.md §1,
     cheap→expensive — 뒤 게이트일수록 비싸고, 앞 게이트가 후보를 걸러 비용 절감):
       ① 위치 스크린 (position-only 소예산 IK — workspace 밖 즉시 기각)
       ② 전 pose 자세 IK (예산 점증 deepening — 실패 기각을 싸게)

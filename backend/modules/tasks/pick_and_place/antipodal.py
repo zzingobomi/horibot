@@ -1,6 +1,6 @@
 """표면 antipodal 파지 선택 — 관측 점군에서 마주 보는 두 접촉점 쌍.
 
-grasp_redesign_journey.md §10.4-2: 윗면 footprint 파지(prismatic 전용 — 가려진
+grasping.md §1: 윗면 footprint 파지(prismatic 전용 — 가려진
 먼 면을 윗면 윤곽으로 **추측**) 폐기. 가정 없이 **관측된 표면**에서 조가 물 수
 있는 antipodal 쌍(마주 보는 두 면, 법선 anti-parallel)을 찾는다. 단일 뷰는 마주
 보는 면 중 먼 쪽이 항상 가려져 전 형상 0쌍 (§10.3-B) — 멀티뷰 융합 점군이 입력.

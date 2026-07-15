@@ -84,7 +84,7 @@ class Kinematics(Protocol):
     def floor_collision(self, joint_angles: Sequence[float], floor_z: float) -> bool:
         """주어진 자세에서 수평 바닥 평면(z=floor_z, base frame)을 침투하는지.
 
-        planner 충돌 게이트 최소형 (grasp_redesign_journey.md §5.7 — 바닥은 평면
+        planner 충돌 게이트 최소형 (grasping.md §1 — 바닥은 평면
         하나). base 쪽 고정 링크는 제외 — 로봇이 그 평면 위에 설치돼 있어 상시
         접촉이 상수 (검출 floor_z 오차 ±cm 에 전 후보 영구 기각 방지).
         """
@@ -95,7 +95,7 @@ class Kinematics(Protocol):
     ) -> None:
         """장애물 점군(base frame, m) scene 설정 — obstacle_collision 의 대상.
 
-        관측 점군(물체/이웃)이 소스 (grasp_redesign_journey.md §10.4-3 그리퍼↔
+        관측 점군(물체/이웃)이 소스 (grasping.md §1 그리퍼↔
         물체 충돌 게이트). None/빈 = 해제. 배치 판정(RESOLVE_REACHABLE) lifecycle:
         판정 시작에 set → 다수 자세 검사 → 끝나면 반드시 해제 (잔존 시 이후
         판정이 남의 물체에 기각되는 침묵 오동작).

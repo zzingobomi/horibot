@@ -69,7 +69,7 @@ _PATH_STEP_M = 0.01
 _PATH_MAX_JUMP_RAD = 0.35  # ≈20°
 
 # ── resolve_reachable 게이트 예산 ─────────────────────────────
-# cheap→expensive (grasp_redesign_journey.md §5.5): 실패 기각 비용 = 예산에
+# cheap→expensive (grasping.md §1): 실패 기각 비용 = 예산에
 # 비례하므로 싼 게이트를 전 그룹에 먼저. 아래 IK 예산 점증은 2026-07-09 벤치
 # 근거 (가용 자세 median 8회 수렴 / 단일 풀예산 패스는 실패 케이스 10× 악화).
 _SCREEN_IK_BUDGET = 5  # ① position-only 위치 스크린

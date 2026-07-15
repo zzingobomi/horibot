@@ -24,7 +24,7 @@ _PLACE_DROP_CLEAR_M = 0.005  # 놓을 때 물체 바닥 vs 적치면 여유 (살
 # 기준 자세 (tilt=0): 툴 x(approach)→base -z(수직 하향), y(조 축)→base +y.
 _TOPDOWN = Rotation.from_matrix([[0, 0, 1], [0, 1, 0], [-1, 0, 0]])
 
-# reachable-orientation 파지 (2026-07-14 재설계 — docs/grasp_redesign_journey.md §5.3):
+# reachable-orientation 파지 (2026-07-14 재설계 — grasping.md §1):
 # top-down 강제 폐기. 조 축은 수평 유지(옆면 antipodal 파지 성립 조건)한 채 approach
 # 를 조 축 둘레 tilt 0~±90°(수직→수평) 전체에서 probe — 도달 판정은 motion resolve.
 # SO-101 은 먼 리치에서 손목을 수직으로 못 세움: 실물 실패 케이스 시뮬 재현에서
@@ -38,7 +38,7 @@ class GraspCandidate(BaseModel):
 
     pre 는 grasp 에서 **접근축(툴 x) 후방** — 월드 +z 위가 아니다 (tilt=0 특수
     케이스에서만 위). 진입 = pre→grasp MoveL(접근축 직선), 후퇴 = grasp→pre 역방향
-    (grasp-frame 상대 동작, docs/grasp_redesign_journey.md §5.4).
+    (grasp-frame 상대 동작, grasping.md §1).
 
     lateral = 단일 가동 조 보정 (파란 고정 조는 모터로 안 움직임 — TCP 를 파지점
     이 아니라 고정 조 안쪽 면이 [접촉 폭/2 + 여유] 에 오는 자리로 조 축 방향

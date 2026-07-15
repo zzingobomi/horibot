@@ -118,6 +118,13 @@ class _Run:
 
 
 class TaskRunnerState:
+    """
+    TaskRunner의 실제 런타임 구현체.
+
+    task 실행 상태와 생명주기를 관리하며, 실행·중단·일시정지·재개 및
+    디버깅 기능을 담당한다.
+    """
+
     def __init__(
         self,
         *,
@@ -127,9 +134,7 @@ class TaskRunnerState:
         self._on_state = on_state
         self._on_trace = on_trace
         self._run: _Run | None = None
-        self._breakpoints: set[str] = set()  # step name — run 간 보존 (미리 박기 허용)
-
-    # ─── 시작/중단 (트리거는 저자 소유 — 서비스/구독/내부 호출 무엇이든) ──
+        self._breakpoints: set[str] = set()
 
     def start(
         self,
@@ -140,11 +145,6 @@ class TaskRunnerState:
         task_name: str = "",
         **kwargs: Any,
     ) -> StartResult:
-        """시나리오 감독 실행 시작 — accepted 즉시 반환 (fire-and-monitor).
-
-        robot_ids = 이번 run 의 참여 robot (ctx.call 검증 명부 + abort STOP 대상
-        + observer 라우팅 힌트). kwargs 는 시나리오 함수 인자로 그대로 전달.
-        """
         if self._run is not None and self._run.active:
             return StartResult(False, f"이미 실행 중 ({self._run.task_name})")
         if not robot_ids:
@@ -361,6 +361,13 @@ class TaskRunnerState:
 
 
 class TaskRunner:
+    """
+    TaskRunnerState를 인스턴스별로 제공하는 descriptor.
+
+    선언 정보만 보관하며, 실행 상태는 공유되지 않도록 TaskRunnerState에
+    분리한다.
+    """
+
     def __init__(self) -> None:
         self._attr_name: str | None = None
         self._on_state_name: str | None = None

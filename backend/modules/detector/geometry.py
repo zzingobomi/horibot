@@ -103,7 +103,7 @@ def obb_corners(obb: Obb, z: float) -> np.ndarray:
 
 
 # object-centric 기하 — top 은 percentile(이상치 한두 점 컷), bottom 은 z-gap 군집.
-# floor(주변 링) 추정 폐기의 대체 (grasp_redesign_journey.md §5.1 — 물체 자기
+# floor(주변 링) 추정 폐기의 대체 (grasping.md §1 — 물체 자기
 # 점군에서만 잰다: 책상이 없어도(공중/손) 성립, 추측이 아니라 관측).
 _Z_HI_PERCENTILE = 98.0
 # z-gap 군집 (§10.3-F): top 에서 아래로 이 크기 이상의 빈 z 틈을 만나면 그 아래는

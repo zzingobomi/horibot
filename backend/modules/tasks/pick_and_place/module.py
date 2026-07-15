@@ -195,7 +195,7 @@ class PickAndPlaceModule:
         self._publish_markers(so101, markers)
 
         # 2) 실행 — 계획이 모두 도달 가능일 때만 물리 동작. 긴 이동은 home 경유
-        # (grasp_redesign_journey.md §5.4 — pick↔place 도달성 분리).
+        # (grasping.md §1 — pick↔place 도달성 분리).
         await steps.execute_pick(ctx, so101, grasp, grasp_pre, home)
         if drop is not None and drop_pre is not None:
             await steps.execute_place(ctx, so101, drop, drop_pre, home)

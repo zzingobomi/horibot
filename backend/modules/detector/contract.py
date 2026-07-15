@@ -26,7 +26,7 @@ class Detection(BaseModel):
     position: 물체 **윗면 중심** base frame (m) — 물체 자기 점군(mask→depth→base)의
       윗면 band centroid. base_z: 물체 **아랫면**의 base-z (자기 점군 z 하위
       percentile — 옛 "주변 책상 ring floor 추정" 폐기: 책상 없어도(공중/손) 성립,
-      추측이 아니라 관측. grasp_redesign_journey.md §5.1). height = 윗면 − 아랫면.
+      추측이 아니라 관측. grasping.md §1). height = 윗면 − 아랫면.
       ⚠ 단일 뷰는 옆면 depth 가 없어 height 구조적 과소 — 실 height 판정은 멀티뷰
       융합(FUSE_ORIENTED) 결과에서만 의미. score: 신뢰도 0..1.
     bbox_2d: 검출 시점 color 이미지의 픽셀 bbox (x1,y1,x2,y2) — frontend 카메라

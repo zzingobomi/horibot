@@ -231,8 +231,8 @@ def _pick_script(**overrides) -> dict:
         ],
         _SELECT: [_resolve_ok()],
         # tick1 TCP = rung0 standoff (오차 0 → 하강), tick2 = rung1 (→ commit),
-        # 마지막 = 도달 로깅 (commit 후).
-        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP)],
+        # commit 후 touch-up 검증 (잔차 0 → 추가 이동 없음) + 도달 로깅.
+        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP), _tcp(_G_TCP)],
         _FUSE: [FuseOrientedResponse(candidates=[_OBS])],  # tick2 (관측 2건부터)
         _MOVE_J: [MoveJResponse()] * 4,  # 스윕 + servo home + rung0 + 종료 home
         _MOVE_L: [MoveLResponse()] * 3,  # 하강 + commit + withdraw
@@ -260,7 +260,7 @@ async def test_scenario_servo_pick_only_sequence():
         _DETECT, _TCP_SNAP,  # tick1 (관측 1건 — 융합 생략)
         _MOVE_L,  # rung1 하강
         _DETECT, _TCP_SNAP, _FUSE,  # tick2 (관측 2건 융합)
-        _MOVE_L, _TCP_SNAP,  # commit (blind) + 도달 로깅
+        _MOVE_L, _TCP_SNAP, _TCP_SNAP,  # commit (blind) + touch-up 검증 + 도달 로깅
         _GRIP, _READ_STATE,  # close + 판정 ①
         _MOVE_L, _READ_STATE,  # withdraw + 판정 ②
         _MOVE_J,  # 종료 home
@@ -273,6 +273,10 @@ async def test_scenario_servo_pick_only_sequence():
     assert ml[0].position == pytest.approx(_SO1, abs=1e-9)  # 하강
     assert ml[1].position == pytest.approx(_G_TCP, abs=1e-9)  # commit
     assert ml[2].position == pytest.approx(_WITHDRAW, abs=1e-9)  # 후퇴
+    # 접촉 인접 이동(commit/후퇴)은 감속 — withdraw 중 흘림 실사고 (2026-07-17)
+    scales = [c["req"].speed_scale for c in ctx.calls(_MOVE_L)]
+    assert scales[1] == _CFG.gentle_speed_scale  # commit
+    assert scales[2] == _CFG.gentle_speed_scale  # withdraw
     assert all(m.quaternion == pytest.approx(_FAM.quat, abs=1e-9) for m in ml)
     # 계획 resolve 계약: 사다리+파지 직선(linear) + 그리퍼 벌림 충돌 + 바닥 +
     # home 경로 게이트, 그룹당 pose = standoff 2 + grasp 1.
@@ -365,8 +369,10 @@ async def test_servo_empty_close_retries_from_standoff_then_succeeds():
             DetectOrientedResponse(found=True, candidates=[_OBS]),  # 재시도 tick
         ],
         _TCP_SNAP: [
-            _tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP),  # tick1/2 + 도달로깅
-            _tcp(_SO1), _tcp(_G_TCP),  # 재시도 tick + 도달로깅
+            _tcp(_SO0), _tcp(_SO1),  # tick1/2
+            _tcp(_G_TCP), _tcp(_G_TCP),  # commit① touch-up + 도달로깅
+            _tcp(_SO1),  # 재시도 tick
+            _tcp(_G_TCP), _tcp(_G_TCP),  # commit② touch-up + 도달로깅
         ],
         _FUSE: [FuseOrientedResponse(candidates=[_OBS])],
         _MOVE_L: [MoveLResponse()] * 6,  # 하강+commit + 후퇴 + commit2 + withdraw
@@ -395,8 +401,10 @@ async def test_servo_empty_close_exhausted_raises():
     ctx = _ctx(_pick_script(**{
         _DETECT: [DetectOrientedResponse(found=True, candidates=[_OBS])] * 4,
         _TCP_SNAP: [
-            _tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP),
-            _tcp(_SO1), _tcp(_G_TCP),
+            _tcp(_SO0), _tcp(_SO1),
+            _tcp(_G_TCP), _tcp(_G_TCP),  # commit① touch-up + 도달로깅
+            _tcp(_SO1),
+            _tcp(_G_TCP), _tcp(_G_TCP),  # commit② touch-up + 도달로깅
         ],
         _FUSE: [FuseOrientedResponse(candidates=[_OBS])],
         _MOVE_L: [MoveLResponse()] * 6,
@@ -546,7 +554,7 @@ async def test_plan_pick_family_exhausted_fails_explicitly():
         _SELECT: [ResolveReachableResponse(index=-1, message="전멸")],
         _MOVE_J: [MoveJResponse()],
     })
-    with pytest.raises(NoReachableGrasp, match="servo 접근 가족"):
+    with pytest.raises(NoReachableGrasp, match="후보 1개 전부 전멸"):
         await _module_for_scenario().scenario(ctx, pick_object="white cube")
     assert ctx.calls(_GRIP) == [] and ctx.calls(_MOVE_L) == []
 

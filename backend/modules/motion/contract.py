@@ -120,9 +120,15 @@ class MoveLRequest(BaseModel):
     특수 케이스 (PnP 접근축 진입/승강이 이 경우 — 2026-07-07 45° 사선 하강이 큐브를
     밀던 실패에서 도입). quaternion=None = position-only. KUKA ORI_TYPE 식 명시
     모드(#JOINT 등)는 실제 필요 시 modifier 로 후속 (2026-07-13 토대 결정).
+
+    speed_scale: cartesian 한계(motion.yaml) 대비 이 이동의 속도/가속 배율 —
+    UR movel(v=) 동형 (명령별 속도는 산업 base primitive). 파지 최종 접근/후퇴
+    같은 접촉 인접 구간의 감속용 (2026-07-17: 잡고 withdraw 중 흘림 — 접촉
+    인접 이동이 전역 상한 10cm/s 그대로였다).
     """
 
     target: PoseTarget
+    speed_scale: Annotated[float, Field(gt=0.0, le=1.0)] = 1.0
 
 
 class MoveLResponse(BaseModel):

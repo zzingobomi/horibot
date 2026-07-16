@@ -78,12 +78,22 @@ class ServoConfig:
     jump_max_m: float = 0.03  # 직전 채택 관측 대비 위치 도약 상한 (mask 오검출 gate)
     min_points: int = 50  # 점군 최소 (depth 붕괴/가림 gate)
     fuse_last_k: int = 4  # 기하(z/폭) 융합에 쓰는 최근 채택 관측 수
-    grip_depth_frac: float = 0.5  # 파지 z = base_z + height·frac (clamp 아래)
-    grip_depth_min_m: float = 0.006
-    grip_depth_max_m: float = 0.018
+    # 파지 z = 윗면(top band centroid z) − grip_below_top_m — **윗면 앵커**.
+    # base_z 앵커 폐기 (2026-07-16 실물: 단일 top-view 의 base_z 는 실제 바닥이
+    # 아니라 보이는 band 하단 ≈ 윗면 — 25mm 큐브에서 +25mm 계통 오차 → 파지 z 가
+    # 윗면 −2mm nip → close 가 물체를 튕겨냄 2연속). 윗면은 카메라가 매 tick
+    # 직접 보는 유일한 면이라 유일하게 믿을 수 있는 z 앵커.
+    grip_below_top_m: float = 0.010
+    # 융합 height 신뢰 문턱 — 옆면을 본 뷰가 섞여야 height 가 실측 (이상이면
+    # "바닥 위 4mm" 하한 guard 활성). 미만이면 height 는 band 두께일 뿐.
+    height_credible_m: float = 0.015
     close_attempts: int = 2  # close 후 EMPTY 재시도 상한 (재관측부터)
     withdraw_standoff_m: float = 0.08  # 파지 후 접근축 역방향 후퇴 거리
     settle_s: float = 0.4  # 이동 후 카메라 정착 (검출 품질)
+    # 접촉 인접 이동(commit blind/touch-up/withdraw) 속도 배율 — 전역 상한
+    # 10cm/s 그대로는 접촉 직전 관성/진동이 크다 (2026-07-17: close 판정 통과
+    # 후 withdraw 중 흘림). 0.25 → ~2.5cm/s (산업 최종접근 관례 1~2cm/s 대).
+    gentle_speed_scale: float = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,19 +188,19 @@ def grasp_point(
     latest: OrientedDetection, fused: OrientedDetection, cfg: ServoConfig
 ) -> Vec3:
     """파지 지점 (물체 좌표, TCP 아님) — XY 는 **최신 관측** (common-mode 상쇄는
-    최신 자세의 측정에만 성립), z 는 융합 기하 (base_z/height 는 여러 close 관측이
-    안정적 — 단일 뷰 height 과소 보완).
+    최신 자세의 측정에만 성립), z 는 **윗면 앵커** (top band centroid z 아래로
+    grip_below_top_m).
 
-    z = base_z + clamp(height·frac) 을 [바닥+4mm, 윗면−2mm] 로 재clamp — height
-    과소/과대가 파지 깊이를 바닥 충돌이나 헛집기로 밀지 않게.
+    base_z 앵커 폐기 근거 = ServoConfig.grip_below_top_m 주석 (단일 top-view 의
+    base_z ≈ 윗면 — nip 튕김 실사고). guard: 융합 height 가 신뢰 가능(옆면 뷰
+    포함)하면 관측 바닥 +4mm 아래로는 안 내려간다 — 얕은 물체를 뚫고 테이블을
+    무는 것 방지. 상한은 윗면 −2mm (헛집기 방지).
     """
-    depth = min(
-        max(fused.height * cfg.grip_depth_frac, cfg.grip_depth_min_m),
-        cfg.grip_depth_max_m,
-    )
-    z = fused.base_z + depth
-    z = max(z, fused.base_z + 0.004)
-    z = min(z, latest.position[2] - 0.002)
+    top = latest.position[2]
+    z = top - cfg.grip_below_top_m
+    if fused.height >= cfg.height_credible_m:
+        z = max(z, top - fused.height + 0.004)
+    z = min(z, top - 0.002)
     return (latest.position[0], latest.position[1], z)
 
 

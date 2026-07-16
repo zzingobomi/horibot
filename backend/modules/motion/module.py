@@ -531,7 +531,10 @@ class MotionModule:
             raise MotionRejected("이전 motion 진행 중")
         assert self._runner is not None and self._move_done is not None
         fut = self._move_done
-        self._runner.run_cartesian(path, list(current), pt.quaternion, start_quat)
+        self._runner.run_cartesian(
+            path, list(current), pt.quaternion, start_quat,
+            speed_scale=req.speed_scale,
+        )
         await self._require_done(fut, "MoveL")
         return MoveLResponse()
 

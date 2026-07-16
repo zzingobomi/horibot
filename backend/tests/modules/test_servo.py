@@ -91,22 +91,22 @@ def test_width_along_measures_extent_on_axis():
     assert servo.width_along(few, (1, 0, 0), fallback_m=0.123) == 0.123
 
 
-def test_grasp_point_z_from_fused_geometry_with_clamps():
+def test_grasp_point_z_anchored_to_top_surface():
     latest = _det(position=(0.21, 0.06, 0.025))
     fused = _det(position=(0.2, 0.05, 0.025), base_z=0.0, height=0.025)
     p = servo.grasp_point(latest, fused, _CFG)
     # XY = 최신 관측 (common-mode 상쇄는 최신 자세 측정에만 성립)
     assert p[0] == 0.21 and p[1] == 0.06
-    # z = base_z + height/2 (25mm 큐브 → 12.5mm)
-    assert p[2] == pytest.approx(0.0125)
-    # height 과소(관측 부족) → 최소 파지 깊이로 방어
+    # z = 윗면 − grip_below_top — base_z 앵커 아님 (단일 top-view 의 base_z 는
+    # ≈윗면이라 nip 튕김 실사고, 2026-07-16)
+    assert p[2] == pytest.approx(0.025 - _CFG.grip_below_top_m)
+    # 단일 뷰 band height(4mm) 는 신뢰 밖 — 깊이가 band 두께에 안 끌려간다
     shallow = servo.grasp_point(latest, _det(height=0.004), _CFG)
-    assert shallow[2] == pytest.approx(_CFG.grip_depth_min_m)
-    # 아주 큰 물체 → 최대 깊이 clamp (윗면 근처 파지)
-    tall = servo.grasp_point(
-        _det(position=(0.2, 0.05, 0.10)), _det(height=0.10), _CFG
-    )
-    assert tall[2] == pytest.approx(_CFG.grip_depth_max_m)
+    assert shallow[2] == pytest.approx(0.025 - _CFG.grip_below_top_m)
+    # 신뢰 가능한 height + 깊은 grip 설정 → "관측 바닥 +4mm" 하한이 지킨다
+    deep = servo.ServoConfig(grip_below_top_m=0.020)
+    thin = servo.grasp_point(latest, _det(height=0.016), deep)
+    assert thin[2] == pytest.approx(0.025 - 0.016 + 0.004)
 
 
 def test_grasp_tcp_applies_lateral_along_jaw_axis():

@@ -186,16 +186,22 @@ class TrajectoryRunner:
         start_angles: list[float],
         target_quaternion: Quaternion | None = None,
         start_quaternion: Quaternion | None = None,
+        *,
+        speed_scale: float = 1.0,
     ) -> None:
         """자세 처리 (UR/ABB/MoveIt 식 MoveL base primitive):
           - target_quaternion=None → position-only IK (자세는 seed 에 딸려감).
           - 지정 + start_quaternion 지정 → 시작 자세 → 목표 자세를 경로 s 에 동기해
             **slerp 보간**. 자세 고정은 start==target 인 자연스러운 특수 케이스.
           - 지정 + start_quaternion=None → 그 자세로 상수(fallback).
+
+        speed_scale: cartesian max vel/acc 배율 (0<s≤1) — 접촉 인접 구간(파지
+        최종 접근/후퇴) 감속용. jerk 는 유지 (프로파일 모양 보존).
         """
         self._launch(
             self._cartesian_loop,
-            (path, list(start_angles), target_quaternion, start_quaternion),
+            (path, list(start_angles), target_quaternion, start_quaternion,
+             speed_scale),
             f"{path.label.lower()}-traj",
         )
 
@@ -219,6 +225,7 @@ class TrajectoryRunner:
         start_angles: list[float],
         target_quat: Quaternion | None = None,
         start_quat: Quaternion | None = None,
+        speed_scale: float = 1.0,
     ) -> None:
         label = path.label
         if not self._release_profile():
@@ -254,9 +261,15 @@ class TrajectoryRunner:
         inp.target_position = [path.total_length]
         inp.target_velocity = [0.0]
         inp.target_acceleration = [0.0]
-        inp.max_velocity = [self._c_max_vel]
-        inp.max_acceleration = [self._c_max_acc]
+        # speed_scale — vel/acc 만 배율 (jerk 유지 = 프로파일 모양 보존). 하한은
+        # 계약(gt=0)이 보장하지만 로컬 호출 방어로 한 번 더 clamp.
+        scale = min(max(speed_scale, 0.05), 1.0)
+        inp.max_velocity = [self._c_max_vel * scale]
+        inp.max_acceleration = [self._c_max_acc * scale]
         inp.max_jerk = [self._c_max_jerk]
+        if scale < 1.0:
+            logger.info("%s: speed_scale=%.2f (v≤%.3fm/s)", label, scale,
+                        self._c_max_vel * scale)
 
         # 명령 = seeded IK 결과를 **직접** 발행 (EMA 저역통과 없음). 옛 EMA(alpha=0.1)는
         # Ruckig 의 매끈한 프로파일을 지연시켜 이동 끝에 3~4.5° 잔차 → 램프-snap = 비매끄러움

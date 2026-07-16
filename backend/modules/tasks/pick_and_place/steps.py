@@ -32,6 +32,8 @@ import math
 import time
 from dataclasses import dataclass
 
+import numpy as np
+
 from modules.detector.contract import (
     DetectOrientedResponse,
     DetectRequest,
@@ -63,6 +65,7 @@ from modules.motor.contract import (
 )
 from modules.tasks.core.context import TaskContext
 from modules.tasks.core.errors import (
+    DetectionNotFound,
     GraspFailed,
     NoReachableGrasp,
     ServoFailed,
@@ -109,6 +112,25 @@ _NEIGHBOR_RADIUS_M = 0.15
 
 # servo 파라미터 SSOT (servo.ServoConfig docstring — 실물 첫 런 데이터로 튜닝).
 _SERVO_CFG = servo.ServoConfig()
+
+# 집기 계획이 resolve 를 시도하는 검출 후보 수 상한 — 오염 뷰 하나에 태스크가
+# 죽지 않게 다음 후보로 넘어가되, 전멸 뷰당 resolve ~40s 라 폭주 방지 상한.
+# 건강한 뷰는 첫 budget 에서 조기 성공 (수 초).
+_PLAN_TRY_MAX = 4
+
+# 후보 시도 순서용 base_z 문턱 — base_z 는 뷰마다 다른 걸 잰다 (top-view =
+# 보이는 band 하단 ≈ 윗면 / 옆면 뷰 = 실제 바닥 근처. 2026-07-16 실물 확인).
+# top-view 는 obs XY 가 윗면 centroid = 파지 XY 그 자체라 계획 진입이 깨끗
+# → 먼저 시도. 낮은 base_z 뷰는 기하 정보(실 바닥)는 좋지만 위치에 뷰별 FK
+# 오차가 섞여 후순위. 기각 아님 — 최종 심판은 resolve.
+_BASE_Z_PLAUSIBLE_MIN_M = -0.01
+
+# 명령-실측 잔차 보상 상한 (m) — backlash/부하 sag 로 "명령한 절대 pose ≠ 도달
+# pose". 무보상 절대 재명령은 정상상태 오차가 영원히 남는다 (2026-07-16 실물
+# trace: 관측·목표 안정인데 lateral 8~12mm 정체, 보정 3회 소진 → capture 턱걸이
+# commit → 헛집기 2연속). 직전 명령 − 실측 TCP 를 다음 명령에 가산 — 상수
+# 오프셋은 1스텝에 소거. 상한은 오검출/이상 실측의 폭주 방지.
+_SERVO_COMP_MAX_M = 0.03
 
 
 # ─── scenario 골격: 계획(모션 0 판정) → servo 집기 → 놓기 ────────────
@@ -171,52 +193,85 @@ async def plan_pick(
 ) -> ServoPlan:
     """찾기(coarse) + servo 접근 계획 (모션 0) → ServoPlan.
 
-    coarse = search 스윕 누적 최고 score. 자세 가족(조 축 2 × flip 2 × tilt 13)
-    마다 [standoff 사다리…, 파지] 를 한 그룹으로 resolve — 게이트: 끝점 IK +
-    바닥 + 그리퍼(벌림)↔물체·이웃 점군 충돌 + home→rung0 관절 경로 + 사다리
-    구간 직선(linear). 전멸 = 명시 실패 (맹목 파지 금지).
+    **도달성 우선 선택 (2026-07-16)**: score 1등에 커밋하지 않는다 — 스윕 뷰 간
+    검출 위치는 FK 계통 오차로 1.5~3.3cm 어긋나며 (detector FUSE_ORIENTED
+    docstring), 오염 뷰(예: base_z 가 테이블 아래로 3cm 눌린 관측)는 resolve 가
+    정당하게 전멸시킨다. score 1등이 그 오염 뷰면 태스크 전체가 죽는 실사고
+    (2026-07-16: 같은 큐브의 건강 뷰 4가족 통과, score 1등 오염 뷰 전멸).
+    → score 내림차순으로 후보마다 resolve, 첫 성공 채택 (plan_place 2026-07-14
+    와 동일 원칙). 전 후보 전멸 = 후보별 사유 포함 명시 실패 (맹목 파지 금지).
+
+    자세 가족(조 축 2 × flip 2 × tilt 13)마다 [standoff 사다리…, 파지] 를 한
+    그룹으로 resolve — 게이트: 끝점 IK + 바닥 + 그리퍼(벌림)↔물체·이웃 점군
+    충돌 + home→rung0 관절 경로 + 사다리 구간 직선(linear).
     """
     cands = await detect(ctx, robot_id, prompt)
-    coarse = geometry.select_target_by_score(cands, prompt=prompt)
-    neighbors = _neighbor_points(cands, coarse)
-    floor_z = coarse.base_z - _FLOOR_GATE_MARGIN_M
+    if not cands:
+        raise DetectionNotFound(prompt, candidates=0, reason="검출 0건")
     cfg = _SERVO_CFG
-    groups, metas = servo_ladder_groups(coarse, cfg)
+    # 물리 타당(base_z 가 설치면 위) 후보 먼저, 그 안에서 score 내림차순 —
+    # 불가능 기하에 resolve ~40s 를 먼저 태우지 않는다 (2026-07-16: score 1등이
+    # base_z=-0.021 오염 뷰라 건강 뷰 도달인데 1분 소모+전멸 보고).
+    ordered = sorted(
+        cands,
+        key=lambda c: (c.base_z < _BASE_Z_PLAUSIBLE_MIN_M, -c.score),
+    )[:_PLAN_TRY_MAX]
+    failures: list[str] = []
+    for rank, coarse in enumerate(ordered):
+        neighbors = _neighbor_points(cands, coarse)
+        # 바닥 평면 = 같은 물체를 본 뷰들(클러스터) base_z 의 최솟값 — 단일
+        # top-view 의 base_z 는 바닥이 아니라 ≈윗면이라, 그걸 floor 로 쓰면
+        # 윗면 근처 가짜 바닥이 생겨 깊은 파지가 계획에서 전멸한다. 옆면을 본
+        # 뷰의 base_z 가 실 바닥에 가장 가깝다 (min 이 그 뷰를 고른다).
+        cluster_base = [
+            c.base_z for c in cands
+            if _xy_dist(c.position, coarse.position) <= _VIEW_MATCH_RADIUS_M
+        ]
+        floor_z = min(cluster_base) - _FLOOR_GATE_MARGIN_M
+        groups, metas = servo_ladder_groups(coarse, cfg)
 
-    t0 = time.monotonic()
-    res = await ctx.call(
-        Motion.Service.RESOLVE_REACHABLE,
-        ResolveReachableRequest(
-            groups=groups,
-            floor_z=floor_z,
-            linear=True,
-            obstacle_points=[*(coarse.points or []), *neighbors],
-            gripper_open=True,
-            path_from=list(home.joint_values),
-        ),
-        ResolveReachableResponse,
-        robot_id=robot_id,
-    )
-    resolve_s = time.monotonic() - t0
-    if res.index < 0:
-        raise NoReachableGrasp(
-            f"servo 접근 가족 {len(groups)}개 전멸 (resolve {resolve_s:.1f}s) — "
-            f"{res.message}"
+        t0 = time.monotonic()
+        res = await ctx.call(
+            Motion.Service.RESOLVE_REACHABLE,
+            ResolveReachableRequest(
+                groups=groups,
+                floor_z=floor_z,
+                linear=True,
+                obstacle_points=[*(coarse.points or []), *neighbors],
+                gripper_open=True,
+                path_from=list(home.joint_values),
+            ),
+            ResolveReachableResponse,
+            robot_id=robot_id,
         )
-    fam, g_point0, g_tcp0, lateral = metas[res.index]
-    logger.info(
-        "plan_pick(%s): 가족 %d/%d 채택 — %s, grasp0=%s lateral=%.1fmm "
-        "(resolve %.1fs)",
-        prompt, res.index, len(groups), fam.label, _fmt(g_tcp0),
-        lateral * 1000.0, resolve_s,
-    )
-    return ServoPlan(
-        coarse=coarse,
-        family=fam,
-        rung0_joints=res.solutions[0],
-        grasp_point0=g_point0,
-        grasp_tcp0=g_tcp0,
-        lateral0=lateral,
+        resolve_s = time.monotonic() - t0
+        if res.index < 0:
+            msg = (
+                f"후보{rank}(score {coarse.score:.2f} "
+                f"pos={_fmt(coarse.position)} base_z={coarse.base_z:+.3f}): "
+                f"가족 {len(groups)}개 전멸 ({resolve_s:.1f}s) — {res.message}"
+            )
+            failures.append(msg)
+            logger.info("plan_pick(%s): %s — 다음 후보 시도", prompt, msg)
+            continue
+        fam, g_point0, g_tcp0, lateral = metas[res.index]
+        logger.info(
+            "plan_pick(%s): 후보%d/%d 채택 (score %.2f) — 가족 %d/%d %s, "
+            "grasp0=%s lateral=%.1fmm (resolve %.1fs)",
+            prompt, rank, len(ordered), coarse.score, res.index, len(groups),
+            fam.label, _fmt(g_tcp0), lateral * 1000.0, resolve_s,
+        )
+        return ServoPlan(
+            coarse=coarse,
+            family=fam,
+            rung0_joints=res.solutions[0],
+            grasp_point0=g_point0,
+            grasp_tcp0=g_tcp0,
+            lateral0=lateral,
+        )
+    raise NoReachableGrasp(
+        f"servo 접근 — 검출 후보 {len(ordered)}개 전부 전멸:\n  "
+        + "\n  ".join(failures)
     )
 
 
@@ -309,6 +364,13 @@ async def servo_pick(
     g_tcp: Vec3 = plan.grasp_tcp0
     lateral = plan.lateral0
     close_attempts = 0
+    # 명령-실측 잔차 보상 (feedforward) — 직전 명령 pose 와 그 뒤 실측 TCP 의
+    # 차. 다음 명령에 가산해 플랜트 상수 오프셋(backlash/sag)을 상쇄.
+    comp = np.zeros(3)
+    last_cmd: Vec3 | None = None
+    # 채택 관측별 조 축 폭 이력 — 중앙값 사용 (단일 뷰 depth 번짐 outlier 가
+    # 폭을 부풀려 lateral_offset 을 밀어낸 실사고: 실물 20mm 가 det 33mm).
+    widths: list[float] = []
     summary: dict = {"result": "unknown", "family": fam.label}
 
     try:
@@ -329,6 +391,13 @@ async def servo_pick(
                     Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
                     robot_id=robot_id,
                 )
+                if last_cmd is not None:
+                    # 플랜트 잔차 갱신 — 검출과 무관 (명령 vs 실측 FK 만 필요)
+                    comp = np.clip(
+                        np.asarray(last_cmd, dtype=float)
+                        - np.asarray(tcp.position, dtype=float),
+                        -_SERVO_COMP_MAX_M, _SERVO_COMP_MAX_M,
+                    )
                 gate = servo.gate_observation(
                     det.candidates, expected_xy, last, cfg
                 )
@@ -342,10 +411,11 @@ async def servo_pick(
                     fused = await _fuse_recent(
                         ctx, accepted[-cfg.fuse_last_k:], gate.obs
                     )
-                    width = servo.width_along(
-                        fused.points or gate.obs.points, fam.jaw_axis,
+                    widths.append(servo.width_along(
+                        gate.obs.points, fam.jaw_axis,
                         fallback_m=plan.coarse.footprint[1],
-                    )
+                    ))
+                    width = float(np.median(widths))
                     lateral = servo.lateral_offset(width)
                     g_point = servo.grasp_point(gate.obs, fused, cfg)
                     g_tcp = servo.grasp_tcp(g_point, fam, lateral)
@@ -386,6 +456,7 @@ async def servo_pick(
                     "axial_mm": round(axial_err * 1000, 2),
                     "grasp_tcp": [round(v, 4) for v in g_tcp],
                     "lateral_offset_mm": round(lateral * 1000, 2),
+                    "comp_mm": [round(float(v) * 1000, 1) for v in comp],
                     "tcp_position": [round(v, 4) for v in tcp.position],
                     "tcp_joints": [round(v, 4) for v in tcp.joints],
                     "action": decision.action,
@@ -400,7 +471,13 @@ async def servo_pick(
                     target = servo.standoff(
                         g_tcp, fam, cfg.standoffs[state.rung]
                     )
-                    await _servo_move(ctx, robot_id, target, fam.quat, trace)
+                    cmd = (
+                        float(target[0] + comp[0]),
+                        float(target[1] + comp[1]),
+                        float(target[2] + comp[2]),
+                    )
+                    await _servo_move(ctx, robot_id, cmd, fam.quat, trace)
+                    last_cmd = cmd
                     continue
                 committed = True  # commit
 
@@ -413,16 +490,60 @@ async def servo_pick(
                 "servo commit: rung=%d blind=%.1fmm grasp_tcp=%s (%s)",
                 state.rung, blind_m * 1000.0, _fmt(g_tcp), fam.label,
             )
+            grasp_cmd = (
+                float(g_tcp[0] + comp[0]),
+                float(g_tcp[1] + comp[1]),
+                float(g_tcp[2] + comp[2]),
+            )
             await _trace_emit(trace, {
                 "phase": "commit",
                 "tick": state.ticks,
                 "rung": state.rung,
                 "blind_mm": round(blind_m * 1000, 1),
                 "grasp_tcp": [round(v, 4) for v in g_tcp],
+                "comp_mm": [round(float(v) * 1000, 1) for v in comp],
+                "cmd": [round(v, 4) for v in grasp_cmd],
                 "action": "commit",
                 "reason": f"blind {blind_m * 1000:.1f}mm 최종 접근",
             })
-            await _move_l(ctx, robot_id, g_tcp, fam.quat)
+            await _move_l(
+                ctx, robot_id, grasp_cmd, fam.quat,
+                speed_scale=cfg.gentle_speed_scale,
+            )
+            last_cmd = grasp_cmd
+            # blind 구간 touch-up — 카메라가 가려진 마지막 ~5cm 는 comp 측정
+            # 시점(standoff)과 자세·부하가 달라 잔차가 남는다 (2026-07-16 실물:
+            # lateral 1.1mm 수렴인데 EMPTY — 잔여 미달이 조 끝 nip/밀어냄).
+            # 관측 불가 구간이라 FK(엔코더) 잔차로 재보정, 상한 2회.
+            for _ in range(2):
+                snap = await ctx.call(
+                    Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
+                    robot_id=robot_id,
+                )
+                resid = np.asarray(g_tcp) - np.asarray(snap.position)
+                resid_norm = float(np.linalg.norm(resid))
+                if resid_norm <= 0.003:
+                    break
+                grasp_cmd = (
+                    float(grasp_cmd[0] + resid[0]),
+                    float(grasp_cmd[1] + resid[1]),
+                    float(grasp_cmd[2] + resid[2]),
+                )
+                logger.info(
+                    "servo touch-up: FK 잔차 %.1fmm → 재보정 %s",
+                    resid_norm * 1000.0, _fmt(grasp_cmd),
+                )
+                await _trace_emit(trace, {
+                    "phase": "touchup",
+                    "tick": state.ticks,
+                    "resid_mm": [round(float(v) * 1000, 1) for v in resid],
+                    "cmd": [round(v, 4) for v in grasp_cmd],
+                })
+                await _move_l(
+                    ctx, robot_id, grasp_cmd, fam.quat,
+                    speed_scale=cfg.gentle_speed_scale,
+                )
+                last_cmd = grasp_cmd
             await _log_reached_tcp(
                 ctx, robot_id, expected=g_tcp, phase="servo grasp 도달"
             )
@@ -450,21 +571,32 @@ async def servo_pick(
                     close_attempts, cfg.close_attempts,
                 )
                 await open_gripper(ctx, robot_id)
-                await _move_l(
-                    ctx, robot_id,
-                    servo.standoff(g_tcp, fam, cfg.standoffs[1]), fam.quat,
+                retreat = servo.standoff(g_tcp, fam, cfg.standoffs[1])
+                retreat_cmd = (
+                    float(retreat[0] + comp[0]),
+                    float(retreat[1] + comp[1]),
+                    float(retreat[2] + comp[2]),
                 )
+                await _move_l(  # 물체 옆에서 시작하는 후퇴 — 감속 (재밀침 방지)
+                    ctx, robot_id, retreat_cmd, fam.quat,
+                    speed_scale=cfg.gentle_speed_scale,
+                )
+                last_cmd = retreat_cmd
                 state = servo.ServoState(rung=1)
                 last = None
                 accepted = []
+                widths = []  # 물체가 밀렸을 수 있음 — 폭 이력도 새로
                 # expected_xy 는 직전 파지 지점 유지 (최선의 추정)
                 continue
             break  # 파지 판정 통과
 
         # ── 후퇴 + 재판정 (이송 중 놓침 포착) + home ──
+        # 후퇴도 감속 — 잡은 직후 가속이 얕은 파지를 흔들어 빼는 실사고
+        # (2026-07-17: close 판정 통과 후 withdraw 중 흘림).
         await _move_l(
             ctx, robot_id,
             servo.standoff(g_tcp, fam, cfg.withdraw_standoff_m), fam.quat,
+            speed_scale=cfg.gentle_speed_scale,
         )
         await verify_grasp(
             ctx, robot_id, phase="withdraw 후", grasp_label=fam.label
@@ -914,12 +1046,18 @@ async def _log_reached_tcp(
 
 
 async def _move_l(
-    ctx: TaskContext, robot_id: str, position: Vec3, quaternion: Quat
+    ctx: TaskContext,
+    robot_id: str,
+    position: Vec3,
+    quaternion: Quat,
+    *,
+    speed_scale: float = 1.0,
 ) -> None:
     await ctx.call(
         Motion.Service.MOVE_L,
         MoveLRequest(
-            target=PoseTarget(kind="pose", position=position, quaternion=quaternion)
+            target=PoseTarget(kind="pose", position=position, quaternion=quaternion),
+            speed_scale=speed_scale,
         ),
         MoveLResponse,
         robot_id=robot_id,

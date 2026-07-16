@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 from pathlib import Path
 
@@ -126,6 +127,11 @@ def main() -> None:
         format="%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    # 특정 로거만 DEBUG (전역 DEBUG 는 zenoh 등 홍수) — 실물 디버깅용.
+    # 예: HORIBOT_DEBUG_LOGGERS=modules.motion.adapters.pybullet → IK walk 상세
+    for name in os.environ.get("HORIBOT_DEBUG_LOGGERS", "").split(","):
+        if name.strip():
+            logging.getLogger(name.strip()).setLevel(logging.DEBUG)
     asyncio.run(run(args.host))
 
 

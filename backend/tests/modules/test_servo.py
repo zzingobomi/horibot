@@ -109,6 +109,21 @@ def test_grasp_point_z_anchored_to_top_surface():
     assert thin[2] == pytest.approx(0.025 - 0.016 + 0.004)
 
 
+def test_grasp_point_floor_clamp_for_flat_objects():
+    """납작한 물체(height < credible → 바닥 guard 비활성)에서 grip_below_top 이
+    테이블을 뚫지 않게 — floor_z(실 바닥 추정)가 마지막 하한 (모양 가정 없이
+    plan 관측 데이터만)."""
+    flat_top = 0.006  # 높이 ~8mm 물체의 윗면 (바닥 -0.002)
+    latest = _det(position=(0.2, 0.05, flat_top), height=0.006)
+    # floor 없음 → top−10mm = 테이블 아래 (구멍이었던 동작)
+    no_guard = servo.grasp_point(latest, latest, _CFG, None)
+    assert no_guard[2] < -0.002
+    # floor 지정 → 바닥 +floor_clear 위로 clamp (상한 top−2mm 안에서)
+    guarded = servo.grasp_point(latest, latest, _CFG, -0.002)
+    assert guarded[2] == pytest.approx(-0.002 + _CFG.floor_clear_m)
+    assert guarded[2] <= flat_top - 0.002
+
+
 def test_grasp_tcp_applies_lateral_along_jaw_axis():
     fam = servo.grasp_families(_det(grasp_yaw=0.0))[0]  # jaw=+y
     tcp = servo.grasp_tcp((0.2, 0.05, 0.0125), fam, 0.008)
@@ -155,6 +170,31 @@ def test_gate_rejects_position_jump():
     jumped = _det(position=(0.2 + 0.045, 0.05, 0.02), points=_pts())
     g = servo.gate_observation([jumped], (0.2, 0.05, 0.0), last, _CFG)
     assert g.obs is None and "도약" in g.reason
+
+
+def test_refit_family_follows_object_rotation():
+    """재획득 시 물체가 회전했으면 같은 변형의 가족을 새 yaw 로 재유도 —
+    옛 각도 스큐 close 재튕김 실사고 (2026-07-17 test4: 86°→-27°)."""
+    fam0 = servo.grasp_families(_det(grasp_yaw=math.radians(86.0)))[0]
+    # 24° 회전 (mod 90) → 재유도
+    rotated = _det(grasp_yaw=math.radians(-27.5))
+    refit = servo.refit_family(fam0, rotated)
+    assert refit is not None and refit.label == fam0.label
+    a = math.degrees(math.atan2(refit.jaw_axis[1], refit.jaw_axis[0]))
+    a0 = math.degrees(math.atan2(fam0.jaw_axis[1], fam0.jaw_axis[0]))
+    assert abs((a - a0 + 90.0) % 180.0 - 90.0) > 10.0
+    # 소폭(<10°) 차이는 유지 (자세 고정 계약 — 마구 돌리지 않는다)
+    near = _det(grasp_yaw=math.radians(82.0))
+    assert servo.refit_family(fam0, near) is None
+
+
+def test_gate_rejects_top_z_jump():
+    """윗면 z 도약 gate — top-앵커 파지 z 의 안전망 (2026-07-17 실물: 조/가림
+    depth 오염으로 top +2cm 점프 → 파지 목표 허공 → 이동 IK 거부 중단)."""
+    last = _det(position=(0.2, 0.05, 0.025))
+    poisoned = _det(position=(0.2, 0.05, 0.046), points=_pts())  # +21mm
+    g = servo.gate_observation([poisoned], (0.2, 0.05, 0.0), last, _CFG)
+    assert g.obs is None and "z 도약" in g.reason
 
 
 def test_gate_rejects_thin_point_cloud():

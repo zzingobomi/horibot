@@ -75,7 +75,14 @@ class ServoConfig:
     max_ticks: int = 15
     miss_max: int = 2  # 연속 관측 실패 허용 (드롭 1회 hold — handoff §2 empty 해석)
     match_radius_m: float = 0.05
+    # 낙하/밀림 재시도 첫 재획득의 매치 반경 — 물체가 움직인 걸 아는 국면이라
+    # 넓힌다 (실물: 낙하 큐브 10cm 굴러감 → 5cm 반경이 재획득 거부 → abort).
+    reacquire_radius_m: float = 0.15
     jump_max_m: float = 0.03  # 직전 채택 관측 대비 위치 도약 상한 (mask 오검출 gate)
+    # 직전 채택 대비 윗면 z 도약 상한 — top-앵커 파지 z 의 안전 gate. 정지 물체의
+    # 윗면이 tick 사이 cm 급으로 움직이는 건 물리 불가 = 조 끝/가림 depth 오염
+    # (2026-07-17 실물: top +2cm 점프 → 파지 목표 허공 → 이동 IK 거부로 중단).
+    z_jump_max_m: float = 0.01
     min_points: int = 50  # 점군 최소 (depth 붕괴/가림 gate)
     fuse_last_k: int = 4  # 기하(z/폭) 융합에 쓰는 최근 채택 관측 수
     # 파지 z = 윗면(top band centroid z) − grip_below_top_m — **윗면 앵커**.
@@ -87,6 +94,10 @@ class ServoConfig:
     # 융합 height 신뢰 문턱 — 옆면을 본 뷰가 섞여야 height 가 실측 (이상이면
     # "바닥 위 4mm" 하한 guard 활성). 미만이면 height 는 band 두께일 뿐.
     height_credible_m: float = 0.015
+    # 바닥 위 파지 z 하한 여유 — grip_below_top 이 물체 높이보다 깊으면 (납작한
+    # 물체) 파지 z 가 테이블을 뚫는다. height 가 신뢰 밖일 때도 바닥(floor_z,
+    # plan 의 클러스터 min base_z)은 항상 안다 → z ≥ floor + 이 여유로 clamp.
+    floor_clear_m: float = 0.004
     close_attempts: int = 2  # close 후 EMPTY 재시도 상한 (재관측부터)
     withdraw_standoff_m: float = 0.08  # 파지 후 접근축 역방향 후퇴 거리
     settle_s: float = 0.4  # 이동 후 카메라 정착 (검출 품질)
@@ -94,6 +105,16 @@ class ServoConfig:
     # 10cm/s 그대로는 접촉 직전 관성/진동이 크다 (2026-07-17: close 판정 통과
     # 후 withdraw 중 흘림). 0.25 → ~2.5cm/s (산업 최종접근 관례 1~2cm/s 대).
     gentle_speed_scale: float = 0.25
+    # 파지 TCP 접근축 추가 전진 — 물체를 조 **끝이 아니라 안쪽**에 물리기.
+    # 2026-07-17 영상(test2.mp4): 조 끝 점접촉 파지가 정적으로는 버티는데(판정
+    # HELD) 감속 withdraw 시작 직후 무게중심 토크로 회전하며 이탈(cam-out).
+    # 접촉선을 CoM 에 가깝게 = 조 면으로 깊이 무는 게 물리 처방 (크기 무관).
+    engage_m: float = 0.006
+    # withdraw 후 gap 유지율 하한 — close 시점 gap 대비 (절대 아님 = 물체 크기
+    # 무관). 미만 = 물체가 조 안에서 끝쪽으로 미끄러짐 (2026-07-17 실물: close
+    # gap 210 → withdraw 후 36 = 17% — 매달려는 있지만 이송 불가 파지) →
+    # 내려놓고 재시도. 공중 open 금지 (튀어 도망감).
+    slip_retention: float = 0.6
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +185,30 @@ def grasp_families(obs: OrientedDetection) -> list[GraspFamily]:
     return out
 
 
+def refit_family(
+    fam: GraspFamily, obs: OrientedDetection, min_delta_deg: float = 10.0
+) -> GraspFamily | None:
+    """재획득 관측의 yaw 로 **같은 변형**(조 축 선택 × tilt × flip)의 가족 재유도.
+
+    가족은 plan coarse 의 yaw 로 고정되는데(자세 고정 = common-mode 상쇄 계약),
+    물체가 밀리거나 튕기며 **회전**하면 옛 각도로 닫게 된다 (2026-07-17 실물:
+    1차 close 튕김으로 86°→-27° 회전 → 2차가 24° 스큐로 닫아 재튕김). 물체가
+    움직인 걸 아는 국면(재시도 재획득)에서만 호출 — yaw 차(mod 90)가 문턱
+    미만이면 None (기존 유지, 마구 돌리지 않는다).
+    """
+    cand = next(
+        (f for f in grasp_families(obs) if f.label == fam.label), None
+    )
+    if cand is None:
+        return None
+    a0 = math.atan2(fam.jaw_axis[1], fam.jaw_axis[0])
+    a1 = math.atan2(cand.jaw_axis[1], cand.jaw_axis[0])
+    delta = abs((math.degrees(a1 - a0) + 90.0) % 180.0 - 90.0)
+    if delta < min_delta_deg:
+        return None
+    return cand
+
+
 def width_along(
     points: list[Vec3] | None, axis: Vec3, fallback_m: float
 ) -> float:
@@ -185,29 +230,43 @@ def lateral_offset(width_m: float) -> float:
 
 
 def grasp_point(
-    latest: OrientedDetection, fused: OrientedDetection, cfg: ServoConfig
+    latest: OrientedDetection,
+    fused: OrientedDetection,
+    cfg: ServoConfig,
+    floor_z: float | None = None,
 ) -> Vec3:
     """파지 지점 (물체 좌표, TCP 아님) — XY 는 **최신 관측** (common-mode 상쇄는
     최신 자세의 측정에만 성립), z 는 **윗면 앵커** (top band centroid z 아래로
     grip_below_top_m).
 
     base_z 앵커 폐기 근거 = ServoConfig.grip_below_top_m 주석 (단일 top-view 의
-    base_z ≈ 윗면 — nip 튕김 실사고). guard: 융합 height 가 신뢰 가능(옆면 뷰
-    포함)하면 관측 바닥 +4mm 아래로는 안 내려간다 — 얕은 물체를 뚫고 테이블을
-    무는 것 방지. 상한은 윗면 −2mm (헛집기 방지).
+    base_z ≈ 윗면 — nip 튕김 실사고). 하한 guard 두 겹 (모양 가정 없이 관측만):
+    ① 융합 height 신뢰 가능(옆면 뷰 포함) → 관측 바닥 +4mm 위.
+    ② floor_z(plan 의 클러스터 min base_z = 실 바닥 추정) → 바닥 +floor_clear 위
+       — height 를 못 믿는 납작한 물체(< height_credible)에서 grip_below_top 이
+       테이블을 뚫는 것을 막는 유일한 데이터 (물체 크기 무관 안전망).
+    상한은 윗면 −2mm (헛집기 방지) — 하한들과 충돌하면 상한이 이긴다 (얕은
+    물체는 윗쪽 sliver 파지가 물리적으로 유일한 선택).
     """
     top = latest.position[2]
     z = top - cfg.grip_below_top_m
     if fused.height >= cfg.height_credible_m:
         z = max(z, top - fused.height + 0.004)
+    if floor_z is not None:
+        z = max(z, floor_z + cfg.floor_clear_m)
     z = min(z, top - 0.002)
     return (latest.position[0], latest.position[1], z)
 
 
-def grasp_tcp(point: Vec3, family: GraspFamily, lateral_m: float) -> Vec3:
-    """파지 지점 → TCP 목표 (조 축 lateral 오프셋 적용 — plan_grasp 동일 규약)."""
+def grasp_tcp(
+    point: Vec3, family: GraspFamily, lateral_m: float, engage_m: float = 0.0
+) -> Vec3:
+    """파지 지점 → TCP 목표 — tool frame 오프셋 2개 적용:
+    y(조 축) = lateral (단일 가동 조 보정, plan_grasp 동일 규약),
+    x(접근축) = engage (조 끝이 아니라 안쪽에 물리는 전진 — cfg.engage_m 주석).
+    """
     rot = Rotation.from_quat(family.quat)
-    off = rot.apply([0.0, lateral_m, 0.0])
+    off = rot.apply([engage_m, lateral_m, 0.0])
     return (
         float(point[0] + off[0]),
         float(point[1] + off[1]),
@@ -238,6 +297,7 @@ def gate_observation(
     expected_xy: Vec3,
     last_accepted: OrientedDetection | None,
     cfg: ServoConfig,
+    match_radius_m: float | None = None,
 ) -> GateResult:
     """tick 관측 게이트 — 실데이터의 실패 클래스가 근거 (docstring 상단):
 
@@ -245,11 +305,16 @@ def gate_observation(
     ② 도약: 직전 채택 대비 jump_max 초과 = mask 오검출 의심 (실데이터 455mm 사례)
     ③ 점군: min_points 미만 = depth 붕괴/가림 (근접 한계 신호)
     기각 사유는 문자열로 — trace/로그에 그대로 남아 사후분석 가능.
+
+    match_radius_m: 기본 cfg 값 override — 낙하 재획득처럼 "물체가 움직였음을
+    아는" 국면은 넓혀서 부른다 (2026-07-17 실물: 떨어진 큐브가 10cm 굴러갔는데
+    5cm 반경이 재획득을 거부 → abort).
     """
     if not candidates:
         return GateResult(None, "검출 0건")
+    radius = match_radius_m if match_radius_m is not None else cfg.match_radius_m
     best: OrientedDetection | None = None
-    best_d = cfg.match_radius_m
+    best_d = radius
     for c in candidates:
         d = math.hypot(
             c.position[0] - expected_xy[0], c.position[1] - expected_xy[1]
@@ -265,7 +330,7 @@ def gate_observation(
         )
         return GateResult(
             None,
-            f"매치 실패 — 기대 위치 반경 {cfg.match_radius_m * 1000:.0f}mm 밖 "
+            f"매치 실패 — 기대 위치 반경 {radius * 1000:.0f}mm 밖 "
             f"(최근접 {near * 1000:.0f}mm)",
         )
     if last_accepted is not None:
@@ -275,6 +340,15 @@ def gate_observation(
                 None,
                 f"위치 도약 {jump * 1000:.0f}mm > {cfg.jump_max_m * 1000:.0f}mm "
                 "(mask 오검출 의심)",
+            )
+        dz = abs(best.position[2] - last_accepted.position[2])
+        if dz > cfg.z_jump_max_m:
+            # 윗면 z 는 파지 z 의 앵커 — 정지 물체에서 tick 간 cm 급 z 변동은
+            # 물리 불가 (조 끝/가림 depth 오염). XY 도약보다 좁게 gate.
+            return GateResult(
+                None,
+                f"윗면 z 도약 {dz * 1000:.0f}mm > "
+                f"{cfg.z_jump_max_m * 1000:.0f}mm (조/가림 depth 오염 의심)",
             )
     n = len(best.points or [])
     if n < cfg.min_points:

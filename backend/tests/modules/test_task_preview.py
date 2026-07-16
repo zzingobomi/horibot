@@ -185,6 +185,7 @@ def test_pick_and_place_scenario_tree():
         ("home_waypoint", 0),
         ("plan_pick", 0),
         ("detect", 1),  # search 스윕 = 찾기(coarse)만 — 파지 정밀은 servo
+        (DYNAMIC_NAME, 1),  # 후보 순회 loop 안 resolve — 정적으로 못 푸는 호출
         ("plan_place", 0),
         ("detect", 1),
         ("resolve_place", 1),
@@ -194,8 +195,8 @@ def test_pick_and_place_scenario_tree():
         # tick 루프의 관측/보정은 ctx.call/servo 순수 함수 — step 아님 (트리 미표시)
         ("close_gripper", 1),
         ("verify_grasp", 1),  # 파지 판정 ① close 직후
-        ("open_gripper", 1),  # close EMPTY 재시도 경로 (조건부)
-        ("verify_grasp", 1),  # 파지 판정 ② withdraw 후 (놓침 포착)
+        ("verify_grasp", 1),  # 파지 판정 ② withdraw 후 (놓침/슬립 포착)
+        ("open_gripper", 1),  # EMPTY/슬립 재시도 경로 (조건부 — 내려놓고 재관측)
         ("go_home", 1),
         ("execute_place", 0),
         ("pre_place", 1),
@@ -213,6 +214,9 @@ def test_pick_and_place_scenario_tree():
     # servo attempt/tick 루프 안 step 들 = 반복 표시 (실행 횟수는 안 셈)
     assert by_row[("close_gripper", 1)].repeated
     assert by_row[("open_gripper", 1)].repeated  # 재시도 open (조건+반복)
-    # 동적 구멍/소스 불가 없음 — trace emit 이 module-level 함수라 구멍이 아님
-    # (지역 closure 로 두면 <동적> 노이즈 3개가 트리를 오염 — 회귀 잠금)
-    assert all(not e.dynamic and not e.unavailable for e in entries)
+    # 동적 구멍 = plan_pick 후보 순회 loop 의 resolve 1곳뿐 (2026-07-17 도달성
+    # 우선 선택 — 후보 수가 런타임 데이터라 정적으로 못 푸는 게 정직한 표시).
+    # trace emit 등 노이즈성 <동적> 오염은 계속 차단 (회귀 잠금).
+    dynamic = [e for e in entries if e.dynamic]
+    assert len(dynamic) == 1 and dynamic[0].depth == 1
+    assert all(not e.unavailable for e in entries)

@@ -172,7 +172,7 @@ _FAM = servo.grasp_families(_OBS)[0]  # resolve index=0 → 첫 가족 (수직·
 _WIDTH = servo.width_along(_OBS.points, _FAM.jaw_axis, _OBS.footprint[1])
 _LAT = servo.lateral_offset(_WIDTH)
 _G_POINT = servo.grasp_point(_OBS, _OBS, _CFG)
-_G_TCP = servo.grasp_tcp(_G_POINT, _FAM, _LAT)
+_G_TCP = servo.grasp_tcp(_G_POINT, _FAM, _LAT, _CFG.engage_m)
 _SO0 = servo.standoff(_G_TCP, _FAM, _CFG.standoffs[0])
 _SO1 = servo.standoff(_G_TCP, _FAM, _CFG.standoffs[1])
 _WITHDRAW = servo.standoff(_G_TCP, _FAM, _CFG.withdraw_standoff_m)
@@ -445,16 +445,24 @@ async def test_servo_move_rejected_falls_back_to_movej():
 
 
 async def test_servo_move_both_rejected_aborts():
+    """이동 거부 1회 = 재관측으로 계속 (오염 관측이 만든 허공 목표일 수 있음 —
+    2026-07-17 실물), **연속 2회** = 진짜 경계 → abort."""
+    obs2 = _det(position=(0.2, 0.062, 0.025))  # 12mm 이탈 → 2번째 correct 유발
     ctx = _ctx(_pick_script(**{
         _DETECT: [
-            DetectOrientedResponse(found=True, candidates=[_OBS]),
-            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick1 하강 시도
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # 스윕
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick1
+            DetectOrientedResponse(found=True, candidates=[obs2]),  # tick2
         ],
-        _TCP_SNAP: [_tcp(_SO0)],
-        _MOVE_L: [RemoteError("MotionRejected", "경로 IK 실패")],
+        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO0)],
+        _MOVE_L: [
+            RemoteError("MotionRejected", "경로 IK 실패"),  # tick1 이동 거부①
+            RemoteError("MotionRejected", "경로 IK 실패"),  # tick2 이동 거부②
+        ],
         _MOVE_J: [
             MoveJResponse(), MoveJResponse(), MoveJResponse(),  # 스윕+home+rung0
-            RemoteError("MotionRejected", "IK 실패"),  # 폴백도 거부
+            RemoteError("MotionRejected", "IK 실패"),  # 폴백 거부①
+            RemoteError("MotionRejected", "IK 실패"),  # 폴백 거부②
         ],
     }))
     with pytest.raises(ServoFailed, match="이동 실패"):
@@ -615,7 +623,9 @@ async def test_servo_success_writes_trace_and_summary(tmp_path: Path):
     runs = list((tmp_path / "servo_pick").iterdir())
     assert len(runs) == 1
     lines = (runs[0] / "trace.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 3  # tick1 + tick2 + commit
+    # tick1 + tick2 + commit + close held + withdraw held (성공 근거도 기록 —
+    # 실패만 기록하면 "잡았을 때 raw/부하 분포"를 영영 못 본다)
+    assert len(lines) == 5
     summary = (runs[0] / "summary.json").read_text(encoding="utf-8")
     assert '"result": "success"' in summary
 
@@ -787,17 +797,24 @@ async def test_list_robots_returns_task_robots():
 
 
 def test_gripper_holding_judgment():
-    assert steps._gripper_holding(_HELD_RAW, _SPEC) is True
-    assert steps._gripper_holding(_EMPTY_RAW, _SPEC) is False
-    thin = _SPEC.gripper_close_raw + 100  # gap 100 < margin 165
-    assert steps._gripper_holding(thin, _SPEC) is False
+    """gap OR 부하 판정 (2026-07-17 실측 기반 — steps._gripper_holding 주석)."""
+    assert steps._gripper_holding(_HELD_RAW, None, _SPEC) is True
+    # 빈손: gap≈0 + 저부하 (실측 56~64)
+    assert steps._gripper_holding(_EMPTY_RAW, 60, _SPEC) is False
+    # 얇은 물림/슬립 sliver: gap 은 margin 아래지만 부하가 누르는 중 (실측 296)
+    thin = _SPEC.gripper_close_raw + 36
+    assert steps._gripper_holding(thin, 296, _SPEC) is True
+    # 같은 gap 인데 부하 낮음 = 빈손
+    assert steps._gripper_holding(thin, 60, _SPEC) is False
+    # 부하 신호 없는 모델 → gap 단독 (얇은 물림은 못 잡음 — 알려진 한계)
+    assert steps._gripper_holding(thin, None, _SPEC) is False
 
 
 def test_position_only_cannot_catch_false_stall():
     """알려진 한계 박제: 물체 없이 어중간히 stall 하면 위치 판정은 HELD 오판
     (false-positive) — load 병기 로그로 실물 튜닝이 해법."""
     false_stall = _SPEC.gripper_held_threshold_raw + 200
-    assert steps._gripper_holding(false_stall, _SPEC) is True
+    assert steps._gripper_holding(false_stall, None, _SPEC) is True
 
 
 async def test_verify_grasp_empty_raises_with_reason():

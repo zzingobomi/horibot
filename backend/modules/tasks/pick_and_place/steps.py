@@ -89,7 +89,10 @@ from .servo_trace import ServoTrace
 
 logger = logging.getLogger(__name__)
 
-_GRIPPER_SETTLE_S = 1.2
+# gripper 이동 완료 대기 — SET_GRIPPER 는 단발 goal 이라 완료 통지가 없다.
+# 2026-07-17 close 30°/s 감속(타격 발사 방지)에 맞춰 1.2→4.0: open↔close 풀
+# 스트로크 ~110° ≈ 3.7s. 짧으면 verify 가 닫히는 도중 raw 를 읽어 오판.
+_GRIPPER_SETTLE_S = 4.0
 _TOP_K = 5
 
 # 검색 자세 그룹 — 사용자가 티칭한 "search" waypoint 그룹 (robot 별). 이 자세들을
@@ -156,10 +159,15 @@ class ServoPlan:
     grasp_point0: Vec3
     grasp_tcp0: Vec3
     lateral0: float
+    # 실 바닥 추정 (클러스터 min base_z − margin) — servo 루프의 파지 z 하한
+    # guard (납작한 물체에서 grip_below_top 이 테이블을 뚫는 것 방지).
+    floor_z: float | None = None
 
 
 def servo_ladder_groups(
-    coarse: OrientedDetection, cfg: servo.ServoConfig
+    coarse: OrientedDetection,
+    cfg: servo.ServoConfig,
+    floor_z: float | None = None,
 ) -> tuple[list[list[TcpPose]], list[tuple[servo.GraspFamily, Vec3, Vec3, float]]]:
     """coarse 관측 → resolve 후보 그룹 ([standoff 사다리…, 파지] × 가족) + 메타.
 
@@ -168,13 +176,13 @@ def servo_ladder_groups(
     families = servo.grasp_families(coarse)
     groups: list[list[TcpPose]] = []
     metas: list[tuple[servo.GraspFamily, Vec3, Vec3, float]] = []
-    g_point0 = servo.grasp_point(coarse, coarse, cfg)
+    g_point0 = servo.grasp_point(coarse, coarse, cfg, floor_z)
     for fam in families:
         width = servo.width_along(
             coarse.points, fam.jaw_axis, fallback_m=coarse.footprint[1]
         )
         lateral = servo.lateral_offset(width)
-        g_tcp0 = servo.grasp_tcp(g_point0, fam, lateral)
+        g_tcp0 = servo.grasp_tcp(g_point0, fam, lateral, cfg.engage_m)
         poses = [
             TcpPose(
                 position=servo.standoff(g_tcp0, fam, s), quaternion=fam.quat
@@ -228,7 +236,7 @@ async def plan_pick(
             if _xy_dist(c.position, coarse.position) <= _VIEW_MATCH_RADIUS_M
         ]
         floor_z = min(cluster_base) - _FLOOR_GATE_MARGIN_M
-        groups, metas = servo_ladder_groups(coarse, cfg)
+        groups, metas = servo_ladder_groups(coarse, cfg, floor_z)
 
         t0 = time.monotonic()
         res = await ctx.call(
@@ -268,6 +276,7 @@ async def plan_pick(
             grasp_point0=g_point0,
             grasp_tcp0=g_tcp0,
             lateral0=lateral,
+            floor_z=floor_z,
         )
     raise NoReachableGrasp(
         f"servo 접근 — 검출 후보 {len(ordered)}개 전부 전멸:\n  "
@@ -371,6 +380,13 @@ async def servo_pick(
     # 채택 관측별 조 축 폭 이력 — 중앙값 사용 (단일 뷰 depth 번짐 outlier 가
     # 폭을 부풀려 lateral_offset 을 밀어낸 실사고: 실물 20mm 가 det 33mm).
     widths: list[float] = []
+    # 연속 이동 거부 카운터 — 오염 관측이 만든 허공 목표는 IK 거부가 옳고,
+    # 다음 tick 의 깨끗한 관측이 목표를 고친다 (2026-07-17 실물: top +2cm
+    # 오염 → 이동 거부 1회에 태스크 전체 중단). 연속 2회면 진짜 경계 → abort.
+    move_fails = 0
+    # 낙하/밀림 재시도 후 첫 재획득 국면 — 매치 반경을 넓힌다 (물체가 움직인
+    # 걸 앎). 첫 채택 관측에서 해제.
+    reacquiring = False
     summary: dict = {"result": "unknown", "family": fam.label}
 
     try:
@@ -399,12 +415,36 @@ async def servo_pick(
                         -_SERVO_COMP_MAX_M, _SERVO_COMP_MAX_M,
                     )
                 gate = servo.gate_observation(
-                    det.candidates, expected_xy, last, cfg
+                    det.candidates, expected_xy, last, cfg,
+                    match_radius_m=(
+                        cfg.reacquire_radius_m if reacquiring else None
+                    ),
                 )
                 lateral_err: float | None = None
                 axial_err = 0.0
                 fused = None
                 if gate.obs is not None:
+                    if reacquiring:
+                        # 물체가 움직인 뒤 첫 재획득 — 회전했을 수 있으니 조
+                        # 각도(가족 yaw)도 새 관측으로 재유도 (servo.refit_family
+                        # docstring — 옛 각도 스큐 close 가 재튕김 만든 실사고)
+                        new_fam = servo.refit_family(fam, gate.obs)
+                        if new_fam is not None:
+                            logger.info(
+                                "servo: 재획득 yaw 재유도 — obs yaw %.1f° 로 "
+                                "가족 회전 (%s)",
+                                math.degrees(gate.obs.grasp_yaw), fam.label,
+                            )
+                            await _trace_emit(trace, {
+                                "phase": "refit",
+                                "tick": state.ticks,
+                                "action": "family_refit",
+                                "obs_yaw_deg": round(
+                                    math.degrees(gate.obs.grasp_yaw), 1
+                                ),
+                            })
+                            fam = new_fam
+                    reacquiring = False  # 재획득 완료 — 반경 원복
                     last = gate.obs
                     accepted.append(gate.obs)
                     expected_xy = gate.obs.position
@@ -417,8 +457,12 @@ async def servo_pick(
                     ))
                     width = float(np.median(widths))
                     lateral = servo.lateral_offset(width)
-                    g_point = servo.grasp_point(gate.obs, fused, cfg)
-                    g_tcp = servo.grasp_tcp(g_point, fam, lateral)
+                    g_point = servo.grasp_point(
+                        gate.obs, fused, cfg, plan.floor_z
+                    )
+                    g_tcp = servo.grasp_tcp(
+                        g_point, fam, lateral, cfg.engage_m
+                    )
                     target_so = servo.standoff(
                         g_tcp, fam, cfg.standoffs[state.rung]
                     )
@@ -476,7 +520,30 @@ async def servo_pick(
                         float(target[1] + comp[1]),
                         float(target[2] + comp[2]),
                     )
-                    await _servo_move(ctx, robot_id, cmd, fam.quat, trace)
+                    try:
+                        await _servo_move(ctx, robot_id, cmd, fam.quat, trace)
+                    except ServoFailed:
+                        move_fails += 1
+                        if move_fails >= 2:
+                            raise
+                        # 목표를 만든 최신 관측을 불신 — 채택 이력에서 빼고
+                        # gate 기준(last)도 리셋해 다음 tick 이 깨끗이 재관측.
+                        if accepted:
+                            accepted.pop()
+                        last = accepted[-1] if accepted else None
+                        logger.warning(
+                            "servo 이동 거부 (%d/2) — 관측 불신, 재관측으로 "
+                            "계속: cmd=%s", move_fails, _fmt(cmd),
+                        )
+                        await _trace_emit(trace, {
+                            "phase": "move",
+                            "action": "rejected_hold",
+                            "tick": state.ticks,
+                            "move_fails": move_fails,
+                            "cmd": [round(v, 4) for v in cmd],
+                        })
+                        continue
+                    move_fails = 0
                     last_cmd = cmd
                     continue
                 committed = True  # commit
@@ -549,26 +616,64 @@ async def servo_pick(
             )
             await close_gripper(ctx, robot_id)
             try:
-                await verify_grasp(
+                grip = await verify_grasp(
                     ctx, robot_id, phase="close 직후", grasp_label=fam.label
                 )
+                await _trace_emit(trace, {
+                    "phase": "close", "tick": state.ticks, "action": "held",
+                    **grip,
+                })
+                # ── 후퇴 + 슬립 재판정 — 이송 자격 검증 (attempt 루프 안:
+                # 놓침/슬립 모두 재시도 대상). 후퇴 감속 — 잡은 직후 가속이
+                # 얕은 파지를 흔들어 빼는 실사고 (2026-07-17).
+                await _move_l(
+                    ctx, robot_id,
+                    servo.standoff(g_tcp, fam, cfg.withdraw_standoff_m),
+                    fam.quat,
+                    speed_scale=cfg.gentle_speed_scale,
+                )
+                grip2 = await verify_grasp(
+                    ctx, robot_id, phase="withdraw 후", grasp_label=fam.label
+                )
+                # 슬립 = close 시점 gap 대비 유지율 미달 (상대 비교 — 물체
+                # 크기 무관). **실패 아님 — 경고 + 계속** (2026-07-17 실물:
+                # 공중에 뜨는 순간 자중이 조 곡면을 타고 끝 홈까지 밀리는
+                # 결정적 현상 — gap 216→35 두 번 재현, 끝 홈에서 load 288 로
+                # 안정적으로 매달림. 내려놓고 재시도해봤자 똑같이 미끄러지고,
+                # 조 끝 파지도 이송·상자 적치는 된다. 근본 = 조 마찰 패드
+                # [하드웨어]). verify(load OR gap)가 "물고 있음"은 이미 보장.
+                slip = (
+                    grip2["gap_raw"]
+                    < cfg.slip_retention * grip["gap_raw"]
+                )
+                await _trace_emit(trace, {
+                    "phase": "withdraw", "tick": state.ticks,
+                    "action": "slip" if slip else "held",
+                    "close_gap_raw": grip["gap_raw"], **grip2,
+                })
+                if slip:
+                    logger.warning(
+                        "servo: withdraw 슬립 (gap %d→%d, load %s) — 조 끝 "
+                        "파지로 이송 계속. 반복되면 조 접촉면 마찰 패드 권장",
+                        grip["gap_raw"], grip2["gap_raw"], grip2["load_raw"],
+                    )
             except GraspFailed as e:
                 close_attempts += 1
                 await _trace_emit(trace, {
-                    "phase": "close",
+                    "phase": "grasp_retry",
                     "tick": state.ticks,
-                    "action": "empty",
+                    "action": "retry",
                     "reason": str(e),
                     "attempt": close_attempts,
                 })
                 if close_attempts >= cfg.close_attempts:
                     raise
-                # 재시도: 물체가 밀렸을 수 있다 — 놓고 물러나 관측부터 다시
-                # (rung 1 = 8cm standoff, 직전 목표 기준. 관측 이력 리셋 —
+                # 재시도: 물체가 밀렸거나(EMPTY) 슬립 — 놓고 물러나 관측부터
+                # 다시 (rung 1 standoff, 직전 목표 기준. 관측 이력 리셋 —
                 # 도약 gate 가 밀린 물체를 오검출로 오판하지 않게).
                 logger.warning(
-                    "servo: close 후 EMPTY — 재시도 %d/%d (rung 1 후퇴, 재관측)",
-                    close_attempts, cfg.close_attempts,
+                    "servo: 파지 실패(%s) — 재시도 %d/%d (후퇴, 재관측)",
+                    e, close_attempts, cfg.close_attempts,
                 )
                 await open_gripper(ctx, robot_id)
                 retreat = servo.standoff(g_tcp, fam, cfg.standoffs[1])
@@ -586,21 +691,11 @@ async def servo_pick(
                 last = None
                 accepted = []
                 widths = []  # 물체가 밀렸을 수 있음 — 폭 이력도 새로
+                reacquiring = True  # 물체가 움직였음 — 재획득 반경 확대
                 # expected_xy 는 직전 파지 지점 유지 (최선의 추정)
                 continue
-            break  # 파지 판정 통과
+            break  # 파지 + 이송 자격 통과
 
-        # ── 후퇴 + 재판정 (이송 중 놓침 포착) + home ──
-        # 후퇴도 감속 — 잡은 직후 가속이 얕은 파지를 흔들어 빼는 실사고
-        # (2026-07-17: close 판정 통과 후 withdraw 중 흘림).
-        await _move_l(
-            ctx, robot_id,
-            servo.standoff(g_tcp, fam, cfg.withdraw_standoff_m), fam.quat,
-            speed_scale=cfg.gentle_speed_scale,
-        )
-        await verify_grasp(
-            ctx, robot_id, phase="withdraw 후", grasp_label=fam.label
-        )
         await go_home(ctx, robot_id, home)
         summary.update({
             "result": "success",
@@ -965,24 +1060,37 @@ async def release(ctx: TaskContext, robot_id: str) -> None:
 # ─── 파지 판정 (물었나/놓쳤나) ────────────────────────────
 
 
-def _gripper_holding(achieved_raw: int, spec) -> bool:  # noqa: ANN001 — TaskRobotSpec
-    """물었나 판정 (벤더 무관). close 명령했는데 물체가 막아 **완전히 못 닫힘** =
-    물림. 방향 무관하게 |achieved − close| 로 "닫힘에서 얼마나 벌어졌나"를 본다:
-    그 gap 이 held margin(=|threshold − close|, resolve.py 에서 15% range)보다 크면
-    물체가 조 사이에 있는 것. gap≈0(close 도달) = 빈 파지.
+# held 판정 부하 하한 — gap 이 작아도 (얇은 물체 / 슬립 후 조 끝 sliver 물림)
+# 부하가 물체를 누르고 있으면 물림. 2026-07-17 실측 (so101 STS3215): 빈손 close
+# = goal 도달이라 load 56~64 / sliver 물림 load 296 / 정상 물림 300~368 —
+# 150 은 빈손×2 마진. ⚠ Feetech raw 기준 — 타 벤더(OMX Dynamixel) 부하 스케일
+# 검증 전 (활성 robot 은 so101 뿐).
+_HELD_LOAD_MIN_RAW = 150
 
-    한계(실물 튜닝 대상, 로그로 근거 확보): 임계보다 얇은 물체는 false negative /
-    물체 없이 어중간히 stall 하면 false positive → load·기대폭 신호는 로그에 병기.
+
+def _gripper_holding(
+    achieved_raw: int, load_raw: int | None, spec  # noqa: ANN001 — TaskRobotSpec
+) -> bool:
+    """물었나 판정 (벤더 무관). 신호 2개의 OR:
+
+    ① gap = |achieved − close| > held margin (resolve.py, 5% range) — close 명령
+      했는데 물체가 막아 완전히 못 닫힘 = 물림.
+    ② 부하 ≥ _HELD_LOAD_MIN_RAW — 얇은 물체/슬립 sliver 는 gap 이 margin 아래로
+      내려가지만 (2026-07-17 실물: gap 36 인데 실제로 물고 있었음 — 절대 gap
+      문턱의 구조적 한계) 물체를 누르는 부하는 남는다. 빈손 close 는 goal 도달로
+      부하가 낮아 (56~64) 구분된다.
     """
     margin = abs(spec.gripper_held_threshold_raw - spec.gripper_close_raw)
     gap = abs(achieved_raw - spec.gripper_close_raw)
-    return gap > margin
+    if gap > margin:
+        return True
+    return load_raw is not None and load_raw >= _HELD_LOAD_MIN_RAW
 
 
 @step(title="파지 확인")
 async def verify_grasp(
     ctx: TaskContext, robot_id: str, *, phase: str, grasp_label: str = ""
-) -> None:
+) -> dict:
     """실제 그리퍼 도달 위치로 물림 판정 — 빈 파지/놓침이면 GraspFailed raise.
 
     단일 시점·단일 신호의 허점(못 잡았는데 잡음/잡았다 놓침)을 줄이려 servo/place
@@ -1000,7 +1108,7 @@ async def verify_grasp(
         if state.loads_raw is not None and gi < len(state.loads_raw)
         else None
     )
-    held = _gripper_holding(achieved, spec)
+    held = _gripper_holding(achieved, load, spec)
     logger.info(
         "verify_grasp[%s] robot=%s grip achieved=%d (close=%d open=%d held_thr=%d "
         "load=%s) 계획폭=%s → %s",
@@ -1015,6 +1123,13 @@ async def verify_grasp(
             close_raw=spec.gripper_close_raw,
             load_raw=load,
         )
+    # 성공 판정의 근거도 반환 — trace 에 남겨 임계 튜닝 데이터 (실패만 기록하면
+    # "잡았을 때 raw/부하 분포"를 영영 못 본다. 2026-07-17 문턱 오판 진단 교훈).
+    return {
+        "achieved_raw": achieved,
+        "gap_raw": abs(achieved - spec.gripper_close_raw),
+        "load_raw": load,
+    }
 
 
 async def _log_reached_tcp(

@@ -119,5 +119,10 @@ motors:
       max: 3186   # URDF +1.74574 rad (+100°, 그리퍼 full open)
     reverse: false
     profile:
-      velocity_dps: 90.0      # gripper — finger slam 방지, OMX 와 같은 숫자
-      acceleration_dpss: 400.0
+      # 2026-07-17 90→30: close 시 가동 조 아크가 물체를 타격해 발사하는 실사고
+      # (test3.mp4 t011 — 큐브가 총알처럼 이탈, 조는 테이블을 물어 false HELD).
+      # 충격 에너지 ∝ v² — 30°/s 면 접촉이 타격이 아니라 압박이 된다.
+      # 대가: close ~65mm 스트로크 ≈ 2s (기존 ~0.7s). _GRIPPER_SETTLE_S 1.2s 로
+      # 부족해질 수 있음 — steps 쪽 3.0s 로 동반 상향.
+      velocity_dps: 30.0
+      acceleration_dpss: 200.0

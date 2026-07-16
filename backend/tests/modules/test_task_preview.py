@@ -184,22 +184,17 @@ def test_pick_and_place_scenario_tree():
     assert _rows(entries) == [
         ("home_waypoint", 0),
         ("plan_pick", 0),
-        ("detect", 1),  # search 스윕 = 찾기(coarse)만
-        ("observe_and_plan_grasp", 1),
-        ("go_home", 2),  # close 뷰 간 이동 = home 경유 (§10.4-4)
-        ("try_plan_grasp", 2),  # close 뷰 후 파지 성립 검사 (adaptive 루프)
-        ("fuse_target", 3),
+        ("detect", 1),  # search 스윕 = 찾기(coarse)만 — 파지 정밀은 servo
         ("plan_place", 0),
         ("detect", 1),
         ("resolve_place", 1),
-        ("execute_pick", 0),
+        ("servo_pick", 0),
         ("go_home", 1),
-        ("pre_grasp", 1),
         ("open_gripper", 1),
-        ("advance", 1),  # _log_reached_tcp 는 @step 아님 — 트리 미표시
+        # tick 루프의 관측/보정은 ctx.call/servo 순수 함수 — step 아님 (트리 미표시)
         ("close_gripper", 1),
         ("verify_grasp", 1),  # 파지 판정 ① close 직후
-        ("withdraw", 1),
+        ("open_gripper", 1),  # close EMPTY 재시도 경로 (조건부)
         ("verify_grasp", 1),  # 파지 판정 ② withdraw 후 (놓침 포착)
         ("go_home", 1),
         ("execute_place", 0),
@@ -215,5 +210,9 @@ def test_pick_and_place_scenario_tree():
     assert by_row[("plan_place", 0)].conditional
     assert by_row[("execute_place", 0)].conditional
     assert not by_row[("plan_pick", 0)].conditional
-    # 동적 구멍/소스 불가 없음 — 이름 직접 호출 스타일이라 트리가 깨끗해야
+    # servo attempt/tick 루프 안 step 들 = 반복 표시 (실행 횟수는 안 셈)
+    assert by_row[("close_gripper", 1)].repeated
+    assert by_row[("open_gripper", 1)].repeated  # 재시도 open (조건+반복)
+    # 동적 구멍/소스 불가 없음 — trace emit 이 module-level 함수라 구멍이 아님
+    # (지역 closure 로 두면 <동적> 노이즈 3개가 트리를 오염 — 회귀 잠금)
     assert all(not e.dynamic and not e.unavailable for e in entries)

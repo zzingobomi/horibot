@@ -177,25 +177,25 @@ class PickAndPlaceModule:
         # 0) home 경유 자세 — 없으면 모션 0 시점에 명시적 실패 (티칭 안내).
         home = await steps.home_waypoint(ctx, so101)
 
-        # 1) 계획 — 집기·놓기 도달성을 모두 먼저 검증 (물리 파지 0). 놓을 곳이
-        # 도달 불가면 아무것도 집기 전에 실패한다 (물체 쥔 채 멈추는 corrupt 방지).
-        held, grasp, grasp_pre = await steps.plan_pick(
-            ctx, so101, pick_object, home
-        )
-        markers.append(TaskMarker(label="grasp", position=grasp.grasp))
+        # 1) 계획 — 집기(servo 접근 가족)·놓기 도달성을 모두 먼저 검증 (물리
+        # 파지 0). 놓을 곳이 도달 불가면 아무것도 집기 전에 실패한다 (물체 쥔 채
+        # 멈추는 corrupt 방지). 놓기의 held 기하 = coarse 관측 (steps 주석).
+        plan = await steps.plan_pick(ctx, so101, pick_object, home)
+        markers.append(TaskMarker(label="grasp", position=plan.grasp_point0))
 
         drop, drop_pre = None, None
         if place_object:
             drop, drop_pre = await steps.plan_place(
-                ctx, so101, place_object, held=held, grasp=grasp, home=home
+                ctx, so101, place_object,
+                held=plan.coarse, lateral=plan.lateral0, home=home,
             )
             markers.append(TaskMarker(label="place", position=drop.place))
 
         # 계획 확정 시점에 마커 표시 (파지·적치 지점을 실행 전 미리 보여줌).
         self._publish_markers(so101, markers)
 
-        # 2) 실행 — 계획이 모두 도달 가능일 때만 물리 동작. 긴 이동은 home 경유
-        # (grasping.md §1 — pick↔place 도달성 분리).
-        await steps.execute_pick(ctx, so101, grasp, grasp_pre, home)
+        # 2) 실행 — 집기 = closed-loop servo (물체 근처에서 관측→보정 루프,
+        # steps/servo.py 정본), 놓기 = open-loop (상자 적치는 오차 관대).
+        await steps.servo_pick(ctx, so101, plan, pick_object, home)
         if drop is not None and drop_pre is not None:
             await steps.execute_place(ctx, so101, drop, drop_pre, home)

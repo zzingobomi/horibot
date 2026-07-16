@@ -49,6 +49,24 @@ class NoReachableGrasp(TaskError):
         )
 
 
+class ServoFailed(TaskError):
+    """closed-loop 파지 루프의 정의된 실패 — 관측 연속 소실 / 수렴 실패(발진·오차
+    정체) / tick 상한 / servo 이동 IK 거부 (docs/closed_loop_grasp_handoff.md §2
+    표의 abort 행들).
+
+    도메인 판정 실패: decide_tick 이 "여기서 계속하면 안전하지 않다/무한 대기"
+    라고 판정해 raise. 사유 문자열이 곧 UI 표시 (침묵 금지) — 어느 tick/rung
+    에서 왜 끊었는지 + 다음 행동을 담는다. tick 단위 재구성은 debug/servo_pick/
+    trace.jsonl.
+    """
+
+    def __init__(self, reason: str, *, ticks: int | None = None) -> None:
+        self.ticks = ticks
+        prefix = f"servo 파지 중단 (tick {ticks}) — " if ticks is not None \
+            else "servo 파지 중단 — "
+        super().__init__(prefix + reason)
+
+
 class GraspFailed(TaskError):
     """그리퍼가 물체를 물지 못함 (또는 물었다 이송 중 놓침) — 실제 도달 그리퍼
     위치가 fully-closed 근처(= 사이에 아무것도 없음)로 판정된 실패.

@@ -1,17 +1,37 @@
+"""pick_and_place @step 함수들 — closed-loop(servo) 파지 판 (2026-07-16 재설계).
+
+**집기 = closed-loop look-then-move** (docs/closed_loop_grasp_handoff.md 구현,
+순수 계산·실측 근거·상태 전이 = servo.py, trace = servo_trace.py):
+
+    찾기(search 스윕, coarse) → 계획(자세 가족 + standoff 사다리 resolve, 모션 0)
+    → servo 루프 (rung 마다: 정지 관측 → tick gate → 상대 오차 보정 MoveL → 수렴
+    시 하강) → commit (마지막 관측으로 blind 진입) → close → 파지 판정 (재시도 1)
+    → 후퇴 → 판정 → home
+
+옛 open-loop 파지 (멀티뷰 융합 → 표면 antipodal → 일괄 실행) 는 **대체됨** —
+팔 절대정확도(자세의존 ~1-2cm) ≈ 큐브(2.5cm) 라 구조적으로 실패했다 (2026-07-15
+post-mortem, 성공 0). antipodal/plan_grasp 코드는 grasp_verify 진단 스크립트가
+소비하므로 geometry/antipodal.py 에 남아 있다 (production 소비자는 이 파일에서
+제거). **놓기는 open-loop 유지** — 적치 대상(상자)이 크고 넓어 1-2cm 오차가
+치명적이지 않다 (실측 도달 오차 12.8mm < 상자 여유).
+
+handoff §2 실패 표 대비 구현 현황 (정직):
+- 구현: 처음부터 못 봄 / 단발 드롭 vs 연속 소실 / mask 오검출(도약 gate) / depth
+  붕괴(점군 gate) / 수렴 실패·발진(보정 상한) / 전체 timeout(tick 상한) / servo
+  이동 IK 거부(MoveJ 폴백 후 실패) / close 후 EMPTY(재시도 상한) / 이송 중 놓침.
+- 미구현 (알고 넘어감): FOV 부분 이탈(잘림) 전용 감지 — 응답에 이미지 크기가
+  없어 bbox 경계 판정 불가. 점군 부족/도약 gate 가 간접 커버, 실물 데이터에서
+  전용 gate 필요성이 보이면 계약 확장.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import math
 import time
+from dataclasses import dataclass
 
-import numpy as np
-
-from modules.calibration.contract import (
-    Calibration,
-    CalibrationBundle,
-    SnapshotBundleRequest,
-)
 from modules.detector.contract import (
     DetectOrientedResponse,
     DetectRequest,
@@ -43,9 +63,9 @@ from modules.motor.contract import (
 )
 from modules.tasks.core.context import TaskContext
 from modules.tasks.core.errors import (
-    DetectionNotFound,
     GraspFailed,
     NoReachableGrasp,
+    ServoFailed,
     TaskError,
 )
 from modules.tasks.core.step import step
@@ -60,8 +80,9 @@ from modules.waypoint.contract import (
     WaypointRecord,
 )
 
-from . import antipodal, geometry
-from .geometry import GraspCandidate, PlaceCandidate, Quat, Vec3
+from . import geometry, servo
+from .geometry import PlaceCandidate, Quat, Vec3
+from .servo_trace import ServoTrace
 
 logger = logging.getLogger(__name__)
 
@@ -69,54 +90,134 @@ _GRIPPER_SETTLE_S = 1.2
 _TOP_K = 5
 
 # 검색 자세 그룹 — 사용자가 티칭한 "search" waypoint 그룹 (robot 별). 이 자세들을
-# 모두 돌며 관측한다 (§ multi-view). 값은 로봇마다 다른 관측 시점 = 사람이 배치.
+# 모두 돌며 관측한다 (coarse 찾기 전용 — 파지 정밀도는 servo 루프 몫).
 _SEARCH_GROUP = "search"
 _SEARCH_SETTLE_S = 0.3  # MoveJ 후 카메라 흔들림 정착 대기 (검출 품질)
 
-# 경유 자세 waypoint — 긴 이동(관측→접근, 후퇴→적치)과 관측 뷰 간 이동이 관절
-# 공간으로 여기를 거친다 (pick↔place 도달성 분리 + 뷰 간 naive MoveJ 금지,
-# grasping.md §1). 사용자가 티칭.
-# motors.yaml home(2048 중심값)은 joint3 URDF limit 밖이라 못 씀 (2026-07-14 확인).
+# 경유 자세 waypoint — 긴 이동(관측→접근)이 관절 공간으로 여기를 거친다. 티칭 필수.
 _HOME_WAYPOINT = "home"
 
 # 바닥 충돌 게이트 평면을 검출 base_z 보다 살짝 내리는 버퍼 — 게이트는 cm-급
-# 육안 충돌(수평 접근 시 그리퍼 몸통 등)용이고, mm-급 여유는 geometry 의
-# clearance 상수 책임. 검출/캘 σ(~8mm)로 정상 파지가 영구 기각되는 것 방지.
+# 육안 충돌용, mm-급 여유는 geometry clearance 상수 책임.
 _FLOOR_GATE_MARGIN_M = 0.005
 
-# ─── 타깃 중심 adaptive 멀티뷰 관측 (§10.4-1) ───
-# 같은 물체 판정 반경 — 다른 뷰의 검출을 coarse 타깃과 잇는다 (base frame 정렬 전제).
+# 같은 물체 판정 반경 — 융합 결과에서 타깃 군집을 찾을 때 (base frame 정렬 전제).
 _VIEW_MATCH_RADIUS_M = 0.05
-# 도달 성공 뷰 상한 — sim 검증(§10.3-G)은 2~4뷰면 파지가 선다. 이만큼 봐도 안
-# 서면 관측으로 풀릴 문제가 아니다 → 사유 있는 실패.
-_VIEW_MAX_REACHED = 6
-# 이웃 장애물 수집 반경 — 이 안의 다른 검출 군집 점군을 그리퍼 충돌 게이트에
-# 장애물로 넣는다 (§10.4-3 "이웃". 이보다 먼 물체는 파지 접근과 무관).
+# 이웃 장애물 수집 반경 — 이 안의 다른 검출 군집 점군을 계획 resolve 의 충돌
+# 게이트에 장애물로 넣는다 (이보다 먼 물체는 접근과 무관).
 _NEIGHBOR_RADIUS_M = 0.15
 
+# servo 파라미터 SSOT (servo.ServoConfig docstring — 실물 첫 런 데이터로 튜닝).
+_SERVO_CFG = servo.ServoConfig()
 
-# ─── scenario: 계획(plan) → 실행(execute) 분리 ─────────────────────
+
+# ─── scenario 골격: 계획(모션 0 판정) → servo 집기 → 놓기 ────────────
 #
-# 순서 규약 (2026-07-13): 물리 파지 **전에** 집기·놓기 도달성을 모두 검증한다.
-# 옛 구조(집기 완주 후 놓기 검출/IK)는 놓을 곳이 도달 불가일 때 이미 물체를 쥔
-# 채 실패해 로봇이 물체를 든 채 멈추는 corrupt 상태를 만들었다 (2026-07-13
-# resolve_place IK 불가 실패). 계획 단계는 모션 0 (검출 + 배치 IK 판정뿐)이 아닌
-# 관측 이동만 있고, 어느 한쪽이라도 도달 불가면 아무것도 집기 전에 실패한다.
+# 순서 규약 (2026-07-13): 물리 파지 **전에** 집기·놓기 도달성을 모두 검증한다 —
+# 놓을 곳이 도달 불가면 아무것도 집기 전에 실패 (쥔 채 멈춤 corrupt 방지).
+# 놓기 계획의 held 기하는 coarse 관측 (단일 뷰 height 과소 가능 — release 가
+# 수 mm 낮아질 수 있으나 상자 삽입은 관대. 정밀화는 실물 데이터 후 판단).
+
+
+@dataclass(frozen=True, slots=True)
+class ServoPlan:
+    """plan_pick 산출 — servo 루프의 시작 조건 (전부 coarse 관측 기준 초기값).
+
+    rung0_joints: resolve 가 반환한 첫 standoff 의 IK 해 (실행부 재계산 없음).
+    grasp_point0/grasp_tcp0: coarse 기준 초기 파지 지점/TCP — 루프가 매 tick
+    관측으로 갱신하므로 이 값은 진입용 + 마커 표시용.
+    """
+
+    coarse: OrientedDetection
+    family: servo.GraspFamily
+    rung0_joints: list[float]
+    grasp_point0: Vec3
+    grasp_tcp0: Vec3
+    lateral0: float
+
+
+def servo_ladder_groups(
+    coarse: OrientedDetection, cfg: servo.ServoConfig
+) -> tuple[list[list[TcpPose]], list[tuple[servo.GraspFamily, Vec3, Vec3, float]]]:
+    """coarse 관측 → resolve 후보 그룹 ([standoff 사다리…, 파지] × 가족) + 메타.
+
+    plan_pick 과 sim 게이트 테스트(test_motion — 실 URDF IK 로 이 그룹이 진짜
+    풀리는지)가 공유하는 그룹 구성 SSOT."""
+    families = servo.grasp_families(coarse)
+    groups: list[list[TcpPose]] = []
+    metas: list[tuple[servo.GraspFamily, Vec3, Vec3, float]] = []
+    g_point0 = servo.grasp_point(coarse, coarse, cfg)
+    for fam in families:
+        width = servo.width_along(
+            coarse.points, fam.jaw_axis, fallback_m=coarse.footprint[1]
+        )
+        lateral = servo.lateral_offset(width)
+        g_tcp0 = servo.grasp_tcp(g_point0, fam, lateral)
+        poses = [
+            TcpPose(
+                position=servo.standoff(g_tcp0, fam, s), quaternion=fam.quat
+            )
+            for s in cfg.standoffs
+        ]
+        poses.append(TcpPose(position=g_tcp0, quaternion=fam.quat))
+        groups.append(poses)
+        metas.append((fam, g_point0, g_tcp0, lateral))
+    return groups, metas
 
 
 @step(title="집기 계획")
 async def plan_pick(
     ctx: TaskContext, robot_id: str, prompt: str, home: WaypointRecord
-) -> tuple[OrientedDetection, GraspCandidate, list[float]]:
-    """검출 → adaptive 멀티뷰 관측·파지 성립 검사 → (대상, 후보, pre 관절해).
+) -> ServoPlan:
+    """찾기(coarse) + servo 접근 계획 (모션 0) → ServoPlan.
 
-    object-centric (§5.1-2): 대상 기하는 융합 점군에서, 파지는 관측 표면의
-    antipodal 쌍에서 (§10.4-2). 관측 충분성의 심판 = "실행 가능한 파지가 섰나"
-    (height 하드게이트 폐기 — §10.4-6). pre 관절해 = resolve 가 반환한 IK 해
-    (실행부 재계산 없음, §5.5). home = 뷰 간/접근 이동의 경유 자세 (§10.4-4)."""
+    coarse = search 스윕 누적 최고 score. 자세 가족(조 축 2 × flip 2 × tilt 13)
+    마다 [standoff 사다리…, 파지] 를 한 그룹으로 resolve — 게이트: 끝점 IK +
+    바닥 + 그리퍼(벌림)↔물체·이웃 점군 충돌 + home→rung0 관절 경로 + 사다리
+    구간 직선(linear). 전멸 = 명시 실패 (맹목 파지 금지).
+    """
     cands = await detect(ctx, robot_id, prompt)
     coarse = geometry.select_target_by_score(cands, prompt=prompt)
-    return await observe_and_plan_grasp(ctx, robot_id, cands, coarse, prompt, home)
+    neighbors = _neighbor_points(cands, coarse)
+    floor_z = coarse.base_z - _FLOOR_GATE_MARGIN_M
+    cfg = _SERVO_CFG
+    groups, metas = servo_ladder_groups(coarse, cfg)
+
+    t0 = time.monotonic()
+    res = await ctx.call(
+        Motion.Service.RESOLVE_REACHABLE,
+        ResolveReachableRequest(
+            groups=groups,
+            floor_z=floor_z,
+            linear=True,
+            obstacle_points=[*(coarse.points or []), *neighbors],
+            gripper_open=True,
+            path_from=list(home.joint_values),
+        ),
+        ResolveReachableResponse,
+        robot_id=robot_id,
+    )
+    resolve_s = time.monotonic() - t0
+    if res.index < 0:
+        raise NoReachableGrasp(
+            f"servo 접근 가족 {len(groups)}개 전멸 (resolve {resolve_s:.1f}s) — "
+            f"{res.message}"
+        )
+    fam, g_point0, g_tcp0, lateral = metas[res.index]
+    logger.info(
+        "plan_pick(%s): 가족 %d/%d 채택 — %s, grasp0=%s lateral=%.1fmm "
+        "(resolve %.1fs)",
+        prompt, res.index, len(groups), fam.label, _fmt(g_tcp0),
+        lateral * 1000.0, resolve_s,
+    )
+    return ServoPlan(
+        coarse=coarse,
+        family=fam,
+        rung0_joints=res.solutions[0],
+        grasp_point0=g_point0,
+        grasp_tcp0=g_tcp0,
+        lateral0=lateral,
+    )
 
 
 @step(title="놓기 계획")
@@ -126,33 +227,27 @@ async def plan_place(
     prompt: str,
     *,
     held: OrientedDetection,
-    grasp: GraspCandidate,
+    lateral: float,
     home: WaypointRecord,
 ) -> tuple[PlaceCandidate, list[float]]:
     """검출 + 적치 후보 게이트 판정 (모션 0) → (적치 후보, pre 관절해).
 
-    적치엔 멀티뷰 불요 — place_z 는 spot **윗면**(단일 뷰로 실측)과 held(융합
-    완료)의 height 에서 나온다. 물체 dims 는 검출(held)에서 오므로 물리 파지
-    전에도 계획 가능.
-
-    **도달성 우선 선택 (2026-07-14)**: 점수 1등에 무조건 커밋하지 않는다. 검출된
-    적치 spot 을 점수순으로 돌며 **팔이 실제로 닿는 첫 spot** 을 채택 (파지의
-    도달성 판정과 대칭). 같은 물체가 여럿(예: 선반 위 통 vs 테이블 박스)일 때
-    점수 최고가 workspace 밖이어도 닿는 대안으로 자동 폴백 — "집었는데 못 놓는"
-    상황(닿는 자리가 있는데 안 닿는 자리에 커밋)을 구조적으로 제거.
-
-    spot 마다 yaw 두 가족 순차 (geometry 상수 주석 — SO-101 은 자세 그물이 성기면
-    위치가 닿아도 자세 전멸): ① 정렬(상자 방위 0/180/90/270°) ② 전멸 시 자유
-    (30° 격자 나머지) — 삐딱하게라도 놓는 게 task 실패보다 낫다."""
+    **도달성 우선 선택 (2026-07-14)**: 점수 1등에 무조건 커밋하지 않는다 — spot
+    을 점수순으로 돌며 팔이 실제로 닿는 첫 spot 채택. spot 마다 yaw 두 가족 순차
+    (① 상자 방위 정렬 ② 전멸 시 자유 — 삐딱하게라도 놓는 게 task 실패보다 낫다).
+    held/lateral 은 coarse 관측·계획 lateral (servo 확정값과 수 mm 차 가능 —
+    상자 적치는 관대)."""
     spots = await detect(ctx, robot_id, prompt)
     if not spots:
-        raise DetectionNotFound(prompt, candidates=0, reason="검출 0건")
+        raise TaskError(
+            f"'{prompt}' 적치 대상 검출 0건 — 물체 배치/조명 확인 후 다시 "
+            "실행하세요"
+        )
     ranked = sorted(spots, key=lambda s: s.score, reverse=True)
     for spot in ranked:
         for family, pplan in (
-            ("정렬", geometry.plan_place(spot, held=held, lateral=grasp.lateral)),
-            ("자유", geometry.plan_place_free(
-                spot, held=held, lateral=grasp.lateral)),
+            ("정렬", geometry.plan_place(spot, held=held, lateral=lateral)),
+            ("자유", geometry.plan_place_free(spot, held=held, lateral=lateral)),
         ):
             got = await resolve_place(
                 ctx, robot_id, pplan,
@@ -181,58 +276,322 @@ async def plan_place(
     )
 
 
-@step(title="집기 실행")
-async def execute_pick(
+# ─── servo 집기 (closed-loop 본체) ──────────────────────────────────
+
+
+@step(title="servo 집기")
+async def servo_pick(
     ctx: TaskContext,
     robot_id: str,
-    c: GraspCandidate,
-    pre_joints: list[float],
+    plan: ServoPlan,
+    prompt: str,
     home: WaypointRecord,
 ) -> None:
-    """계획된 파지 후보로 실제 파지 — home 경유 → 접근 → 진입 → 파지 → 후퇴 → home.
+    """closed-loop 파지 실행 — home 경유 → rung0 진입 → tick 루프 → commit →
+    close → 판정(재시도) → 후퇴 → 판정 → home.
 
-    진입/후퇴는 접근축(툴 x) 기준 MoveL (월드 +z 아님 — §5.4 grasp-frame 동작),
-    긴 이동(관측 자세↔접근, 든 채 적치로)은 관절공간 home 경유 — resolve 의
-    ④ 경로 게이트(path_from=home)가 이 home→pre MoveJ 를 계획 시점에 검증했다."""
-    await go_home(ctx, robot_id, home)
-    await pre_grasp(ctx, robot_id, pre_joints)
-    await open_gripper(ctx, robot_id)
-    await advance(ctx, robot_id, c)
-    # arm 이 실제로 목표 파지 자세에 도달했나 (계획 vs 도달 오차 로깅 — 실패 시
-    # "arm 미도달 / 기하 오류 / 그리퍼 미물림" 레이어 분리).
-    await _log_reached_tcp(ctx, robot_id, expected=c.grasp, phase="grasp 도달")
-    await close_gripper(ctx, robot_id)
-    # 파지 판정 ①: close 직후 물었나. 빈 파지면 raise → withdraw/place 진행 안 함.
-    await verify_grasp(ctx, robot_id, phase="close 직후", grasp_label=c.label)
-    await withdraw(ctx, robot_id, c)
-    # 파지 판정 ②: 들어올린 뒤에도 물고 있나 (이송 중 미끄러짐/낙하 포착 — hole #4).
-    await verify_grasp(ctx, robot_id, phase="withdraw 후", grasp_label=c.label)
-    await go_home(ctx, robot_id, home)
+    루프 계약 (servo.py docstring = SSOT):
+    - 관측은 **정지 상태** 에서만 (이동 완료 → settle → DETECT_ORIENTED).
+    - 명령은 관측한 그 tick 의 TCP 기준 상대 목표 → common-mode FK 상쇄.
+    - 모든 실패에 정의된 동작 (decide_tick) — 크래시/무한대기 없음, 사유는
+      ServoFailed 메시지 + trace 에 남는다.
+    - trace: 매 tick JSONL + 종료 summary (debug/servo_pick/<ts>/ —
+      실패 재구성이 하드웨어 없이 가능해야 한다는 요구의 구현).
+    """
+    cfg = _SERVO_CFG
+    fam = plan.family
+    trace = ServoTrace(prompt, robot_id)
+    state = servo.ServoState()
+    accepted: list[OrientedDetection] = []
+    last: OrientedDetection | None = None
+    tcp: TcpState | None = None
+    expected_xy: Vec3 = plan.coarse.position
+    g_tcp: Vec3 = plan.grasp_tcp0
+    lateral = plan.lateral0
+    close_attempts = 0
+    summary: dict = {"result": "unknown", "family": fam.label}
+
+    try:
+        await go_home(ctx, robot_id, home)
+        await _move_j_joints(ctx, robot_id, plan.rung0_joints)
+        await open_gripper(ctx, robot_id)
+
+        while True:  # attempt 루프 (close 후 EMPTY 재시도)
+            committed = False
+            while not committed:  # tick 루프
+                await asyncio.sleep(cfg.settle_s)
+                det = await ctx.call(
+                    Detector.Service.DETECT_ORIENTED,
+                    DetectRequest(robot_id=robot_id, prompt=prompt, top_k=_TOP_K),
+                    DetectOrientedResponse,
+                )
+                tcp = await ctx.call(
+                    Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
+                    robot_id=robot_id,
+                )
+                gate = servo.gate_observation(
+                    det.candidates, expected_xy, last, cfg
+                )
+                lateral_err: float | None = None
+                axial_err = 0.0
+                fused = None
+                if gate.obs is not None:
+                    last = gate.obs
+                    accepted.append(gate.obs)
+                    expected_xy = gate.obs.position
+                    fused = await _fuse_recent(
+                        ctx, accepted[-cfg.fuse_last_k:], gate.obs
+                    )
+                    width = servo.width_along(
+                        fused.points or gate.obs.points, fam.jaw_axis,
+                        fallback_m=plan.coarse.footprint[1],
+                    )
+                    lateral = servo.lateral_offset(width)
+                    g_point = servo.grasp_point(gate.obs, fused, cfg)
+                    g_tcp = servo.grasp_tcp(g_point, fam, lateral)
+                    target_so = servo.standoff(
+                        g_tcp, fam, cfg.standoffs[state.rung]
+                    )
+                    delta = (
+                        target_so[0] - tcp.position[0],
+                        target_so[1] - tcp.position[1],
+                        target_so[2] - tcp.position[2],
+                    )
+                    lateral_err, axial_err = servo.split_error(delta, fam)
+
+                decision = servo.decide_tick(state, gate, lateral_err, cfg)
+                logger.info(
+                    "servo tick %d rung=%d(%.0fmm) 관측=%s lat=%s ax=%.1fmm → "
+                    "%s (%s)",
+                    state.ticks, state.rung,
+                    cfg.standoffs[state.rung] * 1000.0,
+                    "채택" if gate.obs is not None else f"기각[{gate.reason}]",
+                    f"{lateral_err * 1000:.1f}mm" if lateral_err is not None
+                    else "-",
+                    axial_err * 1000.0, decision.action, decision.reason,
+                )
+                await _trace_emit(trace, {
+                    "phase": "tick",
+                    "tick": state.ticks,
+                    "rung": state.rung,
+                    "standoff_m": cfg.standoffs[state.rung],
+                    "gate_reason": gate.reason,
+                    "observation": _obs_record(gate.obs),
+                    "fused": _obs_record(fused),
+                    "candidates_n": len(det.candidates),
+                    "lateral_mm": (
+                        round(lateral_err * 1000, 2)
+                        if lateral_err is not None else None
+                    ),
+                    "axial_mm": round(axial_err * 1000, 2),
+                    "grasp_tcp": [round(v, 4) for v in g_tcp],
+                    "lateral_offset_mm": round(lateral * 1000, 2),
+                    "tcp_position": [round(v, 4) for v in tcp.position],
+                    "tcp_joints": [round(v, 4) for v in tcp.joints],
+                    "action": decision.action,
+                    "reason": decision.reason,
+                })
+
+                if decision.action == "hold":
+                    continue
+                if decision.action == "abort":
+                    raise ServoFailed(decision.reason, ticks=state.ticks)
+                if decision.action in ("correct", "descend"):
+                    target = servo.standoff(
+                        g_tcp, fam, cfg.standoffs[state.rung]
+                    )
+                    await _servo_move(ctx, robot_id, target, fam.quat, trace)
+                    continue
+                committed = True  # commit
+
+            # ── commit: 마지막 관측으로 blind 최종 접근 (handoff §4) ──
+            blind_m = (
+                math.dist(g_tcp, tuple(tcp.position))
+                if tcp is not None else cfg.standoffs[state.rung]
+            )
+            logger.info(
+                "servo commit: rung=%d blind=%.1fmm grasp_tcp=%s (%s)",
+                state.rung, blind_m * 1000.0, _fmt(g_tcp), fam.label,
+            )
+            await _trace_emit(trace, {
+                "phase": "commit",
+                "tick": state.ticks,
+                "rung": state.rung,
+                "blind_mm": round(blind_m * 1000, 1),
+                "grasp_tcp": [round(v, 4) for v in g_tcp],
+                "action": "commit",
+                "reason": f"blind {blind_m * 1000:.1f}mm 최종 접근",
+            })
+            await _move_l(ctx, robot_id, g_tcp, fam.quat)
+            await _log_reached_tcp(
+                ctx, robot_id, expected=g_tcp, phase="servo grasp 도달"
+            )
+            await close_gripper(ctx, robot_id)
+            try:
+                await verify_grasp(
+                    ctx, robot_id, phase="close 직후", grasp_label=fam.label
+                )
+            except GraspFailed as e:
+                close_attempts += 1
+                await _trace_emit(trace, {
+                    "phase": "close",
+                    "tick": state.ticks,
+                    "action": "empty",
+                    "reason": str(e),
+                    "attempt": close_attempts,
+                })
+                if close_attempts >= cfg.close_attempts:
+                    raise
+                # 재시도: 물체가 밀렸을 수 있다 — 놓고 물러나 관측부터 다시
+                # (rung 1 = 8cm standoff, 직전 목표 기준. 관측 이력 리셋 —
+                # 도약 gate 가 밀린 물체를 오검출로 오판하지 않게).
+                logger.warning(
+                    "servo: close 후 EMPTY — 재시도 %d/%d (rung 1 후퇴, 재관측)",
+                    close_attempts, cfg.close_attempts,
+                )
+                await open_gripper(ctx, robot_id)
+                await _move_l(
+                    ctx, robot_id,
+                    servo.standoff(g_tcp, fam, cfg.standoffs[1]), fam.quat,
+                )
+                state = servo.ServoState(rung=1)
+                last = None
+                accepted = []
+                # expected_xy 는 직전 파지 지점 유지 (최선의 추정)
+                continue
+            break  # 파지 판정 통과
+
+        # ── 후퇴 + 재판정 (이송 중 놓침 포착) + home ──
+        await _move_l(
+            ctx, robot_id,
+            servo.standoff(g_tcp, fam, cfg.withdraw_standoff_m), fam.quat,
+        )
+        await verify_grasp(
+            ctx, robot_id, phase="withdraw 후", grasp_label=fam.label
+        )
+        await go_home(ctx, robot_id, home)
+        summary.update({
+            "result": "success",
+            "close_attempts": close_attempts + 1,
+            "final_grasp_tcp": [round(v, 4) for v in g_tcp],
+            "error_history_mm": [
+                round(e, 1) for e in state.error_history_mm
+            ],
+        })
+    except BaseException as e:
+        summary.update({
+            "result": "cancelled" if isinstance(e, asyncio.CancelledError)
+            else "failed",
+            "error": f"{type(e).__name__}: {e}",
+            "close_attempts": close_attempts,
+            "error_history_mm": [
+                round(er, 1) for er in state.error_history_mm
+            ],
+        })
+        raise
+    finally:
+        try:
+            await asyncio.to_thread(trace.finish, summary)
+            logger.info("servo trace: %s (%s)", trace.dir, summary["result"])
+        except Exception:
+            logger.exception("servo trace summary 기록 실패")
 
 
-@step(title="놓기 실행")
-async def execute_place(
+async def _trace_emit(trace: ServoTrace, record: dict) -> None:
+    """trace tick 기록 — blocking 파일 I/O 는 to_thread, 실패는 로깅만 (관측이
+    실행을 죽이면 안 됨)."""
+    try:
+        await asyncio.to_thread(trace.emit, record)
+    except Exception:
+        logger.exception("servo trace 기록 실패 (실행 영향 없음)")
+
+
+def _obs_record(obs: OrientedDetection | None) -> dict | None:
+    """trace 용 관측 요약 — 원시 depth/mask 는 detector 덤프에 (timestamp 교차참조)."""
+    if obs is None:
+        return None
+    return {
+        "position": [round(v, 4) for v in obs.position],
+        "base_z": round(obs.base_z, 4),
+        "height_mm": round(obs.height * 1000, 1),
+        "score": round(obs.score, 3),
+        "grasp_yaw_deg": round(math.degrees(obs.grasp_yaw), 1),
+        "footprint_mm": [round(v * 1000, 1) for v in obs.footprint],
+        "points_n": len(obs.points or []),
+    }
+
+
+async def _fuse_recent(
+    ctx: TaskContext, recent: list[OrientedDetection], latest: OrientedDetection
+) -> OrientedDetection:
+    """최근 채택 관측 융합 → 타깃 군집 (z/height/폭 안정화). 융합 불가/군집 없음
+    이면 latest 그대로 (침묵 아님 — 로그)."""
+    if len(recent) < 2:
+        return latest
+    res = await ctx.call(
+        Detector.Service.FUSE_ORIENTED,
+        FuseOrientedRequest(candidates=list(recent)),
+        FuseOrientedResponse,
+    )
+    near = _nearest_within(res.candidates, latest.position, _VIEW_MATCH_RADIUS_M)
+    if near is None:
+        logger.info("servo: 융합 군집 없음 (%d 관측) — 최신 관측 단독 사용",
+                    len(recent))
+        return latest
+    return near
+
+
+async def _servo_move(
     ctx: TaskContext,
     robot_id: str,
-    c: PlaceCandidate,
-    pre_joints: list[float],
-    home: WaypointRecord,
+    position: Vec3,
+    quat: Quat,
+    trace: ServoTrace,
 ) -> None:
-    """계획된 적치 후보로 실제 적치 — 접근 → 삽입 → 내려놓기 → 후퇴 → home.
+    """servo 보정/하강 이동 — MoveL(직선, 자세 고정) 우선, 거부 시 MoveJ 폴백
+    1회 (관절 보간 — 목표 동일. 짧은 구간이라 스윙 미미), 둘 다 실패 = ServoFailed.
 
-    home 에서 시작 (execute_pick 이 home 으로 끝남). 종료도 home — 다음 run 의
-    시작 자세가 일정하고 카메라 시야에서 팔이 빠진다."""
-    await pre_place(ctx, robot_id, pre_joints)
-    await insert(ctx, robot_id, c)
-    # 파지 판정 ③: 내려놓기 직전에도 물고 있나 (이송 중 놓쳤으면 여기서 실패 —
-    # 빈 손으로 release 하는 허위 성공 방지).
-    await verify_grasp(ctx, robot_id, phase="적치 직전", grasp_label=c.label)
-    await release(ctx, robot_id)
-    await retreat(ctx, robot_id, c)
-    await go_home(ctx, robot_id, home)
+    실패를 침묵으로 넘기면 루프가 "명령한 증분은 항상 실행된다" 를 가정하게 된다
+    (handoff §2 표) — 여기서 명시적으로 끊는다.
+    """
+    try:
+        await _move_l(ctx, robot_id, position, quat)
+        return
+    except asyncio.CancelledError:
+        raise
+    except Exception as e_l:
+        logger.warning(
+            "servo 이동 MoveL 거부 (%s) — MoveJ 폴백: %s", _fmt(position), e_l
+        )
+        await _trace_emit(trace, {
+            "phase": "move",
+            "action": "movel_rejected",
+            "reason": str(e_l),
+            "target": [round(v, 4) for v in position],
+        })
+        try:
+            await ctx.call(
+                Motion.Service.MOVE_J,
+                MoveJRequest(
+                    target=PoseTarget(
+                        kind="pose", position=position, quaternion=quat
+                    )
+                ),
+                MoveJResponse,
+                robot_id=robot_id,
+            )
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e_j:
+            raise ServoFailed(
+                f"servo 이동 실패 — MoveL({e_l}) / MoveJ 폴백({e_j}). "
+                "목표가 workspace 경계일 수 있습니다 — 물체를 로봇 쪽으로 "
+                "옮긴 뒤 다시 실행하세요"
+            ) from e_j
 
 
-# ─── planning ──────────────────────────────────────
+# ─── 찾기 (search 스윕 — coarse 전용) ─────────────────────────────────
 
 
 @step(title="검출")
@@ -241,10 +600,10 @@ async def detect(
 ) -> list[OrientedDetection]:
     """search 그룹 자세를 **전부** 돌며 검출 → 후보 **누적** (첫 자세에서 안 멈춤).
 
-    원리 (옛 SearchWaypointGroup 포팅): 단일 시점 검출은 가림/시야/각도로 놓치거나
-    오검출한다. 사람이 티칭한 여러 관측 자세를 다 돌아 후보를 모으면(모두 base frame
-    이라 비교 가능) 관측이 많아 강건하다. **선택은 안 함** — 누적만. "자세 다 돌고
-    진짜 제일 점수 높은 것" 판정은 select_target_by_score 가 누적 전체에서.
+    단일 시점 검출은 가림/시야/각도로 놓치거나 오검출한다 — 여러 관측 자세를 다
+    돌아 모으면 강건. **선택은 안 함** — select_target_by_score 가 누적 전체에서.
+    스윕 관측은 멀리서라 FK 오차가 크다 (실측: 카메라 31-33cm 에서 ~40mm) —
+    coarse 위치 전용, 파지 정밀도는 servo 루프가 close 관측으로 잡는다.
     """
     t0 = time.monotonic()
     members = await _search_waypoints(ctx, robot_id)
@@ -264,8 +623,6 @@ async def detect(
         prompt, _SEARCH_GROUP, len(members), len(candidates),
         time.monotonic() - t0,
     )
-    # 진단: 후보별 object-centric 기하 (물체 자기 점군 기준 — 단일 뷰 height 는
-    # 옆면 depth 부재로 과소가 정상 — 파지 성립 검사가 멀티뷰 융합 후 심판).
     for i, c in enumerate(candidates):
         logger.info(
             "  후보%d: score=%.2f height(단일뷰)=%.1fcm base_z(물체바닥)=%.3fm "
@@ -317,193 +674,6 @@ async def _move_j_joints(
     )
 
 
-@step(title="타깃 관측·파지 성립")
-async def observe_and_plan_grasp(
-    ctx: TaskContext,
-    robot_id: str,
-    cands: list[OrientedDetection],
-    coarse: OrientedDetection,
-    prompt: str,
-    home: WaypointRecord,
-) -> tuple[OrientedDetection, GraspCandidate, list[float]]:
-    """close 타깃 관측만으로 파지 계획 (2026-07-14 재구성 — 찾기/집기 분리).
-
-    **search 스윕은 '찾기' 전용** — coarse 위치만 주고 파지 계획엔 안 쓴다. 스윕
-    관측은 멀리서 광역으로 본 것이라 자세별 FK 오차(백래시 ~1-2cm)가 크고, 그걸로
-    파지점을 정하면 오차가 그대로 파지에 실려 빗나간다 (실물 2026-07-14: 옛 "검색
-    스윕 관측만으로 파지 성립" 조기 종료가 close 뷰를 건너뛰어 큐브 끝을 스침 —
-    멀티뷰를 넣은 목적 자체가 무력화됐던 버그). 그래서 coarse 를 겨냥해 **물체
-    근처 close 뷰를 찍고 그것만 융합**해 파지를 세운다.
-
-    adaptive: close 뷰를 spread-first 방위(§10.3-B antipodal 은 마주 보는 면 필요)
-    로 누적하며 매번 파지 성립 검사, 서면 멈춘다 (sim: 2~4뷰). 관측 스크리닝 =
-    motion resolve (IK+self+floor+이웃 점군 충돌). 뷰 간 이동 = home 경유
-    (§10.4-4). 상한까지 봐도 안 서면 사유 있는 실패 (§10.4-3 맹목 파지 금지).
-    """
-    bundle = await ctx.call(
-        Calibration.Service.SNAPSHOT_BUNDLE,
-        SnapshotBundleRequest(robot_id=robot_id),
-        CalibrationBundle,
-    )
-    if bundle.hand_eye is None:
-        raise TaskError(
-            f"hand_eye 캘 없음 (robot={robot_id}) — 멀티뷰 관측 불가, 캘 먼저"
-        )
-    he = bundle.hand_eye.result_data
-
-    # 이웃(장애물)만 스윕에서 재사용 — 충돌 회피는 파지 정밀도 불요. 파지 융합
-    # 시드로는 스윕 검출을 **안** 쓴다 (far 뷰 FK 오차가 파지점에 실리는 것 차단).
-    neighbors = _neighbor_points(cands, coarse)
-    floor_z = coarse.base_z - _FLOOR_GATE_MARGIN_M
-
-    observations: list[OrientedDetection] = []  # close 뷰만 누적 (스윕 시드 없음)
-    reached = 0
-    for radius, elev, az in geometry.view_directions(coarse.position):
-        if reached >= _VIEW_MAX_REACHED:
-            break
-        poses = geometry.view_pose_groups(
-            coarse.position, he.R_cam2gripper, he.t_cam2gripper,
-            radius_m=radius, elev_deg=elev, az_rad=az,
-        )
-        res = await ctx.call(
-            Motion.Service.RESOLVE_REACHABLE,
-            ResolveReachableRequest(
-                groups=[[TcpPose(position=p, quaternion=q)] for p, q in poses],
-                floor_z=floor_z,
-                obstacle_points=_observation_points(observations, neighbors),
-                path_from=list(home.joint_values),
-            ),
-            ResolveReachableResponse,
-            robot_id=robot_id,
-        )
-        if res.index < 0:
-            continue  # 이 뷰 방향은 도달/안전 불가 — 다음 방향 (부정 데이터)
-        reached += 1
-        await go_home(ctx, robot_id, home)  # 뷰 간 이동 = home 경유 (§10.4-4)
-        await _move_j_joints(ctx, robot_id, res.solutions[0])
-        await asyncio.sleep(_SEARCH_SETTLE_S)
-        det = await ctx.call(
-            Detector.Service.DETECT_ORIENTED,
-            DetectRequest(robot_id=robot_id, prompt=prompt, top_k=_TOP_K),
-            DetectOrientedResponse,
-        )
-        near = _nearest_within(
-            det.candidates, coarse.position, _VIEW_MATCH_RADIUS_M
-        )
-        if near is None:
-            logger.info(
-                "observe_and_plan_grasp: close 뷰 %d(고도 %.0f° 방위 %.0f°)에서 "
-                "타깃 미검출 — 새 정보 없음", reached, elev, math.degrees(az),
-            )
-            continue
-        observations.append(near)
-        found = await try_plan_grasp(
-            ctx, robot_id, observations, neighbors, prompt, home
-        )
-        if found is not None:
-            logger.info(
-                "observe_and_plan_grasp(%s): close 뷰 %d/관측 %d건에서 파지 성립",
-                prompt, reached, len(observations),
-            )
-            return found
-
-    raise NoReachableGrasp(
-        f"안전 파지 불가 — '{prompt}' close 관측 {len(observations)}건(도달 뷰 "
-        f"{reached}/{_VIEW_MAX_REACHED})으로 실행 가능한 antipodal 파지가 안 "
-        "섰습니다. 물체가 workspace 경계이거나 주변이 빽빽할 수 있습니다 — 물체를 "
-        "로봇 쪽으로 옮기거나 주변을 비운 뒤 다시 실행하세요"
-    )
-
-
-@step(title="파지 성립 검사")
-async def try_plan_grasp(
-    ctx: TaskContext,
-    robot_id: str,
-    observations: list[OrientedDetection],
-    neighbors: list[Vec3],
-    prompt: str,
-    home: WaypointRecord,
-) -> tuple[OrientedDetection, GraspCandidate, list[float]] | None:
-    """현재 관측으로 파지가 서는지 — 융합 → 표면 antipodal → resolve 게이트.
-
-    None = 아직 안 섬 (부정 데이터 — 관측을 더 쌓으라는 신호). 성립하면
-    (융합 타깃, 채택 후보, pre 관절해). resolve 게이트: 끝점 IK + 바닥 +
-    **그리퍼(벌림)↔물체·이웃 점군 충돌** + home→pre 관절 경로 + pre→grasp
-    직선 경로 (§10.4-3)."""
-    fused = await fuse_target(ctx, observations, prompt)
-    if fused is None or not fused.points:
-        return None
-    pairs = await asyncio.to_thread(  # open3d 로드/법선 추정 — blocking
-        antipodal.horizontal_antipodal_pairs, np.asarray(fused.points, dtype=float)
-    )
-    if not pairs:
-        logger.info(
-            "try_plan_grasp(%s): antipodal 쌍 0 (관측 %d건) — 마주 보는 면 미관측",
-            prompt, len(observations),
-        )
-        return None
-    plan = geometry.plan_grasp(pairs)
-    t0 = time.monotonic()
-    res = await ctx.call(
-        Motion.Service.RESOLVE_REACHABLE,
-        ResolveReachableRequest(
-            groups=geometry.grasp_ik_groups(plan),
-            floor_z=fused.base_z - _FLOOR_GATE_MARGIN_M,
-            linear=True,
-            obstacle_points=[*fused.points, *neighbors],
-            gripper_open=True,
-            path_from=list(home.joint_values),
-        ),
-        ResolveReachableResponse,
-        robot_id=robot_id,
-    )
-    resolve_s = time.monotonic() - t0
-    if res.index < 0:
-        logger.info(
-            "try_plan_grasp(%s): 쌍 %d/후보 %d 전멸 (resolve %.1fs) — %s",
-            prompt, len(pairs), len(plan), resolve_s, res.message,
-        )
-        return None
-    logger.info(
-        "try_plan_grasp(%s): group %d 채택 — %s (쌍 %d, height=%.1fcm "
-        "base_z=%.3f, resolve %.1fs)",
-        prompt, res.index, plan[res.index].label, len(pairs),
-        fused.height * 100.0, fused.base_z, resolve_s,
-    )
-    return fused, plan[res.index], res.solutions[0]
-
-
-@step(title="관측 융합")
-async def fuse_target(
-    ctx: TaskContext, observations: list[OrientedDetection], prompt: str
-) -> OrientedDetection | None:
-    """멀티뷰 관측 융합 (detector FUSE — 점군 합쳐 기하 재계산) → 타깃 후보.
-
-    None = 융합 결과에 타깃 위치 군집 없음 (관측 점군 부족 — 부정 데이터,
-    관측을 더 쌓는다). height 하드게이트는 없다 (§10.4-6 — 심판은 파지 성립).
-    robot 무관 순수 계산이라 robot_id 없음 (§2.7 agnostic)."""
-    res = await ctx.call(
-        Detector.Service.FUSE_ORIENTED,
-        FuseOrientedRequest(candidates=observations),
-        FuseOrientedResponse,
-    )
-    fused = _nearest_within(
-        res.candidates, observations[0].position, _VIEW_MATCH_RADIUS_M
-    )
-    if fused is None:
-        logger.info(
-            "fuse_target(%s): 관측 %d건 융합에 타깃 군집 없음",
-            prompt, len(observations),
-        )
-        return None
-    logger.info(
-        "fuse_target(%s): 관측 %d건 → height=%.1fcm base_z=%.3f points=%d",
-        prompt, len(observations), fused.height * 100.0, fused.base_z,
-        len(fused.points or []),
-    )
-    return fused
-
-
 def _xy_dist(a: Vec3, b: Vec3) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
@@ -523,27 +693,16 @@ def _nearest_within(
 def _neighbor_points(
     cands: list[OrientedDetection], coarse: OrientedDetection
 ) -> list[Vec3]:
-    """타깃 아닌 이웃 후보의 점군 — 그리퍼 충돌 게이트의 장애물 (§10.4-3 '이웃').
+    """타깃 아닌 이웃 후보의 점군 — 계획 resolve 충돌 게이트의 장애물.
 
     같은 prompt 로 잡힌 다른 물체 군집 (매치 반경 밖 ~ _NEIGHBOR_RADIUS_M 안).
-    다른 prompt 의 물체는 지금 관측 채널이 없다 — sim §10.3-I 의 빽빽 clutter
-    fail-safe 는 관측된 이웃에 한해 성립 (미관측 장애물은 실물 몫)."""
+    다른 prompt 의 물체는 지금 관측 채널이 없다 — 미관측 장애물은 실물 몫."""
     out: list[Vec3] = []
     for c in cands:
         d = _xy_dist(c.position, coarse.position)
         if d <= _VIEW_MATCH_RADIUS_M or d > _NEIGHBOR_RADIUS_M:
             continue
         out.extend(c.points or [])
-    return out
-
-
-def _observation_points(
-    observations: list[OrientedDetection], neighbors: list[Vec3]
-) -> list[Vec3]:
-    """관측 자세 스크리닝용 장애물 점군 = 지금까지의 타깃 관측 + 이웃."""
-    out: list[Vec3] = list(neighbors)
-    for o in observations:
-        out.extend(o.points or [])
     return out
 
 
@@ -578,10 +737,7 @@ async def resolve_place(
     pre↔place 직선) — 모션 0. 닿는 그룹 있으면 (index, solutions), 없으면 None.
 
     None = 이 spot 은 도달 불가 (부정 데이터 — 호출부가 다음 spot 으로 폴백).
-    최종 실패 판정(모든 spot 소진)은 호출부 plan_place 가 raise. linear=True:
-    삽입(pre→place)이 MoveL 이므로 끝점만 풀리고 중간이 막히는 후보를 계획
-    시점에 기각. path_from=home: execute_place 가 home 에서 pre 로 MoveJ 하는
-    계약 (§10.4-4)."""
+    최종 실패 판정(모든 spot 소진)은 호출부 plan_place 가 raise."""
     t0 = time.monotonic()
     res = await ctx.call(
         Motion.Service.RESOLVE_REACHABLE,
@@ -605,6 +761,31 @@ async def resolve_place(
     return res.index, res.solutions
 
 
+# ─── 놓기 실행 (open-loop 유지 — 상자 적치는 오차 관대) ───────────────
+
+
+@step(title="놓기 실행")
+async def execute_place(
+    ctx: TaskContext,
+    robot_id: str,
+    c: PlaceCandidate,
+    pre_joints: list[float],
+    home: WaypointRecord,
+) -> None:
+    """계획된 적치 후보로 실제 적치 — 접근 → 삽입 → 내려놓기 → 후퇴 → home.
+
+    home 에서 시작 (servo_pick 이 home 으로 끝남). 종료도 home — 다음 run 의
+    시작 자세가 일정하고 카메라 시야에서 팔이 빠진다."""
+    await pre_place(ctx, robot_id, pre_joints)
+    await insert(ctx, robot_id, c)
+    # 파지 판정: 내려놓기 직전에도 물고 있나 (이송 중 놓쳤으면 여기서 실패 —
+    # 빈 손으로 release 하는 허위 성공 방지).
+    await verify_grasp(ctx, robot_id, phase="적치 직전", grasp_label=c.label)
+    await release(ctx, robot_id)
+    await retreat(ctx, robot_id, c)
+    await go_home(ctx, robot_id, home)
+
+
 # ─── primitives ────────────
 
 
@@ -612,29 +793,6 @@ async def resolve_place(
 async def go_home(ctx: TaskContext, robot_id: str, home: WaypointRecord) -> None:
     logger.info("go_home robot=%s → '%s'", robot_id, home.name)
     await _move_j_joints(ctx, robot_id, home.joint_values)
-
-
-@step(title="파지 접근")
-async def pre_grasp(
-    ctx: TaskContext, robot_id: str, pre_joints: list[float]
-) -> None:
-    # resolve 가 반환한 관절 해 그대로 — 실행부 IK 재계산 없음 (§5.5)
-    logger.info("pre_grasp robot=%s → joints=%s", robot_id, _fmt_joints(pre_joints))
-    await _move_j_joints(ctx, robot_id, pre_joints)
-
-
-@step(title="진입")
-async def advance(ctx: TaskContext, robot_id: str, c: GraspCandidate) -> None:
-    # pre→grasp 접근축 직선 (자세 동일 → slerp 가 자세 고정으로 수렴)
-    logger.info("advance robot=%s → grasp %s [%s]", robot_id, _fmt(c.grasp), c.label)
-    await _move_l(ctx, robot_id, c.grasp, c.quat)
-
-
-@step(title="후퇴")
-async def withdraw(ctx: TaskContext, robot_id: str, c: GraspCandidate) -> None:
-    # grasp→pre 접근축 역방향 — 월드 +z 들어올리기 폐기 (§5.4)
-    logger.info("withdraw robot=%s → pre %s", robot_id, _fmt(c.pre))
-    await _move_l(ctx, robot_id, c.pre, c.quat)
 
 
 @step(title="적치 접근")
@@ -695,8 +853,8 @@ async def verify_grasp(
 ) -> None:
     """실제 그리퍼 도달 위치로 물림 판정 — 빈 파지/놓침이면 GraspFailed raise.
 
-    단일 시점·단일 신호의 허점(못 잡았는데 잡음/잡았다 놓침)을 줄이려 execute 가
-    여러 시점(close 직후·withdraw 후·적치 직전)에서 이걸 부른다. 판정 근거(도달
+    단일 시점·단일 신호의 허점(못 잡았는데 잡음/잡았다 놓침)을 줄이려 servo/place
+    가 여러 시점(close 직후·withdraw 후·적치 직전)에서 이걸 부른다. 판정 근거(도달
     raw / close / threshold / load / 계획 폭)를 **전부 로깅** → 실패 시 원인분석 +
     실물 임계값 튜닝 데이터. fail-closed: 물림 확신 못 하면 실패로 기운다."""
     spec = ctx.spec(robot_id)

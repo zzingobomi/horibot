@@ -20,11 +20,54 @@
 > [backend.md](backend.md) (framework §1–§14 + Module catalog §16 + Task-first §17).
 > 본 문서 = "지금 어디까지 됐고 다음 뭐 할지" 만 — 설계 결정은 여기 안 둠.
 
-## 현재 상태 (2026-07-14)
+## 현재 상태 (2026-07-16)
 
-**framework + 전 Module 가동 + Task 아키텍처 전면 개정 완료 (@step + runner
-wire 절단 + 의식 전폐 + 정적 프리뷰 + runner 데코레이터 DX) + object-centric
-파지 §10 확정 설계(일반 형상 + 멀티뷰 antipodal) 구현 완료 (실물 검증 대기 — 집).**
+**framework + 전 Module 가동 + Task 아키텍처 확정 + 집기 = closed-loop(servo)
+look-then-move 로 전면 전환 구현 완료 (실물 검증 대기 — 집).** open-loop 멀티뷰
+antipodal 집기는 실물 0/N 로 대체됨 (아래 2026-07-16 부).
+
+### 2026-07-16 — 집기 closed-loop(servo) 전환 (구현 + sim 검증 완료, 실물 대기)
+
+배경 = [grasp_debug_handoff_2026-07-16.md](grasp_debug_handoff_2026-07-16.md)
+(post-mortem: 기구학 절대정확도 ~1-2cm ≈ 큐브 2.5cm → 정적 인식 후처리로는 불가) +
+[closed_loop_grasp_handoff.md](closed_loop_grasp_handoff.md) (구현 사고 가이드).
+
+- **착수 전 offline 검증** (`scripts/grasp_verify/closed_loop_feasibility.py`,
+  실물 2026-07-15 debug 세션 재분석): ① base 관측 편차가 카메라 거리에 비례
+  **r=0.95** (14-17cm 에서 5-12mm / 31-33cm 에서 ~40mm) = "가까이서 loop 를 닫으면
+  오차가 준다" 전제 실측 성립. ② cam-frame centroid 산출 건강 (기하 거리와 ≤5mm).
+  ③ mask 오검출로 455mm 튄 뷰 실존 → tick gate 필수의 근거. ④ hand_eye 기하:
+  카메라가 TCP 를 ~5° 오차로 응시, TCP-파지점 5cm 에서 카메라-물체 14.3cm =
+  최적 측정 대역 → **파지 직전까지 servo 가능**.
+- **구조**: 이산 look-then-move (정지 관측 → tick gate → 관측한 그 tick 의 TCP
+  기준 상대 목표 MoveL → 수렴 시 standoff 사다리 8→5cm 하강 (12cm+ 는 실 URDF
+  IK 로 자세 고정 사다리 전멸 — test_motion servo ladder sim 이 잡음) → 마지막 관측으로
+  blind commit → close → 판정(EMPTY 재시도 1) → 후퇴 → 판정). 연속 velocity servo
+  기각: 검출 ~1s/tick + **이동 중엔 카메라 frame ↔ TCP snapshot 쌍이 깨짐**
+  (detector 가 검출 시점 TCP 를 따로 읽는 계약). 코드 정본 =
+  `modules/tasks/pick_and_place/servo.py` (순수 계산 + 상태 전이) + `steps.py`
+  `servo_pick`/`plan_pick` + `servo_trace.py` (run 당 `debug/servo_pick/<ts>/`
+  tick JSONL + summary — 로그만으로 실패 재구성이 요구사항). 파라미터 SSOT =
+  `servo.ServoConfig` (전부 실물 첫 런 데이터로 튜닝하는 knob).
+- **대체/삭제**: `observe_and_plan_grasp`/`try_plan_grasp`/`fuse_target`/
+  `execute_pick`(advance/withdraw 포함) 삭제, `geometry.view_directions`/
+  `view_pose_groups` 삭제 (뷰 이동 자체가 servo 로 대체 — git 복원 가능).
+  `antipodal.py`/`plan_grasp` 는 production 소비자 없음 상태로 유지
+  (grasp_verify 진단 자산 + test_motion resolve sim 이 소비). **놓기는 open-loop
+  유지** (상자 적치는 12.8mm 급 오차에 관대). wire 계약 무변경 (RUN req/스트림
+  전부 그대로 — frontend regen 불요, 페이지 그대로 동작).
+- **sim 으로 증명된 것**: servo 상태 전이 전수 (test_servo 19) + 시나리오 배선
+  (test_pick_and_place — 오검출 hold/연속 소실 결단/수렴 실패 중단/이동 거부
+  폴백/EMPTY 재시도/trace 기록/놓기 선검증 불변식). 전 스위트 422 passed. mock
+  run_task = 부팅+트리거+명시 실패 경로 확인 (mock DB 에 waypoint/hand_eye 없음).
+- **실물에서 남는 미지수 (정직)**: ① 근접(14cm)에서 GDINO 가 큐브를 계속 잡는가
+  + 벌린 그리퍼가 mask 를 오염시키는가 (gate 가 걸러주지만 miss 연발이면 commit
+  일찍 끊김) ② 상대 명령의 common-mode 상쇄가 실제로 남기는 잔차 크기 (offline
+  추정 ~5mm, blind 5cm 구간의 FK drift 미포함) ③ ServoConfig 임계값 전부
+  (eps/capture/jump/min_points — trace 데이터로 1회 보정 전환) ④ tilt 가족에서
+  카메라가 물체를 보는 각도 (수직 가족이 기각되고 tilt 45+ 채택 시 시야 기하).
+  실물 절차: 어제와 동일 (frontend or `run_task srv/pick_and_place/run`) — 실패
+  시 `debug/servo_pick/<ts>/trace.jsonl` + `debug/detect/<세션>/` timestamp 교차.
 
 ### 2026-07-14 (4) — 실물 pick&place 디버깅 (집, 실 SO-101+D405)
 

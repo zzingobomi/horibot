@@ -648,11 +648,12 @@ async def test_obstacle_points_kinematics_gate(stack):
 async def test_resolve_reachable_real_grasp_plan_ik_passes(stack):
     """★ 프로덕션 서비스 경로 e2e — 실 URDF IK 가 실 grasp 후보에서 진짜 풀리나.
 
-    verify_production_pipeline.py 는 게이트를 스크립트가 재현했다 (kin.ik 직접
-    호출). 여기서는 **실제 MotionModule 의 resolve_reachable 서비스**에 **실
-    antipodal → plan_grasp 후보 그룹**을 던진다 — steps.try_plan_grasp 가 던지는
-    것과 동일한 인자(floor_z / linear / obstacle_points=점군 / gripper_open /
-    path_from). "로직만 짜고 IK 는 canned 로 넘어간 것 아니냐"를 실행으로 닫는다.
+    **실제 MotionModule 의 resolve_reachable 서비스**에 **실 antipodal →
+    plan_grasp 후보 그룹**을 던진다 (floor_z / linear / obstacle_points=점군 /
+    gripper_open / path_from). "로직만 짜고 IK 는 canned 로 넘어간 것 아니냐"를
+    실행으로 닫는다. (antipodal/plan_grasp 는 2026-07-16 closed-loop 전환 후
+    production 집기에선 안 쓰지만 grasp_verify 진단 자산이 소비 — 수식 잠금 유지.
+    현행 production 집기 그룹의 동일 검증은 아래 servo ladder 테스트.)
 
     합성 큐브(양쪽 옆면 + 윗면)를 워크스페이스 안(0.24,0.10)에 놓고 실 antipodal
     쌍 → 후보 가족 → 서비스. index≥0 이면 실 IK 가 그 후보를 실제로 풀었다는
@@ -693,7 +694,7 @@ async def test_resolve_reachable_real_grasp_plan_ik_passes(stack):
     plan = geometry.plan_grasp(pairs)
     assert plan
 
-    # 실 resolve_reachable 서비스 — steps.try_plan_grasp 와 동일 인자
+    # 실 resolve_reachable 서비스 — 옛 집기 게이트와 동일 인자
     res = await runtime.module_runtime.call(
         Motion.Service.RESOLVE_REACHABLE,
         ResolveReachableRequest(
@@ -722,6 +723,80 @@ async def test_resolve_reachable_real_grasp_plan_ik_passes(stack):
         assert np.linalg.norm(np.array(pos) - np.array(want)) < 0.02, (
             f"IK 해 FK 가 목표 pose 와 어긋남: {pos} != {want}"
         )
+
+
+async def test_resolve_reachable_servo_ladder_ik_passes(stack):
+    """★ 현행 production 집기(closed-loop servo) 계획 그룹 e2e — plan_pick 이
+    실제로 보내는 [standoff 사다리…, 파지] × 자세 가족 그룹(그룹 구성 SSOT =
+    steps.servo_ladder_groups)을 실 MotionModule resolve_reachable 에 던진다.
+
+    이게 전멸이면 servo 는 시작조차 못 한다 (rung0 진입 IK 해가 여기서 나옴) —
+    "가족 52개 중 workspace 안 큐브에서 하나는 풀린다" 를 실 URDF IK 로 잠금.
+    solutions[0] FK 가 첫 standoff 위치로 복귀해야 진짜 해 (실행부가 그 관절로
+    MoveJ 진입)."""
+    import numpy as np
+
+    from modules.detector.contract import OrientedDetection
+    from modules.tasks.pick_and_place import steps as pnp_steps
+    from modules.tasks.pick_and_place.servo import ServoConfig
+
+    runtime, _driver, _robot = stack
+    assert await _wait_motion_ready(runtime)
+    snap = None
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        snap = await _try_snapshot(runtime)
+        if snap is not None:
+            break
+    assert snap is not None
+
+    # 합성 큐브 관측 (object-centric) — 워크스페이스 안 (0.24, 0.10), 25mm.
+    cx, cy, base_z, top_z = 0.24, 0.10, -0.045, -0.020
+    pts: list[tuple[float, float, float]] = []
+    for x in np.linspace(cx - 0.0125, cx + 0.0125, 8):
+        for y in np.linspace(cy - 0.0125, cy + 0.0125, 8):
+            pts.append((float(x), float(y), top_z))
+            pts.append((float(x), float(y), base_z + 0.01))
+    coarse = OrientedDetection(
+        prompt="cube", position=(cx, cy, top_z), score=0.9, base_z=base_z,
+        height=top_z - base_z, grasp_yaw=0.0, footprint=(0.025, 0.025),
+        points=pts,
+    )
+    cfg = ServoConfig()
+    groups, metas = pnp_steps.servo_ladder_groups(coarse, cfg)
+    assert len(groups) == 13 * 2 * 2  # tilt × 조축 × flip (가족 SSOT)
+
+    res = await runtime.module_runtime.call(
+        Motion.Service.RESOLVE_REACHABLE,
+        ResolveReachableRequest(
+            groups=groups,
+            floor_z=base_z - 0.005,
+            linear=True,
+            obstacle_points=pts,
+            gripper_open=True,
+            path_from=list(snap.joints),
+        ),
+        ResolveReachableResponse,
+        robot_id=_SO101,
+        timeout=120.0,
+    )
+    assert res.index >= 0, (
+        f"실 URDF IK 가 servo 사다리 가족 {len(groups)}개 전멸 — servo 진입 "
+        f"불가 회귀: {res.message}"
+    )
+    # 채택 그룹의 해 = 사다리 rung 수 + 파지 1 — 실행부가 solutions[0] 으로 진입
+    assert len(res.solutions) == len(cfg.standoffs) + 1
+    motion_mod = next(
+        m for m in runtime._modules if type(m).__name__ == "MotionModule"
+    )
+    fam, _g_point0, g_tcp0, _lat = metas[res.index]
+    from modules.tasks.pick_and_place.servo import standoff as servo_standoff
+
+    rung0 = servo_standoff(g_tcp0, fam, cfg.standoffs[0])
+    pos0, _ = motion_mod._kin.fk(res.solutions[0])
+    assert np.linalg.norm(np.array(pos0) - np.array(rung0)) < 0.02, (
+        f"rung0 IK 해 FK 가 standoff 와 어긋남: {pos0} != {rung0}"
+    )
 
 
 async def _try_snapshot(runtime) -> TcpState | None:

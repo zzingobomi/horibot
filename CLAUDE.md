@@ -80,7 +80,7 @@ pnpm gen:types    # 떠 있는 backend /contract.json → src/api/generated/cont
 | waypoint | waypoint/group CRUD + teach |
 | detector | prompt → base-frame 3D 후보 (GDINO/SAM2/mock driver) |
 | llm | 자연어 → pick/place 구조화 (Qwen/mock) |
-| tasks/pick_and_place | Pick&Place **task 모듈** (표준형 레퍼런스 — 검출→도달성 선별→파지→적치). 감독은 [modules/tasks/core/](backend/modules/tasks/core/) 부품 상자 (TaskRunner=wire 무지 감독기/TaskContext/@step — 모듈 아닌 라이브러리, [docs/task.md](docs/task.md)) |
+| tasks/pick_and_place | Pick&Place **task 모듈** (표준형 레퍼런스 — 검출→**closed-loop servo 집기** (look-then-move, 정본 [servo.py](backend/modules/tasks/pick_and_place/servo.py) docstring)→open-loop 적치). 감독은 [modules/tasks/core/](backend/modules/tasks/core/) 부품 상자 (TaskRunner=wire 무지 감독기/TaskContext/@step — 모듈 아닌 라이브러리, [docs/task.md](docs/task.md)) |
 | bridge | FastAPI — WS 릴레이 + `/contract.json` + `/robots` + `/dev` 콘솔 + MJPEG |
 
 task 터미널 실행 (frontend 없이): `uv run --no-sync python scripts/run_task.py srv/pick_and_place/run --param "pick_object=white cube"` (트리거 키 직접 — mock in-process 부팅, :8000 미점유).

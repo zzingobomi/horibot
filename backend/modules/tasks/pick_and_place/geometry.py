@@ -72,103 +72,16 @@ def select_target_by_score(
     return max(cands, key=lambda c: c.score)
 
 
-# ─── 타깃 중심 멀티뷰 — adaptive 뷰 탐색축 (§10.4-1) ─────────────────
-#
-# 고정 궤도(옛 target_view_poses 6점) 폐기 — 반경/고도/방위는 **탐색축**이고,
-# 어느 뷰가 도달·안전한지는 motion resolve(IK+self+floor+장애물)가 판정한다.
-# 미리 티칭한 타깃-중심 자세는 존재 불가 (타깃 위치가 매번 다름) → 검출 위치
-# 기준으로 계산. search waypoint 는 1단계 광역 탐색 전용 (재활용 X).
-
-# 카메라-타깃 거리 — D405 depth 유효 최소(~7cm) 여유 + 좁은 workspace 절충.
-_VIEW_RADII_M = (0.16, 0.13)
-# 고도(수평 기준): 사선 — top-down 은 옆면 depth 가 안 잡혀 멀티뷰 의미 없음.
-_VIEW_ELEVATIONS_DEG = (55.0, 40.0, 70.0)
-# 방위 오프셋 (타깃→base 방위 기준) — spread-first: antipodal 은 서로 떨어진
-# 방위 관측이 필요해 (§10.3-B 마주 보는 면), 한 방위 근처를 파기보다 벌어진
-# 방위를 먼저 시도해야 파지 성립이 빠르다. base 쪽(0°)이 도달 가능성 최고 (§3.2).
-_VIEW_AZIMUTH_OFFSETS_DEG = (
-    0.0, 120.0, -120.0, 60.0, -60.0, 180.0, 90.0, -90.0, 30.0, -30.0, 150.0, -150.0
-)
-# 카메라 roll (광축 둘레) — 관측엔 자유 (광축이 타깃만 향하면 됨). 자연 roll
-# (이미지 up≈월드 up) 우선, 안 닿는 뷰를 다른 roll 이 살린다 (§10.2 sim —
-# roll 스윕이 도달 뷰 커버리지를 방위 180~300° 로 늘린 재료).
-_VIEW_ROLLS_DEG = (0.0, 60.0, -60.0, 120.0, -120.0, 180.0)
-
-
-def view_directions(target: Vec3) -> list[tuple[float, float, float]]:
-    """관측 뷰 방향 후보 (radius_m, elev_deg, az_rad) — 시도 순서가 곧 선호.
-
-    같은 (반경, 고도) 층에서 방위를 spread-first 로 전부 돈 뒤 다음 층 —
-    도달 불가 뷰는 소비자(resolve 판정)가 스킵하므로 목록은 넉넉하게, 정지는
-    "파지가 섰나"(adaptive)가 담당.
-    """
-    base_az = math.atan2(-float(target[1]), -float(target[0]))  # 타깃→base 방위
-    out: list[tuple[float, float, float]] = []
-    for radius in _VIEW_RADII_M:
-        for elev in _VIEW_ELEVATIONS_DEG:
-            for off in _VIEW_AZIMUTH_OFFSETS_DEG:
-                out.append((radius, elev, base_az + math.radians(off)))
-    return out
-
-
-def view_pose_groups(
-    target: Vec3,
-    r_cam2ee: list[list[float]] | np.ndarray,
-    t_cam2ee: list | np.ndarray,
-    *,
-    radius_m: float,
-    elev_deg: float,
-    az_rad: float,
-) -> list[tuple[Vec3, Quat]]:
-    """한 뷰 방향의 **TCP pose** 후보들 — roll 변형 순 (자연 roll 우선).
-
-    카메라 pose: 위치 = 타깃 + 반경·(방위,고도) 단위벡터, 광축(+z_cam)이 타깃을
-    향함. TCP 변환은 hand_eye(cam→ee): R_be = R_bc·R_ceᵀ, t_be = cam_pos − R_be·t_ce.
-    도달·충돌 판정은 소비자 몫 — RESOLVE_REACHABLE 에 [pose] 그룹으로 묶어
-    첫 가용 roll 을 채택한다 (§10.4-1: IK+self 만이 아니라 floor+장애물까지).
-    """
-    r_ce = np.asarray(r_cam2ee, dtype=float)
-    t_ce = np.asarray(t_cam2ee, dtype=float).reshape(3)
-    tgt = np.asarray(target, dtype=float)
-    el = math.radians(elev_deg)
-    up_dir = np.array(
-        [
-            math.cos(az_rad) * math.cos(el),
-            math.sin(az_rad) * math.cos(el),
-            math.sin(el),
-        ]
-    )
-    cam_pos = tgt + radius_m * up_dir
-    z_c = -up_dir  # 광축 → 타깃
-    down = np.array([0.0, 0.0, -1.0])  # 자연 roll: 이미지 y(down) ≈ 월드 아래
-    y0 = down - float(down @ z_c) * z_c
-    norm = float(np.linalg.norm(y0))
-    if norm < 1e-6:  # 수직 내려보기 축퇴 (elev≈90°) — 방위 방향으로
-        y0 = np.array([math.cos(az_rad), math.sin(az_rad), 0.0])
-    else:
-        y0 = y0 / norm
-    x0 = np.cross(y0, z_c)  # 우수계: x×y=z
-
-    out: list[tuple[Vec3, Quat]] = []
-    for roll_deg in _VIEW_ROLLS_DEG:
-        rr = math.radians(roll_deg)
-        x_c = math.cos(rr) * x0 + math.sin(rr) * y0  # z_c 둘레 roll 회전
-        y_c = np.cross(z_c, x_c)
-        r_bc = np.column_stack([x_c, y_c, z_c])
-        r_be = r_bc @ r_ce.T
-        t_be = cam_pos - r_be @ t_ce
-        qx, qy, qz, qw = (float(v) for v in Rotation.from_matrix(r_be).as_quat())
-        out.append(
-            (
-                (float(t_be[0]), float(t_be[1]), float(t_be[2])),
-                (qx, qy, qz, qw),
-            )
-        )
-    return out
+# (옛 adaptive 뷰 탐색축 view_directions/view_pose_groups 는 2026-07-16 closed-loop
+# 전환으로 삭제 — 멀티뷰 관측 이동 자체가 servo 루프로 대체됨. git history 복원 가능.)
 
 
 def plan_grasp(pairs: list[AntipodalPair]) -> list[GraspCandidate]:
     """접촉쌍 → 접근 후보 가족 — tilt(작은 것부터) × 쌍 × 조 축 flip.
+
+    ⚠ production 소비자 없음 (2026-07-16 closed-loop 전환 — 파지 자세는
+    servo.grasp_families 가 담당). scripts/grasp_verify/ 진단 스크립트
+    (code_vs_data/reach_probe — post-mortem §9 검증 자산)가 소비해 유지.
 
     옛 footprint(윗면 윤곽) 파지 폐기 (§10.4-2 — prismatic 전용 추측) — 후보의
     파지점/조 축/폭이 전부 관측 표면의 antipodal 쌍에서 온다. 쌍의 mid 를 단일

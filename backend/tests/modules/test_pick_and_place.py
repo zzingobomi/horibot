@@ -1,29 +1,24 @@
-"""Pick & Place task 테스트 — 순수 함수(geometry) / FakeContext 시나리오 / module wire.
+"""Pick & Place task 테스트 — closed-loop(servo) 집기 판 (2026-07-16 재설계).
 
-의미 (뒤집으면 회귀): adaptive 관측이 "파지 성립" 을 심판으로 쓰지 않고 height
-게이트/고정 뷰 수로 회귀 / 파지 후보가 관측 표면(antipodal)이 아니라 footprint
-추측에서 나옴 / 뷰 이동이 resolve 스크리닝(floor+장애물+경로) 없이 naive MoveJ /
-place 분기가 pick-only 에서 실행 / 실패가 침묵 성공 / place 검출 실패 시 release
-(물체 낙하) / RUN 동시 실행 허용 / 도달 전멸(-1) 침묵 통과 / 관측 전멸이 맹목
-파지로 이어짐 ("안전 파지 불가" 명시 실패 — §10.4-3).
+의미 (뒤집으면 회귀): servo 루프가 이동 중 관측 / 관측 없이 명령(맹목) / mask
+오검출 tick 을 그대로 파지에 반영 / 관측 소실·수렴 실패가 침묵 진행 or 무한 대기 /
+close 후 EMPTY 가 재시도 없이 즉사 or 무한 재시도 / servo 이동 거부가 침묵 통과 /
+trace 미기록(실패 재구성 불가) / place 분기가 pick-only 에서 실행 / 놓기 도달
+불가가 집은 뒤에 발견 (쥔 채 멈춤 corrupt) / RUN 동시 실행 허용.
 
-antipodal/뷰 수식 순수 계산 잠금은 test_antipodal.py.
+servo 순수 계산(가족/gate/decide_tick) 잠금은 test_servo.py.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import numpy as np
 import pytest
 from pydantic import BaseModel
 
-from modules.calibration.contract import (
-    Calibration,
-    CalibrationBundle,
-    HandEyeResultData,
-    HandEyeResultRecord,
-)
+from framework.transport.protocol import RemoteError
 from modules.detector.contract import (
     DetectOrientedResponse,
     Detector,
@@ -50,11 +45,12 @@ from modules.tasks.core.errors import (
     DetectionNotFound,
     GraspFailed,
     NoReachableGrasp,
+    ServoFailed,
     TaskError,
 )
 from modules.tasks.core.fake import FakeContext
 from modules.tasks.core.spec import TaskRobotSpec
-from modules.tasks.pick_and_place import geometry, steps
+from modules.tasks.pick_and_place import geometry, servo, servo_trace, steps
 from modules.tasks.pick_and_place.contract import ListRobotsRequest, RunRequest
 from modules.tasks.pick_and_place.module import PickAndPlaceModule
 from modules.waypoint.contract import (
@@ -77,7 +73,6 @@ _SPEC = TaskRobotSpec(
 
 _DETECT = str(Detector.Service.DETECT_ORIENTED)
 _FUSE = str(Detector.Service.FUSE_ORIENTED)
-_CAL_BUNDLE = str(Calibration.Service.SNAPSHOT_BUNDLE)
 _SELECT = str(Motion.Service.RESOLVE_REACHABLE)
 _MOVE_J = str(Motion.Service.MOVE_J)
 _MOVE_L = str(Motion.Service.MOVE_L)
@@ -91,6 +86,15 @@ _TS = datetime.fromtimestamp(0, UTC)
 
 _HOME_JOINTS = [0.0, 0.5, -1.0, 0.0, 0.5, 1.5]  # 티칭된 home (임의 유효값)
 
+# 테스트용 servo 설정 — 2단 사다리 + settle 0 (결정적·빠름). 실 기본값의
+# 상태 전이 자체는 test_servo 가 잠근다.
+_CFG = servo.ServoConfig(
+    standoffs=(0.10, 0.05),
+    eps_descend_m=(0.008, 0.004),
+    corrections_per_rung=3,
+    settle_s=0.0,
+)
+
 
 def _home_record() -> WaypointRecord:
     return WaypointRecord(
@@ -100,7 +104,6 @@ def _home_record() -> WaypointRecord:
 
 
 def _home_responses() -> dict:
-    """'home' waypoint canned 응답 — 시나리오가 맨 앞에서 조회."""
     return {_LIST_WP: [ListWaypointsResponse(waypoints=[_home_record()])] * 2}
 
 
@@ -109,7 +112,6 @@ _EMPTY_RAW = _SPEC.gripper_close_raw  # close 도달 = 빈 파지
 
 
 def _joint_state(gripper_raw: int, *, load: int | None = None) -> JointState:
-    """READ_STATE canned 응답 — 그리퍼 자리에 도달 raw 를 심는다 (물림/빈 파지)."""
     pos = [0] * 6
     pos[_SPEC.gripper_index] = gripper_raw
     loads = None
@@ -122,356 +124,91 @@ def _joint_state(gripper_raw: int, *, load: int | None = None) -> JointState:
     )
 
 
-def _tcp(position: tuple[float, float, float] = (0.2, 0.05, 0.023)) -> TcpState:
+def _tcp(position: tuple[float, float, float]) -> TcpState:
     return TcpState(
         robot_id=_BOT, seq=0, timestamp_unix=0.0, position=position,
-        quaternion=(0.0, 0.0, 0.0, 1.0), joint_names=[], joints=[],
+        quaternion=(0.0, 0.0, 0.0, 1.0), joint_names=[], joints=[0.0] * 6,
     )
 
 
 def _resolve_ok(index: int = 0) -> ResolveReachableResponse:
-    """가용 응답 — solutions = [pre 해, grasp 해] (실행부가 [0] 을 관절 이동에 씀)."""
+    """가용 응답 — solutions[0] = 첫 standoff(rung0) IK 해 (실행부가 MoveJ 에 씀)."""
     return ResolveReachableResponse(
-        index=index, solutions=[[0.1] * 6, [0.2] * 6]
+        index=index, solutions=[[0.1] * 6, [0.2] * 6, [0.3] * 6]
     )
 
 
-def _hand_eye_bundle() -> CalibrationBundle:
-    return CalibrationBundle(
-        robot_id=_BOT,
-        hand_eye=HandEyeResultRecord(
-            run_id=1, robot_id=_BOT, created_at=_TS, is_active=True,
-            result_data=HandEyeResultData(
-                R_cam2gripper=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-                t_cam2gripper=[[0.0], [0.0], [0.05]],
-                method="TSAI",
-            ),
-        ),
-    )
-
-
-def _cloud(both_sides: bool = True) -> list[tuple[float, float, float]]:
-    """관측 점군 합성 — 옆면(±x, 간격 2.2cm) + 윗면 (중심 0.2,0.05, top z=0.023).
-
-    both_sides=False = 단일 뷰 흉내 (마주 보는 면 중 먼 쪽 가림 → antipodal
-    0쌍 — §10.3-B). 파지 성립 여부가 이 점군에서 **실제 antipodal 계산**으로
-    갈린다 (canned bool 아님 — 코드 경로 그대로).
-    """
-    ys = np.linspace(0.05 - 0.011, 0.05 + 0.011, 12)
-    zs = np.linspace(0.0, 0.023, 12)
-    xs = np.linspace(0.2 - 0.011, 0.2 + 0.011, 12)
-    pts: list[tuple[float, float, float]] = []
-    for x in ((0.211, 0.189) if both_sides else (0.211,)):
-        for y in ys:
-            for z in zs:
-                pts.append((float(x), float(y), float(z)))
+def _pts(n_side: float = 0.011) -> list[tuple[float, float, float]]:
+    """관측 점군 — xy 로 ±n_side 스팬 (조 축 폭 측정의 관측 근거), 52점 ≥ min."""
+    xs = np.linspace(0.2 - n_side, 0.2 + n_side, 13)
+    out = []
     for x in xs:
-        for y in ys:
-            pts.append((float(x), float(y), 0.023))
-    return pts
+        for y in (0.05 - n_side, 0.05 + n_side):
+            for z in (0.01, 0.02):
+                out.append((float(x), float(y), float(z)))
+    return out
 
 
 def _det(
-    score: float = 0.9,
-    height: float = 0.023,
-    position: tuple[float, float, float] = (0.2, 0.05, 0.023),
+    position: tuple[float, float, float] = (0.2, 0.05, 0.025),
     base_z: float = 0.0,
-    footprint: tuple[float, float] = (0.023, 0.022),
-    grasp_yaw: float = 0.3,
-    points: list[tuple[float, float, float]] | None = None,
+    height: float = 0.025,
+    grasp_yaw: float = 0.0,
+    footprint: tuple[float, float] = (0.025, 0.022),
+    points: list | None = None,
+    score: float = 0.9,
 ) -> OrientedDetection:
     return OrientedDetection(
         prompt="cube", position=position, score=score, base_z=base_z,
-        height=height, grasp_yaw=grasp_yaw, footprint=footprint, points=points,
+        height=height, grasp_yaw=grasp_yaw, footprint=footprint,
+        points=_pts() if points is None else points,
     )
 
 
-def _fuse_full() -> FuseOrientedResponse:
-    """파지가 서는 융합 결과 — 양쪽 옆면 점군 (antipodal 쌍 생성)."""
-    return FuseOrientedResponse(candidates=[_det(points=_cloud(True))])
+# ── servo 기대값 (production 함수로 산출 — 배선 검증은 호출 순서/값 대조로) ──
+
+_OBS = _det()
+_FAM = servo.grasp_families(_OBS)[0]  # resolve index=0 → 첫 가족 (수직·jaw∥short)
+_WIDTH = servo.width_along(_OBS.points, _FAM.jaw_axis, _OBS.footprint[1])
+_LAT = servo.lateral_offset(_WIDTH)
+_G_POINT = servo.grasp_point(_OBS, _OBS, _CFG)
+_G_TCP = servo.grasp_tcp(_G_POINT, _FAM, _LAT)
+_SO0 = servo.standoff(_G_TCP, _FAM, _CFG.standoffs[0])
+_SO1 = servo.standoff(_G_TCP, _FAM, _CFG.standoffs[1])
+_WITHDRAW = servo.standoff(_G_TCP, _FAM, _CFG.withdraw_standoff_m)
 
 
-def _fuse_half() -> FuseOrientedResponse:
-    """아직 안 서는 융합 결과 — 한쪽 옆면만 (antipodal 0쌍 → 뷰 더 필요)."""
-    return FuseOrientedResponse(candidates=[_det(points=_cloud(False))])
-
-
-def _search_responses(n_members: int = 1) -> dict:
-    """search 그룹 canned 응답 ('search' 그룹 + n_members 자세)."""
+def _search_responses(n_members: int = 1, sweeps: int = 1) -> dict:
     grp = ListGroupsResponse(
         groups=[WaypointGroupRecord(id=1, robot_id=_BOT, name="search")]
     )
     members = ListGroupMembersResponse(
         waypoints=[
             WaypointRecord(
-                id=i + 1,
-                robot_id=_BOT,
-                name=f"s{i}",
-                joint_values=[0.0] * 6,
-                joint_names=[],
-                created_at=_TS,
+                id=i + 1, robot_id=_BOT, name=f"s{i}",
+                joint_values=[0.0] * 6, joint_names=[], created_at=_TS,
             )
             for i in range(n_members)
         ]
     )
-    return {**_home_responses(), _LIST_GROUPS: [grp] * 4, _LIST_MEMBERS: [members] * 4}
+    return {
+        **_home_responses(),
+        _LIST_GROUPS: [grp] * (sweeps + 1),
+        _LIST_MEMBERS: [members] * (sweeps + 1),
+    }
 
 
 @pytest.fixture(autouse=True)
-def _no_settle(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(steps, "_GRIPPER_SETTLE_S", 0.0)  # 테스트 즉시 진행
-    monkeypatch.setattr(steps, "_SEARCH_SETTLE_S", 0.0)  # 스윕 정착 대기 제거
+def _fast_servo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setattr(steps, "_GRIPPER_SETTLE_S", 0.0)
+    monkeypatch.setattr(steps, "_SEARCH_SETTLE_S", 0.0)
+    monkeypatch.setattr(steps, "_SERVO_CFG", _CFG)
+    # trace 는 실제로 쓴다 (기록 자체가 요구사항) — 저장소만 tmp 로
+    monkeypatch.setattr(servo_trace, "_TRACE_ROOT", tmp_path / "servo_pick")
 
 
-@pytest.fixture
-def _two_view_dirs(monkeypatch: pytest.MonkeyPatch):
-    """뷰 탐색축을 2방향으로 축소 — 전멸 시나리오의 canned 응답 수를 억제.
-
-    (실 탐색축 순서/내용 잠금은 test_antipodal.test_view_directions_*.)"""
-    monkeypatch.setattr(geometry, "_VIEW_RADII_M", (0.16,))
-    monkeypatch.setattr(geometry, "_VIEW_ELEVATIONS_DEG", (55.0,))
-    monkeypatch.setattr(geometry, "_VIEW_AZIMUTH_OFFSETS_DEG", (0.0, 120.0))
-
-
-# ─── geometry 순수 함수 ──────────────────────────────────────────────
-
-
-def test_select_target_by_score():
-    """coarse 선택 = score 만 — height prior/하드게이트 없음 (§10.4-6 폐기,
-    관측 충분성의 심판은 파지 성립)."""
-    best = geometry.select_target_by_score(
-        [_det(score=0.5), _det(score=0.9), _det(score=0.2, height=0.0)],
-        prompt="cube",
-    )
-    assert best.score == 0.9
-
-    with pytest.raises(DetectionNotFound, match="검출 0건"):
-        geometry.select_target_by_score([], prompt="cube")
-
-
-def test_plan_place_release_height():
-    spot = _det(position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3)
-    held = _det(height=0.023)
-    pplan = geometry.plan_place(spot, held=held, lateral=0.008)
-    # release z = spot 상면 + held/2 + 여유(0.005) — 물체 바닥이 상면에 닿게
-    assert pplan[0].place[2] == pytest.approx(0.04 + 0.023 / 2 + 0.005)
-    # tilt=0(첫 후보) = 순수 수직 하강: pre 가 place 바로 위 (x,y 동일, z 만 위로)
-    assert pplan[0].pre[0] == pytest.approx(pplan[0].place[0])
-    assert pplan[0].pre[1] == pytest.approx(pplan[0].place[1])
-    assert pplan[0].pre[2] == pytest.approx(pplan[0].place[2] + 0.06 + 0.023 / 2)
-    # 7 tilt × 4 정렬 yaw — tilt 는 0~±60° 도달 띠 (소각 상한 = top-down 사각
-    # 전멸 / 13단 풀사다리 = 전멸 가족 풀예산 IK 로 분 단위 지연, 둘 다 실물),
-    # yaw 는 0/180/90/270° 4방향 (180° 는 조·롤 방향이 다른 별개 IK — 2방향으로
-    # 줄이면 "위치 통과·자세 전멸" 실물 회귀, 2026-07-14). 수직·정렬이 첫 후보.
-    assert len(pplan) == 7 * 4
-    assert pplan[0].label == "tilt=+0 yaw=17"  # 수직 + 정렬 최우선
-    # yaw 는 상자 방위(grasp_yaw=0.3rad≈17°) 기준 — 하드코딩 0/90° 아님.
-    for deg in (17, 107, 197, 287):  # 정렬 가족 4방향 전부
-        assert any(f"yaw={deg}" in c.label for c in pplan)
-
-
-def test_plan_place_free_family_disjoint_yaws():
-    """자유 yaw 가족 (정렬 전멸 폴백) — 30° 격자의 나머지 8방향 × 13 tilt.
-    정렬과 겹치면 헛 IK (전멸 가족은 그룹당 풀예산 소모), 뒤집으면 = 커버리지
-    구멍 or 중복 낭비."""
-    spot = _det(position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3)
-    held = _det(height=0.023)
-    aligned = geometry.plan_place(spot, held=held, lateral=0.008)
-    free = geometry.plan_place_free(spot, held=held, lateral=0.008)
-    assert len(free) == 7 * 8
-    assert free[0].label == "tilt=+0 yaw=47"  # 정렬에 가장 가까운 자유 yaw 먼저
-    yaw_of = lambda c: c.label.split("yaw=")[1]  # noqa: E731
-    assert {yaw_of(c) for c in aligned} & {yaw_of(c) for c in free} == set()
-
-
-# ─── adaptive 관측·파지 성립 (step 직접 — FakeContext) ────────────────
-
-
-async def test_observe_uses_close_view_not_sweep_seed():
-    """search 스윕은 '찾기'(coarse)만 — 파지는 close 뷰 관측에서 (2026-07-14 재구성).
-    스윕 검출을 파지 융합에 넣지 않고, coarse 를 겨냥해 뷰를 찍어(MOVE_J) 그 close
-    관측만 융합해 파지를 세운다. 옛 "스윕 시드만으로 파지 성립+뷰 이동 0" 조기
-    종료(멀리서 본 걸로 파지 결정 → 큐브 끝 스침)의 회귀 잠금."""
-    coarse = _det()
-    sweep_near = _det(score=0.7, position=(0.21, 0.06, 0.023))  # 스윕 또 다른 관측
-    close = _det(score=0.8, position=(0.205, 0.052, 0.024))  # 뷰에서 찍은 close 관측
-    view_sol = [0.3] * 6
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={
-            _CAL_BUNDLE: [_hand_eye_bundle()],
-            _SELECT: [
-                ResolveReachableResponse(index=0, solutions=[view_sol]),  # 뷰 도달
-                _resolve_ok(),  # 파지 성립
-            ],
-            _MOVE_J: [MoveJResponse()] * 2,  # home 경유 + 뷰 이동
-            _DETECT: [DetectOrientedResponse(found=True, candidates=[close])],
-            _FUSE: [_fuse_full()],
-        },
-    )
-    fused, grasp, pre = await steps.observe_and_plan_grasp(
-        ctx, _BOT, [coarse, sweep_near], coarse, "white cube", _home_record()
-    )
-    assert pre == [0.1] * 6  # resolve 해 그대로 (재계산 금지 — §5.5)
-    # 핵심: 스윕 시드 없이 close 뷰를 찍었다 (MOVE_J = home 경유 + 뷰 이동)
-    assert [c["req"].target.joints for c in ctx.calls(_MOVE_J)] == [
-        _HOME_JOINTS, view_sol,
-    ]
-    # 파지 융합 입력 = close 관측만 — 스윕의 coarse/sweep_near 는 안 들어감
-    fuse_req = ctx.calls(_FUSE)[0]["req"]
-    assert [c.position for c in fuse_req.candidates] == [close.position]
-    assert coarse not in fuse_req.candidates
-    assert sweep_near not in fuse_req.candidates
-
-    # 파지 resolve 게이트 계약 (§10.4-3): 직선 + 바닥 + 그리퍼 벌림 + home 경로.
-    # SELECT[0]=뷰 스크린, [1]=파지 게이트.
-    grasp_sel = ctx.calls(_SELECT)[1]["req"]
-    assert grasp_sel.linear is True and grasp_sel.gripper_open is True
-    assert grasp_sel.floor_z == pytest.approx(0.0 - 0.005)
-    assert grasp_sel.path_from == _HOME_JOINTS
-    assert grasp_sel.obstacle_points  # 융합 점군이 장애물로
-
-
-async def test_observe_accumulates_close_views_until_grasp_stands():
-    """close 뷰 방향1 도달 불가(스킵) → 뷰2 관측 1개(한쪽 면, 쌍0)로는 안 섬 →
-    뷰3 관측 추가 → 융합에 마주 보는 면이 생겨 파지 성립. 파지 융합 입력은 close
-    관측만 누적(스윕 시드 없음). 뷰 이동 = home 경유 + resolve 해 (§10.4-4)."""
-    coarse = _det()
-    c1 = _det(score=0.8, position=(0.205, 0.052, 0.024))  # 뷰2 close 관측
-    c2 = _det(score=0.8, position=(0.198, 0.048, 0.023))  # 뷰3 close 관측
-    vs1, vs2 = [0.3] * 6, [0.35] * 6
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={
-            _CAL_BUNDLE: [_hand_eye_bundle()],
-            _FUSE: [_fuse_half(), _fuse_full()],  # 1뷰=쌍0 → 2뷰=성립
-            _SELECT: [
-                ResolveReachableResponse(index=-1, message="뷰 도달 불가"),  # 뷰1 스킵
-                ResolveReachableResponse(index=0, solutions=[vs1]),  # 뷰2 도달
-                ResolveReachableResponse(index=0, solutions=[vs2]),  # 뷰3 도달
-                _resolve_ok(),  # 파지 성립
-            ],
-            _MOVE_J: [MoveJResponse()] * 4,  # (home 경유 + 뷰)×2
-            _DETECT: [
-                DetectOrientedResponse(found=True, candidates=[c1]),
-                DetectOrientedResponse(found=True, candidates=[c2]),
-            ],
-        },
-    )
-    fused, grasp, pre = await steps.observe_and_plan_grasp(
-        ctx, _BOT, [coarse], coarse, "white cube", _home_record()
-    )
-    assert pre == [0.1] * 6
-    # 호출 순서: 뷰1 resolve(-1 스킵) → 뷰2 resolve → home → 뷰 MoveJ → 검출 →
-    # 융합(쌍0) → 뷰3 resolve → home → 뷰 MoveJ → 검출 → 융합(성립) → 파지 resolve
-    assert ctx.keys() == [
-        _CAL_BUNDLE, _SELECT, _SELECT, _MOVE_J, _MOVE_J, _DETECT, _FUSE,
-        _SELECT, _MOVE_J, _MOVE_J, _DETECT, _FUSE, _SELECT,
-    ]
-    # 뷰 resolve 계약: roll 그룹(그룹당 pose 1) + floor + home 경로, 파지 아님.
-    view_req = ctx.calls(_SELECT)[0]["req"]
-    assert len(view_req.groups) == 6 and all(len(g) == 1 for g in view_req.groups)
-    assert view_req.gripper_open is False and view_req.linear is False
-    assert view_req.path_from == _HOME_JOINTS
-    # 뷰 이동 = home 경유 후 resolve 해 그대로 (도달한 뷰2/뷰3)
-    assert [c["req"].target.joints for c in ctx.calls(_MOVE_J)] == [
-        _HOME_JOINTS, vs1, _HOME_JOINTS, vs2,
-    ]
-    # 파지 융합 입력 = close 관측만 누적 (c1,c2) — 스윕 없음
-    assert [c.position for c in ctx.calls(_FUSE)[1]["req"].candidates] == [
-        c1.position, c2.position,
-    ]
-
-
-async def test_observe_exhausted_fails_explicitly(_two_view_dirs):
-    """모든 뷰 방향이 도달/안전 불가 + 파지 미성립 = "안전 파지 불가" 명시 실패
-    (§10.4-3 — 맹목 파지 금지). 파지·실행 모션 0."""
-    coarse = _det(points=_cloud(False))
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={
-            _CAL_BUNDLE: [_hand_eye_bundle()],
-            _FUSE: [_fuse_half()],
-            _SELECT: [ResolveReachableResponse(index=-1)] * 2,  # 뷰 2방향 전멸
-        },
-    )
-    with pytest.raises(NoReachableGrasp, match="안전 파지 불가"):
-        await steps.observe_and_plan_grasp(
-            ctx, _BOT, [coarse], coarse, "white cube", _home_record()
-        )
-    assert ctx.calls(_MOVE_J) == []  # 도달 불가 뷰는 이동 자체가 없다
-
-
-async def test_observe_grasp_gate_exhausted_keeps_observing_then_fails(
-    _two_view_dirs,
-):
-    """close 뷰에서 antipodal 쌍은 있으나 파지 resolve 전멸(-1) = 부정 데이터 →
-    관측을 더 시도, 끝까지 안 서면 명시 실패. -1 을 침묵 통과(맹목 파지)하면 회귀.
-    (뷰는 도달 성공시켜야 파지 게이트가 돈다.)"""
-    coarse = _det()
-    c = _det(score=0.8, position=(0.205, 0.052, 0.024))
-    vs = [0.3] * 6
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={
-            _CAL_BUNDLE: [_hand_eye_bundle()],
-            _FUSE: [_fuse_full(), _fuse_full()],  # 뷰마다 쌍 있음
-            _SELECT: [
-                ResolveReachableResponse(index=0, solutions=[vs]),  # 뷰1 도달
-                ResolveReachableResponse(index=-1, message="전멸"),  # 파지 게이트1
-                ResolveReachableResponse(index=0, solutions=[vs]),  # 뷰2 도달
-                ResolveReachableResponse(index=-1, message="전멸"),  # 파지 게이트2
-            ],
-            _MOVE_J: [MoveJResponse()] * 4,
-            _DETECT: [
-                DetectOrientedResponse(found=True, candidates=[c]),
-                DetectOrientedResponse(found=True, candidates=[c]),
-            ],
-        },
-    )
-    with pytest.raises(NoReachableGrasp, match="안전 파지 불가"):
-        await steps.observe_and_plan_grasp(
-            ctx, _BOT, [coarse], coarse, "white cube", _home_record()
-        )
-    # 뷰 스크린(gripper_open False)과 파지 게이트(True)가 번갈아 — 파지 -1 은
-    # 데이터라 다음 뷰로 계속 (침묵 통과 아님).
-    assert [s["req"].gripper_open for s in ctx.calls(_SELECT)] == [
-        False, True, False, True,
-    ]
-
-
-async def test_observe_requires_hand_eye():
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={_CAL_BUNDLE: [CalibrationBundle(robot_id=_BOT)]},
-    )
-    with pytest.raises(TaskError, match="hand_eye"):
-        await steps.observe_and_plan_grasp(
-            ctx, _BOT, [_det()], _det(), "white cube", _home_record()
-        )
-    assert ctx.calls(_MOVE_J) == []  # 캘 없으면 모션 0
-
-
-async def test_fuse_target_returns_none_off_cluster():
-    """융합 결과에 coarse 근처 군집이 없으면 None (부정 데이터 — 관측을 더
-    쌓으라는 신호, 침묵 오매칭 금지)."""
-    ctx = FakeContext(
-        robots=[_BOT], specs={_BOT: _SPEC},
-        service_script={
-            _FUSE: [
-                FuseOrientedResponse(candidates=[_det(position=(0.5, 0.3, 0.02))])
-            ]
-        },
-    )
-    assert await steps.fuse_target(ctx, [_det()], "white cube") is None
-
-
-# ─── 시나리오 (FakeContext — 하드웨어/wire 없음, step 은 게이트 없이 실행) ──
+def _ctx(script: dict) -> FakeContext:
+    return FakeContext(robots=[_BOT], specs={_BOT: _SPEC}, service_script=script)
 
 
 def _module_for_scenario() -> PickAndPlaceModule:
@@ -483,326 +220,467 @@ def _module_for_scenario() -> PickAndPlaceModule:
 
 
 def _pick_script(**overrides) -> dict:
-    """pick 경로 성공 스크립트 (search 자세 1개 → coarse, close 뷰 1개서 파지 성립).
-    시나리오 = home 조회 → 스윕(찾기) → close 뷰 도달·검출·융합 → 파지 성립 → 실행.
-    _SELECT 순서 = 뷰 스크린 → 파지 게이트 (→ place resolve)."""
+    """pick 경로 성공 스크립트 — 스윕 1자세 → 계획 resolve → servo 2 tick
+    (tick1 rung0 수렴→하강, tick2 rung1 수렴→commit) → close/withdraw 판정."""
     script = {
         **_search_responses(),
-        _CAL_BUNDLE: [_hand_eye_bundle()] * 2,
         _DETECT: [
-            DetectOrientedResponse(
-                found=True, candidates=[_det(points=_cloud(False))]
-            )
-        ] * 4,
-        _FUSE: [_fuse_full()] * 2,
-        _SELECT: [_resolve_ok()] * 4,  # 뷰 도달 + 파지 (+ place)
-        _MOVE_J: [MoveJResponse()] * 10,  # 스윕 + 뷰(home+이동) + 실행
-        _MOVE_L: [MoveLResponse()] * 4,  # advance/withdraw (+ insert/retreat)
-        _GRIP: [SetGripperResponse()] * 3,  # open + close (+ release)
-        _TCP_SNAP: [_tcp()] * 2,  # grasp 도달 로깅
-        _READ_STATE: [_joint_state(_HELD_RAW)] * 3,  # 파지 판정 (close/withdraw/place)
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # 스윕
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick1
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick2
+        ],
+        _SELECT: [_resolve_ok()],
+        # tick1 TCP = rung0 standoff (오차 0 → 하강), tick2 = rung1 (→ commit),
+        # 마지막 = 도달 로깅 (commit 후).
+        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP)],
+        _FUSE: [FuseOrientedResponse(candidates=[_OBS])],  # tick2 (관측 2건부터)
+        _MOVE_J: [MoveJResponse()] * 4,  # 스윕 + servo home + rung0 + 종료 home
+        _MOVE_L: [MoveLResponse()] * 3,  # 하강 + commit + withdraw
+        _GRIP: [SetGripperResponse()] * 2,  # open + close
+        _READ_STATE: [_joint_state(_HELD_RAW)] * 2,  # close/withdraw 판정
     }
     script.update(overrides)
     return script
 
 
-async def test_scenario_pick_only_sequence():
+# ─── servo 시나리오 (FakeContext — 하드웨어/wire 없음) ────────────────
+
+
+async def test_scenario_servo_pick_only_sequence():
     mod = _module_for_scenario()
-    ctx = FakeContext(robots=[_BOT], specs={_BOT: _SPEC}, service_script=_pick_script())
+    ctx = _ctx(_pick_script())
 
     await mod.scenario(ctx, pick_object="white cube")
 
-    # 호출 순서 = home 조회 → 검색 스윕(찾기: 그룹→자세 MoveJ→검출) → 관측·파지
-    # (hand_eye 조회 → 뷰 도달 resolve → home 경유+뷰 MoveJ → close 검출 → 융합 →
-    # 파지 resolve) → 실행: home 경유 → pre 접근 → open → 진입 → close → 후퇴 → home.
     assert ctx.keys() == [
-        _LIST_WP,  # home waypoint 조회 (모션 0)
-        _LIST_GROUPS, _LIST_MEMBERS, _MOVE_J, _DETECT,  # 스윕(찾기)
-        _CAL_BUNDLE, _SELECT, _MOVE_J, _MOVE_J, _DETECT, _FUSE, _SELECT,  # close 관측·파지
-        # 실행: home 경유 → pre → open → 진입 → TCP도달로깅 → close → 파지판정 →
-        # 후퇴 → 파지판정 → home
-        _MOVE_J, _MOVE_J, _GRIP, _MOVE_L, _TCP_SNAP, _GRIP, _READ_STATE,
-        _MOVE_L, _READ_STATE, _MOVE_J,
+        _LIST_WP,  # home 조회 (모션 0)
+        _LIST_GROUPS, _LIST_MEMBERS, _MOVE_J, _DETECT,  # 스윕 (coarse 찾기)
+        _SELECT,  # servo 접근 계획 (가족+사다리, 모션 0)
+        _MOVE_J, _MOVE_J, _GRIP,  # servo 진입: home 경유 → rung0 → open
+        _DETECT, _TCP_SNAP,  # tick1 (관측 1건 — 융합 생략)
+        _MOVE_L,  # rung1 하강
+        _DETECT, _TCP_SNAP, _FUSE,  # tick2 (관측 2건 융합)
+        _MOVE_L, _TCP_SNAP,  # commit (blind) + 도달 로깅
+        _GRIP, _READ_STATE,  # close + 판정 ①
+        _MOVE_L, _READ_STATE,  # withdraw + 판정 ②
+        _MOVE_J,  # 종료 home
     ]
-    # place 분기 안 탐 + 든 채 종료 (마지막 gripper = close raw)
+    # rung0 진입 = resolve 가 반환한 첫 standoff IK 해 그대로 (재계산 금지)
+    assert ctx.calls(_MOVE_J)[1]["req"].target.joints == _HOME_JOINTS
+    assert ctx.calls(_MOVE_J)[2]["req"].target.joints == [0.1] * 6
+    # servo 이동 목표 = production servo 함수 산출값 (common-mode 상대 명령 배선)
+    ml = [c["req"].target for c in ctx.calls(_MOVE_L)]
+    assert ml[0].position == pytest.approx(_SO1, abs=1e-9)  # 하강
+    assert ml[1].position == pytest.approx(_G_TCP, abs=1e-9)  # commit
+    assert ml[2].position == pytest.approx(_WITHDRAW, abs=1e-9)  # 후퇴
+    assert all(m.quaternion == pytest.approx(_FAM.quat, abs=1e-9) for m in ml)
+    # 계획 resolve 계약: 사다리+파지 직선(linear) + 그리퍼 벌림 충돌 + 바닥 +
+    # home 경로 게이트, 그룹당 pose = standoff 2 + grasp 1.
+    sel = ctx.calls(_SELECT)[0]["req"]
+    assert sel.linear is True and sel.gripper_open is True
+    assert sel.floor_z == pytest.approx(0.0 - 0.005)
+    assert sel.path_from == _HOME_JOINTS
+    assert sel.obstacle_points
+    assert all(len(g) == len(_CFG.standoffs) + 1 for g in sel.groups)
+    # 든 채 종료 (place 없음 — 마지막 gripper = close)
     grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
     assert grips == [_SPEC.gripper_open_raw, _SPEC.gripper_close_raw]
 
-    # 파지 게이트(§10.4-3) = SELECT[1] (SELECT[0]=뷰 스크린): floor_z = 융합 base_z
-    # − 버퍼, linear + 그리퍼 벌림 충돌 + home 경로 게이트.
-    sel = ctx.calls(_SELECT)[1]["req"]
-    assert sel.linear is True
-    assert sel.floor_z == pytest.approx(0.0 - 0.005)
-    assert sel.gripper_open is True and sel.path_from == _HOME_JOINTS
-    assert sel.obstacle_points
-    # pre 접근 = resolve 가 반환한 관절 해 그대로 (실행부 IK 재계산 금지 — §5.5).
-    # MoveJ 순서: [스윕, 뷰-home, 뷰-이동, 실행-home, pre, 실행-home] — pre 는 index 4.
-    pre_req = ctx.calls(_MOVE_J)[4]["req"]
-    assert pre_req.target.kind == "joint" and pre_req.target.joints == [0.1] * 6
-    # home 경유 = 티칭 waypoint 관절값 (뷰 이동 전 home = index 1)
-    assert ctx.calls(_MOVE_J)[1]["req"].target.joints == _HOME_JOINTS
+
+async def test_servo_outlier_tick_holds_without_motion():
+    """mask 오검출 tick (실데이터 455mm 도약 클래스) = hold — 그 관측이 명령으로
+    이어지면 로봇이 허공으로 간다. 기각 tick 과 다음 tick 사이 모션 0 잠금."""
+    outlier = _det(position=(0.5, 0.45, 0.02))  # 기대 위치에서 먼 오검출
+    ctx = _ctx(_pick_script(**{
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # 스윕
+            DetectOrientedResponse(found=True, candidates=[outlier]),  # tick1 기각
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick2 채택
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick3
+        ],
+        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP)],
+        _FUSE: [FuseOrientedResponse(candidates=[_OBS])],
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+
+    keys = ctx.keys()
+    # tick1(기각) 과 tick2(채택) 사이 = 모션 없음 (DETECT,TCP 다음 바로 DETECT)
+    i1 = keys.index(_DETECT, keys.index(_GRIP))  # servo 첫 DETECT
+    assert keys[i1 : i1 + 5] == [_DETECT, _TCP_SNAP, _DETECT, _TCP_SNAP, _MOVE_L]
+    # 파지는 정상 관측 기준 (오검출이 목표에 안 섞임)
+    ml = [c["req"].target.position for c in ctx.calls(_MOVE_L)]
+    assert ml[1] == pytest.approx(_G_TCP, abs=1e-9)
 
 
-async def test_scenario_with_place_branch():
-    mod = _module_for_scenario()
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={
-            **_search_responses(),
-            _CAL_BUNDLE: [_hand_eye_bundle()] * 2,
-            _FUSE: [_fuse_full()] * 2,
-            _DETECT: [
-                DetectOrientedResponse(  # pick 스윕(찾기)
-                    found=True, candidates=[_det(points=_cloud(False))]
-                ),
-                DetectOrientedResponse(  # pick close 뷰
-                    found=True, candidates=[_det(points=_cloud(False))]
-                ),
-                DetectOrientedResponse(  # place 스윕
-                    found=True,
-                    candidates=[_det(position=(0.25, -0.05, 0.04), height=0.04)],
-                ),
-            ],
-            _SELECT: [_resolve_ok()] * 3,  # pick 뷰 도달 + pick 파지 + place resolve
-            _MOVE_J: [MoveJResponse()] * 10,
-            _MOVE_L: [MoveLResponse()] * 4,  # advance/withdraw + insert/retreat
-            _GRIP: [SetGripperResponse()] * 3,  # open/close + release
-            _TCP_SNAP: [_tcp()] * 1,  # grasp 도달 로깅
-            _READ_STATE: [_joint_state(_HELD_RAW)] * 3,  # 파지판정 close/withdraw/적치
-        },
-    )
+async def test_servo_lost_at_start_fails_with_reason_and_trace(tmp_path: Path):
+    """servo 진입 후 물체를 한 번도 못 보면 (연속 소실) — 맹목 진행이 아니라
+    ServoFailed (사유 포함) + 파지 모션 0 + trace/summary 기록."""
+    ctx = _ctx(_pick_script(**{
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # 스윕
+            DetectOrientedResponse(found=False, candidates=[]),  # tick1 miss
+            DetectOrientedResponse(found=False, candidates=[]),  # tick2 → abort
+        ],
+        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO0)],
+    }))
+    with pytest.raises(ServoFailed, match="소실"):
+        await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    assert ctx.calls(_MOVE_L) == []  # 관측 없이 servo 이동/파지 없음
+    grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
+    assert grips == [_SPEC.gripper_open_raw]  # open 만 (close 없음)
+    # trace 안전망: tick 기록 + 실패 summary 가 남는다 (실패 재구성 요구)
+    runs = list((tmp_path / "servo_pick").iterdir())
+    assert len(runs) == 1
+    assert (runs[0] / "trace.jsonl").read_text(encoding="utf-8").count("\n") == 2
+    summary = (runs[0] / "summary.json").read_text(encoding="utf-8")
+    assert '"result": "failed"' in summary and "ServoFailed" in summary
 
-    await mod.scenario(ctx, pick_object="white cube", place_object="red box")
+
+async def test_servo_lost_after_convergence_commits_blind():
+    """가까이서(rung1) 수렴 후 관측이 죽으면 (그리퍼 가림/근접 한계) — 직전
+    관측으로 blind commit (후퇴·포기가 아니라 결단 — handoff §4)."""
+    ctx = _ctx(_pick_script(**{
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # 스윕
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick1 → 하강
+            DetectOrientedResponse(found=False, candidates=[]),  # tick2 miss(hold)
+            DetectOrientedResponse(found=False, candidates=[]),  # tick3 → commit
+        ],
+        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO1), _tcp(_SO1), _tcp(_G_TCP)],
+        _FUSE: [],  # 융합 없음 (채택 관측 1건뿐)
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    ml = [c["req"].target.position for c in ctx.calls(_MOVE_L)]
+    assert ml[1] == pytest.approx(_G_TCP, abs=1e-9)  # 직전 관측 기준 commit
+
+
+async def test_servo_empty_close_retries_from_standoff_then_succeeds():
+    """close 후 EMPTY = 물체가 밀렸을 수 있다 — 놓고 rung1 로 물러나 재관측부터
+    재시도 (상한 1회). 옛 open-loop 은 여기서 그냥 실패였다."""
+    ctx = _ctx(_pick_script(**{
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # 스윕
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick1
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick2 → commit
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # 재시도 tick
+        ],
+        _TCP_SNAP: [
+            _tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP),  # tick1/2 + 도달로깅
+            _tcp(_SO1), _tcp(_G_TCP),  # 재시도 tick + 도달로깅
+        ],
+        _FUSE: [FuseOrientedResponse(candidates=[_OBS])],
+        _MOVE_L: [MoveLResponse()] * 6,  # 하강+commit + 후퇴 + commit2 + withdraw
+        _GRIP: [SetGripperResponse()] * 4,  # open,close, open(재시도),close
+        _READ_STATE: [
+            _joint_state(_EMPTY_RAW),  # close① = 빈 파지
+            _joint_state(_HELD_RAW),  # close② = 물림
+            _joint_state(_HELD_RAW),  # withdraw 판정
+        ],
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
 
     grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
     assert grips == [
         _SPEC.gripper_open_raw, _SPEC.gripper_close_raw,
-        _SPEC.gripper_open_raw,  # 마지막 open = release
+        _SPEC.gripper_open_raw, _SPEC.gripper_close_raw,
     ]
-    assert len(ctx.calls(_MOVE_L)) == 4
-    # 관절 이동 = pick 스윕(1) + close 뷰 home+이동(2) + place 스윕(1) +
-    # execute_pick home×2+pre(3) + execute_place pre+home(2) = 9
-    assert len(ctx.calls(_MOVE_J)) == 9
-    # 적치 resolve = SELECT[2] (뷰·파지 뒤): home 경로 게이트 + linear
-    place_sel = ctx.calls(_SELECT)[2]["req"]
-    assert place_sel.path_from == _HOME_JOINTS and place_sel.linear is True
-    # #2 불변식: 집기·놓기 도달성(RESOLVE)이 **전부** 끝난 뒤에야 첫 파지(GRIP)와
-    # 실행 모션(MOVE_L)이 나간다 — 못 놓을 물체를 집는 일이 없도록. 계획 단계
-    # RESOLVE = pick 뷰(1) + pick 파지(1) + place(1) = 3, 전부 GRIP/MOVE_L 앞.
+    ml = [c["req"].target.position for c in ctx.calls(_MOVE_L)]
+    # 실패 후 후퇴 = rung1 standoff (재관측 자리), 이후 재 commit
+    assert ml[2] == pytest.approx(_SO1, abs=1e-9)
+    assert ml[3] == pytest.approx(_G_TCP, abs=1e-9)
+
+
+async def test_servo_empty_close_exhausted_raises():
+    """재시도 상한까지 EMPTY → GraspFailed (무한 재시도 금지 — handoff §2 표)."""
+    ctx = _ctx(_pick_script(**{
+        _DETECT: [DetectOrientedResponse(found=True, candidates=[_OBS])] * 4,
+        _TCP_SNAP: [
+            _tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP),
+            _tcp(_SO1), _tcp(_G_TCP),
+        ],
+        _FUSE: [FuseOrientedResponse(candidates=[_OBS])],
+        _MOVE_L: [MoveLResponse()] * 6,
+        _GRIP: [SetGripperResponse()] * 4,
+        _READ_STATE: [_joint_state(_EMPTY_RAW)] * 2,  # 두 attempt 모두 빈 파지
+    }))
+    with pytest.raises(GraspFailed) as ei:
+        await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    assert ei.value.phase == "close 직후"
+    assert len(ctx.calls(_READ_STATE)) == 2  # attempt 2회에서 끝 (withdraw 판정 X)
+
+
+async def test_servo_move_rejected_falls_back_to_movej():
+    """servo 이동 MoveL 거부 (경로 IK) → MoveJ 폴백으로 계속 — 거부가 침묵
+    통과("명령은 항상 실행된다" 가정)하면 회귀."""
+    obs2 = _det(position=(0.2, 0.062, 0.025))  # 12mm 이탈 → correct 유발
+    ctx = _ctx(_pick_script(**{
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # 스윕
+            DetectOrientedResponse(found=True, candidates=[obs2]),  # tick1 correct
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick2 하강
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick3 commit
+        ],
+        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP)],
+        _FUSE: [FuseOrientedResponse(candidates=[_OBS])] * 2,
+        _MOVE_L: [
+            RemoteError("MotionRejected", "경로 IK 실패"),  # correct 이동 거부
+            MoveLResponse(),  # 하강
+            MoveLResponse(),  # commit
+            MoveLResponse(),  # withdraw
+        ],
+        _MOVE_J: [MoveJResponse()] * 5,  # 스윕+home+rung0 + 폴백 + 종료 home
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    # 폴백 MoveJ = pose 타깃 (거부된 correct 목표 그대로)
+    fallback = ctx.calls(_MOVE_J)[3]["req"].target
+    assert fallback.kind == "pose"
+
+
+async def test_servo_move_both_rejected_aborts():
+    ctx = _ctx(_pick_script(**{
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS]),
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick1 하강 시도
+        ],
+        _TCP_SNAP: [_tcp(_SO0)],
+        _MOVE_L: [RemoteError("MotionRejected", "경로 IK 실패")],
+        _MOVE_J: [
+            MoveJResponse(), MoveJResponse(), MoveJResponse(),  # 스윕+home+rung0
+            RemoteError("MotionRejected", "IK 실패"),  # 폴백도 거부
+        ],
+    }))
+    with pytest.raises(ServoFailed, match="이동 실패"):
+        await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    assert ctx.calls(_GRIP)[-1]["req"].position_raw == _SPEC.gripper_open_raw
+    assert ctx.calls(_READ_STATE) == []  # 파지 시도 없음
+
+
+async def test_servo_nonconvergence_aborts_with_history():
+    """오차가 안 줄면 (발진/정체) 보정 상한 후 명시 중단 — 사유에 오차 이력."""
+    cfg = servo.ServoConfig(
+        standoffs=(0.10, 0.05), eps_descend_m=(0.008, 0.004),
+        corrections_per_rung=1, settle_s=0.0,
+    )
+    far = _det(position=(0.2, 0.05 + 0.03, 0.025))  # lateral 30mm > capture 12mm
+    ctx = _ctx(_pick_script(**{
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # 스윕
+            DetectOrientedResponse(found=True, candidates=[far]),  # tick1 correct
+            DetectOrientedResponse(found=True, candidates=[far]),  # tick2 → abort
+        ],
+        # TCP 가 목표를 안 따라감 (오차 유지) — 발진/정체 재현
+        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO0)],
+        _FUSE: [FuseOrientedResponse(candidates=[far])],
+        _MOVE_L: [MoveLResponse()],  # correct 1회
+    }))
+    import modules.tasks.pick_and_place.steps as steps_mod
+    steps_mod._SERVO_CFG = cfg  # 이 테스트만 보정 상한 1
+    try:
+        with pytest.raises(ServoFailed, match="수렴 실패"):
+            await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    finally:
+        steps_mod._SERVO_CFG = _CFG
+
+
+async def test_scenario_with_place_branch_places_after_servo():
+    place_spot = _det(position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3)
+    ctx = _ctx(_pick_script(**{
+        **_search_responses(sweeps=2),
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # pick 스윕
+            DetectOrientedResponse(found=True, candidates=[place_spot]),  # place 스윕
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick1
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick2
+        ],
+        _SELECT: [_resolve_ok(), _resolve_ok()],  # servo 계획 + place 정렬 가족
+        _MOVE_J: [MoveJResponse()] * 8,
+        _MOVE_L: [MoveLResponse()] * 5,  # servo 3 + insert + retreat
+        _GRIP: [SetGripperResponse()] * 3,  # open/close/release
+        _READ_STATE: [_joint_state(_HELD_RAW)] * 3,  # close/withdraw/적치 직전
+    }))
+    await _module_for_scenario().scenario(
+        ctx, pick_object="white cube", place_object="red box"
+    )
+    grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
+    assert grips == [
+        _SPEC.gripper_open_raw, _SPEC.gripper_close_raw, _SPEC.gripper_open_raw,
+    ]
+    # 계획 우선 불변식: 놓기 도달성 판정(RESOLVE ×2)이 전부 끝난 뒤에야 servo
+    # 진입(GRIP/MOVE_L) — 못 놓을 물체를 집지 않는다.
     keys = ctx.keys()
-    assert keys[: keys.index(_GRIP)].count(_SELECT) == 3
-    assert keys[: keys.index(_MOVE_L)].count(_SELECT) == 3
+    assert keys[: keys.index(_GRIP)].count(_SELECT) == 2
+    assert keys[: keys.index(_MOVE_L)].count(_SELECT) == 2
+
+
+async def test_scenario_place_unreachable_fails_before_pick():
+    """놓을 곳 도달 불가 → 집기 **전에** 실패 (쥔 채 멈춤 corrupt 방지) —
+    servo 모션·파지 0."""
+    place_spot = _det(position=(0.15, 0.10, 0.22), base_z=0.20)
+    ctx = _ctx({
+        **_search_responses(sweeps=2),
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS]),
+            DetectOrientedResponse(found=True, candidates=[place_spot]),
+        ],
+        _SELECT: [
+            _resolve_ok(),  # servo 계획
+            ResolveReachableResponse(index=-1, message="정렬 전멸"),
+            ResolveReachableResponse(index=-1, message="자유 전멸"),
+        ],
+        _MOVE_J: [MoveJResponse()] * 2,  # 스윕 2회 (pick/place)
+    })
+    with pytest.raises(NoReachableGrasp, match="놓을 자리 도달 불가"):
+        await _module_for_scenario().scenario(
+            ctx, pick_object="white cube", place_object="red box"
+        )
+    assert ctx.calls(_GRIP) == []
+    assert ctx.calls(_MOVE_L) == []
+
+
+async def test_plan_pick_family_exhausted_fails_explicitly():
+    """servo 접근 가족 전멸(-1) = 데이터 → step 이 치명 판정 (침묵 통과 금지),
+    모션은 스윕뿐."""
+    ctx = _ctx({
+        **_search_responses(),
+        _DETECT: [DetectOrientedResponse(found=True, candidates=[_OBS])],
+        _SELECT: [ResolveReachableResponse(index=-1, message="전멸")],
+        _MOVE_J: [MoveJResponse()],
+    })
+    with pytest.raises(NoReachableGrasp, match="servo 접근 가족"):
+        await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    assert ctx.calls(_GRIP) == [] and ctx.calls(_MOVE_L) == []
+
+
+async def test_scenario_detect_fail_raises_after_search():
+    ctx = _ctx({
+        **_search_responses(),
+        _DETECT: [DetectOrientedResponse(found=False, candidates=[])] * 4,
+        _MOVE_J: [MoveJResponse()] * 4,
+    })
+    with pytest.raises(DetectionNotFound):
+        await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    assert ctx.calls(_GRIP) == []
+    assert ctx.calls(_MOVE_L) == []
 
 
 async def test_search_sweep_accumulates_and_selects_best_score():
-    """검색 원리 (옛 SearchWaypointGroup + SelectTarget 포팅): search 자세를 **전부**
-    돌며 후보를 **누적**하고, select_target_by_score 가 누적 전체의 최고 score 를
-    고른다 (첫 자세서 안 멈춤). search 는 '찾기' 전용 — 파지는 이후 close 관측이
-    판단(observe_and_plan_grasp)하므로 여기선 detect+선택만 검증."""
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={
-            **_search_responses(n_members=2),  # 검색 자세 2개
-            _DETECT: [
-                DetectOrientedResponse(found=True, candidates=[_det(score=0.4)]),
-                DetectOrientedResponse(found=True, candidates=[_det(score=0.95)]),
-            ],
-            _MOVE_J: [MoveJResponse()] * 2,  # 스윕 자세 2곳
-        },
-    )
+    """검색 원리: search 자세를 전부 돌며 누적, select 는 누적 전체 최고 score
+    (첫 자세서 안 멈춤)."""
+    ctx = _ctx({
+        **_search_responses(n_members=2),
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_det(score=0.4)]),
+            DetectOrientedResponse(found=True, candidates=[_det(score=0.95)]),
+        ],
+        _MOVE_J: [MoveJResponse()] * 2,
+    })
     cands = await steps.detect(ctx, _BOT, "white cube")
-
-    assert len(ctx.calls(_MOVE_J)) == 2  # 두 자세 다 돎 (첫서 안 멈춤)
-    assert len(ctx.calls(_DETECT)) == 2  # 스윕 자세마다 검출
-    assert [c.score for c in cands] == [0.4, 0.95]  # 누적 (선택 안 함)
-    # 선택 = 누적 전체 최고 score (첫 자세 0.4 아님)
+    assert len(ctx.calls(_MOVE_J)) == 2
+    assert [c.score for c in cands] == [0.4, 0.95]
     coarse = geometry.select_target_by_score(cands, prompt="white cube")
     assert coarse.score == 0.95
 
 
 async def test_search_group_missing_fails_explicitly():
-    """search 그룹 없음 = 명시적 실패 (침묵 단일-뷰 폴백 금지 — 사용자가 관측 자세를
-    티칭해야 함)."""
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={
-            **_home_responses(),
-            _LIST_GROUPS: [ListGroupsResponse(groups=[])],  # search 그룹 없음
-        },
-    )
+    ctx = _ctx({
+        **_home_responses(),
+        _LIST_GROUPS: [ListGroupsResponse(groups=[])],
+    })
     with pytest.raises(TaskError, match="search"):
-        await mod_scenario_run(ctx)
-    assert ctx.calls(_MOVE_J) == []  # 그룹 없으면 아무 데도 안 감
+        await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    assert ctx.calls(_MOVE_J) == []
 
 
 async def test_scenario_home_waypoint_missing_fails_before_any_motion():
-    """'home' waypoint 없음 = 시나리오 맨 앞(모션 0)에서 명시적 실패 + 티칭 안내.
-    검색 스윕조차 안 나간다 (실행 중간에 home 이 없어서 멈추는 corrupt 방지)."""
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={_LIST_WP: [ListWaypointsResponse(waypoints=[])]},
-    )
+    ctx = _ctx({_LIST_WP: [ListWaypointsResponse(waypoints=[])]})
     with pytest.raises(TaskError, match="home"):
-        await mod_scenario_run(ctx)
-    assert ctx.calls(_MOVE_J) == []  # 어떤 모션도 안 나감
-    assert ctx.calls(_LIST_GROUPS) == []  # 검색 스윕 진입 전에 실패
+        await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    assert ctx.calls(_MOVE_J) == []
+    assert ctx.calls(_LIST_GROUPS) == []
 
 
-async def mod_scenario_run(ctx: FakeContext) -> None:
+async def test_servo_success_writes_trace_and_summary(tmp_path: Path):
+    """성공 run 도 tick trace + summary — "성공했는데 왜 성공했는지 모른다" 방지
+    (실물 임계 튜닝의 데이터 소스)."""
+    ctx = _ctx(_pick_script())
     await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    runs = list((tmp_path / "servo_pick").iterdir())
+    assert len(runs) == 1
+    lines = (runs[0] / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 3  # tick1 + tick2 + commit
+    summary = (runs[0] / "summary.json").read_text(encoding="utf-8")
+    assert '"result": "success"' in summary
 
 
-async def test_scenario_detect_fail_raises_after_search():
-    """검색 스윕을 다 돌아도 후보 0 → DetectionNotFound. 스윕(관측 MoveJ)은 돌지만
-    파지(GRIP)·실행 모션은 0 (아무것도 안 집음)."""
-    mod = _module_for_scenario()
-    ctx = FakeContext(
-        robots=[_BOT], specs={_BOT: _SPEC},
-        service_script={
-            **_search_responses(),
-            _DETECT: [DetectOrientedResponse(found=False, candidates=[])] * 4,
-            _MOVE_J: [MoveJResponse()] * 4,  # 검색 스윕
-        },
-    )
-    with pytest.raises(DetectionNotFound):
-        await mod.scenario(ctx, pick_object="white cube")
-    assert ctx.calls(_GRIP) == []  # 검출 실패면 파지 0
-    assert ctx.calls(_MOVE_L) == []  # 실행 모션 0
+# ─── 놓기 geometry/step (open-loop 유지 — 기존 잠금 계승) ─────────────
 
 
-async def test_scenario_ik_exhausted_raises(_two_view_dirs):
-    """RESOLVE_REACHABLE 의 -1 은 데이터 — 파지가 끝내 안 서면 step 이 치명 판정
-    (침묵 -1 통과 금지). 파지 전에 실패 (GRIP·MOVE_L 0)."""
-    mod = _module_for_scenario()
-    ctx = FakeContext(
-        robots=[_BOT], specs={_BOT: _SPEC},
-        service_script=_pick_script(
-            **{
-                _SELECT: [
-                    ResolveReachableResponse(index=-1, message="전멸")
-                ] * 3  # 뷰 2방향 전멸(도달 불가) — close 뷰를 못 찍어 파지 미성립
-            }
-        ),
-    )
-    with pytest.raises(NoReachableGrasp, match="안전 파지 불가"):
-        await mod.scenario(ctx, pick_object="white cube")
-    assert ctx.calls(_GRIP) == []  # 전멸이면 파지 0
-    assert ctx.calls(_MOVE_L) == []
+def test_plan_place_release_height():
+    spot = _det(position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3)
+    held = _det(height=0.023)
+    pplan = geometry.plan_place(spot, held=held, lateral=0.008)
+    assert pplan[0].place[2] == pytest.approx(0.04 + 0.023 / 2 + 0.005)
+    assert pplan[0].pre[0] == pytest.approx(pplan[0].place[0])
+    assert pplan[0].pre[1] == pytest.approx(pplan[0].place[1])
+    assert pplan[0].pre[2] == pytest.approx(pplan[0].place[2] + 0.06 + 0.023 / 2)
+    assert len(pplan) == 7 * 4
+    assert pplan[0].label == "tilt=+0 yaw=17"
+    for deg in (17, 107, 197, 287):
+        assert any(f"yaw={deg}" in c.label for c in pplan)
 
 
-async def test_scenario_place_unreachable_fails_before_pick():
-    """놓을 곳 IK 불가 → 집기 **전에** 실패 (#2). 물체를 쥔 채 멈추는 corrupt 상태를
-    막는다 — 실물 실패 로그(resolve_place IK 불가) 그대로가 회귀 시나리오.
-
-    계획 단계(집기·놓기 검출+IK)가 파지 없음이라, 놓기 IK 가 -1 이면 파지 전에
-    raise → gripper·MOVE_L(실행) 0 (아무것도 안 집음). 검색 스윕 MoveJ 는 관측이라
-    있는 게 정상."""
-    mod = _module_for_scenario()
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={
-            **_search_responses(),
-            _CAL_BUNDLE: [_hand_eye_bundle()],
-            _FUSE: [_fuse_full()],
-            _DETECT: [
-                DetectOrientedResponse(  # 집기 스윕(찾기)
-                    found=True, candidates=[_det(points=_cloud(False))]
-                ),
-                DetectOrientedResponse(  # 집기 close 뷰
-                    found=True, candidates=[_det(points=_cloud(False))]
-                ),
-                DetectOrientedResponse(  # 놓기 스윕
-                    found=True,
-                    candidates=[_det(position=(0.25, -0.05, 0.04), height=0.04)],
-                ),
-            ],
-            _SELECT: [
-                ResolveReachableResponse(index=0, solutions=[[0.3] * 6]),  # 집기 뷰 도달
-                _resolve_ok(),  # 집기 파지 성립
-                # 놓기 불가 — 정렬 + 자유 yaw 두 가족 다 전멸
-                ResolveReachableResponse(index=-1, message="놓기 IK 전멸"),
-                ResolveReachableResponse(index=-1, message="놓기 IK 전멸"),
-            ],
-            # 집기 스윕(1) + close 뷰 home+이동(2) + 놓기 스윕(1)
-            _MOVE_J: [MoveJResponse()] * 4,
-        },
-    )
-    with pytest.raises(NoReachableGrasp, match="놓을 자리 도달 불가"):
-        await mod.scenario(ctx, pick_object="white cube", place_object="red box")
-    # 핵심 (#2): 파지·실행 모션이 하나도 안 나감 — 아무것도 안 집었으니 든 채 멈춤 없음.
-    assert ctx.calls(_GRIP) == []
-    assert ctx.calls(_MOVE_L) == []
+def test_plan_place_free_family_disjoint_yaws():
+    spot = _det(position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3)
+    held = _det(height=0.023)
+    aligned = geometry.plan_place(spot, held=held, lateral=0.008)
+    free = geometry.plan_place_free(spot, held=held, lateral=0.008)
+    assert len(free) == 7 * 8
+    assert free[0].label == "tilt=+0 yaw=47"
+    yaw_of = lambda c: c.label.split("yaw=")[1]  # noqa: E731
+    assert {yaw_of(c) for c in aligned} & {yaw_of(c) for c in free} == set()
 
 
 async def test_plan_place_falls_back_to_reachable_spot():
-    """놓기 타깃 = 점수 1등에 무조건 커밋하지 않고 **닿는 첫 spot** 채택 (실물 버그
-    회귀: 점수 최고인 선반 위 통(도달 불가)에 커밋해 실패, 테이블 박스(도달 가능)를
-    버림). 점수 높은 unreachable → 낮지만 reachable 로 폴백. 뒤집으면 = 점수-only
-    커밋 회귀."""
-    high_far = _det(score=0.80, position=(0.15, 0.10, 0.22), base_z=0.20)  # 선반 위
-    low_near = _det(score=0.73, position=(0.24, -0.11, 0.03), base_z=0.005)  # 테이블
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={
-            **_search_responses(),
-            _DETECT: [
-                DetectOrientedResponse(found=True, candidates=[high_far, low_near])
-            ],
-            _SELECT: [  # spot 점수순: high_far 정렬·자유 전멸 → low_near 정렬 가용
-                ResolveReachableResponse(index=-1, message="선반 위 IK 전멸"),
-                ResolveReachableResponse(index=-1, message="선반 위 IK 전멸"),
-                _resolve_ok(),
-            ],
-            _MOVE_J: [MoveJResponse()],  # place 스윕 1자세
-        },
-    )
+    high_far = _det(score=0.80, position=(0.15, 0.10, 0.22), base_z=0.20)
+    low_near = _det(score=0.73, position=(0.24, -0.11, 0.03), base_z=0.005)
+    ctx = _ctx({
+        **_search_responses(),
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[high_far, low_near])
+        ],
+        _SELECT: [
+            ResolveReachableResponse(index=-1, message="선반 위 IK 전멸"),
+            ResolveReachableResponse(index=-1, message="선반 위 IK 전멸"),
+            _resolve_ok(),
+        ],
+        _MOVE_J: [MoveJResponse()],
+    })
     held = _det(height=0.023)
-    grasp = geometry.GraspCandidate(
-        label="stub", pre=(0, 0, 0), grasp=(0, 0, 0),
-        quat=(0, 0, 0, 1), lateral=0.008,
-    )
     chosen, _pre = await steps.plan_place(
-        ctx, _BOT, "blue box", held=held, grasp=grasp, home=_home_record()
+        ctx, _BOT, "blue box", held=held, lateral=0.008, home=_home_record()
     )
-    # 채택된 놓기 자리 = 테이블 박스(low_near) 위 — 선반(high_far) 아님
     assert chosen.place[2] == pytest.approx(0.03 + 0.023 / 2 + 0.005)
-    # resolve 소비 = 선반(정렬+자유 전멸 2회) → 테이블(정렬 채택 1회)
     assert len(ctx.calls(_SELECT)) == 3
 
 
 async def test_plan_place_falls_back_to_free_yaw_family():
-    """한 spot 안에서 정렬 yaw 전멸 → 자유 yaw 폴백 (실물 회귀: 위치 통과 26/26
-    자세 IK 전멸 — 정렬 yaw 그물이 성겨 지점은 닿는데 자세를 못 찾음). 뒤집으면
-    = 정렬 전멸이 곧 spot 포기(삐딱하게라도 놓기 상실) 회귀."""
-    ctx = FakeContext(
-        robots=[_BOT],
-        specs={_BOT: _SPEC},
-        service_script={
-            **_search_responses(),
-            _DETECT: [DetectOrientedResponse(found=True, candidates=[_det()])],
-            _SELECT: [
-                ResolveReachableResponse(index=-1, message="정렬 yaw 전멸"),
-                _resolve_ok(),  # 자유 yaw 가족에서 성립
-            ],
-            _MOVE_J: [MoveJResponse()],
-        },
-    )
-    grasp = geometry.GraspCandidate(
-        label="stub", pre=(0, 0, 0), grasp=(0, 0, 0),
-        quat=(0, 0, 0, 1), lateral=0.008,
-    )
+    ctx = _ctx({
+        **_search_responses(),
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_det(grasp_yaw=0.3)])
+        ],
+        _SELECT: [
+            ResolveReachableResponse(index=-1, message="정렬 yaw 전멸"),
+            _resolve_ok(),
+        ],
+        _MOVE_J: [MoveJResponse()],
+    })
     chosen, _pre = await steps.plan_place(
-        ctx, _BOT, "cube", held=_det(height=0.023), grasp=grasp,
+        ctx, _BOT, "cube", held=_det(height=0.023), lateral=0.008,
         home=_home_record(),
     )
-    assert len(ctx.calls(_SELECT)) == 2  # 정렬 → 자유 두 가족 순차
-    assert chosen.label == "tilt=+0 yaw=47"  # 자유 가족 첫 후보 (index=0)
+    assert len(ctx.calls(_SELECT)) == 2
+    assert chosen.label == "tilt=+0 yaw=47"  # 자유 가족 첫 후보 (30°+17°)
 
 
 # ─── module wire (runner 결합 e2e) ───────────────────────────────────
@@ -825,7 +703,6 @@ class _WireStub:
 
 async def test_module_run_reports_failure_reason_and_allows_rerun():
     rt = _WireStub()
-    # home 조회 → 검색 스윕: search 그룹 1자세 → MoveJ → 검출(0건) → DetectionNotFound
     rt.responses[_LIST_WP] = ListWaypointsResponse(waypoints=[_home_record()])
     rt.responses[_LIST_GROUPS] = ListGroupsResponse(
         groups=[WaypointGroupRecord(id=1, robot_id=_BOT, name="search")]
@@ -840,7 +717,7 @@ async def test_module_run_reports_failure_reason_and_allows_rerun():
     )
     rt.responses[_MOVE_J] = MoveJResponse()
     rt.responses[_DETECT] = DetectOrientedResponse(found=False, candidates=[])
-    rt.responses[str(Motion.Service.STOP)] = StopResponse(ok=True)  # abort 안전 경로
+    rt.responses[str(Motion.Service.STOP)] = StopResponse(ok=True)
     mod = PickAndPlaceModule(rt, {})  # type: ignore[arg-type]
 
     res = await mod.run(RunRequest(pick_object="white cube"))
@@ -852,9 +729,8 @@ async def test_module_run_reports_failure_reason_and_allows_rerun():
     final = states[-1]
     assert isinstance(final, TaskState)
     assert final.status == TaskStatus.FAILED
-    assert final.error is not None and "white cube" in final.error  # 사유 표시
+    assert final.error is not None and "white cube" in final.error
 
-    # 실패 후 재실행 가능 (상태 corrupt 없음)
     res2 = await mod.run(RunRequest(pick_object="white cube"))
     assert res2.accepted
 
@@ -862,157 +738,69 @@ async def test_module_run_reports_failure_reason_and_allows_rerun():
 async def test_module_control_without_run_says_why():
     mod = PickAndPlaceModule(_WireStub(), {})  # type: ignore[arg-type]
     r = await mod.pause(ControlRequest())
-    assert not r.ok and r.message  # 침묵 금지
+    assert not r.ok and r.message
 
 
 async def test_module_preview_returns_static_tree_without_wire():
-    """PREVIEW 서비스 — 실행/모킹 0 (wire stub 은 call 스크립트가 없어 호출되면
-    즉사). 트리 상세는 test_task_preview 가 잠금 — 여기선 wire 노출만 확인."""
     mod = PickAndPlaceModule(_WireStub(), {})  # type: ignore[arg-type]
     res = await mod.preview(PreviewRequest())
     assert [e.name for e in res.entries if e.depth == 0] == [
-        "home_waypoint", "plan_pick", "plan_place", "execute_pick", "execute_place",
+        "home_waypoint", "plan_pick", "plan_place", "servo_pick", "execute_place",
     ]
-    assert not mod._seq["state"]  # 프리뷰는 발행/실행 상태를 건드리지 않는다
+    assert not mod._seq["state"]
 
 
 async def test_module_toggle_breakpoint_before_run_publishes_state():
-    """run 밖 breakpoint 토글(프리뷰에서 미리 박기)이 STATE 로 보인다 — robot
-    라우팅은 참여 명부(TASK_ROBOTS) fallback (침묵 금지)."""
     rt = _WireStub()
     mod = PickAndPlaceModule(rt, {})  # type: ignore[arg-type]
-    r = await mod.toggle_breakpoint(ToggleBreakpointRequest(name="advance"))
+    r = await mod.toggle_breakpoint(ToggleBreakpointRequest(name="servo_pick"))
     assert r.ok and "다음 실행" in r.message
 
     states = [e for k, e in rt.published if k.endswith("/state")]
     assert states, "run 밖 토글이 침묵 — STATE 미발행"
     final = states[-1]
     assert isinstance(final, TaskState)
-    assert final.robot_id == _BOT  # robot_ids 없음 → TASK_ROBOTS fallback
+    assert final.robot_id == _BOT
     assert final.status == TaskStatus.IDLE
-    assert final.breakpoints == ["advance"]
+    assert final.breakpoints == ["servo_pick"]
 
 
 def test_task_robots_constant_matches_scenario_binding():
-    """TASK_ROBOTS = 바인딩 SSOT (scenario 도 여기서 파생) — 값이 바뀌면 프론트
-    스트림 키/실 robot 대상이 같이 바뀌므로 명시 잠금."""
     assert PickAndPlaceModule.TASK_ROBOTS == ("so101_6dof_0",)
 
 
 async def test_list_robots_returns_task_robots():
-    """LIST_ROBOTS = 프론트가 {robot_id} 를 채우는 유일한 채널 — TASK_ROBOTS 와
-    어긋나면 프론트가 존재하지 않는 스트림을 구독한다 (침묵 무데이터)."""
     mod = PickAndPlaceModule(_WireStub(), {})  # type: ignore[arg-type]
     res = await mod.list_robots(ListRobotsRequest())
     assert res.robot_ids == list(PickAndPlaceModule.TASK_ROBOTS)
 
 
-# ─── 파지 판정 (물었나/놓쳤나) — 구멍당 테스트 ──────────────────────────
-# 의미 (뒤집으면 회귀): 못 잡았는데 성공처럼 진행(침묵 성공) / 잡았다 이송 중
-# 놓쳤는데 계속 진행 / 판정이 단일 시점·단일 신호로 허점 노출. 각 구멍 = 테스트 1개.
-# 실물 stall/부하 매핑은 sim 이 못 줌 — 여기선 "신호가 주어졌을 때 판정·흐름이
-# 옳은가"만 결정적으로 잠근다 (실물 임계값은 특성화 루틴 + 로그로 튜닝).
-
-
-def _grasp_candidate() -> geometry.GraspCandidate:
-    return geometry.GraspCandidate(
-        label="pair0 tilt=0 flip=+ w=22mm",
-        pre=(0.18, 0.05, 0.06), grasp=(0.20, 0.05, 0.02),
-        quat=(0.0, 0.0, 0.0, 1.0), lateral=0.01,
-    )
+# ─── 파지 판정 (물었나/놓쳤나) — 기존 잠금 계승 ───────────────────────
 
 
 def test_gripper_holding_judgment():
-    # margin = |held_thr - close| = |2100-1935| = 165.
-    assert steps._gripper_holding(_HELD_RAW, _SPEC) is True  # gap 465 > 165
-    assert steps._gripper_holding(_EMPTY_RAW, _SPEC) is False  # close 도달 = 빈 파지
-    # 임계보다 얇은 물체 = 못 잡음 판정 (false-negative 한계 — 실물 로그로 튜닝).
+    assert steps._gripper_holding(_HELD_RAW, _SPEC) is True
+    assert steps._gripper_holding(_EMPTY_RAW, _SPEC) is False
     thin = _SPEC.gripper_close_raw + 100  # gap 100 < margin 165
     assert steps._gripper_holding(thin, _SPEC) is False
 
 
 def test_position_only_cannot_catch_false_stall():
-    """알려진 한계 박제: 물체 없이 어중간히 stall 하면 위치 판정은 HELD 로 오판
-    (false-positive). load 를 로그에 병기해 실물에서 load 게이트 추가로 튜닝하는
-    게 해법 — 지금은 위치 단일 신호의 한계를 명시적으로 잠근다."""
+    """알려진 한계 박제: 물체 없이 어중간히 stall 하면 위치 판정은 HELD 오판
+    (false-positive) — load 병기 로그로 실물 튜닝이 해법."""
     false_stall = _SPEC.gripper_held_threshold_raw + 200
-    assert steps._gripper_holding(false_stall, _SPEC) is True  # 못 거름 (한계)
+    assert steps._gripper_holding(false_stall, _SPEC) is True
 
 
 async def test_verify_grasp_empty_raises_with_reason():
-    ctx = FakeContext(
-        robots=[_BOT], specs={_BOT: _SPEC},
-        service_script={_READ_STATE: [_joint_state(_EMPTY_RAW, load=3)]},
-    )
+    ctx = _ctx({_READ_STATE: [_joint_state(_EMPTY_RAW, load=3)]})
     with pytest.raises(GraspFailed) as ei:
         await steps.verify_grasp(ctx, _BOT, phase="close 직후", grasp_label="w=22mm")
-    # 사유 문자열이 "무엇을/다음 행동" 을 담는다 (침묵 금지)
     assert "파지 실패" in str(ei.value) and "close 직후" in str(ei.value)
     assert ei.value.achieved_raw == _EMPTY_RAW
 
 
 async def test_verify_grasp_held_passes():
-    ctx = FakeContext(
-        robots=[_BOT], specs={_BOT: _SPEC},
-        service_script={_READ_STATE: [_joint_state(_HELD_RAW, load=280)]},
-    )
-    await steps.verify_grasp(ctx, _BOT, phase="close 직후")  # raise 안 함
+    ctx = _ctx({_READ_STATE: [_joint_state(_HELD_RAW, load=280)]})
+    await steps.verify_grasp(ctx, _BOT, phase="close 직후")
     assert len(ctx.calls(_READ_STATE)) == 1
-
-
-async def test_execute_pick_empty_grasp_stops_before_withdraw():
-    """핵심 회귀 (어제 사고): 빈 파지면 close 직후 판정에서 실패 → 후퇴/적치로
-    진행 안 함. 예전엔 판정이 없어 빈 손으로 조용히 성공했다."""
-    ctx = FakeContext(
-        robots=[_BOT], specs={_BOT: _SPEC},
-        service_script={
-            _MOVE_J: [MoveJResponse()] * 3,
-            _GRIP: [SetGripperResponse()] * 2,
-            _MOVE_L: [MoveLResponse()] * 2,
-            _TCP_SNAP: [_tcp()],
-            _READ_STATE: [_joint_state(_EMPTY_RAW)],  # close 직후 = 빈 파지
-        },
-    )
-    with pytest.raises(GraspFailed) as ei:
-        await steps.execute_pick(
-            ctx, _BOT, _grasp_candidate(), [0.1] * 6, _home_record()
-        )
-    assert ei.value.phase == "close 직후"
-    # 진입(advance) MOVE_L 1회만 — 후퇴(withdraw)로 진행 안 함
-    assert len(ctx.calls(_MOVE_L)) == 1
-    assert len(ctx.calls(_READ_STATE)) == 1  # close 에서 즉시 실패
-
-
-async def test_execute_pick_drop_after_lift_detected():
-    """구멍 #4 (잡았다 놓침): close 직후엔 물렸지만 withdraw 후 놓친 경우 —
-    다중 체크포인트가 withdraw 시점에서 잡아낸다 (단일 시점이면 못 잡음)."""
-    ctx = FakeContext(
-        robots=[_BOT], specs={_BOT: _SPEC},
-        service_script={
-            _MOVE_J: [MoveJResponse()] * 3,
-            _GRIP: [SetGripperResponse()] * 2,
-            _MOVE_L: [MoveLResponse()] * 2,
-            _TCP_SNAP: [_tcp()],
-            # close = 물림 → 통과, withdraw = 놓침 → 실패
-            _READ_STATE: [_joint_state(_HELD_RAW), _joint_state(_EMPTY_RAW)],
-        },
-    )
-    with pytest.raises(GraspFailed) as ei:
-        await steps.execute_pick(
-            ctx, _BOT, _grasp_candidate(), [0.1] * 6, _home_record()
-        )
-    assert ei.value.phase == "withdraw 후"
-    assert len(ctx.calls(_READ_STATE)) == 2  # close 통과 후 withdraw 에서 실패
-
-
-async def test_scenario_empty_grasp_fails_and_stops():
-    """end-to-end: 빈 파지 → 시나리오 GraspFailed → runner 가 FAILED + Motion.STOP.
-    '못 집었는데 성공' 침묵 실패가 이제 명시적 실패 + 안전정지로 드러난다."""
-    ctx = FakeContext(
-        robots=[_BOT], specs={_BOT: _SPEC},
-        service_script={**_pick_script(), _READ_STATE: [_joint_state(_EMPTY_RAW)]},
-    )
-    with pytest.raises(GraspFailed):
-        await _module_for_scenario().scenario(ctx, pick_object="white cube")
-    # 빈 파지 판정 후 place/withdraw 진행 안 함 — advance MOVE_L 1회만
-    assert len(ctx.calls(_MOVE_L)) == 1

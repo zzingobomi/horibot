@@ -1,14 +1,16 @@
 """표면 antipodal 파지 선택 테스트 (순수 계산 — open3d 법선, 하드웨어 0).
 
-의미 (뒤집으면 회귀): 마주 보는 두 면이 관측돼야 쌍이 나온다(단일 뷰 0쌍 —
-§10.3-B, "쌍 없음" 이 관측 부족의 신호라는 adaptive 루프의 전제) / 조 개구보다
-넓은 물체는 못 문다 / 조 축 수평 필터(수평 마주면만) / plan_grasp 후보의
-tool-frame 기하 (접근축 후퇴 pre, 단일 조 lateral, tilt 우선순위).
+⚠ antipodal/plan_grasp 는 production 소비자 없음 (2026-07-16 closed-loop 전환 —
+servo.grasp_families 가 대체). scripts/grasp_verify/ 진단 자산(post-mortem §9)과
+test_motion 의 resolve 게이트 sim 이 소비해 수식을 계속 잠근다.
+
+의미 (뒤집으면 회귀): 마주 보는 두 면이 관측돼야 쌍이 나온다(단일 뷰 0쌍) /
+조 개구보다 넓은 물체는 못 문다 / 조 축 수평 필터(수평 마주면만) / plan_grasp
+후보의 tool-frame 기하 (접근축 후퇴 pre, 단일 조 lateral, tilt 우선순위).
 """
 
 from __future__ import annotations
 
-import math
 
 import numpy as np
 import pytest
@@ -151,39 +153,5 @@ def test_grasp_ik_groups_pair_pre_and_grasp():
     assert groups[0][0].quaternion == plan[0].quat
 
 
-# ─── adaptive 뷰 탐색축 (§10.4-1) ────────────────────────────────────
-
-
-def test_view_directions_spread_first_from_base_azimuth():
-    """뷰 방향 순서 — 첫 후보는 base 쪽 방위(도달 가능성 최고), 이어서 벌어진
-    방위 (spread-first: antipodal 은 떨어진 방위 관측이 필요 — §10.3-B)."""
-    target = (0.25, 0.15, -0.02)
-    base_az = math.atan2(-0.15, -0.25)
-    dirs = geometry.view_directions(target)
-    assert dirs[0][2] == pytest.approx(base_az)
-    # 두 번째는 ±120° — 같은 방위 근처를 파지 않는다
-    assert abs(abs(dirs[1][2] - base_az) - math.radians(120)) < 1e-9
-
-
-def test_view_pose_groups_look_at_target_all_rolls():
-    """뷰 pose 수식 — 모든 roll 변형에서 카메라가 타깃을 바라보고(광축) 반경
-    유지, hand_eye 오프셋이 TCP 로 정확히 환산. 자연 roll(첫 변형)은 이미지
-    y(down)가 월드 아래쪽."""
-    target = (0.25, 0.15, -0.02)
-    t_ce = np.array([0.0, 0.0, 0.05])
-    poses = geometry.view_pose_groups(
-        target, np.eye(3), [[0.0], [0.0], [0.05]],
-        radius_m=0.16, elev_deg=55.0, az_rad=1.0,
-    )
-    assert len(poses) == 6  # roll 변형 수
-    for i, (pos, quat) in enumerate(poses):
-        r_be = Rotation.from_quat(quat).as_matrix()
-        cam_pos = np.array(pos) + r_be @ t_ce  # hand_eye 역환산 (R_ce=I)
-        to_target = np.array(target) - cam_pos
-        dist = float(np.linalg.norm(to_target))
-        assert dist == pytest.approx(0.16, abs=1e-6)  # 뷰 반경 유지
-        z_cam = r_be[:, 2]  # 광축 (R_ce=I 라 R_bc=R_be) → 타깃을 향함
-        assert float(z_cam @ (to_target / dist)) == pytest.approx(1.0, abs=1e-6)
-        assert cam_pos[2] > target[2]  # 위에서 내려봄 (고도 양수)
-        if i == 0:
-            assert r_be[2, 1] < 0.0  # 자연 roll — 이미지 y(down) ≈ 월드 아래
+# (옛 adaptive 뷰 탐색축 view_directions/view_pose_groups 테스트는 2026-07-16
+# closed-loop 전환으로 함수와 함께 삭제 — 뷰 이동이 servo 루프로 대체됨.)

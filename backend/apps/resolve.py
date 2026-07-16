@@ -148,7 +148,12 @@ def resolve_host_deps(
             if grip is None:
                 continue
             open_raw, close_raw = grip.limit_max, grip.limit_min
-            held = close_raw + round((open_raw - close_raw) * 0.15)
+            # held 문턱 = close + 5% range. 15% → 5% (2026-07-17 실물 실측):
+            # 조는 피벗 회전이라 25mm 큐브를 조 끝으로 물면 gap 이 117~181 raw
+            # 뿐 (so101 range 1251 의 15%=188 이 물림 분포 전체 위 → 물고도
+            # EMPTY 오판 6연속, 영상 확인). 진짜 빈손 실측 gap=6 — 5%(63) 가
+            # 빈손×10 / 물림 최소치의 절반 자리.
+            held = close_raw + round((open_raw - close_raw) * 0.05)
             task_specs[r.id] = TaskRobotSpec(
                 gripper_open_raw=open_raw,
                 gripper_close_raw=close_raw,

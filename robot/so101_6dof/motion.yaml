@@ -17,30 +17,34 @@ joint_limits:
   # 서보가 뒤처지다 감속 구간에 몰아서 따라잡는 서지("팍" 체감, PnP 접근/리프트).
   # Ruckig 상한을 가장 느린 profile(60) 아래로 → jerk-limited 곡선이 서보에서
   # 그대로 재현. 빠르게 가려면 profile 을 올리는 쪽 (motors.yaml, 후속 튜닝).
+  #
+  # 2026-07-17: vel 1.0→0.7 / acc 3.0→1.5 / jerk 15→8 — 전체 MoveJ(스윕/home)가
+  # "급하다" 체감. 주범은 acc+jerk (0.33s 만에 풀속도 = 홱 출발). acc 절반이면
+  # 램프 0.47s, 90° 이동 ~1.9s→2.7s — 차분함과 작업 속도의 절충. 체감 보고 재조정.
   joint1:
-    max_velocity: 1.0
-    max_acceleration: 3.0
-    max_jerk: 15.0
+    max_velocity: 0.7
+    max_acceleration: 1.5
+    max_jerk: 8.0
   joint2:
-    max_velocity: 1.0
-    max_acceleration: 3.0
-    max_jerk: 15.0
+    max_velocity: 0.7
+    max_acceleration: 1.5
+    max_jerk: 8.0
   joint3:
-    max_velocity: 1.0
-    max_acceleration: 3.0
-    max_jerk: 15.0
+    max_velocity: 0.7
+    max_acceleration: 1.5
+    max_jerk: 8.0
   joint4:
-    max_velocity: 1.0
-    max_acceleration: 3.0
-    max_jerk: 15.0
+    max_velocity: 0.7
+    max_acceleration: 1.5
+    max_jerk: 8.0
   joint5:
-    max_velocity: 1.0
-    max_acceleration: 3.0
-    max_jerk: 15.0
+    max_velocity: 0.7
+    max_acceleration: 1.5
+    max_jerk: 8.0
   joint6:
-    max_velocity: 1.0
-    max_acceleration: 3.0
-    max_jerk: 15.0
+    max_velocity: 0.7
+    max_acceleration: 1.5
+    max_jerk: 8.0
 
 cartesian_limits:
   max_trans_vel: 0.10

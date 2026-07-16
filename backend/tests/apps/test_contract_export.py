@@ -93,8 +93,9 @@ def test_contract_json_shape():
     assert topic_keys | service_keys == FRONTEND_EXPOSED
     # +pick_and_place STATE/TRACE/STEP_RESULT +detector DETECTIONS +DETECTIONS_ORIENTED(draft)
     assert len(data["topics"]) == 16
-    # +detector DETECT +DETECT_ORIENTED(draft) +llm PARSE +pick_and_place 9 +calibration ABORT_RUN
-    assert len(data["services"]) == 48
+    # +detector DETECT +DETECT_ORIENTED(draft) +llm PARSE +pick_and_place 9 +calibration
+    # ABORT_RUN +motion_preview PLAN
+    assert len(data["services"]) == 49
     # 내부 전용 payload 는 도달성으로 제외 — JointCommand 안 나옴
     iface_names = {i["name"] for i in data["interfaces"]}
     assert "JointCommand" not in iface_names
@@ -205,7 +206,7 @@ async def test_contract_json_endpoint_serves(contract_endpoint: str):
     assert set(data) == {"enums", "interfaces", "topics", "services"}
     # HTTP 로 serve 된 JSON = in-process build_contract_json 과 동일 계약
     assert len(data["topics"]) == 16  # +DETECTIONS_ORIENTED(draft)
-    assert len(data["services"]) == 48  # +DETECT_ORIENTED(draft) +ABORT_RUN +LIST_ROBOTS +PREVIEW
+    assert len(data["services"]) == 49  # +DETECT_ORIENTED(draft) +ABORT_RUN +LIST_ROBOTS +PREVIEW +motion_preview PLAN
 
 
 # ─── build_contract_graph — unfiltered attribution + wiring (§5.2) ─
@@ -228,6 +229,7 @@ def test_graph_nodes_are_contentful_modules_only():
     assert ids == {
         "MotorDriverModule",
         "MotionModule",
+        "MotionPreviewModule",  # plan-only 미리보기 — host-level (robot-agnostic)
         "CameraDriverModule",
         "CameraDecodedModule",
         "CalibrationModule",
@@ -254,6 +256,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "WaypointModule",
         "LlmModule",
         "PickAndPlaceModule",  # task family — robot-agnostic (host당 1)
+        "MotionPreviewModule",  # plan-only 미리보기 — robot-agnostic (host당 1)
         "HostMonitorModule",  # 각 host 발행 — robot 무관 (host-level)
     }
     for mid in host_level:
@@ -405,6 +408,7 @@ async def test_contract_graph_endpoint_serves(graph_endpoint: str):
     assert {m["id"] for m in data["modules"]} == {
         "MotorDriverModule",
         "MotionModule",
+        "MotionPreviewModule",  # plan-only 미리보기 — host-level (robot-agnostic)
         "CameraDriverModule",
         "CameraDecodedModule",
         "CalibrationModule",

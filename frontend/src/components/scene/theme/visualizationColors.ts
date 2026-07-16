@@ -23,6 +23,8 @@ export const VizColor = {
   TARGET: "#f59e0b",
   /** 후보 / 비활성 (검출 후보) */
   CANDIDATE: "#71717a",
+  /** 경고 / 제약 위반 — "여기서 막힘·도달 불가" (preview 경로 실패 지점) */
+  WARNING: "#ef4444",
   /** 로봇 기준 프레임 — "현재 손 끝이 어디인가" (TCP frame label). 항상 존재하는 기준점 */
   TCP: "#ffcc44",
   // 실물(real world object)은 tint 없음 = RobotModel 원본 material (gray/white).

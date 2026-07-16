@@ -69,6 +69,7 @@ def test_load_deployment_mock():
     assert {m.name for m in deploy.modules} == {
         "motor",
         "motion",
+        "motion_preview",
         "camera",
         "camera_decoded",
         "calibration",

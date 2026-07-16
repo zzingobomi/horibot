@@ -14,6 +14,7 @@ MODULE_REGISTRY: dict[str, str] = {
     "camera": "modules.camera.module:CameraDriverModule",
     "camera_decoded": "modules.camera.decoded:CameraDecodedModule",
     "motion": "modules.motion.module:MotionModule",
+    "motion_preview": "modules.motion_preview.module:MotionPreviewModule",
     "calibration": "modules.calibration.module:CalibrationModule",
     "scene3d": "modules.scene3d.module:Scene3DModule",
     "scan": "modules.scan.module:ScanModule",

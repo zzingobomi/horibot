@@ -96,6 +96,36 @@ def resolve_host_deps(
             "object_store": _object_store(_require_object_uri("scan", deploy)),
             "robots": scan_specs,
         }
+    if name == "motion_preview":
+        # robot-agnostic plan-only 미리보기 — motion 과 같은 값을 preview 전용으로
+        # 투영 (motion 인스턴스 미참조). motion 한계/URDF 가 완비된 arm robot 만.
+        from modules.motion.adapters.pybullet import PybulletKinematics
+        from modules.motion_preview.module import PreviewRobotSpec
+        from modules.motor.contract import MotorKind
+
+        preview_specs: dict[str, PreviewRobotSpec] = {}
+        for r in robots.values():
+            if not r.enabled:
+                continue
+            arm = [m for m in r.motors if m.kind != MotorKind.GRIPPER]
+            if not arm or r.motors[: len(arm)] != arm:
+                continue
+            try:
+                lims = [r.motion_joint_limits[m.name] for m in arm]
+            except KeyError:
+                continue  # motion.yaml 한계 미완 — 미리보기 불가 robot 은 skip
+            preview_specs[r.id] = PreviewRobotSpec(
+                kinematics_factory=PybulletKinematics,
+                urdf_path=_ROBOT_DIR / r.type / "urdf" / f"{r.type}.urdf",
+                arm_specs=arm,
+                joint_max_velocity=[x.max_velocity for x in lims],
+                joint_max_acceleration=[x.max_acceleration for x in lims],
+                joint_max_jerk=[x.max_jerk for x in lims],
+                cartesian_max_velocity=r.cartesian_limits.max_trans_vel,
+                cartesian_max_acceleration=r.cartesian_limits.max_trans_acc,
+                cartesian_max_jerk=r.cartesian_limits.max_trans_jerk,
+            )
+        return {"robots": preview_specs}
     if name == "waypoint":
         from modules.waypoint.persistence.repository import WaypointRepository
 
@@ -217,12 +247,40 @@ def _object_store(object_uri: str) -> ObjectStore:
 
 # ─── driver / kinematics ─────────────────────
 
+# mock 배치 전용 ready 자세 (arm raw, motors.yaml 순) — motors.yaml home 영점
+# ([0]*rad)이 IK-특이(seed 가 정확해도 PyBullet 수치 IK 가 1cm 내 수렴 실패)라, sim
+# 미리보기/데모가 그 자세에서 안 도는 것을 피하려고 자연스러운 자세에서 부팅한다.
+# **rad 영점(home)은 불변** — 이건 "sim 로봇이 어디서 쉬나"일 뿐 캘/변환 기준이 아니다.
+# 실 driver 는 실물 위치에서 시작하므로 무관 (mock 편의). J6=3083(≈91°)=D405
+# top-down. 값은 사용자 실측 자세(Robot State 패널)를 raw 로 그대로 (round-trip 오차
+# 없이 재현). robot type 키 (없으면 home).
+_MOCK_READY_POSE_RAW: dict[str, list[int]] = {
+    # J1~J6 raw — 사용자 실측 자세 (Robot State: 2.5/32.8/-51.6/62.3/0.0/91.0°).
+    # J5=2048(=0.0°=home), J6=3083(≈91°=D405 top-down).
+    "so101_6dof": [2077, 2421, 1461, 2757, 2048, 3083],
+}
+
+
+def _mock_initial_raw(robot: RobotConfig) -> list[int] | None:
+    from modules.motor.contract import MotorKind
+
+    ready = _MOCK_READY_POSE_RAW.get(robot.type)
+    if ready is None:
+        return None
+    arm = [m for m in robot.motors if m.kind != MotorKind.GRIPPER]
+    if len(ready) != len(arm):
+        return None  # 레이아웃 불일치 — 안전하게 기본(home)
+    rest_raw = [m.initial_raw for m in robot.motors[len(arm) :]]  # gripper 등
+    return list(ready) + rest_raw
+
 
 def _motor_driver(robot: RobotConfig, deploy: DeploymentConfig) -> MotorBackend:
     if deploy.driver_mode == DriverMode.MOCK:
         from modules.motor.drivers.mock import MockMotorBackend
 
-        return MockMotorBackend(motors=robot.motors)
+        return MockMotorBackend(
+            motors=robot.motors, initial_positions_raw=_mock_initial_raw(robot)
+        )
     if robot.motor_backend == "feetech":
         from modules.motor.drivers.feetech import FeetechBackend
 

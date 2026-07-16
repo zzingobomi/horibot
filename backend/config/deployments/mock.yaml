@@ -21,6 +21,7 @@ modules:
     robots: [so101_6dof_0, omx_f_0]
   - name: motion
     robots: [so101_6dof_0, omx_f_0]
+  - name: motion_preview
   - name: camera
     robots: [so101_6dof_0, omx_f_0]
   - name: camera_decoded
@@ -33,5 +34,5 @@ modules:
   - name: llm
   - name: pick_and_place
   - name: bridge
-  - name: logcollector   # 단일 머신 = 이 머신이 중앙 → 로그 파일 생성 (logs/)
-  - name: host_monitor   # 이 host CPU/mem 발행 (bridge 가 집계 → 대시보드)
+  - name: logcollector
+  - name: host_monitor

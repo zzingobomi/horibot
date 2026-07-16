@@ -11,6 +11,7 @@ import { ModeDockview, type PanelSpec } from "@/components/shared/ModeDockview";
 const PANELS: PanelSpec[] = [
   { id: "robot-state", component: "robotState" },
   { id: "motion", component: "motion" },
+  { id: "move-preview", component: "movePreview" },
 ];
 
 export function RobotMoveMode() {

@@ -5,6 +5,12 @@
  * DO NOT EDIT - run `pnpm gen:types` to regenerate.
  */
 
+export const PreviewMode = {
+  MOVE_L: "move_l",
+  MOVE_J_POSE: "move_j_pose",
+} as const;
+export type PreviewModeValue = (typeof PreviewMode)[keyof typeof PreviewMode];
+
 export const MotorCapability = {
   TORQUE_TOGGLE: "torque_toggle",
   REBOOT: "reboot",
@@ -438,6 +444,28 @@ export interface TcpState {
   gripper_rad?: number | null;
   calibration_applied?: boolean;
   calibration_stale?: boolean;
+}
+
+export interface PreviewPoseTarget {
+  position: [number, number, number];
+  rpy_deg: [number, number, number];
+}
+
+export interface PlanPreviewRequest {
+  robot_id: string;
+  start_joints: number[];
+  target: PreviewPoseTarget;
+  mode: PreviewModeValue;
+  use_orientation?: boolean;
+}
+
+export interface PlanPreviewResponse {
+  feasible: boolean;
+  joint_names: string[];
+  frames: number[][];
+  tcp_trace: [number, number, number][];
+  fail_at_sample?: number | null;
+  message?: string;
 }
 
 export interface MotorCapabilitiesRequest {
@@ -912,6 +940,7 @@ export const ServiceKey = {
   DETECTOR_DETECT: "srv/detector/detect",
   DETECTOR_DETECT_ORIENTED: "srv/detector/detect_oriented",
   LLM_PARSE_COMMAND: "srv/llm/parse_command",
+  MOTIONPREVIEW_PLAN: "srv/motion_preview/plan",
   MOTION_MOVE_J: "srv/motion/{robot_id}/move_j",
   MOTOR_CAPABILITIES: "srv/motor/{robot_id}/capabilities",
   MOTOR_GET_TOPOLOGY: "srv/motor/{robot_id}/topology",
@@ -964,6 +993,7 @@ export type ServiceMap = {
   "srv/detector/detect": { req: DetectRequest; res: DetectResponse };
   "srv/detector/detect_oriented": { req: DetectRequest; res: DetectOrientedResponse };
   "srv/llm/parse_command": { req: ParseCommandRequest; res: ParseCommandResponse };
+  "srv/motion_preview/plan": { req: PlanPreviewRequest; res: PlanPreviewResponse };
   "srv/motion/{robot_id}/move_j": { req: MoveJRequest; res: MoveJResponse };
   "srv/motor/{robot_id}/capabilities": { req: MotorCapabilitiesRequest; res: MotorCapabilities };
   "srv/motor/{robot_id}/topology": { req: TopologyRequest; res: MotorTopology };

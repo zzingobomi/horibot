@@ -18,11 +18,29 @@ from ..layout import MotorSpec
 class MockMotorBackend:
     """In-process mock — motors 레이아웃대로 합성 state, hardware 없이 동작."""
 
-    def __init__(self, motors: list[MotorSpec]) -> None:
+    def __init__(
+        self,
+        motors: list[MotorSpec],
+        initial_positions_raw: list[int] | None = None,
+    ) -> None:
         self._motors = list(motors)
         # 초기 position = 각 모터 유효 초기 자세 (home 영점을 limit 안으로 clamp —
-        # joint3 처럼 영점 0° 가 limit 밖인 축도 물리적으로 유효한 자세로 시작)
-        self._positions: list[int] = [m.initial_raw for m in self._motors]
+        # joint3 처럼 영점 0° 가 limit 밖인 축도 물리적으로 유효한 자세로 시작).
+        # initial_positions_raw 지정 시 그 자세로 부팅 (mock 전용 ready 자세 — home
+        # 영점([0]*rad)이 IK-특이라 sim 데모/미리보기가 거기서 안 도는 것을 피함.
+        # 실 driver 는 실물이 있는 자리에서 시작하므로 무관 — mock 배치만의 편의).
+        if initial_positions_raw is not None and len(initial_positions_raw) != len(
+            self._motors
+        ):
+            raise ValueError(
+                f"initial_positions_raw 길이 {len(initial_positions_raw)} != "
+                f"motors {len(self._motors)}"
+            )
+        self._positions: list[int] = (
+            list(initial_positions_raw)
+            if initial_positions_raw is not None
+            else [m.initial_raw for m in self._motors]
+        )
         self._torque_enabled = False
         self._gripper_index: int | None = (
             len(self._motors) - 1

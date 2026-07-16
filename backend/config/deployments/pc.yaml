@@ -18,6 +18,7 @@ zenoh:
 modules:
   - name: camera_decoded
     robots: [so101_6dof_0, omx_f_0]
+  - name: motion_preview
   - name: calibration
   - name: scene3d
   - name: scan
@@ -26,5 +27,5 @@ modules:
   - name: llm
   - name: pick_and_place
   - name: bridge
-  - name: logcollector   # 중앙 로그 수집 (log/** → debug/logs/) — PC 에만
-  - name: host_monitor   # 이 host CPU/mem 발행 (bridge 가 fan-in 집계 → 대시보드)
+  - name: logcollector
+  - name: host_monitor

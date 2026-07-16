@@ -24,6 +24,7 @@ from modules.calibration.contract import Calibration
 from modules.detector.contract import Detector
 from modules.llm.contract import Llm
 from modules.motion.contract import Motion
+from modules.motion_preview.contract import MotionPreview
 from modules.motor.contract import Motor
 from modules.scan.contract import Scan
 from modules.scene3d.contract import Scene3d
@@ -50,6 +51,8 @@ FRONTEND_EXPOSED: set[str] = {
         Motion.Stream.TCP_STATE,
         Motion.Stream.JOG_J,
         Motion.Stream.JOG_TCP,
+        # Motion Preview (plan-only 궤적 미리보기 — 고스트 재생)
+        MotionPreview.Service.PLAN,
         # Calibration
         Calibration.Service.START_RUN,
         Calibration.Service.CAPTURE,

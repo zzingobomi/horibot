@@ -10,7 +10,9 @@ import type { IDockviewPanelProps } from "dockview";
 import { RobotStatePanel } from "./RobotStatePanel";
 import { WaypointScenePart } from "./WaypointPanel/scenePart";
 import { CalibrationScenePart } from "./CalibrationPanel/scenePart";
+import { MovePreviewScenePart } from "./MovePreviewPanel/scenePart";
 import { MotionPanel } from "./MotionPanel";
+import { MovePreviewPanel } from "./MovePreviewPanel";
 import { CalibrationPanel } from "./CalibrationPanel";
 import { CameraPanel } from "./CameraPanel";
 import { DetectionCameraPanel } from "./DetectionCameraPanel";
@@ -27,6 +29,7 @@ import { withRobotOwnership } from "@/components/shared/robotOwnership";
 export const PANEL_COMPONENTS = {
   robotState: RobotStatePanel,
   motion: MotionPanel,
+  movePreview: MovePreviewPanel,
   calibration: CalibrationPanel,
   camera: CameraPanel,
   detectionCamera: DetectionCameraPanel,
@@ -72,6 +75,12 @@ export const PANEL_CATALOG: Record<
 > = {
   robotState: { title: "Robot State", width: 260, height: 300 },
   motion: { title: "Motion", width: 320, height: 380 },
+  movePreview: {
+    title: "Move Preview",
+    width: 320,
+    height: 420,
+    scenePart: MovePreviewScenePart, // 목표 마커 + plan 고스트 재생 + TCP 트레이스
+  },
   calibration: {
     title: "Calibration",
     width: 360,
@@ -116,6 +125,7 @@ export const PANEL_CATALOG: Record<
 export const ROBOT_OWNED_PANELS: ReadonlySet<PanelComponentKey> = new Set<PanelComponentKey>([
   "robotState",
   "motion",
+  "movePreview",
   "calibration",
   "camera",
   "detectionCamera",

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
@@ -11,14 +13,48 @@ logger = logging.getLogger(__name__)
 
 
 _LOG_DIR = Path("logs")
-_BASE_FILENAME = "horibot.log"
+_PREFIX = "horibot"
 _BACKUP_DAYS = 14
 
 
-def _dated_namer(default_name: str) -> str:
-    dirpath, fname = os.path.split(default_name)
-    base, _ext, date = fname.split(".")
-    return os.path.join(dirpath, f"{base}-{date}.log")
+class DatedMidnightHandler(TimedRotatingFileHandler):
+    def __init__(self, log_dir: Path, prefix: str, backup_count: int) -> None:
+        self._dir = log_dir
+        self._prefix = prefix
+        self._backup = backup_count
+        log_dir.mkdir(parents=True, exist_ok=True)
+        super().__init__(
+            filename=str(self._dated_path()),
+            when="midnight",
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+
+    def _dated_path(self) -> Path:
+        return self._dir / f"{self._prefix}-{datetime.now().strftime('%Y-%m-%d')}.log"
+
+    def doRollover(self) -> None:  # noqa: N802 (stdlib override 이름)
+        if self.stream:
+            self.stream.close()
+            self.stream = None  # type: ignore[assignment]
+        self.baseFilename = os.path.abspath(str(self._dated_path()))
+        self.stream = self._open()
+        current = int(time.time())
+        nxt = self.computeRollover(current)
+        while nxt <= current:
+            nxt += self.interval
+        self.rolloverAt = nxt
+        self._cleanup_old()
+
+    def _cleanup_old(self) -> None:
+        if self._backup <= 0:
+            return
+        files = sorted(self._dir.glob(f"{self._prefix}-*.log"))
+        for f in files[: -self._backup]:
+            try:
+                f.unlink()
+            except OSError:
+                pass
 
 
 class LogCollectorModule:
@@ -31,14 +67,7 @@ class LogCollectorModule:
 
     def start(self) -> None:
         self._log_dir.mkdir(parents=True, exist_ok=True)
-        handler = TimedRotatingFileHandler(
-            filename=str(self._log_dir / _BASE_FILENAME),
-            when="midnight",
-            backupCount=_BACKUP_DAYS,
-            encoding="utf-8",
-        )
-        handler.suffix = "%Y-%m-%d"
-        handler.namer = _dated_namer
+        handler = DatedMidnightHandler(self._log_dir, _PREFIX, _BACKUP_DAYS)
         handler.setFormatter(logging.Formatter("%(message)s"))
 
         self._file_handler = handler
@@ -49,7 +78,7 @@ class LogCollectorModule:
         self._sub = self._transport.subscribe("log/**", self._on_line)
         logger.info(
             "LogCollector 시작 — log/** 구독 → %s",
-            self._log_dir / _BASE_FILENAME,
+            handler.baseFilename,
         )
 
     def _on_line(self, payload: bytes) -> None:

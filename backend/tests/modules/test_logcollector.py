@@ -96,7 +96,7 @@ def test_collector_writes_received_line_verbatim(tmp_path: Path) -> None:
         bus.publish("log/pc", raw.encode("utf-8"))
         collector._file_handler.flush()  # type: ignore[union-attr]
 
-        content = _read(tmp_path / "horibot.log")
+        content = _read(Path(collector._file_handler.baseFilename))  # type: ignore[union-attr, arg-type]
         assert content.strip() == raw  # 접두 조립 없이 그대로 (verbatim)
     finally:
         collector.stop()
@@ -111,7 +111,7 @@ def test_percent_signs_in_line_are_not_formatted(tmp_path: Path) -> None:
         raw = "progress 50% done — value=%s not-substituted"
         bus.publish("log/pc", raw.encode("utf-8"))
         collector._file_handler.flush()  # type: ignore[union-attr]
-        assert raw in _read(tmp_path / "horibot.log")
+        assert raw in _read(Path(collector._file_handler.baseFilename))  # type: ignore[union-attr, arg-type]
     finally:
         collector.stop()
 
@@ -128,7 +128,7 @@ def test_end_to_end_logger_call_lands_in_central_file(tmp_path: Path) -> None:
     try:
         test_logger.info("스캔 완료 — 프레임 12")
         collector._file_handler.flush()  # type: ignore[union-attr]
-        content = _read(tmp_path / "horibot.log")
+        content = _read(Path(collector._file_handler.baseFilename))  # type: ignore[union-attr, arg-type]
         assert "[pc]" in content
         assert "스캔 완료 — 프레임 12" in content
         assert "modules.example" in content

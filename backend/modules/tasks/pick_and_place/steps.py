@@ -1011,6 +1011,9 @@ async def execute_place(
     await release(ctx, robot_id)
     await retreat(ctx, robot_id, c)
     await go_home(ctx, robot_id, home)
+    # 마무리: 그리퍼 닫아 정리 자세 (열린 조가 대기 중 걸리적/충돌 표면 —
+    # 사용자 요청 2026-07-17)
+    await close_gripper(ctx, robot_id)
 
 
 # ─── primitives ────────────

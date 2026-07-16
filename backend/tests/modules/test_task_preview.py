@@ -205,14 +205,17 @@ def test_pick_and_place_scenario_tree():
         ("release", 1),
         ("retreat", 1),
         ("go_home", 1),
+        ("close_gripper", 1),  # 종료 정리 자세 (2026-07-17)
     ]
     by_row = {(e.name, e.depth): e for e in entries}
     # place 경로는 `if place_object:` / `if drop is not None:` 안 — 조건부 표시
     assert by_row[("plan_place", 0)].conditional
     assert by_row[("execute_place", 0)].conditional
     assert not by_row[("plan_pick", 0)].conditional
-    # servo attempt/tick 루프 안 step 들 = 반복 표시 (실행 횟수는 안 셈)
-    assert by_row[("close_gripper", 1)].repeated
+    # servo attempt/tick 루프 안 step 들 = 반복 표시 (실행 횟수는 안 셈).
+    # close_gripper 는 2곳 (servo 루프 안=반복 / 종료 정리=단발) — 첫 번째가 servo.
+    servo_close = next(e for e in entries if e.name == "close_gripper")
+    assert servo_close.repeated
     assert by_row[("open_gripper", 1)].repeated  # 재시도 open (조건+반복)
     # 동적 구멍 = plan_pick 후보 순회 loop 의 resolve 1곳뿐 (2026-07-17 도달성
     # 우선 선택 — 후보 수가 런타임 데이터라 정적으로 못 푸는 게 정직한 표시).

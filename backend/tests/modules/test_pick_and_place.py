@@ -511,7 +511,7 @@ async def test_scenario_with_place_branch_places_after_servo():
         _SELECT: [_resolve_ok(), _resolve_ok()],  # servo 계획 + place 정렬 가족
         _MOVE_J: [MoveJResponse()] * 8,
         _MOVE_L: [MoveLResponse()] * 5,  # servo 3 + insert + retreat
-        _GRIP: [SetGripperResponse()] * 3,  # open/close/release
+        _GRIP: [SetGripperResponse()] * 4,  # open/close/release/마무리 close
         _READ_STATE: [_joint_state(_HELD_RAW)] * 3,  # close/withdraw/적치 직전
     }))
     await _module_for_scenario().scenario(
@@ -519,7 +519,9 @@ async def test_scenario_with_place_branch_places_after_servo():
     )
     grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
     assert grips == [
-        _SPEC.gripper_open_raw, _SPEC.gripper_close_raw, _SPEC.gripper_open_raw,
+        _SPEC.gripper_open_raw, _SPEC.gripper_close_raw,
+        _SPEC.gripper_open_raw,
+        _SPEC.gripper_close_raw,  # 종료 정리 자세 (2026-07-17 사용자 요청)
     ]
     # 계획 우선 불변식: 놓기 도달성 판정(RESOLVE ×2)이 전부 끝난 뒤에야 servo
     # 진입(GRIP/MOVE_L) — 못 놓을 물체를 집지 않는다.

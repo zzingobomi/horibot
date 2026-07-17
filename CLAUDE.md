@@ -122,7 +122,7 @@ capture-only 세션: `start_run(kind)` (robot 당 활성 세션 1개 — stale i
 | [frontend.md](docs/frontend.md) | **frontend SSOT** — hooks/패널/contract gen. 부록: 씬 시각화 소유권(scene_contribution — scenePart/기각 목록) / robot 소유권 불변식 / 워크스페이스 autohide 헤더. "scenePart" / "robot 셀렉터" / "패널에서 3D" 톤 전부 여기. |
 | [hardware.md](docs/hardware.md) | **HW + 운영** — 머신 토폴로지(pi_hori1/2/3 + IP)/실행 명령/OMX 모터·전원/SO-101 6DOF 개조 기록(STS3250·기어비·Feetech provisioning)/카메라/작업대. 부록: pyrealsense2 Pi 소스빌드 가이드. |
 | [calibration.md](docs/calibration.md) | **캘 전부** — 모듈 boundary spec(코드 역참조 정본) + 캡처 절차/보드 spec + **σ floor 진단(캘 trauma 최우선 앵커 — cv2_seed/MCMC/StageE/Kalib 전부 reject 확정)** + 확장 BA 도달기 + 정확도 짜내기 전략. |
-| [task.md](docs/task.md) | **task 아키텍처 정본 (2026-07-12 확정)** — task=모듈 + tasks/core 부품, 새 task 체크리스트 §3 (+ 대체된 2026-07-08 안 / 폐기 DSL reference 원문). "task" / "시나리오" / "TaskRunner" 톤이면 여기. |
+| [task.md](docs/task.md) | **task 아키텍처 정본 (2026-07-12 확정)** — task=모듈 + tasks/core 부품, 새 task 체크리스트 §3, **PnP 실물 디버깅 runbook §4 (2026-07-17 — trace 읽는 법 / 실패 모드→수정 위치 사전 / 노브 SSOT / 배포 매트릭스. 실물 테스트 분석 세션은 여기부터)** (+ 대체된 2026-07-08 안 / 폐기 DSL reference 원문). "task" / "시나리오" / "TaskRunner" 톤이면 여기. |
 | [motion.md](docs/motion.md) | Move/Servo/Jog/Task 4계층 + 산업 매핑 + jog drift 진단 박제 + URDF visual↔FK mismatch (open). |
 | [perception.md](docs/perception.md) | GDINO+SAM2 선택 근거 + multi-way ICP/TSDF 결정·파라미터(구현=modules/scan/build.py) + LLM preload race 진단. |
 | [dev_reference.md](docs/dev_reference.md) | DB 스키마 + 4계층 검증 방법론(testing_strategy) + "이거 왜 이렇게 짰어?" 검토 protocol + 아이디어 버킷. |

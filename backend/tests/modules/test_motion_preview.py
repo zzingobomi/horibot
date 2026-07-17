@@ -208,14 +208,14 @@ async def test_plan_real_so101_wire_e2e() -> None:
         kin.initialize()
         try:
             pos, quat = kin.fk(start)
-            rpy = tuple(
+            r0, r1, r2 = (
                 float(v) for v in Rotation.from_quat(quat).as_euler("XYZ", degrees=True)
             )
         finally:
             kin.close()
 
         reach = PreviewPoseTarget(
-            position=(pos[0], pos[1] + 0.02, pos[2]), rpy_deg=rpy
+            position=(pos[0], pos[1] + 0.02, pos[2]), rpy_deg=(r0, r1, r2)
         )
         res = await runtime.module_runtime.call(
             MotionPreview.Service.PLAN,

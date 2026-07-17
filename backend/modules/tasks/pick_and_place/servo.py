@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -356,6 +357,110 @@ def gate_observation(
             None, f"점군 부족 {n} < {cfg.min_points} (depth 붕괴/가림 의심)"
         )
     return GateResult(best, "")
+
+
+@dataclass(slots=True)
+class PlantComp:
+    """명령-실측 잔차 보상 (feedforward) — "명령한 절대 pose ≠ 도달 pose"
+    (backlash/부하 sag). 무보상 절대 재명령은 정상상태 오차가 영원히 남는다
+    (2026-07-16 실물: 관측·목표 안정인데 lateral 8~12mm 정체 → capture 턱걸이
+    commit → 헛집기 2연속). 직전 명령 − 실측 FK 를 다음 명령에 가산 — 상수
+    오프셋은 1스텝 소거. clamp 는 오검출/이상 실측의 폭주 방지.
+
+    사용 규약: 매 정지 관측에서 observe(실측 TCP) → 이동 목표는 apply(target)
+    → **실제로 실행된** 명령만 commanded(cmd) (거부된 이동은 기록하지 않는다).
+    """
+
+    max_m: float = 0.03
+    _comp: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    _last_cmd: Vec3 | None = None
+
+    def observe(self, measured: Sequence[float]) -> None:
+        """플랜트 잔차 갱신 — 검출과 무관 (직전 명령 vs 실측 FK 만 필요)."""
+        if self._last_cmd is None:
+            return
+        self._comp = np.clip(
+            np.asarray(self._last_cmd, dtype=float)
+            - np.asarray(measured, dtype=float),
+            -self.max_m, self.max_m,
+        )
+
+    def apply(self, target: Vec3) -> Vec3:
+        return (
+            float(target[0] + self._comp[0]),
+            float(target[1] + self._comp[1]),
+            float(target[2] + self._comp[2]),
+        )
+
+    def commanded(self, cmd: Vec3) -> None:
+        self._last_cmd = cmd
+
+    @property
+    def mm(self) -> list[float]:
+        """trace 기록용 (mm, 반올림)."""
+        return [round(float(v) * 1000, 1) for v in self._comp]
+
+
+@dataclass(slots=True)
+class TrackState:
+    """관측 추적 + 파지 기하 상태 — servo_pick 루프가 소유 (2026-07-17 리팩토링:
+    루프 지역변수 산개 → 응집. 각 필드/전이의 실물 사고 근거는 메서드 주석).
+
+    ServoState(tick/rung 카운터, decide_tick 입력)와 별개 — 이쪽은 "무엇을
+    어디서 어떻게 잡을지"의 추적 상태.
+    """
+
+    fam: GraspFamily
+    expected_xy: Vec3
+    g_tcp: Vec3
+    g_point: Vec3  # 물체측 파지점 (마커 표시용 — update_grasp 가 매 채택마다 갱신)
+    lateral: float
+    fallback_width_m: float  # coarse footprint — 점군 없는 tick 의 폭 fallback
+    floor_z: float | None
+    last: OrientedDetection | None = None
+    accepted: list[OrientedDetection] = field(default_factory=list)
+    widths: list[float] = field(default_factory=list)
+    move_fails: int = 0
+    close_attempts: int = 0
+    reacquiring: bool = False
+
+    def note_accept(self, obs: OrientedDetection) -> None:
+        """채택 관측 반영 — gate 기준/기대 위치 갱신 (융합은 호출부: 이력이
+        갱신된 뒤 최근 k 개로 융합해야 해서 순서 의존)."""
+        self.last = obs
+        self.accepted.append(obs)
+        self.expected_xy = obs.position
+
+    def update_grasp(
+        self, obs: OrientedDetection, fused: OrientedDetection, cfg: ServoConfig
+    ) -> None:
+        """파지 기하 갱신 — 폭은 채택 관측별 측정의 **중앙값** (단일 뷰 depth
+        번짐 outlier 가 폭을 부풀려 lateral_offset 을 밀어낸 실사고: 실물
+        20mm 가 det 33mm)."""
+        self.widths.append(
+            width_along(obs.points, self.fam.jaw_axis, self.fallback_width_m)
+        )
+        width = float(np.median(self.widths))
+        self.lateral = lateral_offset(width)
+        self.g_point = grasp_point(obs, fused, cfg, self.floor_z)
+        self.g_tcp = grasp_tcp(self.g_point, self.fam, self.lateral, cfg.engage_m)
+
+    def distrust_last(self) -> None:
+        """이동 거부 시 — 허공 목표를 만든 최신 관측을 이력에서 빼고 gate
+        기준(last)도 리셋해 다음 tick 이 깨끗이 재관측 (2026-07-17: 조/가림
+        depth 오염 관측 → IK 거부가 옳은데 태스크 전체가 죽던 사고)."""
+        if self.accepted:
+            self.accepted.pop()
+        self.last = self.accepted[-1] if self.accepted else None
+
+    def reset_for_retry(self) -> None:
+        """낙하/밀림 재시도 — 관측 이력·폭 리셋 (물체가 밀렸을 수 있음, 도약
+        gate 가 밀린 물체를 오검출로 오판하지 않게) + 재획득 반경 확대.
+        expected_xy 는 직전 파지 지점 유지 (최선의 추정)."""
+        self.last = None
+        self.accepted = []
+        self.widths = []
+        self.reacquiring = True
 
 
 @dataclass(slots=True)

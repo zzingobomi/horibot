@@ -102,25 +102,42 @@ def obb_corners(obb: Obb, z: float) -> np.ndarray:
     return np.column_stack([xy, np.full(4, z)])
 
 
-# object-centric 기하 — top 은 percentile(이상치 한두 점 컷), bottom 은 z-gap 군집.
-# floor(주변 링) 추정 폐기의 대체 (grasping.md §1 — 물체 자기
-# 점군에서만 잰다: 책상이 없어도(공중/손) 성립, 추측이 아니라 관측).
+# object-centric 기하 — 몸통 = z-gap 군집 중 **질량 있는 최상단 군집**. floor(주변
+# 링) 추정 폐기의 대체 (grasping.md §1 — 물체 자기 점군에서만 잰다: 책상이
+# 없어도(공중/손) 성립, 추측이 아니라 관측).
 _Z_HI_PERCENTILE = 98.0
-# z-gap 군집 (§10.3-F): top 에서 아래로 이 크기 이상의 빈 z 틈을 만나면 그 아래는
-# 물체 몸통이 아니다 (mask 경계 flying-pixel/배경 누출 outlier). 옛 2-percentile
-# bottom 은 아래-outlier 3~5% 에 끌려 base_z −0.2m phantom 을 만들었다 (실물 #1
-# 사고 재현·수정 — sim 검증: outlier 10% + 노이즈 + bleed 에도 base_z 안정).
+# z-gap 군집 (§10.3-F): 이 크기 이상의 빈 z 틈으로 분포를 군집으로 나눈다. mask
+# 경계 flying-pixel/배경 누출 outlier 는 몸통과 gap 으로 분리된 성긴 봉우리가 된다.
+# 실사고 2건이 각각 한쪽 방향: ① 아래-outlier 3~5% 가 옛 2-percentile bottom 을
+# base_z −0.2m phantom 으로 끌어내림 (실물 #1) ② 위-outlier(실루엣 flying pixel 은
+# 카메라 쪽 = 물체 **위**로 뜬다) 트레일이 옛 p98 top 앵커를 탈취 → gap 군집이
+# 트레일만 몸통으로 삼아 진짜 물체(점군 대다수)를 버림 (2026-07-17 실물: blue box
+# base_z=+0.175 공중 spot → resolve_place spot 당 ~55s 전멸 / 큐브 top +2cm →
+# servo 허공 목표 IK 거부). 그래서 앵커는 꼬리 percentile 이 아니라 질량:
 _BODY_Z_GAP_M = 0.005
+# 몸통 자격 = 전체 점의 최소 비율. flying-pixel 트레일은 실측 2~5% (오늘 PLY:
+# 608점 중 top 군집이 전체의 수 %), 실 물체 면은 수십 % — 사이에 성긴 경계.
+_BODY_MIN_MASS_FRAC = 0.20
 
 
-def _body_bottom_z(z: np.ndarray, top_z: float) -> float:
-    """top_z 에서 아래로 연속(_BODY_Z_GAP_M 이내)인 z 군집의 바닥."""
-    zs = np.sort(z[z <= top_z])[::-1]  # top 이하만, 위→아래
-    if zs.size == 0:
-        return top_z
+def _body_z_band(z: np.ndarray) -> tuple[float, float]:
+    """z 분포를 gap(>_BODY_Z_GAP_M) 군집으로 나눠 몸통 군집의 (top, bottom).
+
+    몸통 = 질량 비율 ≥ _BODY_MIN_MASS_FRAC 인 **최상단** 군집 (파지/적치가 보는
+    면은 윗면 — 같은 질량이면 위가 물체 표면). 자격 군집이 없으면(파편화 점군)
+    최대 질량 군집으로 폴백 — 판정은 소비자 몫, 여기서 hard fail 하지 않는다.
+    """
+    zs = np.sort(z)[::-1]  # 위→아래
     gaps = zs[:-1] - zs[1:]
-    cut = np.nonzero(gaps > _BODY_Z_GAP_M)[0]
-    return float(zs[cut[0]] if cut.size else zs[-1])
+    cuts = np.nonzero(gaps > _BODY_Z_GAP_M)[0]
+    starts = [0, *(int(c) + 1 for c in cuts)]
+    ends = [*(int(c) + 1 for c in cuts), len(zs)]
+    min_pts = max(3, math.ceil(len(zs) * _BODY_MIN_MASS_FRAC))
+    for s, e in zip(starts, ends):
+        if e - s >= min_pts:
+            return float(zs[s]), float(zs[e - 1])
+    s, e = max(zip(starts, ends), key=lambda se: se[1] - se[0])
+    return float(zs[s]), float(zs[e - 1])
 
 
 def object_metrics_from_points(
@@ -128,19 +145,22 @@ def object_metrics_from_points(
 ) -> tuple[tuple[float, float, float], float, float] | None:
     """물체 base 점군 → (윗면 중심 position, base_z(물체 바닥), height).
 
-    전부 물체 자기 점군에서 — 주변 바닥 추정 없음. base_z = top 에서 이어지는
-    z 군집의 바닥 (_body_bottom_z — 아래로 떨어진 outlier 봉우리 절단),
-    height = top − bottom. **단일 뷰(위에서)는 옆면 depth 가 없어 height 가
-    구조적으로 과소** — 멀티뷰 융합 점군이 입력일 때 비로소 실 height.
-    충분성 판정은 소비자(파지가 서는가 — height 하드게이트 아님, §10.4-6).
-    점 3개 미만 = None.
+    전부 물체 자기 점군에서 — 주변 바닥 추정 없음. 몸통 = 질량 있는 최상단
+    z-gap 군집 (_body_z_band — 위/아래 outlier 봉우리 양방향 절단), top = 몸통
+    안 p98 (군집 내 잔여 speck 컷), base_z = 몸통 바닥, height = top − bottom.
+    **단일 뷰(위에서)는 옆면 depth 가 없어 height 가 구조적으로 과소** —
+    멀티뷰 융합 점군이 입력일 때 비로소 실 height. 충분성 판정은 소비자
+    (파지가 서는가 — height 하드게이트 아님, §10.4-6). 점 3개 미만 = None.
     """
     if pts_base is None or len(pts_base) < 3:
         return None
     z = pts_base[:, 2]
-    top_z = float(np.percentile(z, _Z_HI_PERCENTILE))
-    bottom_z = _body_bottom_z(z, top_z)
-    top = top_face_points(pts_base)
+    band_top, bottom_z = _body_z_band(z)
+    body = pts_base[(z >= bottom_z) & (z <= band_top)]
+    top_z = float(np.percentile(body[:, 2], _Z_HI_PERCENTILE))
+    # 윗면 band(중심 계산)도 몸통 안에서만 — 전체 점군에 percentile 을 걸면
+    # 위-outlier 가 band 기준을 탈취해 중심이 트레일로 끌려간다 (top 앵커와 동일 구멍).
+    top = top_face_points(body)
     if top is None:
         return None
     center = top.mean(axis=0)

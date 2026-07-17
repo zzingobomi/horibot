@@ -172,6 +172,24 @@ def test_gate_rejects_position_jump():
     assert g.obs is None and "도약" in g.reason
 
 
+def test_plant_comp_feedforward_and_clamp():
+    """PlantComp — 실행된 명령만 기준으로 잔차 학습, 상수 오프셋 1스텝 소거,
+    clamp 폭주 방지 (2026-07-16 lateral 정체 사고의 해법 잠금)."""
+    comp = servo.PlantComp(max_m=0.03)
+    # 명령 이력 없으면 보상 0 (첫 tick)
+    comp.observe((0.2, 0.1, 0.05))
+    assert comp.apply((0.2, 0.1, 0.05)) == (0.2, 0.1, 0.05)
+    # 명령 (0.2,0.1,0.05) → 실측이 (0.19,0.1,0.04) = 플랜트가 (10,0,10)mm 미달
+    comp.commanded((0.2, 0.1, 0.05))
+    comp.observe((0.19, 0.1, 0.04))
+    cmd = comp.apply((0.2, 0.1, 0.05))
+    assert cmd == pytest.approx((0.21, 0.1, 0.06))  # 미달만큼 선보상
+    # clamp — 60mm 이상(異常) 잔차도 ±30mm 로 제한
+    comp.commanded((0.2, 0.1, 0.05))
+    comp.observe((0.14, 0.1, 0.05))
+    assert comp.apply((0.0, 0.0, 0.0))[0] == pytest.approx(0.03)
+
+
 def test_refit_family_follows_object_rotation():
     """재획득 시 물체가 회전했으면 같은 변형의 가족을 새 yaw 로 재유도 —
     옛 각도 스큐 close 재튕김 실사고 (2026-07-17 test4: 86°→-27°)."""

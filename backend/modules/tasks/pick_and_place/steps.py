@@ -30,6 +30,7 @@ import asyncio
 import logging
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -127,13 +128,27 @@ _PLAN_TRY_MAX = 4
 # → 먼저 시도. 낮은 base_z 뷰는 기하 정보(실 바닥)는 좋지만 위치에 뷰별 FK
 # 오차가 섞여 후순위. 기각 아님 — 최종 심판은 resolve.
 _BASE_Z_PLAUSIBLE_MIN_M = -0.01
+# 위쪽 상한 — flying-pixel 트레일이 검출을 공중으로 들어올린 오염의 방어선
+# (1차 방어 = detector _body_z_band 질량 앵커, 2026-07-17 실물: 오염 spot
+# base_z=+0.156~0.175 가 score 상위로 resolve ~55s×2 낭비 / 큐브 +0.044 →
+# servo 허공 목표). 적치로 상자 위에 놓인 물체(base_z ≈ 상자 top ~0.03)는
+# 정상 통과해야 하므로 gross floater 만 거르는 성긴 상한.
+_BASE_Z_PLAUSIBLE_MAX_M = 0.08
+# 적치 spot 하한이 pick(-0.01)보다 깊은 이유: 적치 상자는 크고 멀티뷰 바닥이
+# 실제로 -0.02 대까지 관측된다 (2026-07-17 로그: 실상자 -0.007~-0.024) —
+# pick 문턱을 그대로 쓰면 건강한 상자 뷰 전부가 후순위로 밀린다.
+_PLACE_BASE_Z_MIN_M = -0.04
 
-# 명령-실측 잔차 보상 상한 (m) — backlash/부하 sag 로 "명령한 절대 pose ≠ 도달
-# pose". 무보상 절대 재명령은 정상상태 오차가 영원히 남는다 (2026-07-16 실물
-# trace: 관측·목표 안정인데 lateral 8~12mm 정체, 보정 3회 소진 → capture 턱걸이
-# commit → 헛집기 2연속). 직전 명령 − 실측 TCP 를 다음 명령에 가산 — 상수
-# 오프셋은 1스텝에 소거. 상한은 오검출/이상 실측의 폭주 방지.
-_SERVO_COMP_MAX_M = 0.03
+# pick 후보 score 하한 — 이 밑은 실행 후보에서 **제외** (후순위가 아니라 컷).
+# 도달성 우선 순회가 저신뢰 오검출까지 내려가면 엉뚱한 물체를 집으러 간다
+# (2026-07-17 실물: 진짜 큐브(0.76/0.49) 전멸 → score 0.31 오검출(로봇 옆
+# 흰 어댑터) 채택 → 사용자 STOP). 실측 분리: 진짜 큐브 min 0.49 / 오검출 max
+# 0.44. 전 후보 미달이면 명시 실패 — 오동작보다 정직한 실패가 낫다.
+# **pick 전용** — place spot 은 진짜 상자가 score 0.34 로 채택된 실측(06:18)이
+# 있어 하한을 걸면 정상 run 이 죽는다 (적치는 오검출 비용도 낮음).
+_PICK_SCORE_MIN = 0.45
+
+# (명령-실측 잔차 보상은 servo.PlantComp 로 이동 — 근거/사용 규약은 그 docstring)
 
 
 # ─── scenario 골격: 계획(모션 0 판정) → servo 집기 → 놓기 ────────────
@@ -217,12 +232,34 @@ async def plan_pick(
     if not cands:
         raise DetectionNotFound(prompt, candidates=0, reason="검출 0건")
     cfg = _SERVO_CFG
-    # 물리 타당(base_z 가 설치면 위) 후보 먼저, 그 안에서 score 내림차순 —
-    # 불가능 기하에 resolve ~40s 를 먼저 태우지 않는다 (2026-07-16: score 1등이
-    # base_z=-0.021 오염 뷰라 건강 뷰 도달인데 1분 소모+전멸 보고).
+    # score 하한 컷 — 저신뢰 오검출은 순회 폴백 대상조차 아님 (_PICK_SCORE_MIN
+    # 주석 — 엉뚱한 물체 파지 실사고). 컷은 침묵하지 않는다.
+    trusted = [c for c in cands if c.score >= _PICK_SCORE_MIN]
+    if len(trusted) < len(cands):
+        logger.info(
+            "plan_pick(%s): 저신뢰 후보 %d개 제외 (score < %.2f — 오검출 방지)",
+            prompt, len(cands) - len(trusted), _PICK_SCORE_MIN,
+        )
+    if not trusted:
+        raise DetectionNotFound(
+            prompt,
+            candidates=len(cands),
+            reason=(
+                f"검출 {len(cands)}건 전부 score < {_PICK_SCORE_MIN} (저신뢰 — "
+                "오검출 가능성). 물체 위치/조명 확인 후 다시 실행하세요"
+            ),
+        )
+    # 물리 타당(base_z 가 설치면 근방 대역 안) 후보 먼저, 그 안에서 score
+    # 내림차순 — 불가능 기하에 resolve ~40s 를 먼저 태우지 않는다 (2026-07-16:
+    # score 1등이 base_z=-0.021 오염 뷰라 건강 뷰 도달인데 1분 소모+전멸 보고 /
+    # 2026-07-17: 공중 부양 오염 뷰 — 상한 추가).
     ordered = sorted(
-        cands,
-        key=lambda c: (c.base_z < _BASE_Z_PLAUSIBLE_MIN_M, -c.score),
+        trusted,
+        key=lambda c: (
+            c.base_z < _BASE_Z_PLAUSIBLE_MIN_M
+            or c.base_z > _BASE_Z_PLAUSIBLE_MAX_M,
+            -c.score,
+        ),
     )[:_PLAN_TRY_MAX]
     failures: list[str] = []
     for rank, coarse in enumerate(ordered):
@@ -307,7 +344,18 @@ async def plan_place(
             f"'{prompt}' 적치 대상 검출 0건 — 물체 배치/조명 확인 후 다시 "
             "실행하세요"
         )
-    ranked = sorted(spots, key=lambda s: s.score, reverse=True)
+    # 물리 타당(base_z 대역 안) spot 먼저 — plan_pick 과 같은 원칙 (기각 아님,
+    # 최종 심판은 resolve). 2026-07-17 실물: 공중 부양 오염 spot(base_z=+0.156
+    # ~0.175)이 score 상위를 차지해 spot 당 정렬+자유 resolve ~55s 를 먼저
+    # 태우고, 최악 런은 plan_place 에만 3.5분 소모 후 실패.
+    ranked = sorted(
+        spots,
+        key=lambda s: (
+            s.base_z < _PLACE_BASE_Z_MIN_M
+            or s.base_z > _BASE_Z_PLAUSIBLE_MAX_M,
+            -s.score,
+        ),
+    )
     for spot in ranked:
         for family, pplan in (
             ("정렬", geometry.plan_place(spot, held=held, lateral=lateral)),
@@ -350,6 +398,7 @@ async def servo_pick(
     plan: ServoPlan,
     prompt: str,
     home: WaypointRecord,
+    on_grasp: Callable[[Vec3], None] | None = None,
 ) -> None:
     """closed-loop 파지 실행 — home 경유 → rung0 진입 → tick 루프 → commit →
     close → 판정(재시도) → 후퇴 → 판정 → home.
@@ -361,33 +410,25 @@ async def servo_pick(
       ServoFailed 메시지 + trace 에 남는다.
     - trace: 매 tick JSONL + 종료 summary (debug/servo_pick/<ts>/ —
       실패 재구성이 하드웨어 없이 가능해야 한다는 요구의 구현).
+    - on_grasp: 채택 관측이 파지점을 갱신할 때마다 호출 (호출자=module 이
+      마커 스트림 재발행 — 계획 시점 마커가 실행 내내 고정 표시되던 UI 구멍,
+      2026-07-17 사용자 리포트).
     """
     cfg = _SERVO_CFG
-    fam = plan.family
     trace = ServoTrace(prompt, robot_id)
-    state = servo.ServoState()
-    accepted: list[OrientedDetection] = []
-    last: OrientedDetection | None = None
+    state = servo.ServoState()  # tick/rung 카운터 — decide_tick 의 입력
+    run = servo.TrackState(  # 관측 추적 + 파지 기하 (전이 근거 = servo.py 주석)
+        fam=plan.family,
+        expected_xy=plan.coarse.position,
+        g_tcp=plan.grasp_tcp0,
+        g_point=plan.grasp_point0,
+        lateral=plan.lateral0,
+        fallback_width_m=plan.coarse.footprint[1],
+        floor_z=plan.floor_z,
+    )
+    comp = servo.PlantComp()  # 명령-실측 잔차 보상 (근거 = servo.py docstring)
     tcp: TcpState | None = None
-    expected_xy: Vec3 = plan.coarse.position
-    g_tcp: Vec3 = plan.grasp_tcp0
-    lateral = plan.lateral0
-    close_attempts = 0
-    # 명령-실측 잔차 보상 (feedforward) — 직전 명령 pose 와 그 뒤 실측 TCP 의
-    # 차. 다음 명령에 가산해 플랜트 상수 오프셋(backlash/sag)을 상쇄.
-    comp = np.zeros(3)
-    last_cmd: Vec3 | None = None
-    # 채택 관측별 조 축 폭 이력 — 중앙값 사용 (단일 뷰 depth 번짐 outlier 가
-    # 폭을 부풀려 lateral_offset 을 밀어낸 실사고: 실물 20mm 가 det 33mm).
-    widths: list[float] = []
-    # 연속 이동 거부 카운터 — 오염 관측이 만든 허공 목표는 IK 거부가 옳고,
-    # 다음 tick 의 깨끗한 관측이 목표를 고친다 (2026-07-17 실물: top +2cm
-    # 오염 → 이동 거부 1회에 태스크 전체 중단). 연속 2회면 진짜 경계 → abort.
-    move_fails = 0
-    # 낙하/밀림 재시도 후 첫 재획득 국면 — 매치 반경을 넓힌다 (물체가 움직인
-    # 걸 앎). 첫 채택 관측에서 해제.
-    reacquiring = False
-    summary: dict = {"result": "unknown", "family": fam.label}
+    summary: dict = {"result": "unknown", "family": run.fam.label}
 
     try:
         await go_home(ctx, robot_id, home)
@@ -407,33 +448,28 @@ async def servo_pick(
                     Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
                     robot_id=robot_id,
                 )
-                if last_cmd is not None:
-                    # 플랜트 잔차 갱신 — 검출과 무관 (명령 vs 실측 FK 만 필요)
-                    comp = np.clip(
-                        np.asarray(last_cmd, dtype=float)
-                        - np.asarray(tcp.position, dtype=float),
-                        -_SERVO_COMP_MAX_M, _SERVO_COMP_MAX_M,
-                    )
+                comp.observe(tcp.position)
                 gate = servo.gate_observation(
-                    det.candidates, expected_xy, last, cfg,
+                    det.candidates, run.expected_xy, run.last, cfg,
                     match_radius_m=(
-                        cfg.reacquire_radius_m if reacquiring else None
+                        cfg.reacquire_radius_m if run.reacquiring else None
                     ),
                 )
                 lateral_err: float | None = None
                 axial_err = 0.0
                 fused = None
                 if gate.obs is not None:
-                    if reacquiring:
+                    if run.reacquiring:
                         # 물체가 움직인 뒤 첫 재획득 — 회전했을 수 있으니 조
                         # 각도(가족 yaw)도 새 관측으로 재유도 (servo.refit_family
                         # docstring — 옛 각도 스큐 close 가 재튕김 만든 실사고)
-                        new_fam = servo.refit_family(fam, gate.obs)
+                        new_fam = servo.refit_family(run.fam, gate.obs)
                         if new_fam is not None:
                             logger.info(
                                 "servo: 재획득 yaw 재유도 — obs yaw %.1f° 로 "
                                 "가족 회전 (%s)",
-                                math.degrees(gate.obs.grasp_yaw), fam.label,
+                                math.degrees(gate.obs.grasp_yaw),
+                                run.fam.label,
                             )
                             await _trace_emit(trace, {
                                 "phase": "refit",
@@ -443,35 +479,23 @@ async def servo_pick(
                                     math.degrees(gate.obs.grasp_yaw), 1
                                 ),
                             })
-                            fam = new_fam
-                    reacquiring = False  # 재획득 완료 — 반경 원복
-                    last = gate.obs
-                    accepted.append(gate.obs)
-                    expected_xy = gate.obs.position
+                            run.fam = new_fam
+                    run.reacquiring = False  # 재획득 완료 — 반경 원복
+                    run.note_accept(gate.obs)
                     fused = await _fuse_recent(
-                        ctx, accepted[-cfg.fuse_last_k:], gate.obs
+                        ctx, run.accepted[-cfg.fuse_last_k:], gate.obs
                     )
-                    widths.append(servo.width_along(
-                        gate.obs.points, fam.jaw_axis,
-                        fallback_m=plan.coarse.footprint[1],
-                    ))
-                    width = float(np.median(widths))
-                    lateral = servo.lateral_offset(width)
-                    g_point = servo.grasp_point(
-                        gate.obs, fused, cfg, plan.floor_z
-                    )
-                    g_tcp = servo.grasp_tcp(
-                        g_point, fam, lateral, cfg.engage_m
-                    )
+                    run.update_grasp(gate.obs, fused, cfg)
+                    _notify_grasp(on_grasp, run.g_point)  # 마커 재발행
                     target_so = servo.standoff(
-                        g_tcp, fam, cfg.standoffs[state.rung]
+                        run.g_tcp, run.fam, cfg.standoffs[state.rung]
                     )
                     delta = (
                         target_so[0] - tcp.position[0],
                         target_so[1] - tcp.position[1],
                         target_so[2] - tcp.position[2],
                     )
-                    lateral_err, axial_err = servo.split_error(delta, fam)
+                    lateral_err, axial_err = servo.split_error(delta, run.fam)
 
                 decision = servo.decide_tick(state, gate, lateral_err, cfg)
                 logger.info(
@@ -498,9 +522,9 @@ async def servo_pick(
                         if lateral_err is not None else None
                     ),
                     "axial_mm": round(axial_err * 1000, 2),
-                    "grasp_tcp": [round(v, 4) for v in g_tcp],
-                    "lateral_offset_mm": round(lateral * 1000, 2),
-                    "comp_mm": [round(float(v) * 1000, 1) for v in comp],
+                    "grasp_tcp": [round(v, 4) for v in run.g_tcp],
+                    "lateral_offset_mm": round(run.lateral * 1000, 2),
+                    "comp_mm": comp.mm,
                     "tcp_position": [round(v, 4) for v in tcp.position],
                     "tcp_joints": [round(v, 4) for v in tcp.joints],
                     "action": decision.action,
@@ -512,112 +536,74 @@ async def servo_pick(
                 if decision.action == "abort":
                     raise ServoFailed(decision.reason, ticks=state.ticks)
                 if decision.action in ("correct", "descend"):
-                    target = servo.standoff(
-                        g_tcp, fam, cfg.standoffs[state.rung]
-                    )
-                    cmd = (
-                        float(target[0] + comp[0]),
-                        float(target[1] + comp[1]),
-                        float(target[2] + comp[2]),
-                    )
+                    cmd = comp.apply(servo.standoff(
+                        run.g_tcp, run.fam, cfg.standoffs[state.rung]
+                    ))
                     try:
-                        await _servo_move(ctx, robot_id, cmd, fam.quat, trace)
+                        await _servo_move(
+                            ctx, robot_id, cmd, run.fam.quat, trace
+                        )
                     except ServoFailed:
-                        move_fails += 1
-                        if move_fails >= 2:
+                        # 오염 관측이 만든 허공 목표는 IK 거부가 옳다 — 관측
+                        # 불신 + 재관측으로 계속, 연속 2회면 진짜 경계 → abort
+                        # (2026-07-17 실물: 거부 1회에 태스크 전체 중단 사고).
+                        run.move_fails += 1
+                        if run.move_fails >= 2:
                             raise
-                        # 목표를 만든 최신 관측을 불신 — 채택 이력에서 빼고
-                        # gate 기준(last)도 리셋해 다음 tick 이 깨끗이 재관측.
-                        if accepted:
-                            accepted.pop()
-                        last = accepted[-1] if accepted else None
+                        run.distrust_last()
                         logger.warning(
                             "servo 이동 거부 (%d/2) — 관측 불신, 재관측으로 "
-                            "계속: cmd=%s", move_fails, _fmt(cmd),
+                            "계속: cmd=%s", run.move_fails, _fmt(cmd),
                         )
                         await _trace_emit(trace, {
                             "phase": "move",
                             "action": "rejected_hold",
                             "tick": state.ticks,
-                            "move_fails": move_fails,
+                            "move_fails": run.move_fails,
                             "cmd": [round(v, 4) for v in cmd],
                         })
                         continue
-                    move_fails = 0
-                    last_cmd = cmd
+                    run.move_fails = 0
+                    comp.commanded(cmd)
                     continue
                 committed = True  # commit
 
             # ── commit: 마지막 관측으로 blind 최종 접근 (handoff §4) ──
             blind_m = (
-                math.dist(g_tcp, tuple(tcp.position))
+                math.dist(run.g_tcp, tuple(tcp.position))
                 if tcp is not None else cfg.standoffs[state.rung]
             )
             logger.info(
                 "servo commit: rung=%d blind=%.1fmm grasp_tcp=%s (%s)",
-                state.rung, blind_m * 1000.0, _fmt(g_tcp), fam.label,
+                state.rung, blind_m * 1000.0, _fmt(run.g_tcp), run.fam.label,
             )
-            grasp_cmd = (
-                float(g_tcp[0] + comp[0]),
-                float(g_tcp[1] + comp[1]),
-                float(g_tcp[2] + comp[2]),
-            )
+            grasp_cmd = comp.apply(run.g_tcp)
             await _trace_emit(trace, {
                 "phase": "commit",
                 "tick": state.ticks,
                 "rung": state.rung,
                 "blind_mm": round(blind_m * 1000, 1),
-                "grasp_tcp": [round(v, 4) for v in g_tcp],
-                "comp_mm": [round(float(v) * 1000, 1) for v in comp],
+                "grasp_tcp": [round(v, 4) for v in run.g_tcp],
+                "comp_mm": comp.mm,
                 "cmd": [round(v, 4) for v in grasp_cmd],
                 "action": "commit",
                 "reason": f"blind {blind_m * 1000:.1f}mm 최종 접근",
             })
             await _move_l(
-                ctx, robot_id, grasp_cmd, fam.quat,
+                ctx, robot_id, grasp_cmd, run.fam.quat,
                 speed_scale=cfg.gentle_speed_scale,
             )
-            last_cmd = grasp_cmd
-            # blind 구간 touch-up — 카메라가 가려진 마지막 ~5cm 는 comp 측정
-            # 시점(standoff)과 자세·부하가 달라 잔차가 남는다 (2026-07-16 실물:
-            # lateral 1.1mm 수렴인데 EMPTY — 잔여 미달이 조 끝 nip/밀어냄).
-            # 관측 불가 구간이라 FK(엔코더) 잔차로 재보정, 상한 2회.
-            for _ in range(2):
-                snap = await ctx.call(
-                    Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
-                    robot_id=robot_id,
-                )
-                resid = np.asarray(g_tcp) - np.asarray(snap.position)
-                resid_norm = float(np.linalg.norm(resid))
-                if resid_norm <= 0.003:
-                    break
-                grasp_cmd = (
-                    float(grasp_cmd[0] + resid[0]),
-                    float(grasp_cmd[1] + resid[1]),
-                    float(grasp_cmd[2] + resid[2]),
-                )
-                logger.info(
-                    "servo touch-up: FK 잔차 %.1fmm → 재보정 %s",
-                    resid_norm * 1000.0, _fmt(grasp_cmd),
-                )
-                await _trace_emit(trace, {
-                    "phase": "touchup",
-                    "tick": state.ticks,
-                    "resid_mm": [round(float(v) * 1000, 1) for v in resid],
-                    "cmd": [round(v, 4) for v in grasp_cmd],
-                })
-                await _move_l(
-                    ctx, robot_id, grasp_cmd, fam.quat,
-                    speed_scale=cfg.gentle_speed_scale,
-                )
-                last_cmd = grasp_cmd
+            comp.commanded(grasp_cmd)
+            await _touch_up(ctx, robot_id, run, grasp_cmd, comp, cfg,
+                            trace, state.ticks)
             await _log_reached_tcp(
-                ctx, robot_id, expected=g_tcp, phase="servo grasp 도달"
+                ctx, robot_id, expected=run.g_tcp, phase="servo grasp 도달"
             )
             await close_gripper(ctx, robot_id)
             try:
                 grip = await verify_grasp(
-                    ctx, robot_id, phase="close 직후", grasp_label=fam.label
+                    ctx, robot_id, phase="close 직후",
+                    grasp_label=run.fam.label,
                 )
                 await _trace_emit(trace, {
                     "phase": "close", "tick": state.ticks, "action": "held",
@@ -628,12 +614,15 @@ async def servo_pick(
                 # 얕은 파지를 흔들어 빼는 실사고 (2026-07-17).
                 await _move_l(
                     ctx, robot_id,
-                    servo.standoff(g_tcp, fam, cfg.withdraw_standoff_m),
-                    fam.quat,
+                    servo.standoff(
+                        run.g_tcp, run.fam, cfg.withdraw_standoff_m
+                    ),
+                    run.fam.quat,
                     speed_scale=cfg.gentle_speed_scale,
                 )
                 grip2 = await verify_grasp(
-                    ctx, robot_id, phase="withdraw 후", grasp_label=fam.label
+                    ctx, robot_id, phase="withdraw 후",
+                    grasp_label=run.fam.label,
                 )
                 # 슬립 = close 시점 gap 대비 유지율 미달 (상대 비교 — 물체
                 # 크기 무관). **실패 아님 — 경고 + 계속** (2026-07-17 실물:
@@ -658,49 +647,31 @@ async def servo_pick(
                         grip["gap_raw"], grip2["gap_raw"], grip2["load_raw"],
                     )
             except GraspFailed as e:
-                close_attempts += 1
+                run.close_attempts += 1
                 await _trace_emit(trace, {
                     "phase": "grasp_retry",
                     "tick": state.ticks,
                     "action": "retry",
                     "reason": str(e),
-                    "attempt": close_attempts,
+                    "attempt": run.close_attempts,
                 })
-                if close_attempts >= cfg.close_attempts:
+                if run.close_attempts >= cfg.close_attempts:
                     raise
-                # 재시도: 물체가 밀렸거나(EMPTY) 슬립 — 놓고 물러나 관측부터
-                # 다시 (rung 1 standoff, 직전 목표 기준. 관측 이력 리셋 —
-                # 도약 gate 가 밀린 물체를 오검출로 오판하지 않게).
                 logger.warning(
                     "servo: 파지 실패(%s) — 재시도 %d/%d (후퇴, 재관측)",
-                    e, close_attempts, cfg.close_attempts,
+                    e, run.close_attempts, cfg.close_attempts,
                 )
                 await open_gripper(ctx, robot_id)
-                retreat = servo.standoff(g_tcp, fam, cfg.standoffs[1])
-                retreat_cmd = (
-                    float(retreat[0] + comp[0]),
-                    float(retreat[1] + comp[1]),
-                    float(retreat[2] + comp[2]),
-                )
-                await _move_l(  # 물체 옆에서 시작하는 후퇴 — 감속 (재밀침 방지)
-                    ctx, robot_id, retreat_cmd, fam.quat,
-                    speed_scale=cfg.gentle_speed_scale,
-                )
-                last_cmd = retreat_cmd
+                await _retreat_for_retry(ctx, robot_id, run, comp, cfg)
                 state = servo.ServoState(rung=1)
-                last = None
-                accepted = []
-                widths = []  # 물체가 밀렸을 수 있음 — 폭 이력도 새로
-                reacquiring = True  # 물체가 움직였음 — 재획득 반경 확대
-                # expected_xy 는 직전 파지 지점 유지 (최선의 추정)
                 continue
             break  # 파지 + 이송 자격 통과
 
         await go_home(ctx, robot_id, home)
         summary.update({
             "result": "success",
-            "close_attempts": close_attempts + 1,
-            "final_grasp_tcp": [round(v, 4) for v in g_tcp],
+            "close_attempts": run.close_attempts + 1,
+            "final_grasp_tcp": [round(v, 4) for v in run.g_tcp],
             "error_history_mm": [
                 round(e, 1) for e in state.error_history_mm
             ],
@@ -710,7 +681,7 @@ async def servo_pick(
             "result": "cancelled" if isinstance(e, asyncio.CancelledError)
             else "failed",
             "error": f"{type(e).__name__}: {e}",
-            "close_attempts": close_attempts,
+            "close_attempts": run.close_attempts,
             "error_history_mm": [
                 round(er, 1) for er in state.error_history_mm
             ],
@@ -722,6 +693,15 @@ async def servo_pick(
             logger.info("servo trace: %s (%s)", trace.dir, summary["result"])
         except Exception:
             logger.exception("servo trace summary 기록 실패")
+
+
+def _notify_grasp(cb: Callable[[Vec3], None] | None, p: Vec3) -> None:
+    """파지점 갱신 통지 — 모듈 레벨 간접호출인 이유: 시나리오 프리뷰의 정적
+    인덱서가 파라미터 직접 호출(`on_grasp(...)`)을 못 풀어 step 트리에 `<동적>`
+    노이즈 행을 만든다 (2026-07-17 preview 계약 테스트로 포착). 마커 통지는
+    step 이 아니므로 트리 미표시가 올바른 의미론."""
+    if cb is not None:
+        cb(p)
 
 
 async def _trace_emit(trace: ServoTrace, record: dict) -> None:
@@ -766,6 +746,69 @@ async def _fuse_recent(
                     len(recent))
         return latest
     return near
+
+
+async def _touch_up(
+    ctx: TaskContext,
+    robot_id: str,
+    run: servo.TrackState,
+    grasp_cmd: Vec3,
+    comp: servo.PlantComp,
+    cfg: servo.ServoConfig,
+    trace: ServoTrace,
+    tick: int,
+) -> None:
+    """blind 도달 touch-up — 카메라가 가려진 마지막 ~5cm 는 comp 측정 시점
+    (standoff)과 자세·부하가 달라 잔차가 남는다 (2026-07-16 실물: lateral
+    1.1mm 수렴인데 EMPTY — 잔여 미달이 조 끝 nip/밀어냄). 관측 불가 구간이라
+    FK(엔코더) 잔차로 재보정, 상한 2회."""
+    for _ in range(2):
+        snap = await ctx.call(
+            Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
+            robot_id=robot_id,
+        )
+        resid = np.asarray(run.g_tcp) - np.asarray(snap.position)
+        resid_norm = float(np.linalg.norm(resid))
+        if resid_norm <= 0.003:
+            break
+        grasp_cmd = (
+            float(grasp_cmd[0] + resid[0]),
+            float(grasp_cmd[1] + resid[1]),
+            float(grasp_cmd[2] + resid[2]),
+        )
+        logger.info(
+            "servo touch-up: FK 잔차 %.1fmm → 재보정 %s",
+            resid_norm * 1000.0, _fmt(grasp_cmd),
+        )
+        await _trace_emit(trace, {
+            "phase": "touchup",
+            "tick": tick,
+            "resid_mm": [round(float(v) * 1000, 1) for v in resid],
+            "cmd": [round(v, 4) for v in grasp_cmd],
+        })
+        await _move_l(
+            ctx, robot_id, grasp_cmd, run.fam.quat,
+            speed_scale=cfg.gentle_speed_scale,
+        )
+        comp.commanded(grasp_cmd)
+
+
+async def _retreat_for_retry(
+    ctx: TaskContext,
+    robot_id: str,
+    run: servo.TrackState,
+    comp: servo.PlantComp,
+    cfg: servo.ServoConfig,
+) -> None:
+    """파지 재시도 후퇴 — rung1 standoff 로 물러나 재관측 준비. 관측 이력
+    리셋 + 재획득 반경 확대는 run.reset_for_retry (근거 = servo.py 주석)."""
+    cmd = comp.apply(servo.standoff(run.g_tcp, run.fam, cfg.standoffs[1]))
+    await _move_l(  # 물체 옆에서 시작하는 후퇴 — 감속 (재밀침 방지)
+        ctx, robot_id, cmd, run.fam.quat,
+        speed_scale=cfg.gentle_speed_scale,
+    )
+    comp.commanded(cmd)
+    run.reset_for_retry()
 
 
 async def _servo_move(
@@ -1009,7 +1052,7 @@ async def execute_place(
     # 빈 손으로 release 하는 허위 성공 방지).
     await verify_grasp(ctx, robot_id, phase="적치 직전", grasp_label=c.label)
     await release(ctx, robot_id)
-    await retreat(ctx, robot_id, c)
+    await retreat(ctx, robot_id, c, pre_joints)
     await go_home(ctx, robot_id, home)
     # 마무리: 그리퍼 닫아 정리 자세 (열린 조가 대기 중 걸리적/충돌 표면 —
     # 사용자 요청 2026-07-17)
@@ -1040,9 +1083,30 @@ async def insert(ctx: TaskContext, robot_id: str, c: PlaceCandidate) -> None:
 
 
 @step(title="적치 후퇴")
-async def retreat(ctx: TaskContext, robot_id: str, c: PlaceCandidate) -> None:
+async def retreat(
+    ctx: TaskContext,
+    robot_id: str,
+    c: PlaceCandidate,
+    pre_joints: list[float],
+) -> None:
+    """place → pre 직선 후퇴. MoveL 실패 시 계획 관절해(pre_joints) MoveJ 폴백.
+
+    2026-07-17 실물: 사전 검증 통과한 retreat MoveL 이 실행 중 끝점(=pre)에서
+    IK 실패 — pre 는 resolve 가 관절해까지 증명했고 20초 전 MoveJ 로 실제 도달한
+    자세다 (좁은 basin — 실행 seed 연쇄가 다른 branch 로 흘러 못 푸는 복권).
+    알려진 해가 있는데 재풀이 실패로, **적치까지 성공한** task 를 죽이지
+    않는다. 이 시점 물체는 이미 release 됨 + 폴백 시작 관절은 insert 로 온 구성
+    근방이라 관절 보간 스윕 위험 낮음. (정석은 insert 궤적 역재생 — motion 단
+    지원 필요, 2026-07-17 분석 §근본3. 폴백은 그 전까지의 안전망.)
+    """
     logger.info("retreat robot=%s → pre %s", robot_id, _fmt(c.pre))
-    await _move_l(ctx, robot_id, c.pre, c.quat)
+    try:
+        await _move_l(ctx, robot_id, c.pre, c.quat)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("retreat MoveL 실패 (%s) — 계획 관절해(pre) MoveJ 폴백", e)
+        await _move_j_joints(ctx, robot_id, pre_joints)
 
 
 @step(title="그리퍼 열기")

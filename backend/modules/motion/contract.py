@@ -28,8 +28,9 @@ class Motion:
         # 후보 pose 그룹 배치 IK 판정 (모션 0) — MoveIt goal-sampling 패턴의 미니판.
         # task 가 후보마다 move 서비스로 원격 probe 하면 왕복×N + 실패 IK 풀비용이
         # 지배 (2026-07-09 PnP 10s) → in-process 1회 호출 + seed 연쇄 + early-exit.
-        # 이름 = Resolve (2026-07-13): 계약이 "순서를 선호 힌트로 존중하며 가용
-        # 그룹 하나" 라서 — 엄격한 first 보장이 아님 (deepening 이 속도와 맞바꿈).
+        # 이름 = Resolve (2026-07-13). 2026-07-17 부터 **선호 엄격**: group-major
+        # 스캔이라 반환 = 가용 그룹 중 순서상 첫 그룹 (옛 budget-major deepening
+        # 은 힌트-only — 비선호 가족을 먼저 채택하는 선호 역전이 실물에서 관측됨).
         RESOLVE_REACHABLE = "srv/motion/{robot_id}/resolve_reachable"
 
     class Stream(StrEnum):
@@ -145,17 +146,18 @@ class TcpPose(BaseModel):
 class ResolveReachableRequest(BaseModel):
     """후보 pose 그룹 중 '그룹 내 전 pose 가용'인 그룹 하나를 resolve.
 
-    계약: **순서 = 선호 힌트 (best-effort)** — 가급적 앞쪽 그룹을 반환하지만
-    엄격한 first 보장은 아님 (구현이 cheap→expensive 게이트 파이프라인 —
-    싼 게이트를 전 그룹에 먼저 돌리므로, 앞 그룹이 어려운 해면 뒤의 쉬운 가용
-    그룹이 먼저 잡힐 수 있다). 선호가 보장이어야 하는 소비자가 나타나면 그때
-    별도 질의 (FIRST/ALL/BEST) 신설.
+    계약: **순서 = 선호 (엄격, 2026-07-17)** — 반환 index 는 가용 그룹 중
+    순서상 첫 그룹. group-major 스캔이 앞 그룹의 가/불가를 확정한 뒤에만 다음
+    그룹으로 가므로 "도달 가능한 것 중 호출자가 가장 선호하는 그룹" 보장.
+    (옛 budget-major deepening 은 best-effort 힌트 — 선호 가족이 소예산 티어에
+    밀린 사이 비선호 가족을 채택하는 역전이 실물 관측됨 (07-17 tilt+75 누워
+    잡기 의혹). 예산 상세/폐지 근거 = module.py _GROUP_IK_BUDGET 주석.)
 
     그룹 예 = [pre_grasp, grasp] (같은 자세로 접근+파지 둘 다 풀려야 실행 가능).
     판정 전용 — 로봇은 안 움직임. 게이트 (grasping.md §1,
     cheap→expensive — 뒤 게이트일수록 비싸고, 앞 게이트가 후보를 걸러 비용 절감):
       ① 위치 스크린 (position-only 소예산 IK — workspace 밖 즉시 기각)
-      ② 전 pose 자세 IK (예산 점증 deepening — 실패 기각을 싸게)
+      ② 전 pose 자세 IK (그룹당 walk+단일 소예산 1회 — 실패 기각 비용 상수)
       ③ floor_z 지정 시 바닥 평면 충돌 (해 자세의 로봇 링크 침투 기각)
       ③b obstacle_points 지정 시 장애물 점군 충돌 — 해 자세에서 로봇(그리퍼
          gripper_open 반영)이 관측 점군(물체/이웃)을 침투하면 기각 (§10.4-3

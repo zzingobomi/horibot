@@ -70,10 +70,26 @@ _PATH_MAX_JUMP_RAD = 0.35  # ≈20°
 
 # ── resolve_reachable 게이트 예산 ─────────────────────────────
 # cheap→expensive (grasping.md §1): 실패 기각 비용 = 예산에
-# 비례하므로 싼 게이트를 전 그룹에 먼저. 아래 IK 예산 점증은 2026-07-09 벤치
-# 근거 (가용 자세 median 8회 수렴 / 단일 풀예산 패스는 실패 케이스 10× 악화).
+# 비례하므로 싼 게이트(위치 스크린)를 전 그룹에 먼저.
 _SCREEN_IK_BUDGET = 5  # ① position-only 위치 스크린
-_IK_BUDGETS = (10, 40, None)  # ② 자세 IK deepening (None = 실행용 풀예산)
+# ② 자세 IK — 그룹당 **단일 예산 1회** (walk + 40 restarts). 옛 deepening
+# (10, 40, None=200) 을 2026-07-17 폐지 — 근거 4개:
+# ⑴ walk(좁은 basin 결정적 탐색, 07-16 밤 도입) 이후 실측 채택 100% 가 소예산
+#    구간 (07-17 전 로그: 성공 resolve 0.7~4.0s = 그룹당 ~0.1s). 풀예산(200)
+#    티어가 채택을 만든 사례 0.
+# ⑵ 전멸 비용이 티어 중복 과금 — 티어마다 같은 seed 로 같은 결정적 walk 재실행
+#    + rng(0) 고정이라 restart 도 앞 티어 재검증 (pose 당 walk×3 + 250 restarts)
+#    → 52가족 후보 전멸 36.5s 로봇 정지 (07-17 실물 pain).
+# ⑶ 200-restarts 로만 풀리는 해 = 실행(runtime seed 연쇄)이 재현 못 하는
+#    fragile basin → 실행 중 FAILED (07-17 retreat 사고 클래스). 계획-실행
+#    정합상 계획 단계 거절이 시나리오를 보호한다. 진짜 전멸이면 호출자
+#    (plan_pick/plan_place)가 다음 검출 뷰로 폴백 — 그게 구조적 안전망.
+# ⑷ budget-major 루프는 선호 역전 구멍 — 선호 그룹이 소예산 티어에서 밀린 사이
+#    비선호 그룹이 먼저 풀리면 즉시 채택. group-major(아래 _scan)로 "도달
+#    가능한 것 중 가장 선호 높은 자세" 보장.
+# (2026-07-09 벤치 "단일 풀예산 패스 10× 악화"는 walk 이전 세계의 200-restart
+# 단일 패스 얘기 — walk+40 단일 패스는 그 벤치의 대상이 아님.)
+_GROUP_IK_BUDGET = 40
 _PATH_IK_BUDGET = 10  # ⑤ 경로 샘플 IK — 보수적 소예산 (미수렴 = 후보 기각)
 # ④ 관절 보간 경로 샘플 간격 — 최대 관절 이동 기준 (IK 없음, 충돌 검사만이라
 # 촘촘해도 싸다. 5° 면 SO-101 링크 끝 이동 ~수 mm 단위 해상도).
@@ -545,10 +561,12 @@ class MotionModule:
         """후보 그룹 가용성 판정 (모션 0) — cheap→expensive 게이트 파이프라인.
 
         게이트 순서 = 계약 docstring (contract.py ResolveReachableRequest):
-        ① 위치 스크린 → ② 자세 IK deepening → ③ 바닥 충돌 → ③b 장애물 점군
-        충돌 → ④ 관절 보간 경로 → ⑤ 직선 경로. 싼 게이트를 전 그룹에 먼저
-        돌려 불가 그룹 기각을 싸게 (deepening 의 "싼 예산 먼저" 정신 계승 —
-        2026-07-09 벤치: 단일 풀예산 패스는 실패 케이스 10× 악화). 미래
+        ① 위치 스크린(전 그룹 소예산) → 그룹 순서대로 ② 자세 IK (walk+단일
+        예산, _GROUP_IK_BUDGET 주석) → ③ 바닥 충돌 → ③b 장애물 점군 충돌 →
+        ④ 관절 보간 경로 → ⑤ 직선 경로, 첫 통과 채택. **그룹 순서 = 호출자의
+        선호 순서** (예: 파지 tilt 사다리 — 작은 tilt 우선): group-major 스캔
+        이라 "도달 가능한 것 중 가장 선호 높은 그룹"이 구조적으로 보장된다
+        (옛 budget-major deepening 은 선호 역전 구멍 — 상수 주석 ⑷). 미래
         cross-robot 충돌 게이트는 ③b 옆에 낀다.
 
         채택 그룹의 IK 해를 반환 — 실행부가 재계산 없이 그 관절로 이동 (판정
@@ -655,35 +673,32 @@ class MotionModule:
             alive = [gi for gi in range(len(groups)) if _screen(groups[gi])]
             if not alive:
                 return -1, [], f"전 후보({len(groups)}) 위치가 workspace 밖"
-            rejected: set[int] = set()  # ③~⑤ 확정 기각 (예산과 무관한 불가)
             gate_rejects = {"floor": 0, "obstacle": 0, "joint_path": 0, "path": 0}
-            for budget in _IK_BUDGETS:
-                for gi in alive:
-                    if gi in rejected:
-                        continue
-                    sols = _solve(groups[gi], budget)
-                    if sols is None:
-                        continue  # 예산 부족일 수 있음 — 다음 단계 재시도
-                    if _floor_blocked(sols):
-                        rejected.add(gi)
-                        gate_rejects["floor"] += 1
-                        continue
-                    if _obstacle_blocked(sols):
-                        rejected.add(gi)
-                        gate_rejects["obstacle"] += 1
-                        continue
-                    if _joint_path_blocked(sols):
-                        rejected.add(gi)
-                        gate_rejects["joint_path"] += 1
-                        continue
-                    if _linear_blocked(groups[gi], sols):
-                        rejected.add(gi)
-                        gate_rejects["path"] += 1
-                        continue
-                    return gi, sols, ""
+            ik_fails = 0
+            # group-major — 앞(선호) 그룹의 가/불가를 확정한 뒤에만 다음 그룹.
+            # 실패 그룹 비용 = walk 1회 + 40 restarts (~0.15s) 로 상수라 전멸도
+            # 선형 (52가족 ~8s — 다음 검출 뷰 폴백과 같은 자릿수).
+            for gi in alive:
+                sols = _solve(groups[gi], _GROUP_IK_BUDGET)
+                if sols is None:
+                    ik_fails += 1
+                    continue
+                if _floor_blocked(sols):
+                    gate_rejects["floor"] += 1
+                    continue
+                if _obstacle_blocked(sols):
+                    gate_rejects["obstacle"] += 1
+                    continue
+                if _joint_path_blocked(sols):
+                    gate_rejects["joint_path"] += 1
+                    continue
+                if _linear_blocked(groups[gi], sols):
+                    gate_rejects["path"] += 1
+                    continue
+                return gi, sols, ""
             return -1, [], (
                 f"가용 그룹 없음 — 위치 통과 {len(alive)}/{len(groups)}, "
-                f"자세 IK 실패 {len(alive) - len(rejected)}, "
+                f"자세 IK 실패 {ik_fails}, "
                 f"바닥 충돌 기각 {gate_rejects['floor']}, "
                 f"장애물(그리퍼↔물체) 기각 {gate_rejects['obstacle']}, "
                 f"이동 경로 기각 {gate_rejects['joint_path']}, "

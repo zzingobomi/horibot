@@ -194,8 +194,17 @@ class PickAndPlaceModule:
         # 계획 확정 시점에 마커 표시 (파지·적치 지점을 실행 전 미리 보여줌).
         self._publish_markers(so101, markers)
 
+        # servo 가 파지점을 갱신할 때마다 마커 재발행 — 계획 시점 마커가 실행
+        # 내내 고정 표시되던 UI 구멍 (2026-07-17 사용자 리포트. 스트림은
+        # latest-wins 라 매 채택 발행이 곧 실시간 표시).
+        def on_grasp(p: tuple[float, float, float]) -> None:
+            self._publish_markers(so101, [
+                TaskMarker(label="grasp", position=p),
+                *markers[1:],  # place 마커 유지 (계획값 — 적치는 open-loop)
+            ])
+
         # 2) 실행 — 집기 = closed-loop servo (물체 근처에서 관측→보정 루프,
         # steps/servo.py 정본), 놓기 = open-loop (상자 적치는 오차 관대).
-        await steps.servo_pick(ctx, so101, plan, pick_object, home)
+        await steps.servo_pick(ctx, so101, plan, pick_object, home, on_grasp)
         if drop is not None and drop_pre is not None:
             await steps.execute_place(ctx, so101, drop, drop_pre, home)

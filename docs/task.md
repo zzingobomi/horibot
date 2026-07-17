@@ -202,6 +202,92 @@ modules/tasks/
    `uv run --no-sync python scripts/run_task.py srv/<name>/run --param k=v`
    (mock, bridge 미점유) → 전용 페이지.
 
+## 4. PnP 실물 디버깅 runbook (2026-07-17 — 첫 완주 세션의 운영 지식)
+
+> 다음 세션 진입점. 사용자가 실물 테스트를 반복하는 동안, **어느 세션이든 이
+> 절차로 결과를 확인·분석하고 실패를 수정 위치로 매핑**한다. 값·사고의 1차
+> 근거는 전부 코드 주석 (servo.py / steps.py / pybullet.py / motors.yaml) —
+> 여기는 지도만.
+
+### 4.1 실행 + 수정→재배포 매트릭스
+
+실물 실행 = pi_hori1(so101 motor+motion) + pi_hori2(D405) + PC(`--host pc`) 가동
+→ frontend `/tasks/pick_and_place` 에서 run. 프롬프트 예: pick "white small
+round cube" / place "blue box".
+
+| 수정한 것 | 재시작 대상 |
+| --- | --- |
+| tasks/(steps/servo/module)·detector·`apps/resolve.py`(held 문턱) | **PC 만** |
+| motion/motor 코드·`pybullet.py`(IK)·motion contract·`robot/*/motors.yaml`·`motion.yaml` | **pi_hori1 pull+재시작** |
+| camera 코드/설정 | pi_hori2 |
+
+### 4.2 런 결과 읽는 법 (관측성 자산)
+
+**`backend/debug/servo_pick/<ts>/trace.jsonl` + `summary.json`** 이 1차 소스 —
+런당 1폴더, phase 별 레코드:
+
+- `tick`: `observation.position[2]` = **윗면** band centroid z (base_z 는 top-view
+  에선 ≈윗면이지 바닥이 아님 — 07-16 최대 함정), `lateral_mm` = 수렴 지표
+  (**1.6~4mm 가 정상 도달치**, 8~12mm 정체 = 보상 문제), `comp_mm` = 플랜트
+  잔차 (5~13mm 대가 정상), `action/reason` = decide_tick 판정.
+- `commit`(blind_mm/cmd) → `touchup`(resid_mm — 3mm 이하로 수렴해야) →
+  `close`/`withdraw`(`held|slip|empty` + gap_raw/load_raw) → `grasp_retry`,
+  `refit`(yaw 재유도), `move`(rejected_hold = 이동 거부 관용).
+- **판정 기준값 (07-17 실측)**: 빈손 gap 6~7 · load 56~64 / 슬립 sliver gap
+  33~36 · load ~290 / 정상 물림 gap 117~217 · load 300+. held = gap>5%range
+  **OR** load≥150 (`steps._gripper_holding`).
+
+**`backend/debug/detect/<ts>/`** = 관측 원본 (det/fuse json+ply+png). 스윕 뷰 간
+위치는 FK 계통 오차로 1.5~3.3cm 어긋나는 게 정상 — coarse 선택은 plan_pick 이
+도달성 우선 순회로 흡수.
+
+**사용자 영상**: cv2 로 0.5s 프레임 추출해 trace 와 교차 — 타격/슬립/yaw 스큐
+판별은 영상이 결정적이었음 (trace 만 보면 "테이블 문 false HELD" 류를 오진).
+
+### 4.3 실패 모드 → 수정 위치 사전 (07-16~17 실사고 전수)
+
+| 증상 (trace 시그니처) | 원인 클래스 | 수정/노브 위치 |
+| --- | --- | --- |
+| plan 전멸 "자세 IK 실패 N" | solver false-neg 는 walk 로 해소됨 — 지금 전멸은 ① 오염 뷰 coarse (공중 부양 포함 — base_z 대역 후순위가 07-17 방어) ② yaw 위상: place 는 yaw 빗이 spot OBB yaw 에 고정, **pick 도 동일 클래스 확정** (07-17 오후: 같은 큐브 두 뷰의 OBB yaw 84° 차로 한쪽 뷰만 통과 — near-square 물체는 OBB yaw 가 뷰마다 랜덤 = 복권. replay 로 두 층 분리: IK 생존 가족이 그리퍼↔점군 게이트에서 죽는 뷰도 있음) — **미수정**, 신 resolve 적용 후 잔존 빈도로 yaw 격자 판단 | `steps.plan_pick`/`plan_place` (base_z 대역 정렬), `pybullet.ik`(walk), offline 재생 `scripts/grasp_verify/servo_reach_replay.py <detect세션>` |
+| 엉뚱한 물체를 집으러 감 | 진짜 후보 전멸 → 도달성 우선 순회가 저신뢰 오검출로 폴백 (07-17: score 0.31 로봇 옆 흰 물체 채택 → 사용자 STOP. 실측 분리: 진짜 큐브 min 0.49 / 오검출 max 0.44) | `steps._PICK_SCORE_MIN` (0.45) 컷 — 미달만 남으면 명시 실패 (pick 전용 — place 는 진짜 spot 0.34 실측이 반례) |
+| lateral 8~12mm 정체/발진 | 절대 재명령 (플랜트 잔차 무보상) | `servo.PlantComp` |
+| 파지 z 이상 (윗면 nip / 테이블 뚫음) | base_z 앵커 허구 / 납작 물체 | `servo.grasp_point` (윗면 앵커) + `grip_below_top_m` / `floor_clear_m` |
+| 물고도 EMPTY → 스스로 놓음 | gap 단독 판정 (조 피벗이라 gap 작음) | `steps._gripper_holding` (gap OR load), held 문턱 `apps/resolve.py` 5% |
+| close 순간 물체 발사 | ① close 90°/s 타격 ② yaw 스큐 (물체 회전 후 옛 가족) | ① `motors.yaml` joint7 velocity_dps 30 (+`_GRIPPER_SETTLE_S` 4s 쌍) ② `servo.refit_family` (재획득 시) |
+| withdraw 슬립 (gap 급감, load 유지) | 조 곡면+민면 마찰 — **경고+이송 계속이 정책** (내려놓고 재시도는 과잉이었음) | `slip_retention` (판정), 근본 = 조 마찰 패드 (하드웨어) |
+| withdraw 완전 낙하 (load ~50) | 동일 마찰 문제 | 재시도 체인: `reacquire_radius_m` 15cm + refit — 굴러간 물체 재발견 |
+| 관측 오염 (top z 점프/455mm 도약/점군 부족) | 조/가림 depth, mask 오검출 | `servo.gate_observation` (z_jump/jump/min_points/match_radius) + 이동 거부 1회 관용 (`TrackState.move_fails`) |
+| 검출이 공중 부양 (base_z +0.04~+0.18, "허공 목표 IK 거부"/공중 spot) | 실루엣 flying-pixel(카메라 쪽 = 위로 뜸) 트레일이 옛 p98 top 앵커 탈취 → z-gap 군집이 트레일만 몸통으로 (07-17 PLY 실측: 점군 99%가 테이블인데 base_z=+0.175) | `detector geometry._body_z_band` (질량 군집 — 07-17 수정, 회귀 test) + `steps` base_z 대역 후순위 (2차 방어) |
+| 적치 성공 후 `[retreat] MoveL failed` | MoveL 사전검증 통과했는데 실행 seed 연쇄가 끝점(=pre) IK 못 풂 — pre 는 관절해가 알려진 자세 (좁은 basin 복권) | `steps.retreat` pre_joints MoveJ 폴백 (07-17) — 정석(insert 궤적 역재생)은 motion 단 지원 필요 |
+
+### 4.4 노브 SSOT
+
+`servo.ServoConfig` (전 필드 주석에 실측 근거) / `steps._PLAN_TRY_MAX` 등 상수 /
+`robot/so101_6dof/motors.yaml` joint7 profile (close 속도) / `motion.yaml`
+joint_limits (전역 움직임 속도감 — 07-17 vel 0.7/acc 1.5) / `apps/resolve.py`
+held 5%. **임계값은 추측 말고 trace 실측으로만 조정** (CLAUDE.md 작업 방식).
+
+### 4.5 회귀 검증 루틴 (완료 보고 전)
+
+`uv run ruff check . && uv run pyright && uv run --no-sync pytest -m "not sim" -q`
+— ⚠ **부분 스위트만 돌리다 test_motion 의 실 URDF sim 게이트 회귀를 놓친 전례**
+(07-17). 같은 LAN 에 실 robot backend 가 떠 있으면 pytest 가 broadcast 될 수
+있음 — motion 관련 test 는 사용자 확인 후.
+
+### 4.6 알려진 한계 / 다음
+
+- **재현성 통계 수집 중** (07-17 첫 완주 + 2연속까지 확인) — trace 폴더가 곧 데이터.
+- **조 마찰 패드 미적용** (하드웨어) — 슬립/이젝션 클래스의 근본. 최대 레버.
+- 얇은 물체(펜 ~8-10mm): gap 문턱 아래 → load 신호가 커버할 예정, 실물 미검증.
+- place "blue box" **유령 뷰**: 매 세션 (0.15, 0.09, z 0.2) 에 로봇 자신의 파란
+  몸체가 box 로 검출됨 (score 0.4~0.6) — 진짜 상자(0.84+)가 이겨서 무사하지만
+  score 역전 시 위험. plan_place 도달성 우선이 2차 방어. **07-17 후속**: score
+  역전이 실제 발생 (0.80 유령이 1위) — flying-pixel 이 유령을 z≈0.2 공중 spot
+  으로 띄워 spot 당 resolve ~55s×2 낭비. detector 질량 앵커가 접지시키고
+  base_z 대역 정렬이 후순위 — 이제 낭비 없이 진짜 상자 먼저.
+- steps.py 파일 분리 (pick/place/primitives) 미완 — servo_pick 은 리팩토링 완료
+  (PlantComp/TrackState).
+
 ---
 ---
 

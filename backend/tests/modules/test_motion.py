@@ -750,16 +750,20 @@ async def test_resolve_reachable_servo_ladder_ik_passes(stack):
             break
     assert snap is not None
 
-    # 합성 큐브 관측 (object-centric) — 워크스페이스 안 (0.24, 0.10), 25mm.
-    cx, cy, base_z, top_z = 0.24, 0.10, -0.045, -0.020
+    # 합성 큐브 관측 — **2026-07-17 실물 성공 런의 관측 모양 그대로**
+    # (debug/servo_pick/20260717_054257: pos (0.265,0.150), top 0.025, 바닥≈0,
+    # yaw≈76°, 점군은 top-view 라 **윗면 band 만** 보임 — 옆면/중간 점 없음.
+    # 옛 합성(중간 slab 점군 + yaw 0 + z −0.045)은 detector 실출력과 달라
+    # 깊은 파지(top 앵커+engage)에서 가짜 장애물/비현실 좌표로 전멸했다).
+    cx, cy, base_z, top_z = 0.265, 0.150, 0.0, 0.025
+    yaw = math.radians(76.0)
     pts: list[tuple[float, float, float]] = []
-    for x in np.linspace(cx - 0.0125, cx + 0.0125, 8):
-        for y in np.linspace(cy - 0.0125, cy + 0.0125, 8):
+    for x in np.linspace(cx - 0.0105, cx + 0.0105, 10):
+        for y in np.linspace(cy - 0.010, cy + 0.010, 10):
             pts.append((float(x), float(y), top_z))
-            pts.append((float(x), float(y), base_z + 0.01))
     coarse = OrientedDetection(
         prompt="cube", position=(cx, cy, top_z), score=0.9, base_z=base_z,
-        height=top_z - base_z, grasp_yaw=0.0, footprint=(0.025, 0.025),
+        height=top_z - base_z, grasp_yaw=yaw, footprint=(0.021, 0.020),
         points=pts,
     )
     cfg = ServoConfig()

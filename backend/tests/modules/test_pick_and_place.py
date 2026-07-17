@@ -51,7 +51,11 @@ from modules.tasks.core.errors import (
 from modules.tasks.core.fake import FakeContext
 from modules.tasks.core.spec import TaskRobotSpec
 from modules.tasks.pick_and_place import geometry, servo, servo_trace, steps
-from modules.tasks.pick_and_place.contract import ListRobotsRequest, RunRequest
+from modules.tasks.pick_and_place.contract import (
+    ListRobotsRequest,
+    RunRequest,
+    TaskMarkers,
+)
 from modules.tasks.pick_and_place.module import PickAndPlaceModule
 from modules.waypoint.contract import (
     ListGroupMembersResponse,
@@ -530,6 +534,39 @@ async def test_scenario_with_place_branch_places_after_servo():
     assert keys[: keys.index(_MOVE_L)].count(_SELECT) == 2
 
 
+async def test_place_retreat_movel_failure_falls_back_to_pre_joints():
+    """2026-07-17 실물 회귀 — 적치·release 까지 성공한 뒤 retreat MoveL 이 실행
+    중 IK 실패로 죽어 task 전체가 실패 처리됐다 (사전 검증은 통과 — 실행 seed
+    연쇄 복권). pre 는 resolve 가 관절해까지 증명한 자세 — MoveL 실패 시 그
+    관절해(pre_joints) MoveJ 폴백으로 run 을 살린다."""
+    place_spot = _det(position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3)
+    ctx = _ctx(_pick_script(**{
+        **_search_responses(sweeps=2),
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # pick 스윕
+            DetectOrientedResponse(found=True, candidates=[place_spot]),
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick1
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick2
+        ],
+        _SELECT: [_resolve_ok(), _resolve_ok()],
+        _MOVE_J: [MoveJResponse()] * 9,  # 성공 시나리오 8 + retreat 폴백 1
+        _MOVE_L: [MoveLResponse()] * 4 + [
+            RemoteError("MotionFailed", "MoveL failed"),  # retreat 실행 실패
+        ],
+        _GRIP: [SetGripperResponse()] * 4,
+        _READ_STATE: [_joint_state(_HELD_RAW)] * 3,
+    }))
+    await _module_for_scenario().scenario(
+        ctx, pick_object="white cube", place_object="red box"
+    )  # raise 없음 = 적치 성공 run 생존
+    # 폴백 = 마지막에서 두 번째 MoveJ (마지막은 go_home), 타깃 = 계획 관절해
+    fallback = ctx.calls(_MOVE_J)[-2]["req"].target
+    assert fallback.kind == "joint"
+    assert list(fallback.joints) == [0.1] * 6  # _resolve_ok solutions[0]
+    grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
+    assert grips[-1] == _SPEC.gripper_close_raw  # 종료 정리까지 완주
+
+
 async def test_scenario_place_unreachable_fails_before_pick():
     """놓을 곳 도달 불가 → 집기 **전에** 실패 (쥔 채 멈춤 corrupt 방지) —
     servo 모션·파지 0."""
@@ -661,16 +698,18 @@ def test_plan_place_free_family_disjoint_yaws():
 
 
 async def test_plan_place_falls_back_to_reachable_spot():
-    high_far = _det(score=0.80, position=(0.15, 0.10, 0.22), base_z=0.20)
-    low_near = _det(score=0.73, position=(0.24, -0.11, 0.03), base_z=0.005)
+    high_score = _det(score=0.80, position=(0.15, 0.10, 0.03), base_z=0.005)
+    low_score = _det(score=0.73, position=(0.24, -0.11, 0.05), base_z=0.005)
     ctx = _ctx({
         **_search_responses(),
         _DETECT: [
-            DetectOrientedResponse(found=True, candidates=[high_far, low_near])
+            DetectOrientedResponse(
+                found=True, candidates=[high_score, low_score]
+            )
         ],
         _SELECT: [
-            ResolveReachableResponse(index=-1, message="선반 위 IK 전멸"),
-            ResolveReachableResponse(index=-1, message="선반 위 IK 전멸"),
+            ResolveReachableResponse(index=-1, message="IK 전멸"),
+            ResolveReachableResponse(index=-1, message="IK 전멸"),
             _resolve_ok(),
         ],
         _MOVE_J: [MoveJResponse()],
@@ -679,8 +718,90 @@ async def test_plan_place_falls_back_to_reachable_spot():
     chosen, _pre = await steps.plan_place(
         ctx, _BOT, "blue box", held=held, lateral=0.008, home=_home_record()
     )
-    assert chosen.place[2] == pytest.approx(0.03 + 0.023 / 2 + 0.005)
+    assert chosen.place[2] == pytest.approx(0.05 + 0.023 / 2 + 0.005)
     assert len(ctx.calls(_SELECT)) == 3
+
+
+async def test_plan_place_defers_implausible_base_z_spots():
+    """공중 부양(flying-pixel 오염) / 과침하 spot 은 score 가 높아도 후순위 —
+    2026-07-17 실물: base_z=+0.156~0.175 오염 spot 이 score 상위로 spot 당
+    resolve ~55s 를 먼저 태움 (최악 런은 plan_place 에만 3.5분). 기각 아님 —
+    타당 spot 이 먼저 닿으면 resolve 1회로 끝. 하한은 pick(-0.01)이 아니라
+    place 전용(-0.04) — 실상자 멀티뷰 바닥은 -0.02 대가 정상 관측이다."""
+    floating = _det(score=0.95, position=(0.15, 0.10, 0.22), base_z=0.20)
+    sunken = _det(score=0.90, position=(0.20, 0.10, 0.02), base_z=-0.10)
+    box = _det(score=0.50, position=(0.24, -0.11, 0.03), base_z=-0.016)
+    ctx = _ctx({
+        **_search_responses(),
+        _DETECT: [
+            DetectOrientedResponse(
+                found=True, candidates=[floating, sunken, box]
+            )
+        ],
+        _SELECT: [_resolve_ok()],
+        _MOVE_J: [MoveJResponse()],
+    })
+    chosen, _pre = await steps.plan_place(
+        ctx, _BOT, "blue box", held=_det(height=0.023), lateral=0.008,
+        home=_home_record(),
+    )
+    # 타당 spot(box — base_z=-0.016 은 place 대역 안, score 최하)이 첫 시도
+    assert len(ctx.calls(_SELECT)) == 1
+    assert chosen.place[2] == pytest.approx(0.03 + 0.023 / 2 + 0.005)
+
+
+async def test_plan_pick_defers_floating_candidate():
+    """공중 부양(base_z 상한 밖) 후보는 score 1등이어도 후순위 — 2026-07-17
+    실물: flying-pixel 이 큐브 top 을 공중으로 들어올린 관측이 허공 목표를
+    만들어 servo 이동 IK 거부 (04:24 태스크 사망). 타당 후보가 resolve 첫
+    시도가 되어야 오염 뷰에 resolve 예산을 태우지 않는다."""
+    floating = _det(score=0.95, position=(0.2, 0.05, 0.22), base_z=0.20)
+    healthy = _det(score=0.50)  # base_z=0.0 — 타당
+    ctx = _ctx({
+        **_search_responses(),
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[floating, healthy])
+        ],
+        _SELECT: [_resolve_ok()],
+        _MOVE_J: [MoveJResponse()],
+    })
+    plan = await steps.plan_pick(ctx, _BOT, "white cube", _home_record())
+    assert plan.coarse.score == pytest.approx(0.50)  # 타당 후보 채택
+    assert len(ctx.calls(_SELECT)) == 1  # 오염 후보에 resolve 소모 0
+
+
+async def test_plan_pick_rejects_all_low_score_candidates():
+    """저신뢰(오검출 가능) 후보만 남으면 명시 실패 — 2026-07-17 실물: 진짜
+    큐브 전멸 후 순회가 score 0.31 오검출(로봇 옆 흰 물체)로 폴백, 엉뚱한
+    물체를 집으러 가 사용자 STOP. 오동작(맹목 파지)보다 정직한 실패."""
+    ctx = _ctx({
+        **_search_responses(),
+        _DETECT: [DetectOrientedResponse(found=True, candidates=[
+            _det(score=0.35),
+            _det(score=0.31, position=(0.1, 0.22, 0.012)),
+        ])],
+        _MOVE_J: [MoveJResponse()],
+    })
+    with pytest.raises(DetectionNotFound):
+        await steps.plan_pick(ctx, _BOT, "white cube", _home_record())
+    assert ctx.calls(_SELECT) == []  # 저신뢰 후보에 resolve 예산 소모 0
+
+
+async def test_plan_pick_low_score_excluded_from_fallback():
+    """진짜 후보가 전멸해도 저신뢰 후보로 **폴백하지 않는다** — 도달성 우선
+    순회의 바닥은 신뢰 후보까지. 전멸이면 엉뚱한 물체 대신 명시 실패."""
+    ctx = _ctx({
+        **_search_responses(),
+        _DETECT: [DetectOrientedResponse(found=True, candidates=[
+            _det(score=0.76),
+            _det(score=0.31, position=(0.1, 0.22, 0.012)),
+        ])],
+        _SELECT: [ResolveReachableResponse(index=-1, message="전멸")],
+        _MOVE_J: [MoveJResponse()],
+    })
+    with pytest.raises(NoReachableGrasp, match="후보 1개 전부 전멸"):
+        await steps.plan_pick(ctx, _BOT, "white cube", _home_record())
+    assert len(ctx.calls(_SELECT)) == 1  # 저신뢰 후보는 시도 대상 아님
 
 
 async def test_plan_place_falls_back_to_free_yaw_family():
@@ -753,6 +874,28 @@ async def test_module_run_reports_failure_reason_and_allows_rerun():
 
     res2 = await mod.run(RunRequest(pick_object="white cube"))
     assert res2.accepted
+
+
+async def test_scenario_republishes_grasp_marker_during_servo():
+    """servo 채택 관측이 파지점을 갱신할 때마다 마커 스트림 재발행 — 계획
+    시점 마커가 실행 내내 고정 표시되던 UI 구멍 (2026-07-17 사용자 리포트).
+    on_grasp 배선을 빼면 발행이 계획 1회로 줄어 즉시 잡힌다."""
+    rt = _WireStub()
+    mod = PickAndPlaceModule(rt, {})  # type: ignore[arg-type]
+    ctx = _ctx(_pick_script())
+    await mod.scenario(ctx, pick_object="white cube")
+    marker_events = [
+        e for k, e in rt.published
+        if k.endswith("/markers") and isinstance(e, TaskMarkers)
+    ]
+    # 계획 확정 1회 + servo 채택 tick 마다 (script = 2 tick 채택)
+    assert len(marker_events) >= 3, [k for k, _ in rt.published]
+    for ev in marker_events:
+        assert ev.markers[0].label == "grasp"
+        assert len(ev.markers[0].position) == 3
+    # seq 단조 증가 (latest-wins 스트림 계약)
+    seqs = [ev.seq for ev in marker_events]
+    assert seqs == sorted(seqs)
 
 
 async def test_module_control_without_run_says_why():

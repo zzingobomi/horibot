@@ -20,11 +20,33 @@
 > [backend.md](backend.md) (framework §1–§14 + Module catalog §16 + Task-first §17).
 > 본 문서 = "지금 어디까지 됐고 다음 뭐 할지" 만 — 설계 결정은 여기 안 둠.
 
-## 현재 상태 (2026-07-16)
+## 현재 상태 (2026-07-17)
 
-**framework + 전 Module 가동 + Task 아키텍처 확정 + 집기 = closed-loop(servo)
-look-then-move 로 전면 전환 구현 완료 (실물 검증 대기 — 집).** open-loop 멀티뷰
-antipodal 집기는 실물 0/N 로 대체됨 (아래 2026-07-16 부).
+**closed-loop PnP 실물 첫 완주 성공 (2026-07-17 새벽, 2연속 포함) — 재현성 통계
+수집 단계.** framework + 전 Module 가동 + Task 아키텍처 확정. 실물 테스트
+확인/분석/수정 절차 = **[task.md](task.md) §4 "PnP 실물 디버깅 runbook"** (다음
+세션 진입점 — trace 읽는 법, 실패 모드→수정 위치 사전, 노브 SSOT, 배포 매트릭스).
+
+### 2026-07-17 — 실물 첫 완주 (밤샘 수정 체인 8개 + servo_pick 리팩토링)
+
+07-16 밤~17 새벽 실물 세션. 매 런 trace+영상 교차로 원인 1개씩 확정하며 수정
+(근거 전부 코드 주석 — 값·사고 박제). 상세 사전 = task.md §4.3:
+① IK continuation walk (`pybullet.ik` — one-shot false negative 해소, plan 전멸
+풀림) ② PlantComp 잔차 보상 (절대 재명령의 정상상태 8~12mm → lateral 1.6~4mm
+수렴 재현) + commit 후 FK touch-up ③ 파지 z = **윗면 앵커** (단일 top-view 의
+base_z ≈ 윗면, +25mm 계통 오차였음) + 클러스터 min base_z floor ④ held 판정 =
+gap OR 부하 (실측 빈손 56~64 / 물림 300+; gap 문턱 15%→5%) ⑤ gripper close
+90→30°/s (가동 조 아크 타격-발사 실사고, 영상 확정) + settle 4s ⑥ engage 6mm
+(조 안쪽 물림) + MoveL `speed_scale` 신설 (접촉 인접 4구간 0.25) ⑦ 재시도 체인:
+EMPTY→내려놓고 재관측 (반경 15cm) + refit_family (튕기며 회전한 물체에 yaw
+재유도) ⑧ 슬립 = 경고+이송 계속 (조 끝 걸림도 안정 매달림 실측). plan_pick 은
+도달성 우선 후보 순회 (오염 뷰 score 1등에 태스크 안 죽음). `servo_pick` 은
+PlantComp/TrackState (servo.py) 로 리팩토링 — 테스트 무변경 63개 초록 = 동작
+보존. 전 스위트 429 passed.
+
+**남은 것**: 재현성 통계 (사용자 반복 테스트 중) / 조 마찰 패드 (하드웨어 — 슬립
+근본, 미적용) / 얇은 물체(펜) held 검증 / place "blue box" 유령 뷰 (로봇 자신
+z 0.2 검출 — score 로 버티는 중, task.md §4.6) / steps.py 파일 분리 미완.
 
 ### 2026-07-16 — 집기 closed-loop(servo) 전환 (구현 + sim 검증 완료, 실물 대기)
 

@@ -1,7 +1,11 @@
 # MoveJ(pose) 도달 불가 — motion IK 완전성 이슈 (열린 논의, 2026-07-16)
 
-> **핸드오프 문서.** 세션이 길어져 다음 세션에서 이어가려고 분리. 해결되면
-> [docs/motion.md](motion.md) 에 § 로 접는다 (CLAUDE.md 관례 — 신규 문서는 임시).
+> ✅ **해소됨 (2026-07-16 밤)**: `PybulletKinematics.ik` 에 **continuation walk**
+> 구현 (①seed 1발 → ②위치-only 도달 후 TCP 고정 자세 slerp 걸음 + 스텝 재선형화
+> → ③random restart). §3 의 [A] 실패 pose 성공 확인 + plan_pick 52가족 전멸
+> 해소 + 실물 첫 완주 (backend.md handoff 2026-07-17 부). §6 의 TRAC-IK/analytical
+> 은 불채택 — walk 가 §8.7 우려(빌드/hybrid) 없이 완전성을 실용 수준으로 올림.
+> motion.md 로 접는 것은 후속 정리로 남김.
 > 관련 메모리: `project_motion_preview_poc`.
 
 ---
@@ -226,5 +230,8 @@ print('[C]', kin.ik(target_pos, target_quat, end))              # 성공
   실물([motion/module.py:483](../backend/modules/motion/module.py#L483)) 모두
   `kin.ik` 1회 seed=현재(+내부 200 restart). MoveL 도 양쪽 seed 연쇄 동일.
 - 단 실물 PnP **집기**는 MoveJ(pose)를 안 씀 → `resolve_reachable`(seed 연쇄 +
-  deepening + 52 후보) + MoveL 로 **더 두꺼운 경로**. 그래서 프리뷰 MoveJ 실패가
-  PnP 집기 실패로 **직결되진 않음**(밑바닥 솔버가 같으니 면역은 아님).
+  52 후보 group-major 스캔) + MoveL 로 **더 두꺼운 경로**. 그래서 프리뷰 MoveJ
+  실패가 PnP 집기 실패로 **직결되진 않음**(밑바닥 솔버가 같으니 면역은 아님).
+  (2026-07-17: resolve 의 budget-major deepening(10,40,200) 폐지 → 그룹당
+  walk+40 단일 예산, 선호 순서 엄격 — 근거/수치는 `motion/module.py`
+  `_GROUP_IK_BUDGET` 주석. 전멸 후보 36.5s→~8s, 선호 역전 구멍 제거.)

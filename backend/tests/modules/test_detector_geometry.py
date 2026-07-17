@@ -216,6 +216,59 @@ def test_object_metrics_zgap_cuts_below_outliers():
     assert abs(position[2] + 0.022) < 2e-3
 
 
+def test_object_metrics_flying_pixel_trail_above_does_not_hijack_top():
+    """2026-07-17 실물 회귀 — 실루엣 flying pixel 은 카메라 쪽 = 물체 **위**로
+    뜬 성긴 트레일을 만든다 (내부 간격 <5mm 로 연결, 몸통과는 >5mm 분리). 옛
+    p98 top 앵커가 트레일(전체의 2% 초과)에 올라타면 z-gap 군집이 트레일만
+    몸통으로 삼아 물체 전체가 공중 부양했다 — blue box base_z=+0.175 공중
+    spot (resolve_place spot 당 ~55s 전멸), 큐브 top +2cm (servo 허공 목표 IK
+    거부). 몸통 = **질량 있는** 최상단 군집이라야 한다 (PLY 실측: 트레일은
+    수 %, 물체 면은 대다수)."""
+    from modules.detector.geometry import object_metrics_from_points
+
+    body = _cube_view_points(0.2, 0.1, top_z=0.024, height=0.023, side="x")
+    n_trail = 12  # 288점 대비 ~4% — p98(하위 2% 컷)을 넘는 오염량
+    trail_z = np.linspace(0.15, 0.20, n_trail)  # 간격 4.5mm — 트레일 내부 연결
+    trail = np.stack(
+        [np.full(n_trail, 0.2), np.full(n_trail, 0.1), trail_z], axis=1
+    )
+    m = object_metrics_from_points(np.vstack([body, trail]))
+    assert m is not None
+    position, base_z, height = m
+    assert abs(position[2] - 0.024) < 2e-3, position  # top = 물체 윗면 (트레일 아님)
+    assert abs(base_z - 0.001) < 3e-3, base_z  # 바닥 = top − height (공중 부양 없음)
+    assert abs(height - 0.023) < 3e-3, height
+
+
+def test_object_metrics_elevated_object_wins_over_larger_lower_bleed():
+    """적치된(공중) 물체 — 상자 위 큐브처럼 실제로 떠 있는 물체는 base_z 가
+    올라간 값으로 **정직하게** 나와야 한다 (floor 추정 없음 — 공중/손 성립이
+    이 기하의 존재 이유). 동시에 mask 가 아래 면(테이블)으로 새서 만든 더 큰
+    하부 군집이 있어도, 몸통 선택은 '최대 질량'이 아니라 '질량 자격을 갖춘
+    최상단'이라 물체가 이긴다 — 최대-질량 선택으로 바꾸면 이 테스트가 잡는다."""
+    from modules.detector.geometry import object_metrics_from_points
+
+    # 상자(top 0.027) 위 큐브: z ∈ [0.027, 0.051] — 288점
+    cube = _cube_view_points(0.2, 0.1, top_z=0.051, height=0.024, side="x")
+    # 테이블(z≈0)로 샌 배경 bleed — 큐브보다 **많은** 점 (400점), 27mm gap 분리
+    rng = np.random.default_rng(1)
+    n_bleed = 400
+    bleed = np.stack(
+        [
+            0.2 + rng.normal(0, 0.02, n_bleed),
+            0.1 + rng.normal(0, 0.02, n_bleed),
+            rng.normal(0.0, 0.001, n_bleed),
+        ],
+        axis=1,
+    )
+    m = object_metrics_from_points(np.vstack([cube, bleed]))
+    assert m is not None
+    position, base_z, height = m
+    assert abs(position[2] - 0.051) < 2e-3, position  # top = 큐브 윗면
+    assert abs(base_z - 0.027) < 3e-3, base_z  # 바닥 = 상자 top (공중 — 정직)
+    assert abs(height - 0.024) < 3e-3, height
+
+
 def test_voxel_downsample_reduces_and_preserves_extent():
     from modules.detector.geometry import voxel_downsample
 

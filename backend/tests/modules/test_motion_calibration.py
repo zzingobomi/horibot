@@ -365,6 +365,7 @@ def _make_bundle_with_ids(robot_id: str, arm, base_id: int) -> CalibrationBundle
     )
 
 
+@pytest.mark.sim  # 실 Zenoh 2세션 + Runtime 2개 + liveliness 수렴 (~6s) — fast loop 제외
 async def test_motion_converges_when_calibration_owner_boots_later(
     robot, arm, urdf_copy: Path
 ):

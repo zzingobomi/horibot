@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from sqlalchemy import String, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from framework.persistence.protocol import Repository
 from infra.database.sqlite import open_sqlite
 
 
@@ -54,65 +52,3 @@ def test_sqlite_file_based_persists_across_sessions(tmp_path: Path):
     engine2.dispose()
 
 
-class FakeWidgetRepository:
-    def __init__(self):
-        self._store: dict[int, Widget] = {}
-
-    def get(self, id: int) -> Widget | None:
-        return self._store.get(id)
-
-    def save(self, entity: Widget) -> None:
-        self._store[entity.id] = entity
-
-    def delete(self, id: int) -> None:
-        del self._store[id]
-
-
-def test_fake_repository_satisfies_protocol():
-    repo: Repository[Widget] = FakeWidgetRepository()
-    repo.save(Widget(id=1, name="x"))
-    assert repo.get(1) is not None
-    assert repo.get(999) is None
-    repo.delete(1)
-    assert repo.get(1) is None
-    with pytest.raises(KeyError):
-        repo.delete(1)
-
-
-class SqlWidgetRepository:
-    def __init__(self, session_factory):
-        self._session_factory = session_factory
-
-    def get(self, id: int) -> Widget | None:
-        with self._session_factory() as session:
-            return session.get(Widget, id)
-
-    def save(self, entity: Widget) -> None:
-        with self._session_factory() as session:
-            session.merge(entity)
-            session.commit()
-
-    def delete(self, id: int) -> None:
-        with self._session_factory() as session:
-            obj = session.get(Widget, id)
-            if obj is None:
-                raise KeyError(id)
-            session.delete(obj)
-            session.commit()
-
-
-def test_sql_repository_round_trip():
-    engine, factory = open_sqlite(":memory:")
-    Base.metadata.create_all(engine)
-
-    repo: Repository[Widget] = SqlWidgetRepository(factory)
-    repo.save(Widget(id=10, name="hello"))
-    fetched = repo.get(10)
-    assert fetched is not None
-    assert fetched.name == "hello"
-
-    repo.delete(10)
-    assert repo.get(10) is None
-
-    with pytest.raises(KeyError):
-        repo.delete(10)

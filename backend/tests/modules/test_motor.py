@@ -31,8 +31,6 @@ from modules.motor.contract import (
     MotorState,
     MotorTopology,
     ReadStateRequest,
-    RebootRequest,
-    RebootResponse,
     SetGripperRequest,
     SetGripperResponse,
     SetTorqueRequest,
@@ -45,6 +43,9 @@ from modules.motor.layout import MotorSpec
 from modules.motor.module import MotorDriverModule
 
 _LOCAL_CFG = {"mode": "peer", "scouting": {"multicast": {"enabled": False}}}
+
+# 실 Zenoh 세션 + Runtime 부팅/test + sleep 폴링 — 마커 정의 그대로 sim
+pytestmark = pytest.mark.sim
 
 
 def _layout(n_joints: int, gripper: bool) -> list[MotorSpec]:
@@ -232,21 +233,9 @@ async def test_driver_state_stream_publishes_torque_enabled(runtime: Runtime):
     )
 
 
-# ─── 4. reboot + set_gripper service ─────────────────────
-
-
-async def test_reboot_service(runtime: Runtime):
-    driver = MockMotorBackend(_layout(6, True))
-    runtime.add_module(MotorDriverModule, robot_id="so101_0", driver=driver)
-    await runtime.start()
-
-    res = await runtime.module_runtime.call(
-        Motor.Service.REBOOT,
-        RebootRequest(),
-        RebootResponse,
-        robot_id="so101_0",
-    )
-    assert res.ok is True
+# ─── 4. set_gripper service ─────────────────────
+# (reboot relay 테스트는 2026-07-17 정리로 삭제 — mock.reboot() 가 no-op 이라
+# ok=True 하드코드 확인일 뿐, 뒤집어도 잡는 게 없었다.)
 
 
 async def test_set_gripper_writes_to_driver(runtime: Runtime):

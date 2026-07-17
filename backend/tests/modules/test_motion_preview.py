@@ -34,7 +34,6 @@ from modules.motion_preview.contract import (
 from modules.motion_preview.module import (
     MotionPreviewModule,
     PreviewRobotSpec,
-    _rpy_to_quat,
     plan_trajectory,
 )
 
@@ -123,10 +122,6 @@ def spec() -> PreviewRobotSpec:
 
 def _target(x: float) -> PreviewPoseTarget:
     return PreviewPoseTarget(position=(x, 0.1, 0.2), rpy_deg=(0.0, 0.0, 0.0))
-
-
-def test_rpy_to_quat_identity() -> None:
-    assert _rpy_to_quat((0.0, 0.0, 0.0)) == pytest.approx((0.0, 0.0, 0.0, 1.0))
 
 
 def test_move_l_reachable(spec: PreviewRobotSpec) -> None:

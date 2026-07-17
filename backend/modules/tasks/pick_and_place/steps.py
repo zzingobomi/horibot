@@ -85,6 +85,7 @@ from modules.waypoint.contract import (
 )
 
 from . import geometry, servo
+from .antipodal import _JAW_OPEN_MAX_M
 from .geometry import PlaceCandidate, Quat, Vec3
 from .servo_trace import ServoTrace
 
@@ -147,6 +148,14 @@ _PLACE_BASE_Z_MIN_M = -0.04
 # **pick 전용** — place spot 은 진짜 상자가 score 0.34 로 채택된 실측(06:18)이
 # 있어 하한을 걸면 정상 run 이 죽는다 (적치는 오검출 비용도 낮음).
 _PICK_SCORE_MIN = 0.45
+# pick 후보 폭 상한 — 조가 물리적으로 못 무는 물체는 score 와 무관하게 후보가
+# 아니다 (2026-07-17 실물: 손에 든 큐브 전멸 후 score 0.68 짜리 footprint
+# 116mm blob 을 "small cube" 로 채택, lateral 47mm 계획으로 "완전 다른 데"
+# 주행 — antipodal 쌍 필터(_JAW_OPEN_MAX_M)는 쓰레기 점군 안 우연 쌍으로
+# 우회됨). 문턱 = 조 개구 SSOT + 관측 번짐 여유 (실측: 실물 20mm 가 depth
+# 번짐으로 33mm 로 측정된 전례 — 진짜 큐브를 컷하지 않게 +15mm).
+_PICK_WIDTH_BLEED_M = 0.015
+_PICK_MAX_WIDTH_M = _JAW_OPEN_MAX_M + _PICK_WIDTH_BLEED_M
 
 # (명령-실측 잔차 보상은 servo.PlantComp 로 이동 — 근거/사용 규약은 그 docstring)
 
@@ -183,12 +192,15 @@ def servo_ladder_groups(
     coarse: OrientedDetection,
     cfg: servo.ServoConfig,
     floor_z: float | None = None,
+    *,
+    yaw_free: bool = False,
 ) -> tuple[list[list[TcpPose]], list[tuple[servo.GraspFamily, Vec3, Vec3, float]]]:
     """coarse 관측 → resolve 후보 그룹 ([standoff 사다리…, 파지] × 가족) + 메타.
 
     plan_pick 과 sim 게이트 테스트(test_motion — 실 URDF IK 로 이 그룹이 진짜
-    풀리는지)가 공유하는 그룹 구성 SSOT."""
-    families = servo.grasp_families(coarse)
+    풀리는지)가 공유하는 그룹 구성 SSOT. yaw_free=True 면 근사 정사각 물체의
+    확장 yaw 가족이 기존 블록 **뒤에** 붙는다 (2단 resolve — 호출부 슬라이스)."""
+    families = servo.grasp_families(coarse, yaw_free=yaw_free)
     groups: list[list[TcpPose]] = []
     metas: list[tuple[servo.GraspFamily, Vec3, Vec3, float]] = []
     g_point0 = servo.grasp_point(coarse, coarse, cfg, floor_z)
@@ -225,28 +237,42 @@ async def plan_pick(
     와 동일 원칙). 전 후보 전멸 = 후보별 사유 포함 명시 실패 (맹목 파지 금지).
 
     자세 가족(조 축 2 × flip 2 × tilt 13)마다 [standoff 사다리…, 파지] 를 한
-    그룹으로 resolve — 게이트: 끝점 IK + 바닥 + 그리퍼(벌림)↔물체·이웃 점군
-    충돌 + home→rung0 관절 경로 + 사다리 구간 직선(linear).
+    그룹으로 resolve — 게이트: 끝점 IK + 바닥 + 그리퍼(벌림)↔**이웃** 점군
+    충돌 + home→rung0 관절 경로 + 사다리 구간 직선(linear). 파지 대상 자신의
+    점군은 장애물이 아니다 (engage 겹침은 의도 — resolve 호출부 주석).
     """
     cands = await detect(ctx, robot_id, prompt)
     if not cands:
         raise DetectionNotFound(prompt, candidates=0, reason="검출 0건")
     cfg = _SERVO_CFG
-    # score 하한 컷 — 저신뢰 오검출은 순회 폴백 대상조차 아님 (_PICK_SCORE_MIN
-    # 주석 — 엉뚱한 물체 파지 실사고). 컷은 침묵하지 않는다.
-    trusted = [c for c in cands if c.score >= _PICK_SCORE_MIN]
-    if len(trusted) < len(cands):
+    # 신뢰 컷 2종 — 저신뢰 score / 조 개구 초과 폭. 어느 쪽이든 순회 폴백
+    # 대상조차 아님 (상수 주석 — 엉뚱한 물체 파지 실사고 2건). 컷은 침묵하지
+    # 않는다.
+    oversize = [c for c in cands if c.footprint[1] > _PICK_MAX_WIDTH_M]
+    if oversize:
+        logger.info(
+            "plan_pick(%s): 개구 초과 후보 %d개 제외 (짧은 변 %s > %.0fmm — "
+            "조가 못 무는 크기)",
+            prompt, len(oversize),
+            [f"{c.footprint[1] * 1000:.0f}mm" for c in oversize],
+            _PICK_MAX_WIDTH_M * 1000,
+        )
+    sized = [c for c in cands if c.footprint[1] <= _PICK_MAX_WIDTH_M]
+    trusted = [c for c in sized if c.score >= _PICK_SCORE_MIN]
+    if len(trusted) < len(sized):
         logger.info(
             "plan_pick(%s): 저신뢰 후보 %d개 제외 (score < %.2f — 오검출 방지)",
-            prompt, len(cands) - len(trusted), _PICK_SCORE_MIN,
+            prompt, len(sized) - len(trusted), _PICK_SCORE_MIN,
         )
     if not trusted:
         raise DetectionNotFound(
             prompt,
             candidates=len(cands),
             reason=(
-                f"검출 {len(cands)}건 전부 score < {_PICK_SCORE_MIN} (저신뢰 — "
-                "오검출 가능성). 물체 위치/조명 확인 후 다시 실행하세요"
+                f"검출 {len(cands)}건 전부 신뢰 컷 미달 (score < "
+                f"{_PICK_SCORE_MIN} 저신뢰 {len(sized) - len(trusted)}건 / "
+                f"조 개구 {_PICK_MAX_WIDTH_M * 1000:.0f}mm 초과 "
+                f"{len(oversize)}건). 물체 위치/조명 확인 후 다시 실행하세요"
             ),
         )
     # 물리 타당(base_z 가 설치면 근방 대역 안) 후보 먼저, 그 안에서 score
@@ -273,38 +299,75 @@ async def plan_pick(
             if _xy_dist(c.position, coarse.position) <= _VIEW_MATCH_RADIUS_M
         ]
         floor_z = min(cluster_base) - _FLOOR_GATE_MARGIN_M
-        groups, metas = servo_ladder_groups(coarse, cfg, floor_z)
-
-        t0 = time.monotonic()
-        res = await ctx.call(
-            Motion.Service.RESOLVE_REACHABLE,
-            ResolveReachableRequest(
-                groups=groups,
-                floor_z=floor_z,
-                linear=True,
-                obstacle_points=[*(coarse.points or []), *neighbors],
-                gripper_open=True,
-                path_from=list(home.joint_values),
-            ),
-            ResolveReachableResponse,
-            robot_id=robot_id,
+        # 2단 resolve (2026-07-17 저녁 — 채택 속도와 커버리지의 분리): 1단 =
+        # 기존 축 52가족 (빠른 채택 경로 — 잘 잡히는 위치는 여기서 수 초),
+        # 전멸 시에만 2단 = 확장 yaw 가족 (근사 정사각 물체의 yaw 자유 —
+        # OBB yaw 노이즈 복권 탈출. servo.grasp_families yaw_free docstring).
+        full_groups, full_metas = servo_ladder_groups(
+            coarse, cfg, floor_z, yaw_free=True
         )
-        resolve_s = time.monotonic() - t0
-        if res.index < 0:
+        base_groups, base_metas = servo_ladder_groups(coarse, cfg, floor_z)
+        base_n = len(base_groups)
+        stages: list[tuple[str, list, list]] = [
+            ("기존", base_groups, base_metas)
+        ]
+        if len(full_groups) > base_n:
+            stages.append(("확장", full_groups[base_n:], full_metas[base_n:]))
+
+        stage_fails: list[str] = []
+        adopted = None
+        for stage, groups, metas in stages:
+            t0 = time.monotonic()
+            # 장애물 = **이웃 점군만** — 파지 대상 자신의 점군은 넣지 않는다
+            # (2026-07-17 오후 실사고): engage(조를 물체 쪽으로 밀어넣어 물기)
+            # 설계상 grasp 자세의 조↔대상 겹침은 **의도된 것**인데, 자기
+            # 점군을 장애물로 검사하면 그 겹침이 기각된다 (실측 침투 -3.6~
+            # -9.6mm = engage 겹침 — 기각/통과를 가른 건 "카메라가 어느 면을
+            # 봤나"). 대상 보호 = antipodal 구성 + servo + 파지 판정
+            # (MoveIt ACM 의 조작 대상 충돌 허용 등가).
+            res = await ctx.call(
+                Motion.Service.RESOLVE_REACHABLE,
+                ResolveReachableRequest(
+                    groups=groups,
+                    floor_z=floor_z,
+                    linear=True,
+                    obstacle_points=list(neighbors),
+                    gripper_open=True,
+                    path_from=list(home.joint_values),
+                ),
+                ResolveReachableResponse,
+                robot_id=robot_id,
+            )
+            resolve_s = time.monotonic() - t0
+            if res.index >= 0:
+                adopted = (stage, groups, metas, res, resolve_s)
+                break
+            stage_fails.append(
+                f"{stage} {len(groups)}가족 전멸 ({resolve_s:.1f}s) — "
+                f"{res.message}"
+            )
+            if stage == "기존" and len(stages) > 1:
+                logger.info(
+                    "plan_pick(%s): 후보%d 기존 축 전멸 — 확장 yaw %d가족 "
+                    "재시도 (근사 정사각 — OBB yaw 노이즈 복권 탈출)",
+                    prompt, rank, len(full_groups) - base_n,
+                )
+        if adopted is None:
             msg = (
                 f"후보{rank}(score {coarse.score:.2f} "
                 f"pos={_fmt(coarse.position)} base_z={coarse.base_z:+.3f}): "
-                f"가족 {len(groups)}개 전멸 ({resolve_s:.1f}s) — {res.message}"
+                + _join_msgs(stage_fails)
             )
             failures.append(msg)
             logger.info("plan_pick(%s): %s — 다음 후보 시도", prompt, msg)
             continue
+        stage, groups, metas, res, resolve_s = adopted
         fam, g_point0, g_tcp0, lateral = metas[res.index]
         logger.info(
-            "plan_pick(%s): 후보%d/%d 채택 (score %.2f) — 가족 %d/%d %s, "
+            "plan_pick(%s): 후보%d/%d 채택 (score %.2f) — %s 가족 %d/%d %s, "
             "grasp0=%s lateral=%.1fmm (resolve %.1fs)",
-            prompt, rank, len(ordered), coarse.score, res.index, len(groups),
-            fam.label, _fmt(g_tcp0), lateral * 1000.0, resolve_s,
+            prompt, rank, len(ordered), coarse.score, stage, res.index,
+            len(groups), fam.label, _fmt(g_tcp0), lateral * 1000.0, resolve_s,
         )
         return ServoPlan(
             coarse=coarse,
@@ -455,6 +518,22 @@ async def servo_pick(
                         cfg.reacquire_radius_m if run.reacquiring else None
                     ),
                 )
+                if gate.obs is None:
+                    # 재앵커 — 연속 도약-기각 2건이 상호 일관하면 그쪽이
+                    # 다수결 진실 (servo.TrackState.consider_reanchor 주석).
+                    re = run.consider_reanchor(gate.rejected, cfg)
+                    if re is not None:
+                        logger.info(
+                            "servo: 재앵커 — 연속 기각 2건 상호 일관 (%s)",
+                            gate.reason,
+                        )
+                        await _trace_emit(trace, {
+                            "phase": "reanchor",
+                            "tick": state.ticks,
+                            "reason": gate.reason,
+                            "obs": _obs_record(re),
+                        })
+                        gate = servo.GateResult(re, "")
                 lateral_err: float | None = None
                 axial_err = 0.0
                 fused = None
@@ -545,10 +624,20 @@ async def servo_pick(
                         )
                     except ServoFailed:
                         # 오염 관측이 만든 허공 목표는 IK 거부가 옳다 — 관측
-                        # 불신 + 재관측으로 계속, 연속 2회면 진짜 경계 → abort
-                        # (2026-07-17 실물: 거부 1회에 태스크 전체 중단 사고).
+                        # 불신 + 재관측으로 계속 (2026-07-17 실물: 거부 1회에
+                        # 태스크 전체 중단 사고). 연속 2회 = 재관측도 같은
+                        # 목표를 재생산 = **관측이 진실인데 가족이 그 자리서
+                        # 불가** (07-17 저녁 실물: 헛집음이 큐브를 3cm 밀어
+                        # r≈0.32 경계로 — 재유도 가족 standoff 가 IK 밖, 정확한
+                        # 관측 2연속을 '불신'만 하다 사망) → 그 위치 기준 가족
+                        # 재-resolve 로 계속, 그것도 전멸이면 진짜 경계 → abort.
                         run.move_fails += 1
                         if run.move_fails >= 2:
+                            if await _replan_family(
+                                ctx, robot_id, run, state, cfg, tcp, trace
+                            ):
+                                run.move_fails = 0
+                                continue
                             raise
                         run.distrust_last()
                         logger.warning(
@@ -612,14 +701,36 @@ async def servo_pick(
                 # ── 후퇴 + 슬립 재판정 — 이송 자격 검증 (attempt 루프 안:
                 # 놓침/슬립 모두 재시도 대상). 후퇴 감속 — 잡은 직후 가속이
                 # 얕은 파지를 흔들어 빼는 실사고 (2026-07-17).
-                await _move_l(
-                    ctx, robot_id,
-                    servo.standoff(
-                        run.g_tcp, run.fam, cfg.withdraw_standoff_m
-                    ),
-                    run.fam.quat,
-                    speed_scale=cfg.gentle_speed_scale,
-                )
+                try:
+                    await _move_l(
+                        ctx, robot_id,
+                        servo.standoff(
+                            run.g_tcp, run.fam, cfg.withdraw_standoff_m
+                        ),
+                        run.fam.quat,
+                        speed_scale=cfg.gentle_speed_scale,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e_w:
+                    # **쥔 이후의 이동 실패는 task 를 죽일 수 없다** (2026-07-17
+                    # 저녁 실물: HELD·부하 320 직후 withdraw 사전검증 거부 →
+                    # 쥔 채 사망. withdraw 목표는 servo 가 보정한 새 위치
+                    # 기준이라 계획이 검증한 적 없는 자세 — 경계에서 자세 IK
+                    # 가 안 풀릴 수 있다). 폴백 = 계획이 증명한 rung0 관절해
+                    # (IK 재풀이 0 — retreat/재플랜과 동일 원칙: 알려진 해가
+                    # 있으면 그 해로).
+                    logger.warning(
+                        "withdraw MoveL 실패 (%s) — 계획 rung0 관절해 MoveJ "
+                        "폴백 (쥔 채 계속)", e_w,
+                    )
+                    await _trace_emit(trace, {
+                        "phase": "withdraw",
+                        "action": "fallback_rung0",
+                        "tick": state.ticks,
+                        "reason": str(e_w),
+                    })
+                    await _move_j_joints(ctx, robot_id, plan.rung0_joints)
                 grip2 = await verify_grasp(
                     ctx, robot_id, phase="withdraw 후",
                     grasp_label=run.fam.label,
@@ -693,6 +804,90 @@ async def servo_pick(
             logger.info("servo trace: %s (%s)", trace.dir, summary["result"])
         except Exception:
             logger.exception("servo trace summary 기록 실패")
+
+
+async def _replan_family(
+    ctx: TaskContext,
+    robot_id: str,
+    run: servo.TrackState,
+    state: servo.ServoState,
+    cfg: servo.ServoConfig,
+    tcp: TcpState | None,
+    trace: ServoTrace,
+) -> bool:
+    """이동 거부 연속 시 최후 수단 — 현 관측(run.last) 위치 기준 가족 전체
+    재-resolve, 통과 가족으로 교체 + rung0 재진입 (plan_pick 채택과 동일 경로).
+
+    전제: 거부가 2연속이면 재관측이 같은 목표를 재생산한 것 = 관측은 진실이고
+    **기존 가족이 그 자리에서 IK 불가** (2026-07-17 저녁 실물: 헛집음이 큐브를
+    3cm 밀어 경계로 — yaw 재유도만으로는 같은 tilt 가족의 standoff 가 계속
+    도달 밖). 전멸/관측 없음 = False — 호출부가 기존 명시 실패 경로 유지."""
+    if run.last is None:
+        return False
+    t0 = time.monotonic()
+    # plan_pick 과 동일한 2단 — 1단 기존 축(빠름), 전멸 시 확장 yaw.
+    full_groups, full_metas = servo_ladder_groups(
+        run.last, cfg, run.floor_z, yaw_free=True
+    )
+    base_groups, base_metas = servo_ladder_groups(run.last, cfg, run.floor_z)
+    base_n = len(base_groups)
+    stages: list[tuple[list, list]] = [(base_groups, base_metas)]
+    if len(full_groups) > base_n:
+        stages.append((full_groups[base_n:], full_metas[base_n:]))
+    adopted: tuple[ResolveReachableResponse, list, int] | None = None
+    last_msg = ""
+    for groups, metas in stages:
+        res = await ctx.call(
+            Motion.Service.RESOLVE_REACHABLE,
+            ResolveReachableRequest(
+                groups=groups,
+                floor_z=run.floor_z,
+                linear=True,
+                path_from=list(tcp.joints) if tcp is not None else None,
+            ),
+            ResolveReachableResponse,
+            robot_id=robot_id,
+        )
+        if res.index >= 0:
+            adopted = (res, metas, len(groups))
+            break
+        last_msg = res.message
+    if adopted is None:
+        logger.warning(
+            "servo 재플랜: 가족 %d개(확장 포함) 전멸 (%.1fs) — 물체가 도달 "
+            "범위 밖으로 밀려난 것으로 판단: %s",
+            len(full_groups), time.monotonic() - t0, last_msg,
+        )
+        return False
+    res, metas, n_groups = adopted
+    fam, g_point0, g_tcp0, lateral = metas[res.index]
+    logger.info(
+        "servo 재플랜: 가족 %d/%d 채택 (%s) — 밀린 물체 위치 기준 rung0 재진입 "
+        "(%.1fs)", res.index, n_groups, fam.label, time.monotonic() - t0,
+    )
+    await _trace_emit(trace, {
+        "phase": "replan",
+        "tick": state.ticks,
+        "action": "refamily",
+        "family": fam.label,
+        "grasp_tcp": [round(v, 4) for v in g_tcp0],
+    })
+    run.fam = fam
+    run.g_point = g_point0
+    run.g_tcp = g_tcp0
+    run.lateral = lateral
+    run.widths.clear()  # 조 축이 바뀌었을 수 있음 — 폭 이력 무효
+    state.rung = 0
+    state.corrections = 0
+    state.misses = 0
+    await _move_j_joints(ctx, robot_id, res.solutions[0])
+    return True
+
+
+def _join_msgs(parts: list[str], sep: str = " / ") -> str:
+    """실패 사유 조립 — 명명 헬퍼인 이유: 프리뷰 정적 인덱서가 문자열 리터럴
+    `.join` 호출을 `<동적>` 노이즈 행으로 잡는다 (step 트리 오염 방지)."""
+    return sep.join(parts)
 
 
 def _notify_grasp(cb: Callable[[Vec3], None] | None, p: Vec3) -> None:

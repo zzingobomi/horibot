@@ -40,10 +40,11 @@ _CFG = servo.ServoConfig()
 # ─── 파지 자세 가족 ────────────────────────────────────────────────────
 
 
-def test_grasp_families_count_and_preference_order():
+def test_grasp_families_preference_order():
+    # 기본(yaw_free=False) = 1단 resolve 의 빠른 채택 경로 (07-17 저녁 2단화:
+    # 확장은 전멸 시에만). 첫 후보 = 수직 + 짧은 변. 총 개수는 tilt 사다리
+    # 튜닝마다 변해 잠그지 않는다 — 계약은 선호 순서.
     fams = servo.grasp_families(_det())
-    # tilt 13 × 조 축 2(짧은 변 우선) × flip 2 = 52. 첫 후보 = 수직 + 짧은 변.
-    assert len(fams) == 13 * 2 * 2
     assert fams[0].tilt_deg == 0 and "∥short" in fams[0].label
     assert "flip=+" in fams[0].label
     # 선호순: 작은 tilt 이 앞 (도달만 되면 수직에 가까운 쪽 채택)
@@ -220,6 +221,82 @@ def test_gate_rejects_thin_point_cloud():
     thin = _det(position=(0.2, 0.05, 0.02), points=_pts(10))
     g = servo.gate_observation([thin], (0.2, 0.05, 0.0), None, _CFG)
     assert g.obs is None and "점군 부족" in g.reason
+
+
+def test_grasp_families_yaw_expands_for_near_square_objects():
+    """근사 정사각 물체 = yaw 자유 확장 (2026-07-17 저녁): near-square 는 OBB
+    yaw 가 노이즈(뷰마다 랜덤)라 후보를 관측 축에 묶을 근거가 없는데 90° 빗
+    4방향뿐이라 위치별 도달 yaw 밴드(실측 30~40° 폭)를 통째로 미스 — 같은
+    큐브 두 뷰가 yaw 84° 차로 전멸/채택 갈린 실사고. 확장 yaw 는 기존 52 블록
+    **뒤에** (2단 resolve 슬라이스 계약 — 1단 채택 비용 불변, 전멸 시에만
+    확장분 스캔). 직사각 물체는 조가 옆면에 수직이어야 하므로 확장 없음."""
+    square = _det(footprint=(0.024, 0.022))  # aspect 1.09 → yaw 자유
+    base = servo.grasp_families(square)
+    full = servo.grasp_families(square, yaw_free=True)
+    assert len(full) > len(base)  # 확장이 실제로 붙는다
+    # 슬라이스 계약: 앞부분 = 기본 목록과 완전 동일 (2단 resolve 가 이 prefix 를
+    # 1단으로 자른다 — 블록 순서가 뒤섞이면 1단 채택 비용 불변 약속이 깨짐)
+    assert [f.label for f in full[: len(base)]] == [f.label for f in base]
+    assert all("@" in f.label for f in full[len(base):])  # 확장분은 전부 @yaw
+
+    oblong = _det(footprint=(0.10, 0.06))  # aspect 1.67 → OBB 축에 묶임 (물리)
+    fams_ob = servo.grasp_families(oblong, yaw_free=True)
+    # 직사각은 yaw_free 여도 확장 0 — 기본 목록과 동일
+    assert [f.label for f in fams_ob] == [f.label for f in servo.grasp_families(oblong)]
+    assert not any("@" in f.label for f in fams_ob)
+
+
+def test_gate_accepts_cleaned_sparse_but_healthy_cloud():
+    """body_points 소스 청소 후 문턱 재보정 회귀 (2026-07-17 저녁 실물) —
+    건강한 2cm 큐브 top-view 가 청소 후 49점인데 옛 문턱 50 이 연속 기각 →
+    소실 중단. 청소본 기준 정상 대역(≥30)은 통과해야 한다."""
+    healthy = _det(position=(0.2, 0.05, 0.024), points=_pts(49))
+    g = servo.gate_observation([healthy], (0.2, 0.05, 0.0), None, _CFG)
+    assert g.obs is healthy, g.reason
+
+
+def test_gate_rejects_low_score_observation():
+    """열화 관측(부분 뷰) score 하한 — 2026-07-17 13:53 실물: score 0.43·top z
+    16mm 낮은 관측이 **첫 앵커**가 되어 정상 관측(0.83)을 z 도약으로 연속
+    기각 → 소실 중단. 열화 관측은 앵커가 될 수 없어야 한다."""
+    degraded = _det(position=(0.2, 0.05, 0.008), points=_pts(), score=0.43)
+    g = servo.gate_observation([degraded], (0.2, 0.05, 0.0), None, _CFG)
+    assert g.obs is None and "저신뢰" in g.reason
+    assert g.rejected is None  # 저품질은 재앵커 후보도 아님
+
+
+def test_gate_jump_rejection_carries_candidate_for_reanchor():
+    """도약 기각은 품질 통과 후보를 rejected 로 노출 — 재앵커 판정 입력."""
+    last = _det(position=(0.2, 0.05, 0.008))
+    good = _det(position=(0.2, 0.05, 0.024), points=_pts(), score=0.83)
+    g = servo.gate_observation([good], (0.2, 0.05, 0.0), last, _CFG)
+    assert g.obs is None and "z 도약" in g.reason
+    assert g.rejected is good
+
+
+def test_track_state_reanchors_on_two_consistent_rejections():
+    """연속 도약-기각 2건이 상호 일관하면 재앵커 — 나쁜 앵커가 좋은 관측
+    스트림을 기각하는 역전 차단 (13:53 실물: 기각된 정상 관측 둘은 서로
+    1.4mm/0mm 일치). 불일치(진짜 산발 오염)면 재앵커 없음."""
+    run = servo.TrackState(
+        fam=servo.grasp_families(_det())[0], expected_xy=(0.2, 0.05, 0.0),
+        g_tcp=(0.2, 0.05, 0.01), g_point=(0.2, 0.05, 0.01), lateral=0.008,
+        fallback_width_m=0.022, floor_z=None,
+    )
+    a = _det(position=(0.300, 0.044, 0.024), points=_pts(), score=0.83)
+    b = _det(position=(0.301, 0.045, 0.024), points=_pts(), score=0.82)
+    assert run.consider_reanchor(a, _CFG) is None  # 1건째 — 대기
+    assert run.consider_reanchor(b, _CFG) is b  # 2건째 일관 → 재앵커
+    assert run.last_rejected is None  # 소비됨
+    # 불일치 (xy 20mm 벌어짐 — jump/2=15mm 밖) → 재앵커 없음
+    c = _det(position=(0.300, 0.044, 0.024), points=_pts(), score=0.83)
+    d = _det(position=(0.320, 0.044, 0.024), points=_pts(), score=0.83)
+    assert run.consider_reanchor(c, _CFG) is None
+    assert run.consider_reanchor(d, _CFG) is None
+    # 채택이 들어오면 기각 이력 리셋
+    run.consider_reanchor(c, _CFG)
+    run.note_accept(_det())
+    assert run.last_rejected is None
 
 
 # ─── decide_tick 상태 전이 (handoff §2 표) ────────────────────────────

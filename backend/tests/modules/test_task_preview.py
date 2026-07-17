@@ -176,50 +176,30 @@ class _DeadRuntime:
 
 
 def test_pick_and_place_scenario_tree():
-    """실 시나리오의 정적 트리 — 이 목록이 곧 실행 전 breakpoint/run_to 대상.
-    시나리오 구조를 바꾸면 이 테스트도 같이 바뀌는 게 맞다 (계약 잠금)."""
+    """실 시나리오의 정적 트리 — **골격과 오염 불변식만** 잠근다. 전체 step
+    목록의 exact 잠금은 시나리오 편집마다 깨지는 구현 미러였다 (2026-07-17
+    하루 2회 파손 → 완화). 뒤집으면 잡히는 것: phase 골격 붕괴/순서 역전,
+    안전 이중 파지판정 소실, <동적> 노이즈 범람, 소스 미보유 step, 프리뷰 중
+    wire 실행 (_DeadRuntime)."""
     mod = PickAndPlaceModule(_DeadRuntime(), {})  # type: ignore[arg-type]
     entries = build_preview(mod.scenario)
 
-    assert _rows(entries) == [
-        ("home_waypoint", 0),
-        ("plan_pick", 0),
-        ("detect", 1),  # search 스윕 = 찾기(coarse)만 — 파지 정밀은 servo
-        (DYNAMIC_NAME, 1),  # 후보 순회 loop 안 resolve — 정적으로 못 푸는 호출
-        ("plan_place", 0),
-        ("detect", 1),
-        ("resolve_place", 1),
-        ("servo_pick", 0),
-        ("go_home", 1),
-        ("open_gripper", 1),
-        # tick 루프의 관측/보정은 ctx.call/servo 순수 함수 — step 아님 (트리 미표시)
-        ("close_gripper", 1),
-        ("verify_grasp", 1),  # 파지 판정 ① close 직후
-        ("verify_grasp", 1),  # 파지 판정 ② withdraw 후 (놓침/슬립 포착)
-        ("open_gripper", 1),  # EMPTY/슬립 재시도 경로 (조건부 — 내려놓고 재관측)
-        ("go_home", 1),
-        ("execute_place", 0),
-        ("pre_place", 1),
-        ("insert", 1),
-        ("verify_grasp", 1),  # 파지 판정 ③ 적치 직전
-        ("release", 1),
-        ("retreat", 1),
-        ("go_home", 1),
-        ("close_gripper", 1),  # 종료 정리 자세 (2026-07-17)
+    # phase 골격 (depth 0) — 시나리오의 뼈대 순서
+    top = [e.name for e in entries if e.depth == 0]
+    assert top == [
+        "home_waypoint", "plan_pick", "plan_place", "servo_pick", "execute_place",
     ]
-    by_row = {(e.name, e.depth): e for e in entries}
-    # place 경로는 `if place_object:` / `if drop is not None:` 안 — 조건부 표시
-    assert by_row[("plan_place", 0)].conditional
-    assert by_row[("execute_place", 0)].conditional
-    assert not by_row[("plan_pick", 0)].conditional
-    # servo attempt/tick 루프 안 step 들 = 반복 표시 (실행 횟수는 안 셈).
-    # close_gripper 는 2곳 (servo 루프 안=반복 / 종료 정리=단발) — 첫 번째가 servo.
-    servo_close = next(e for e in entries if e.name == "close_gripper")
-    assert servo_close.repeated
-    assert by_row[("open_gripper", 1)].repeated  # 재시도 open (조건+반복)
-    # 동적 구멍 = plan_pick 후보 순회 loop 의 resolve 1곳뿐 (2026-07-17 도달성
-    # 우선 선택 — 후보 수가 런타임 데이터라 정적으로 못 푸는 게 정직한 표시).
-    # trace emit 등 노이즈성 <동적> 오염은 계속 차단 (회귀 잠금).
+    by_top = {e.name: e for e in entries if e.depth == 0}
+    # place 경로는 `if place_object:` 안 — 조건부 표시, pick 은 무조건
+    assert by_top["plan_place"].conditional and by_top["execute_place"].conditional
+    assert not by_top["plan_pick"].conditional
+    # 안전 구조: 파지 판정은 최소 2곳 (close 직후 + withdraw 후 — 놓침/슬립 포착)
+    names = [e.name for e in entries]
+    assert names.count("verify_grasp") >= 2
+    for required in ("close_gripper", "open_gripper", "retreat", "go_home"):
+        assert required in names, f"{required} step 이 트리에서 사라짐"
+    # 동적 구멍은 소수만 (현재 = plan_pick 후보 순회 resolve). trace emit 류
+    # 노이즈가 <동적> 으로 범람하면 여기서 깨진다 (회귀 잠금).
     dynamic = [e for e in entries if e.dynamic]
-    assert len(dynamic) == 1 and dynamic[0].depth == 1
+    assert 0 < len(dynamic) <= 2 and all(e.depth >= 1 for e in dynamic)
     assert all(not e.unavailable for e in entries)

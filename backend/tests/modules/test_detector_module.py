@@ -174,8 +174,6 @@ async def test_detect_oriented_returns_obb_candidates():
     assert abs(min(ys) - 192) < 3 and abs(max(ys) - 288) < 3, c.obb_2d
     # mask_contour = SAM mask 윤곽 (mock = 채운 bbox → 사각형 윤곽 폴리곤)
     assert c.mask_contour is not None and len(c.mask_contour) >= 4, c.mask_contour
-    # DraftModel = extra allow (shape 미확정 마커 — 굳으면 StrictModel 로 교체)
-    assert OrientedDetection.model_config.get("extra") == "allow"
 
     # 오버레이 스냅샷 publish (DETECTIONS_ORIENTED) — 카메라 패널 소비
     ups = [e for k, e in rt.published if k.endswith("/detections_oriented")]

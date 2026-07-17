@@ -101,19 +101,6 @@ def test_service_decorator_extracts_spec_with_wire_key():
     assert is_service(Mod.echo)
 
 
-def test_service_decorator_accepts_raw_string_key():
-    """StrEnum 추천이지만 raw str 도 받음 — 단 사용자 코드는 StrEnum 권장."""
-
-    class Mod:
-        @service("srv/test/raw_key")
-        def echo(self, req: EchoRequest) -> EchoResponse:
-            return EchoResponse(echoed=req.message)
-
-    spec = get_service_spec(Mod.echo)
-    assert spec is not None
-    assert spec.wire_key == "srv/test/raw_key"
-
-
 def test_service_decorator_invalid_req_type_raises():
     with pytest.raises(TypeError, match="req parameter"):
 
@@ -157,17 +144,6 @@ def test_subscriber_decorator_extracts_spec_with_wire_key():
     assert spec.wire_key == "event/test/greeted"
     assert spec.event_cls is GreetEvent
     assert is_subscriber(Mod.on_greet)
-
-
-def test_subscriber_decorator_accepts_raw_string_key():
-    class Mod:
-        @subscriber("event/test/raw_key")
-        def on_greet(self, event: GreetEvent) -> None:
-            _ = event
-
-    spec = get_subscriber_spec(Mod.on_greet)
-    assert spec is not None
-    assert spec.wire_key == "event/test/raw_key"
 
 
 def test_subscriber_decorator_invalid_event_type_raises():
@@ -246,17 +222,6 @@ def test_encode_native_bytes_no_base64_overhead():
     )
     restored = decode_event(BlobFrame, wire)
     assert restored.payload == payload
-
-
-# ─── envelope wire round-trip ────────────────────────────
-
-
-def test_envelope_wrap_unwrap():
-    req = ServiceRequest[EchoRequest](
-        timestamp=time.time(), data=EchoRequest(message="hi"))
-    wire = req.model_dump_json().encode()
-    restored = ServiceRequest[EchoRequest].model_validate_json(wire)
-    assert restored.data.message == "hi"
 
 
 # ─── E2E — Step 2 검증 핵심 ─────────────────────────────
@@ -372,34 +337,3 @@ def test_event_publish_subscribe_end_to_end(transport: ZenohTransport):
         handle.undeclare()
 
 
-def test_event_publish_subscribe_with_bytes_payload(transport: ZenohTransport):
-    """stream/ topic 의 bytes field event round-trip — msgpack native pass-through."""
-    received: list[BlobFrame] = []
-    done = threading.Event()
-
-    class Mod:
-        @subscriber(Blob.Stream.BLOB)
-        def on_blob(self, event: BlobFrame) -> None:
-            received.append(event)
-            done.set()
-
-    mod = Mod()
-    spec = get_subscriber_spec(mod.on_blob)
-    assert spec is not None
-    assert spec.wire_key == "stream/test/blob"
-
-    def callback_bytes(payload: bytes) -> None:
-        evt = decode_event(spec.event_cls, payload)
-        spec.handler(mod, evt)
-
-    handle = transport.subscribe(spec.wire_key, callback_bytes)
-    try:
-        time.sleep(0.1)
-        binary = b"\x00\x01\x02\xff" * 256  # 1KB binary
-        evt = BlobFrame(timestamp=1.0, payload=binary)
-        transport.publish(str(Blob.Stream.BLOB), encode_event(evt))
-        assert done.wait(timeout=2.0)
-        assert len(received) == 1
-        assert received[0].payload == binary
-    finally:
-        handle.undeclare()

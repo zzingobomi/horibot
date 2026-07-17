@@ -622,6 +622,11 @@ class MotionModule:
         def _obstacle_blocked(sols: list[list[float]]) -> bool:
             # ③b 장애물 점군 충돌 — 그리퍼(벌림 반영)가 관측 점군을 침투하는
             # 후보 기각 (§10.4-3). 점군은 _scan 진입 시 1회 로드.
+            # TODO(cross-robot, 2026-07-17): 미래 cross-robot 게이트 자리 (계약
+            # docstring 이 예약한 슬롯) — peer robot 의 (joints + base_pose) 를
+            # 받아 링크 간 근접 기각. 그 전까지의 잠정 구현 = handover task 의
+            # 로컬 체커 (modules/tasks/handover/collision.py — motion 불침범).
+            # pick_and_place 실물 검증 완료 후 여기로 승격, 체커는 흡수/폐기.
             if not has_obstacles:
                 return False
             return any(

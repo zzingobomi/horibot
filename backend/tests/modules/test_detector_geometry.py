@@ -240,6 +240,33 @@ def test_object_metrics_flying_pixel_trail_above_does_not_hijack_top():
     assert abs(height - 0.023) < 3e-3, height
 
 
+def test_body_points_strips_far_background_majority():
+    """2026-07-17 오후 실사고 회귀 — 테이블 모서리 mask 가 먼 바닥으로 새면
+    점군 **과반**이 1m 밖 쓰레기가 된다 (실측: 채택 후보 399점 중 과반의
+    median (0.9,0.07,−1.0)). 지표는 질량 군집이 지켰지만 raw 점군을 마시는
+    antipodal 쌍이 하이재킹돼 계획 g_tcp 가 관측에서 11.6cm 이탈 (tick1
+    lat=110.6mm 실측 일치). body_points 소스 청소가 몸통 대역만 남겨야 한다."""
+    from modules.detector.geometry import body_points, object_metrics_from_points
+
+    cube = _cube_view_points(0.3, 0.03, top_z=0.024, height=0.023, side="x")
+    rng = np.random.default_rng(2)
+    n_bg = int(len(cube) * 1.5)  # 60% — 과반 쓰레기 (실사고 비율 재현)
+    bg = np.stack(
+        [
+            0.9 + rng.normal(0, 0.05, n_bg),
+            0.05 + rng.normal(0, 0.05, n_bg),
+            -1.0 + rng.normal(0, 0.02, n_bg),
+        ],
+        axis=1,
+    )
+    body = body_points(np.vstack([cube, bg]))
+    assert len(body) == len(cube), len(body)  # 쓰레기 전량 제거
+    assert body[:, 2].min() >= -0.001 and body[:, 2].max() <= 0.025
+    m = object_metrics_from_points(body)  # 청소본 지표 = 깨끗한 점군과 동일
+    assert m is not None
+    assert abs(m[0][2] - 0.024) < 2e-3
+
+
 def test_object_metrics_elevated_object_wins_over_larger_lower_bleed():
     """적치된(공중) 물체 — 상자 위 큐브처럼 실제로 떠 있는 물체는 base_z 가
     올라간 값으로 **정직하게** 나와야 한다 (floor 추정 없음 — 공중/손 성립이

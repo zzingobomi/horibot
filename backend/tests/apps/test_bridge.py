@@ -23,7 +23,6 @@ import pytest
 
 from apps.config import DeploymentConfig, DriverMode, ModuleEntry, load_robots
 from apps.main import build_runtime
-from apps.registry import load_module_class
 from apps.resolve import resolve_host_deps
 from framework.runtime.app import Runtime
 from framework.transport.protocol import RawTransport
@@ -49,10 +48,6 @@ def _mock_bridge_deploy() -> DeploymentConfig:
 # ─── 배선 ────────────────────────────────────────────────────────
 
 
-def test_registry_has_bridge():
-    assert load_module_class("bridge") is BridgeModule
-
-
 def test_resolve_host_deps_bridge_returns_robot_info():
     deps = resolve_host_deps("bridge", _robots(), _mock_bridge_deploy())
     infos = {r.id: r for r in deps["robots"]}
@@ -60,9 +55,9 @@ def test_resolve_host_deps_bridge_returns_robot_info():
     assert set(infos) == {"so101_6dof_0", "omx_f_0"}
     assert infos["so101_6dof_0"].type == "so101_6dof"
     assert "rgbd" in infos["so101_6dof_0"].capabilities
-    # RobotConfig → RobotInfo 변환 — 크로스캘 확정값 (so101=원점 anchor, 2026-07-11)
-    assert infos["so101_6dof_0"].base_pose.x == 0.0
-    assert infos["omx_f_0"].base_pose.x == 0.0342
+    # RobotConfig → RobotInfo 변환 — base_pose(크로스캘)가 변환을 통과하는지만
+    # 본다. 좌표 literal 은 재캘 때마다 바뀌는 robots.yaml 미러라 잠그지 않는다.
+    assert infos["omx_f_0"].base_pose != infos["so101_6dof_0"].base_pose
     assert infos["omx_f_0"].type == "omx_f"
     assert "rgbd" not in infos["omx_f_0"].capabilities  # UVC color-only
 

@@ -26,8 +26,11 @@ uv run --no-sync python -m apps.main --host mock   # 단일 머신, HW 없이 (b
 uv run --no-sync python -m apps.main --host pc     # 분산 PC 측 (실 HW)
 uv run ruff check .
 uv run pyright
-uv run --no-sync pytest -m "not sim" -q            # fast loop (수 초)
-uv run --no-sync pytest -q                         # full (~90s, sim marker 포함)
+uv run --no-sync pytest -m "not sim" -q            # fast loop (~27s) — 매 구현 변경마다
+uv run --no-sync pytest -q                         # full (~3분, sim 포함) — 실물 handoff 전 1회
+# sim = 무거운 부팅 (Runtime/Zenoh/PyBullet/URDF/모델 import) — 새 테스트가 이 부류면
+# 반드시 sim 마킹. 유지 원칙(무엇을 잠그고 무엇을 지우나) = docs/dev_reference.md
+# "테스트 스위트 유지 원칙" (2026-07-17 대정리: 461→425개, fast loop 177s→27s)
 ```
 
 Pi 배포 (각 deployment yaml 상단 주석이 실행법 SSOT):
@@ -81,6 +84,7 @@ pnpm gen:types    # 떠 있는 backend /contract.json → src/api/generated/cont
 | detector | prompt → base-frame 3D 후보 (GDINO/SAM2/mock driver) |
 | llm | 자연어 → pick/place 구조화 (Qwen/mock) |
 | tasks/pick_and_place | Pick&Place **task 모듈** (표준형 레퍼런스 — 검출→**closed-loop servo 집기** (look-then-move, 정본 [servo.py](backend/modules/tasks/pick_and_place/servo.py) docstring)→open-loop 적치). 감독은 [modules/tasks/core/](backend/modules/tasks/core/) 부품 상자 (TaskRunner=wire 무지 감독기/TaskContext/@step — 모듈 아닌 라이브러리, [docs/task.md](docs/task.md)) |
+| tasks/handover | **2026-07-17 신설, 실물 미검증** — omx 가 집어 든 물체를 so101 이 받아 상자 적치 (open-loop + cross-robot 충돌 체커 [collision.py](backend/modules/tasks/handover/collision.py)). mock 활성 / **pc.yaml 주석 TODO** (PnP 실물 검증 완료 후 해제) — [docs/task.md](docs/task.md) §4.7 |
 | bridge | FastAPI — WS 릴레이 + `/contract.json` + `/robots` + `/dev` 콘솔 + MJPEG |
 
 task 터미널 실행 (frontend 없이): `uv run --no-sync python scripts/run_task.py srv/pick_and_place/run --param "pick_object=white cube"` (트리거 키 직접 — mock in-process 부팅, :8000 미점유).

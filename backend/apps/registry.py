@@ -22,6 +22,7 @@ MODULE_REGISTRY: dict[str, str] = {
     "detector": "modules.detector.module:DetectorModule",
     "llm": "modules.llm.module:LlmModule",
     "pick_and_place": "modules.tasks.pick_and_place.module:PickAndPlaceModule",
+    "handover": "modules.tasks.handover.module:HandoverModule",
     "bridge": "modules.bridge.module:BridgeModule",
     "logcollector": "modules.logcollector.module:LogCollectorModule",
     "host_monitor": "modules.host_monitor.module:HostMonitorModule",

@@ -35,6 +35,9 @@ _URDF = (
 _POS_TOL_M = 1e-4  # 0.1mm
 _ROT_TOL_DEG = 0.05
 
+# PyBullet+yourdfpy URDF 부팅 (module-scope 1회) — 마커 정의 그대로 sim
+pytestmark = pytest.mark.sim
+
 # limit 내 대표 자세 (rad) — so101_6dof motors.yaml URDF limit 참고.
 _POSES = [
     [0.0, 0.5, -1.5, 0.0, 0.0, 1.57],
@@ -72,9 +75,10 @@ def fk_chain() -> FkChain:
 
 
 def test_arm_names_and_dof(fk_chain: FkChain, kin: PybulletKinematics):
-    # motors.yaml arm = joint1..6, gripper(joint7) 제외 → n_arm == pybullet dof
-    assert _arm_joint_names() == ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
-    assert fk_chain.n_arm == kin.dof == 6
+    # motors.yaml arm(gripper 제외) ↔ URDF tcp chain 이 같은 관절 수 — 이름
+    # 리스트 하드코드는 config 미러라 잠그지 않는다 (순서 오류는 FK 일치
+    # 테스트가 불일치로 잡음).
+    assert fk_chain.n_arm == kin.dof == len(_arm_joint_names())
 
 
 @pytest.mark.parametrize("angles", _POSES)

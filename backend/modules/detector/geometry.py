@@ -140,6 +140,24 @@ def _body_z_band(z: np.ndarray) -> tuple[float, float]:
     return float(zs[s]), float(zs[e - 1])
 
 
+def body_points(pts_base: np.ndarray) -> np.ndarray:
+    """점군을 몸통 z 대역(_body_z_band)으로 필터 — **export 전 소스 청소**.
+
+    Fix(z 앵커 질량 군집)가 지표만 청소하고 점군은 raw 로 내보내던 구멍의 완결
+    (2026-07-17 오후 실사고: 테이블 모서리 근처 mask 가 먼 바닥으로 새 점군
+    과반이 1m 밖 쓰레기 — 채택 후보 399점 중 과반 median (0.9,0.07,−1.0) →
+    antipodal 쌍이 하이재킹돼 계획 g_tcp 가 관측에서 11.6cm 이탈, width 폭주
+    lateral 47mm). 소비자(antipodal/width_along/장애물/융합/OBB)가 전부 이
+    점군을 마시므로 소스 한 곳에서 자른다. z 대역만 — XY 노이즈는 기존 완화
+    (폭 중앙값/top band percentile) 소관, 과필터로 footprint 를 깎지 않는다.
+    """
+    if pts_base is None or pts_base.ndim != 2 or len(pts_base) < 3:
+        return pts_base
+    top, bottom = _body_z_band(pts_base[:, 2])
+    z = pts_base[:, 2]
+    return pts_base[(z >= bottom) & (z <= top)]
+
+
 def object_metrics_from_points(
     pts_base: np.ndarray,
 ) -> tuple[tuple[float, float, float], float, float] | None:

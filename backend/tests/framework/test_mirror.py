@@ -334,18 +334,24 @@ async def test_mirror_robot_scoped_snapshot(runtime: Runtime):
 
 
 async def test_mirror_robot_scoped_event_filter(runtime: Runtime):
-    """robot-scoped Mirror — 다른 robot 의 event 무시."""
+    """robot-scoped Mirror — 다른 robot 의 event 무시.
+
+    값 비교만으론 vacuous (owner1 값이 안 변해 refetch 가 새도 1 이 나옴 —
+    2026-07-17 발견). 그래서 snapshot 호출 수 스파이로 "타 robot event 에
+    refetch 자체가 없다" 를 잠근다."""
 
     class Owner:
         def __init__(self, runtime: ModuleRuntime, robot_id: str):
             self.runtime = runtime
             self.robot_id = robot_id
+            self.snapshot_calls = 0
             self._bundle = CalibrationBundle(
                 bundle_id=1, hand_eye=[1.0], joint_offsets=[],
             )
 
         @service(CalibRobot.Service.SNAPSHOT_BUNDLE)
         def snapshot(self, req: SnapshotRequest) -> CalibrationBundle:
+            self.snapshot_calls += 1
             return self._bundle
 
         def update(self, new_id: int) -> None:
@@ -380,6 +386,7 @@ async def test_mirror_robot_scoped_event_filter(runtime: Runtime):
 
     assert reader1.cal.value.bundle_id == 1
     assert reader2.cal.value.bundle_id == 1
+    owner1_boot_calls = owner1.snapshot_calls  # reader1 초기 snapshot 만
 
     # owner2 만 update — reader2 만 변해야 함
     owner2.update(99)
@@ -391,13 +398,17 @@ async def test_mirror_robot_scoped_event_filter(runtime: Runtime):
         await asyncio.sleep(0.05)
 
     assert reader2.cal.value.bundle_id == 99
-    assert reader1.cal.value.bundle_id == 1  # filter 박힘 — 변 X
-    _ = owner1  # unused warning 회피
+    assert reader1.cal.value.bundle_id == 1
+    # 필터의 실체 — r2 activation 이 reader1 의 refetch 를 유발하지 않는다
+    assert owner1.snapshot_calls == owner1_boot_calls, (
+        "타 robot event 에 reader1 이 refetch — robot-scoped 필터 붕괴"
+    )
 
 
 # ─── Mirror invariant — race / thread safety ────────
 
 
+@pytest.mark.sim  # race window 재현에 실 대기 0.5s+α — fast loop 제외
 async def test_mirror_event_during_init_not_lost(runtime: Runtime):
     """M5.1 / M5.4 — INITIALIZING 중 받은 event 가 snapshot 후 fresh refetch trigger.
 
@@ -475,75 +486,10 @@ async def test_mirror_event_during_init_not_lost(runtime: Runtime):
     )
 
 
-def test_mirror_concurrent_read_write_no_partial_state():
-    """M6.1 — 동시 read/write 자체 partial state 안 보임 (RLock 검증).
-
-    spec §3.3.2 — Mirror update 가 event callback thread, .value access 가 다른
-    thread. 두 access 사이 race 가 partial state (cache 만 새값 / initialized 만
-    옛값) 보이면 안 됨. 현재 구현 = RLock.
-
-    검증: 한 thread = writer (1000 회 _set), 다른 thread = reader (1000 회 .value).
-    reader 가 본 value 의 invariant — `bundle_id` 와 `hand_eye[0]` 가 일치 (한
-    bundle 안 두 field 는 같은 write 의 결과). partial 박히면 두 값 mismatch.
-    """
-    import threading as _threading
-
-    state: MirrorState[CalibrationBundle] = MirrorState(
-        spec=Mirror(
-            snapshot_service=Calib.Service.SNAPSHOT_BUNDLE,
-            snapshot_req=lambda self: SnapshotRequest(),
-            change_topic=Calib.Event.ACTIVATED,
-            value_cls=CalibrationBundle,
-            change_event_cls=CalibrationActivated,
-        ).spec
-    )
-    initial = CalibrationBundle(bundle_id=0, hand_eye=[0.0], joint_offsets=[])
-    state._set(initial)
-
-    iterations = 1000
-    errors: list[str] = []
-    stop = _threading.Event()
-
-    def writer():
-        for i in range(1, iterations + 1):
-            if stop.is_set():
-                return
-            bundle = CalibrationBundle(
-                bundle_id=i,
-                hand_eye=[float(i)],
-                joint_offsets=[],
-            )
-            state._set(bundle)
-
-    def reader():
-        for _ in range(iterations):
-            if stop.is_set():
-                return
-            try:
-                v = state.value
-            except NotReady as e:
-                errors.append(f"NotReady (writer 가 init 이미 박았는데): {e}")
-                stop.set()
-                return
-            # invariant — 한 bundle 안 bundle_id 와 hand_eye[0] 는 같은 write 결과
-            if v.hand_eye[0] != float(v.bundle_id):
-                errors.append(
-                    f"partial state — bundle_id={v.bundle_id}, "
-                    f"hand_eye[0]={v.hand_eye[0]}"
-                )
-                stop.set()
-                return
-
-    t1 = _threading.Thread(target=writer)
-    t2 = _threading.Thread(target=reader)
-    t1.start()
-    t2.start()
-    t1.join(timeout=10.0)
-    t2.join(timeout=10.0)
-
-    assert not errors, f"thread race 에서 partial state 발견: {errors[:3]}"
-    # 두 thread 다 정상 종료
-    assert not t1.is_alive() and not t2.is_alive()
+# M6.1 동시 read/write partial-state 테스트는 삭제 (2026-07-17 정리) — 현 구현이
+# 참조 스왑(_set = 원자적 교체)이라 CPython GIL 아래서 락을 빼도 못 깨지는
+# vacuous 검증이었고 (2×1000 thread, join 10s) 비용만 컸다. in-place 변형으로
+# 리팩토링하려면 그때 동시성 테스트를 실검출력 있게 재설계할 것.
 
 
 # ─── cross-process ──────────────────────────────────
@@ -638,6 +584,7 @@ asyncio.run(main())
 """
 
 
+@pytest.mark.sim  # subprocess 인터프리터 스폰 + 실 tcp (~수 초) — fast loop 제외
 def test_mirror_cross_process(tmp_path: Path):
     """Reader (parent process) ↔ Owner (subprocess) — Zenoh between-session."""
     endpoint = "tcp/127.0.0.1:17448"
@@ -736,6 +683,7 @@ def test_mirror_cross_process(tmp_path: Path):
 # ─── liveliness 수렴 — 부팅 순서 해방 (2026-07-07 근본 수정) ─────
 
 
+@pytest.mark.sim  # 2세션 tcp + 수렴 대기 (~수 초) — fast loop 제외 (full 은 필수)
 async def test_mirror_converges_when_owner_boots_later():
     """THE 회귀 테스트 — Reader 먼저 부팅 (owner 없음, NotReady) → Owner 가
     **나중에** 부팅 → change event 하나 없이 liveliness alive 만으로 mirror 수렴.

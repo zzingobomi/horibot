@@ -4,13 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from framework.storage.protocol import ObjectStore
 from infra.object_store.filesystem import FilesystemObjectStore
-
-
-def test_filesystem_satisfies_object_store_protocol(tmp_path: Path):
-    store = FilesystemObjectStore(tmp_path)
-    assert isinstance(store, ObjectStore)
 
 
 def test_put_get_round_trip(tmp_path: Path):

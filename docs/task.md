@@ -248,8 +248,12 @@ round cube" / place "blue box".
 
 | 증상 (trace 시그니처) | 원인 클래스 | 수정/노브 위치 |
 | --- | --- | --- |
-| plan 전멸 "자세 IK 실패 N" | solver false-neg 는 walk 로 해소됨 — 지금 전멸은 ① 오염 뷰 coarse (공중 부양 포함 — base_z 대역 후순위가 07-17 방어) ② yaw 위상: place 는 yaw 빗이 spot OBB yaw 에 고정, **pick 도 동일 클래스 확정** (07-17 오후: 같은 큐브 두 뷰의 OBB yaw 84° 차로 한쪽 뷰만 통과 — near-square 물체는 OBB yaw 가 뷰마다 랜덤 = 복권. replay 로 두 층 분리: IK 생존 가족이 그리퍼↔점군 게이트에서 죽는 뷰도 있음) — **미수정**, 신 resolve 적용 후 잔존 빈도로 yaw 격자 판단 | `steps.plan_pick`/`plan_place` (base_z 대역 정렬), `pybullet.ik`(walk), offline 재생 `scripts/grasp_verify/servo_reach_replay.py <detect세션>` |
+| plan 전멸 "자세 IK 실패 N" | solver false-neg 는 walk 로 해소됨 — 지금 전멸은 ① 오염 뷰 coarse (공중 부양 포함 — base_z 대역 후순위가 07-17 방어) ② yaw 위상: place 는 yaw 빗이 spot OBB yaw 에 고정, pick 도 IK 층 생존 가족 수(1~3/52)가 뷰 OBB yaw 에 좌우 (near-square 물체 OBB yaw = 뷰마다 랜덤) — **미수정**, 잔존 빈도로 yaw 격자 판단 | `steps.plan_pick`/`plan_place` (base_z 대역 정렬), `pybullet.ik`(walk), offline 재생 `scripts/grasp_verify/servo_reach_replay.py <detect세션>` |
+| plan 전멸 "장애물(그리퍼↔물체) 기각 N" = IK 생존 전부 | **낡은 불변식** (07-17 오후 확정): engage(조를 대상 쪽으로 밀어 물기) 도입 후 grasp 자세의 조↔대상 겹침은 의도인데, 자기 점군을 장애물로 검사해 관측면 쪽 조가 걸림 — 같은 큐브·같은 파지가 "카메라가 어느 면을 봤나"로 전멸 (실측 침투 -3.6~-9.6mm = engage 겹침, 스침 아님) | `steps.plan_pick` 장애물=**이웃 점군만** (07-17 수정) — 대상 보호 = antipodal 구성 + servo closed-loop + 파지 판정 (MoveIt ACM 등가) |
 | 엉뚱한 물체를 집으러 감 | 진짜 후보 전멸 → 도달성 우선 순회가 저신뢰 오검출로 폴백 (07-17: score 0.31 로봇 옆 흰 물체 채택 → 사용자 STOP. 실측 분리: 진짜 큐브 min 0.49 / 오검출 max 0.44) | `steps._PICK_SCORE_MIN` (0.45) 컷 — 미달만 남으면 명시 실패 (pick 전용 — place 는 진짜 spot 0.34 실측이 반례) |
+| **[미수정·1순위]** 계획 g_tcp 가 관측에서 수 cm~11cm 이탈 / lateral 폭주 / 조 개구 3배 물체 채택 | **detector `points` 가 raw** — Fix 1(질량 군집)이 지표(base_z/top/pos)만 청소하고 점군은 안 씻음. 테이블 모서리 근처 mask 가 먼 바닥으로 새면 점군 과반이 1m 밖 쓰레기 (07-17 오후 실측: 채택 후보 399점 중 과반 median (0.9,0.07,−1.0)) → antipodal 쌍/width_along/융합/장애물이 전부 오염 소비 (13:52 g_tcp 11.6cm 이탈 = tick1 lat 110.6mm, 13:56 blob lateral 47mm) | **detector 가 points 도 몸통 군집(base_z~top 대역)으로 필터해 내보내기 — Fix 1 의 완결** (한 곳 수정, 소비자 전부 치유) |
+| **[미수정]** score 0.45 넘는 큰 오검출 채택 (13:56: 손에 든 큐브 전멸 후 footprint 116mm blob 을 "small cube" 로 채택 — "완전 다른 데로") | 파지 물리 게이트 부재 — 조 최대 개구 35mm (`antipodal._JAW_OPEN_MAX_M` SSOT) 초과 물체는 물리적으로 못 무는데 plan 후보를 통과 (antipodal 쌍 필터는 쓰레기 점군 안 우연 쌍으로 우회됨) | plan 후보 footprint 짧은 변 ≤ 개구+관측번짐여유(실측 번짐: 실물 20→33mm) 컷 — 후보 레벨 게이트 신설 |
+| **[미수정]** servo 첫 관측이 열화(부분 뷰)면 이후 정상 관측 연속 기각 → 소실 중단 (13:53: tick1 top z 16mm 낮은 score 0.43 관측이 앵커 → 정상 0.83 관측 2연속 "z 도약" 기각) | 나쁜 앵커가 좋은 관측을 기각하는 역전 — servo tick 은 score 하한도 없음 (plan 만 0.45) | ① servo gate 에 score 하한 ② 연속 기각 2건이 서로 일관하면(xy·z 일치) 재앵커 (기각된 쪽이 다수결 진실) |
 | lateral 8~12mm 정체/발진 | 절대 재명령 (플랜트 잔차 무보상) | `servo.PlantComp` |
 | 파지 z 이상 (윗면 nip / 테이블 뚫음) | base_z 앵커 허구 / 납작 물체 | `servo.grasp_point` (윗면 앵커) + `grip_below_top_m` / `floor_clear_m` |
 | 물고도 EMPTY → 스스로 놓음 | gap 단독 판정 (조 피벗이라 gap 작음) | `steps._gripper_holding` (gap OR load), held 문턱 `apps/resolve.py` 5% |
@@ -287,6 +291,37 @@ held 5%. **임계값은 추측 말고 trace 실측으로만 조정** (CLAUDE.md 
   base_z 대역 정렬이 후순위 — 이제 낭비 없이 진짜 상자 먼저.
 - steps.py 파일 분리 (pick/place/primitives) 미완 — servo_pick 은 리팩토링 완료
   (PlantComp/TrackState).
+- **offline IK 진단 도구는 캘 미적용 낙관** (07-17 오후 발견): 실행부 kin =
+  `kinematics_builder` (URDF 링크 오프셋 패치 + joint offsets + sag 래핑) 인데
+  `servo_reach_replay` 등 grasp_verify 스크립트는 raw `PybulletKinematics`.
+  가장자리 실낱 island(2~3/84)는 이 모델 차로 생사가 갈림 — replay 도구에 캘
+  적용 옵션 필요, 그 전까지 offline "가용" 판정은 낙관으로 읽을 것.
+- **가장자리 작업영역**: (0.17,-0.16) 적치 / r≥0.31 파지 등은 캘 모델 기준
+  실낱~빈 지역 (07-17 오후 전멸 다발 자리). 다음 특성화 후보 = 캘 kin 워크
+  스페이스 그리드 스캔 → 신뢰 영역 heatmap (frontend 표시까지 가면 UX 완결).
+- **손에 든 물체 파지는 범위 밖** (07-17 확인): 공중 물체는 base_z 대역이
+  의도적으로 후순위 (이 task 의 세계 = 테이블 위) + 손 근처 파지는 안전 설계
+  별도 필요 — 핸드오버는 자기 대역을 선언하는 전용 task 로.
+
+### 4.7 handover task 신설 (2026-07-17 — 코드만, **실물 미검증**)
+
+[modules/tasks/handover/](../backend/modules/tasks/handover/) — omx(giver)가
+집어 든 물체를 so101(receiver)이 받아 상자 적치. pick_and_place 표준형 복제
+(§3 체크리스트) + 신규 부품 = **cross-robot 충돌 체커**
+([collision.py](../backend/modules/tasks/handover/collision.py) — 두 URDF 를 한
+PyBullet 세계에, base_pose 는 robots.yaml 크로스캘. motion 모듈 불침범 — 정석
+통합 자리는 motion resolve ③b 옆 TODO 주석).
+
+- **활성화**: mock 은 켜져 있음 (터미널: `scripts/run_task.py srv/handover/run
+  --param "pick_object=..." --param "place_object=..."`). **pc.yaml 은 주석
+  TODO** — pick_and_place 실물 검증 완료 후 해제.
+- **핵심 불변식** (mock 테스트 잠금): so101 이 close + held 판정한 **뒤에만**
+  omx 가 연다 / 수취 계획은 충돌 그룹 제외 재시도, 전멸 = 명시 실패 / omx
+  복귀 경로 충돌 위험 = omx 정지 유지 (so101 이 물건을 듦 — 멈추는 쪽이 안전).
+- **실물 전 확인 가정 3개** = [steps.py](../backend/modules/tasks/handover/steps.py)
+  docstring: ① omx tcp 축 규약 ② 크로스캘 오차 예산 (omx open-loop pick)
+  ③ 'handover' waypoint 티칭 (omx home/handover + so101 home/search 그룹 필수).
+- 충돌 margin 2cm = 보수 기본값 (미검증 — 실물 특성화로 튜닝).
 
 ---
 ---

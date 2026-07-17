@@ -10,15 +10,13 @@
   - v5: from_pretrained(device_map="auto") — dtype=auto 기본의 meta-tensor ".to(device)"
     깨짐 우회 (accelerate 가 배치, gdino 동형). 옛 low_cpu_mem_usage=False + .to 대체.
 
-JSON 파싱(_parse_json_response)은 순수 함수 분리 — 모델 없이 단위테스트 (옛 inline 은
-테스트 불가였음).
+JSON 파싱은 경량 모듈 parse.py 로 분리 (parse_json_response) — 모델/torch 없이
+단위테스트 (이 모듈을 import 하면 transformers 로드 ~20s 를 문다).
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from typing import Any
 
 import torch
@@ -26,6 +24,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from infra.ml.loader import transformers_load_lock
 
+from .parse import parse_json_response
 from .protocol import ParsedCommand
 
 logger = logging.getLogger(__name__)
@@ -106,33 +105,4 @@ class QwenBackend:
         response = self._tokenizer.decode(
             generated, skip_special_tokens=True
         ).strip()
-        return _parse_json_response(response)
-
-
-def _parse_json_response(response: str) -> ParsedCommand | None:
-    """모델 응답 텍스트 → ParsedCommand. JSON 못 찾거나 pick 없으면 None (순수·테스트가능).
-
-    모델이 markdown fence 로 감싸도 첫 {...} 블록 추출. pick 필수, place 없으면 None.
-    """
-    match = re.search(r"\{.*\}", response, re.DOTALL)
-    if not match:
-        logger.warning("Qwen 응답에서 JSON 못 찾음: %r", response)
-        return None
-    try:
-        data = json.loads(match.group())
-    except json.JSONDecodeError as exc:
-        logger.warning("Qwen JSON parse 실패: %s (%r)", exc, response)
-        return None
-    if not isinstance(data, dict):
-        return None
-    pick = data.get("pick")
-    if not isinstance(pick, str) or not pick.strip():
-        logger.warning("Qwen 응답에 pick 없음: %r", data)
-        return None
-    place_raw = data.get("place")
-    place = (
-        place_raw.strip()
-        if isinstance(place_raw, str) and place_raw.strip()
-        else None
-    )
-    return ParsedCommand(pick=pick.strip(), place=place)
+        return parse_json_response(response)

@@ -26,6 +26,10 @@ modules:
   - name: detector
   - name: llm
   - name: pick_and_place
+  # TODO(handover): pick_and_place 실물 검증 완료 후 주석 해제 (2026-07-17 신설
+  # — 실물 미검증 task. omx pick(open-loop)/수취/충돌 margin 전부 실물 특성화
+  # 필요 — modules/tasks/handover/steps.py docstring 의 가정 ①~③ 먼저 확인).
+  # - name: handover
   - name: bridge
   - name: logcollector
   - name: host_monitor

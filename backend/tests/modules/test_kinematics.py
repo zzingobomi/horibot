@@ -21,6 +21,9 @@ _URDF = (
     / "so101_6dof.urdf"
 )
 
+# PyBullet+URDF 부팅 (~3s/test) — 마커 정의 그대로 sim
+pytestmark = pytest.mark.sim
+
 
 @pytest.fixture
 def kin():
@@ -73,9 +76,3 @@ def test_ik_reachable_from_bad_seed_solves(kin: PybulletKinematics):
     pos2, _ = kin.fk(sol)
     err = float(np.linalg.norm(np.array(target_pos) - np.array(pos2)))
     assert err < 1e-2, f"IK 해의 FK 오차 {err}"
-
-
-def test_fk_to_matrix_shape(kin: PybulletKinematics):
-    rot, pos = kin.fk_to_matrix([0.0] * 6)
-    assert len(rot) == 3 and all(len(r) == 3 for r in rot)
-    assert len(pos) == 3

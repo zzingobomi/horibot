@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from framework.transport.protocol import RemoteError, Transport
+from framework.transport.protocol import RemoteError
 from infra.transport.zenoh import ZenohTransport
 
 
@@ -29,12 +29,6 @@ def transport():
     time.sleep(0.05)
     yield t
     t.close()
-
-
-# ─── Transport(Protocol) 구조적 만족 ─────────────────
-
-def test_zenoh_transport_satisfies_protocol(transport: ZenohTransport):
-    assert isinstance(transport, Transport)
 
 
 # ─── same-session publish/subscribe ─────────────────
@@ -163,6 +157,7 @@ sys.exit(0 if out_file.exists() else 1)
 """
 
 
+@pytest.mark.sim  # subprocess + 실 tcp 세션 (~수 초) — fast loop 제외
 def test_publish_subscribe_cross_process(tmp_path: Path):
     """다른 process 의 subscriber 가 publish 받음 — Zenoh between-session network."""
     endpoint = "tcp/127.0.0.1:17447"
@@ -228,6 +223,7 @@ def _wait_until(pred, timeout: float = 3.0) -> bool:
     return False
 
 
+@pytest.mark.sim  # 2세션 tcp + 전이 폴링 (~수 초) — fast loop 제외
 def test_liveliness_presence_lifecycle():
     """4 전이 검증 (2026-07-07 probe 회귀 잠금):
     ① 구독 전 이미 살아있는 token → history 로 즉시 alive (부팅 순서 무관의 핵심)

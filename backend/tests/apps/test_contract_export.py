@@ -87,15 +87,11 @@ def test_contract_json_shape():
     finally:
         transport.close()
 
-    # 노출 keys = FRONTEND_EXPOSED (topic 6 + service 4)
+    # 노출 keys = FRONTEND_EXPOSED — set 동치가 게이트의 전부. (len 개수 잠금은
+    # 같은 사실의 중복 재기술이라 삭제 — 서비스 추가마다 두 자리 갱신 유발)
     topic_keys = {t["key"] for t in data["topics"]}
     service_keys = {s["key"] for s in data["services"]}
     assert topic_keys | service_keys == FRONTEND_EXPOSED
-    # +pick_and_place STATE/TRACE/STEP_RESULT +detector DETECTIONS +DETECTIONS_ORIENTED(draft)
-    assert len(data["topics"]) == 16
-    # +detector DETECT +DETECT_ORIENTED(draft) +llm PARSE +pick_and_place 9 +calibration
-    # ABORT_RUN +motion_preview PLAN
-    assert len(data["services"]) == 49
     # 내부 전용 payload 는 도달성으로 제외 — JointCommand 안 나옴
     iface_names = {i["name"] for i in data["interfaces"]}
     assert "JointCommand" not in iface_names
@@ -178,12 +174,12 @@ def test_incomplete_host_raises_helpful_error():
         build_contract_json(partial)
 
 
-# ─── HTTP e2e — 실 bridge 가 /contract.json serve ─────────────────
+# ─── HTTP e2e — 실 bridge 가 /contract.json + /contract/graph serve ──
 
 
 @pytest.fixture
-async def contract_endpoint():
-    """mock 전 module + bridge start (uvicorn). /contract.json HTTP 검증용."""
+async def served_base_url():
+    """mock 전 module + bridge start (uvicorn) 1회 — 두 HTTP 엔드포인트 공용."""
     transport = ZenohTransport(_LOCAL_CFG)
     deploy, robots = load_configs("mock", _CONFIG_DIR)
     deploy.bridge_port = 0  # ephemeral — 실행 중인 실 backend(:8000) 와 공존
@@ -193,20 +189,23 @@ async def contract_endpoint():
     except BaseException:
         transport.close()
         raise
-    yield f"http://127.0.0.1:{_bridge_port(runtime)}/contract.json"
+    yield f"http://127.0.0.1:{_bridge_port(runtime)}"
     await runtime.stop()
     transport.close()
 
 
-async def test_contract_json_endpoint_serves(contract_endpoint: str):
+@pytest.mark.sim  # Runtime 전체 부팅 + uvicorn (~3s) — fast loop 제외
+async def test_contract_endpoints_serve(served_base_url: str):
+    # serve 배선만 본다 — 내용 정합(키/모듈 목록)은 in-process 테스트들이 잠금.
     async with httpx.AsyncClient() as client:
-        res = await client.get(contract_endpoint)
-    assert res.status_code == 200
-    data = res.json()
-    assert set(data) == {"enums", "interfaces", "topics", "services"}
-    # HTTP 로 serve 된 JSON = in-process build_contract_json 과 동일 계약
-    assert len(data["topics"]) == 16  # +DETECTIONS_ORIENTED(draft)
-    assert len(data["services"]) == 49  # +DETECT_ORIENTED(draft) +ABORT_RUN +LIST_ROBOTS +PREVIEW +motion_preview PLAN
+        contract = await client.get(f"{served_base_url}/contract.json")
+        graph = await client.get(f"{served_base_url}/contract/graph")
+    assert contract.status_code == 200
+    assert set(contract.json()) == {"enums", "interfaces", "topics", "services"}
+    graph_data = graph.json()
+    assert graph.status_code == 200
+    assert set(graph_data) == {"modules", "keys", "models", "edges"}
+    assert len(graph_data["edges"]) >= 4
 
 
 # ─── build_contract_graph — unfiltered attribution + wiring (§5.2) ─
@@ -239,6 +238,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "DetectorModule",
         "LlmModule",
         "PickAndPlaceModule",  # task family (modules/tasks/pick_and_place), host-level
+        "HandoverModule",  # task family (modules/tasks/handover, 2026-07-17 — 실물 미검증)
         "HostMonitorModule",  # @publishes(METRICS) — host-level
     }
     assert "BridgeModule" not in ids
@@ -256,6 +256,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "WaypointModule",
         "LlmModule",
         "PickAndPlaceModule",  # task family — robot-agnostic (host당 1)
+        "HandoverModule",  # task family — robot-agnostic (host당 1, 2026-07-17)
         "MotionPreviewModule",  # plan-only 미리보기 — robot-agnostic (host당 1)
         "HostMonitorModule",  # 각 host 발행 — robot 무관 (host-level)
     }
@@ -383,41 +384,6 @@ def test_graph_shows_declared_universe_not_running_fleet():
         transport.close()
 
 
-@pytest.fixture
-async def graph_endpoint():
-    transport = ZenohTransport(_LOCAL_CFG)
-    deploy, robots = load_configs("mock", _CONFIG_DIR)
-    deploy.bridge_port = 0  # ephemeral — 실행 중인 실 backend(:8000) 와 공존
-    runtime = build_runtime(deploy, robots, transport)
-    try:
-        await runtime.start()
-    except BaseException:
-        transport.close()
-        raise
-    yield f"http://127.0.0.1:{_bridge_port(runtime)}/contract/graph"
-    await runtime.stop()
-    transport.close()
-
-
-async def test_contract_graph_endpoint_serves(graph_endpoint: str):
-    async with httpx.AsyncClient() as client:
-        res = await client.get(graph_endpoint)
-    assert res.status_code == 200
-    data = res.json()
-    assert set(data) == {"modules", "keys", "models", "edges"}
-    assert {m["id"] for m in data["modules"]} == {
-        "MotorDriverModule",
-        "MotionModule",
-        "MotionPreviewModule",  # plan-only 미리보기 — host-level (robot-agnostic)
-        "CameraDriverModule",
-        "CameraDecodedModule",
-        "CalibrationModule",
-        "Scene3DModule",
-        "ScanModule",
-        "WaypointModule",
-        "DetectorModule",
-        "LlmModule",
-        "PickAndPlaceModule",  # task family (modules/tasks/pick_and_place), host-level
-        "HostMonitorModule",  # @publishes(METRICS) — host-level
-    }
-    assert len(data["edges"]) >= 4
+# (graph 전용 endpoint fixture/test 는 test_contract_endpoints_serve 로 병합 —
+# Runtime 부팅 2회 → 1회. 모듈 목록 잠금은 in-process
+# test_graph_nodes_are_contentful_modules_only 한 곳만 유지.)

@@ -79,10 +79,10 @@ def _feed(mod: Scene3DModule, robot_id: str, depth_value: int) -> None:
 
 
 def test_service_wiring_agnostic_keys():
+    # 전체 키 목록은 contract 미러라 잠그지 않는다 — 계약은 §2.7.3 acceptance 1.
     mod, _ = _module()
     keys = {spec.wire_key for _m, spec in discover_services(mod)}
-    assert keys == {Scene3d.Service.SET_STREAM, Scene3d.Service.SNAPSHOT}
-    # robot-agnostic — 서비스 키에 {robot_id} placeholder 없음 (§2.7.3 acceptance 1)
+    assert Scene3d.Service.SNAPSHOT in keys  # discovery 자체가 도는지
     assert all("{robot_id}" not in k for k in keys)
     assert not hasattr(mod, "robot_id")
 

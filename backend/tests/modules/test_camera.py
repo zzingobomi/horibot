@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import time
 
-import cv2
 import numpy as np
 import pytest
 
@@ -40,6 +39,9 @@ from modules.camera.drivers.mock import MockCameraDriver
 from modules.camera.module import CameraDriverModule
 
 _LOCAL_CFG = {"mode": "peer", "scouting": {"multicast": {"enabled": False}}}
+
+# 실 Zenoh 세션 + Runtime 부팅/test + sleep 폴링 — 마커 정의 그대로 sim
+pytestmark = pytest.mark.sim
 
 
 @pytest.fixture
@@ -405,5 +407,3 @@ async def test_jpeg_decode_roundtrip_color_consistency(runtime: Runtime):
     assert int(arr[:, :, 0].mean()) <= 5, (
         f"B channel mean = {arr[:, :, 0].mean()} (counter=0 시작)"
     )
-    # 추가 — encode 후 decode 박은 자리 cv2.imdecode 가 valid ndarray return
-    _ = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)  # sanity check

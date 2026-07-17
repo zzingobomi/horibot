@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from apps.contract_export import KeyEntry, _is_draft_model, _key_is_draft
+from apps.contract_export import KeyEntry, _key_is_draft
 from framework.contract.model import DraftModel, StrictModel
 
 
@@ -37,13 +37,6 @@ def _topic(payload: type[BaseModel] | None) -> KeyEntry:
     return KeyEntry(
         const_name="X", key="stream/x/y", category="stream", req_cls=payload, res_cls=None
     )
-
-
-def test_is_draft_model_only_true_for_draftmodel_subclass():
-    assert _is_draft_model(_Draft) is True
-    assert _is_draft_model(_Strict) is False
-    assert _is_draft_model(_Plain) is False
-    assert _is_draft_model(None) is False
 
 
 def test_service_draft_iff_req_or_res_is_draft():

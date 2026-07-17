@@ -64,25 +64,12 @@ def test_load_robots_reads_physical_sag_joints():
 
 
 def test_load_deployment_mock():
+    # 파싱 동작만 — 모듈 전체 목록은 yaml 미러라 잠그지 않는다 (모듈 추가마다
+    # 테스트 수정 유발). yaml↔registry 정합은 booted e2e 가 실부팅으로 잡는다.
     deploy = load_deployment(_CONFIG_DIR / "deployments" / "mock.yaml")
     assert deploy.driver_mode == "mock"
-    assert {m.name for m in deploy.modules} == {
-        "motor",
-        "motion",
-        "motion_preview",
-        "camera",
-        "camera_decoded",
-        "calibration",
-        "scene3d",
-        "scan",
-        "waypoint",
-        "detector",
-        "llm",
-        "pick_and_place",
-        "bridge",
-        "logcollector",  # 단일 머신 = 중앙 → 로그 파일 (docs/logging.md)
-        "host_monitor",  # 각 host CPU/mem 발행 (docs/logging.md §7)
-    }
+    names = {m.name for m in deploy.modules}
+    assert {"motor", "motion", "camera", "bridge"} <= names
     assert deploy.rdb_uri == "sqlite:///:memory:"  # DB owner host
 
 
@@ -98,6 +85,7 @@ def test_resolve_robot_deps_mock_motor_picks_mock_backend():
     assert len(topo.motors) == 7
 
 
+@pytest.mark.sim  # clean subprocess 기동 (~5s) — 배포 게이트, fast loop 제외
 def test_registry_role_isolated_no_heavy_imports():
     # lazy registry invariant — motor/motion load 가 fastapi(bridge)/pyrealsense2·cv2
     # (camera) 를 끌어오면 안 됨 (pi_hori1 가 그 deps 없이 boot 가능해야).
@@ -172,6 +160,7 @@ def test_resolve_robot_deps_real_opencv_uvc_constructs():
     assert driver.get_factory_intrinsics() is None  # 사용자 intrinsic 캘 필요
 
 
+@pytest.mark.sim  # torch/transformers import (~13s) — 배포 게이트, fast loop 제외
 def test_resolve_host_deps_real_detector_constructs():
     # real → GroundedSamBackend 생성 (GDINO+SAM2, 모델 로드 X — preload/detect 안 부름).
     from modules.detector.drivers.grounded_sam import GroundedSamBackend
@@ -193,6 +182,10 @@ def test_resolve_robot_deps_camera_mock_depth_from_rgbd_capability():
 
 
 # ─── e2e boot — mock.yaml 한 process ────────────────────────────
+#
+# Runtime 전체 부팅 (~3s/test) = 마커 정의 그대로 sim — 아래 e2e 전부 개별 마킹.
+
+_SIM = pytest.mark.sim
 
 
 @pytest.fixture
@@ -214,6 +207,7 @@ async def booted():
     transport.close()
 
 
+@_SIM
 async def test_boot_motor_capabilities_reachable(booted: Runtime):
     res = await booted.module_runtime.call(
         Motor.Service.CAPABILITIES,
@@ -224,6 +218,7 @@ async def test_boot_motor_capabilities_reachable(booted: Runtime):
     assert len(res.flags) > 0
 
 
+@_SIM
 async def test_boot_camera_capabilities_reachable(booted: Runtime):
     res = await booted.module_runtime.call(
         Camera.Service.CAPABILITIES,
@@ -234,6 +229,7 @@ async def test_boot_camera_capabilities_reachable(booted: Runtime):
     assert CameraCapability.DEPTH in res.flags  # rgbd robot
 
 
+@_SIM
 async def test_boot_omx_motor_and_camera_reachable(booted: Runtime):
     # 2-robot mock boot (2026-07-09 omx 재활성화) — omx robot-scoped module 도
     # 같은 process 에 mount, robot_id 라우팅으로 도달.
@@ -253,6 +249,7 @@ async def test_boot_omx_motor_and_camera_reachable(booted: Runtime):
     assert CameraCapability.DEPTH not in cam.flags  # UVC color-only
 
 
+@_SIM
 async def test_boot_calibration_snapshot_bundle_reachable(booted: Runtime):
     # calibration robot-agnostic Module 이 booted (rdb_uri :memory: + alembic upgrade
     # head) → snapshot_bundle service 가 Zenoh 로 도달 (키에 {robot_id} 없음, 대상은
@@ -278,6 +275,7 @@ async def test_boot_calibration_snapshot_bundle_reachable(booted: Runtime):
     assert res.signature() == (("intrinsic", res.intrinsic.id),)
 
 
+@_SIM
 async def test_boot_calibration_start_run_and_list_over_wire(booted: Runtime):
     # write 경로 + 마이그레이션 검증 — start_run(INSERT) → list_runs(SELECT) over Zenoh.
     from modules.calibration.contract import (
@@ -305,6 +303,7 @@ async def test_boot_calibration_start_run_and_list_over_wire(booted: Runtime):
     assert any(r.id == started.run_id and r.kind == "hand_eye" for r in listed.runs)
 
 
+@_SIM
 async def test_boot_camera_decode_stream_e2e(booted: Runtime):
     # camera capture loop (30Hz) → JPEG stream → camera_decoded → DECODED_SNAPSHOT.
     # 한 process 안 두 robot-scoped Module 이 Zenoh peer 로 stream 주고받는지 검증.

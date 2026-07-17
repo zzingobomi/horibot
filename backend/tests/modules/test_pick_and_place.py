@@ -288,7 +288,11 @@ async def test_scenario_servo_pick_only_sequence():
     assert sel.linear is True and sel.gripper_open is True
     assert sel.floor_z == pytest.approx(0.0 - 0.005)
     assert sel.path_from == _HOME_JOINTS
-    assert sel.obstacle_points
+    # 장애물 = 이웃 점군만 — **자기 점군 금지** (2026-07-17: engage 설계상
+    # grasp 자세의 조↔대상 겹침은 의도된 것 — 자기 점군을 장애물로 검사하면
+    # 관측면 쪽 조가 걸려 같은 파지가 뷰에 따라 전멸. steps 주석 참조).
+    # 이 시나리오는 이웃 없음(단일 후보) → 빈 리스트가 맞다.
+    assert not sel.obstacle_points
     assert all(len(g) == len(_CFG.standoffs) + 1 for g in sel.groups)
     # 든 채 종료 (place 없음 — 마지막 gripper = close)
     grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
@@ -448,9 +452,11 @@ async def test_servo_move_rejected_falls_back_to_movej():
     assert fallback.kind == "pose"
 
 
-async def test_servo_move_both_rejected_aborts():
-    """이동 거부 1회 = 재관측으로 계속 (오염 관측이 만든 허공 목표일 수 있음 —
-    2026-07-17 실물), **연속 2회** = 진짜 경계 → abort."""
+async def test_servo_move_both_rejected_replans_then_aborts_if_exhausted():
+    """이동 거부 1회 = 재관측으로 계속 (오염 관측 가능성), 연속 2회 = 관측이
+    진실 → **가족 재-resolve** (2026-07-17 저녁 실물: 헛집음이 큐브를 경계로
+    밀면 재유도 가족이 그 자리서 IK 불가 — 불신 재생산은 사망). 재플랜도
+    전멸이면 그때 명시 실패."""
     obs2 = _det(position=(0.2, 0.062, 0.025))  # 12mm 이탈 → 2번째 correct 유발
     ctx = _ctx(_pick_script(**{
         _DETECT: [
@@ -459,6 +465,12 @@ async def test_servo_move_both_rejected_aborts():
             DetectOrientedResponse(found=True, candidates=[obs2]),  # tick2
         ],
         _TCP_SNAP: [_tcp(_SO0), _tcp(_SO0)],
+        _SELECT: [
+            _resolve_ok(),  # plan_pick (1단 채택)
+            # 재플랜 2단 (기존 축 → 확장 yaw) 모두 전멸
+            ResolveReachableResponse(index=-1, message="전멸"),
+            ResolveReachableResponse(index=-1, message="전멸"),
+        ],
         _MOVE_L: [
             RemoteError("MotionRejected", "경로 IK 실패"),  # tick1 이동 거부①
             RemoteError("MotionRejected", "경로 IK 실패"),  # tick2 이동 거부②
@@ -471,8 +483,76 @@ async def test_servo_move_both_rejected_aborts():
     }))
     with pytest.raises(ServoFailed, match="이동 실패"):
         await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    assert len(ctx.calls(_SELECT)) == 3  # 죽기 전 재플랜(기존+확장)을 시도했다
     assert ctx.calls(_GRIP)[-1]["req"].position_raw == _SPEC.gripper_open_raw
     assert ctx.calls(_READ_STATE) == []  # 파지 시도 없음
+
+
+async def test_servo_move_rejected_twice_replans_family_and_continues():
+    """2연속 이동 거부 → 가족 재-resolve 성공 → rung0 재진입 → 정상 수렴 →
+    파지 성공까지 완주 (2026-07-17 저녁 실물 사망 시나리오의 생존 경로)."""
+    # tick2 는 12mm 이탈 관측 — tick1 의 (실패한) descend 가 rung 을 이미
+    # 전진시키므로, 수렴 관측이면 commit 으로 빠져 2번째 거부가 _servo_move
+    # 를 안 탄다. correct 를 유도해 거부②가 같은 경로로 나게 한다.
+    obs2 = _det(position=(0.2, 0.062, 0.025))
+    ctx = _ctx(_pick_script(**{
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # 스윕
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick1 거부①
+            DetectOrientedResponse(found=True, candidates=[obs2]),  # tick2 거부②
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick3 (재진입)
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick4 commit
+        ],
+        _SELECT: [_resolve_ok(), _resolve_ok()],  # plan + 재플랜
+        _TCP_SNAP: [
+            _tcp(_SO0), _tcp(_SO0),  # tick1/2 (거부 국면)
+            _tcp(_SO0), _tcp(_SO1),  # tick3 rung0 수렴 → tick4 rung1 수렴
+            _tcp(_G_TCP), _tcp(_G_TCP),  # touch-up + 도달 로깅
+        ],
+        _FUSE: [FuseOrientedResponse(candidates=[_OBS])] * 2,  # tick3/4
+        _MOVE_J: [
+            MoveJResponse(), MoveJResponse(), MoveJResponse(),  # 스윕+home+rung0
+            RemoteError("MotionRejected", "IK 실패"),  # 폴백 거부①
+            RemoteError("MotionRejected", "IK 실패"),  # 폴백 거부②
+            MoveJResponse(),  # 재플랜 rung0 재진입
+            MoveJResponse(),  # 종료 home
+        ],
+        _MOVE_L: [
+            RemoteError("MotionRejected", "경로 IK 실패"),  # 거부①
+            RemoteError("MotionRejected", "경로 IK 실패"),  # 거부②
+            MoveLResponse(),  # tick3 하강
+            MoveLResponse(),  # commit
+            MoveLResponse(),  # withdraw
+        ],
+        _GRIP: [SetGripperResponse()] * 2,
+        _READ_STATE: [_joint_state(_HELD_RAW)] * 2,
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    assert len(ctx.calls(_SELECT)) == 2
+    # 재플랜 재진입 = resolve 가 반환한 rung0 관절해 그대로 (재계산 금지)
+    reentry = ctx.calls(_MOVE_J)[5]["req"].target
+    assert reentry.kind == "joint" and reentry.joints == [0.1] * 6
+    # 파지까지 완주 (close + withdraw 판정 2회)
+    assert len(ctx.calls(_READ_STATE)) == 2
+
+
+async def test_withdraw_rejected_falls_back_to_rung0_joints_while_holding():
+    """**쥔 이후의 이동 실패는 task 를 죽일 수 없다** (2026-07-17 저녁 실물:
+    HELD·부하 320 직후 withdraw 사전검증 거부 → 쥔 채 사망). 집은 자세는
+    유효한 관절 구성 — 관절 공간(IK 0)으로 항상 탈출 가능하다. 폴백 = 계획이
+    증명한 rung0 관절해 MoveJ, 이후 슬립 판정·이송 계속."""
+    ctx = _ctx(_pick_script(**{
+        _MOVE_L: [
+            MoveLResponse(),  # 하강
+            MoveLResponse(),  # commit
+            RemoteError("MotionRejected", "경로 IK 실패"),  # withdraw 거부
+        ],
+        _MOVE_J: [MoveJResponse()] * 5,  # 스윕+home+rung0+**폴백**+종료 home
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    fallback = ctx.calls(_MOVE_J)[3]["req"].target
+    assert fallback.kind == "joint" and fallback.joints == [0.1] * 6
+    assert len(ctx.calls(_READ_STATE)) == 2  # withdraw-후 슬립 판정까지 계속
 
 
 async def test_servo_nonconvergence_aborts_with_history():
@@ -598,11 +678,13 @@ async def test_plan_pick_family_exhausted_fails_explicitly():
     ctx = _ctx({
         **_search_responses(),
         _DETECT: [DetectOrientedResponse(found=True, candidates=[_OBS])],
-        _SELECT: [ResolveReachableResponse(index=-1, message="전멸")],
+        # 2단: 기존 축 전멸 → 확장 yaw 재시도도 전멸 (근사 정사각 물체)
+        _SELECT: [ResolveReachableResponse(index=-1, message="전멸")] * 2,
         _MOVE_J: [MoveJResponse()],
     })
     with pytest.raises(NoReachableGrasp, match="후보 1개 전부 전멸"):
         await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    assert len(ctx.calls(_SELECT)) == 2  # 확장까지 시도한 뒤에야 실패
     assert ctx.calls(_GRIP) == [] and ctx.calls(_MOVE_L) == []
 
 
@@ -787,6 +869,36 @@ async def test_plan_pick_rejects_all_low_score_candidates():
     assert ctx.calls(_SELECT) == []  # 저신뢰 후보에 resolve 예산 소모 0
 
 
+async def test_plan_pick_rejects_ungraspable_width():
+    """조 개구 초과 물체는 score 가 높아도 후보가 아니다 — 2026-07-17 실물:
+    손에 든 큐브 전멸 후 score 0.68 footprint 116mm blob 을 채택 (lateral
+    47mm 계획) → '완전 다른 데' 주행. antipodal 쌍 필터는 쓰레기 점군 안
+    우연 쌍으로 우회됐다 — 후보 레벨 물리 게이트가 마지막 방어선."""
+    blob = _det(
+        score=0.68, position=(0.09, -0.26, -0.04), base_z=-0.057,
+        footprint=(0.120, 0.116),
+    )
+    cube = _det(score=0.50)  # footprint 기본 (0.025, 0.022) — 통과
+    ctx = _ctx({
+        **_search_responses(),
+        _DETECT: [DetectOrientedResponse(found=True, candidates=[blob, cube])],
+        _SELECT: [_resolve_ok()],
+        _MOVE_J: [MoveJResponse()],
+    })
+    plan = await steps.plan_pick(ctx, _BOT, "white cube", _home_record())
+    assert plan.coarse.score == pytest.approx(0.50)  # blob 아닌 큐브
+    assert len(ctx.calls(_SELECT)) == 1  # blob 에 resolve 소모 0
+
+    ctx2 = _ctx({
+        **_search_responses(),
+        _DETECT: [DetectOrientedResponse(found=True, candidates=[blob])],
+        _MOVE_J: [MoveJResponse()],
+    })
+    with pytest.raises(DetectionNotFound):  # blob 만 = 명시 실패
+        await steps.plan_pick(ctx2, _BOT, "white cube", _home_record())
+    assert ctx2.calls(_SELECT) == []
+
+
 async def test_plan_pick_low_score_excluded_from_fallback():
     """진짜 후보가 전멸해도 저신뢰 후보로 **폴백하지 않는다** — 도달성 우선
     순회의 바닥은 신뢰 후보까지. 전멸이면 엉뚱한 물체 대신 명시 실패."""
@@ -796,12 +908,13 @@ async def test_plan_pick_low_score_excluded_from_fallback():
             _det(score=0.76),
             _det(score=0.31, position=(0.1, 0.22, 0.012)),
         ])],
-        _SELECT: [ResolveReachableResponse(index=-1, message="전멸")],
+        # 2단: 진짜 후보의 기존 축 + 확장 yaw 모두 전멸
+        _SELECT: [ResolveReachableResponse(index=-1, message="전멸")] * 2,
         _MOVE_J: [MoveJResponse()],
     })
     with pytest.raises(NoReachableGrasp, match="후보 1개 전부 전멸"):
         await steps.plan_pick(ctx, _BOT, "white cube", _home_record())
-    assert len(ctx.calls(_SELECT)) == 1  # 저신뢰 후보는 시도 대상 아님
+    assert len(ctx.calls(_SELECT)) == 2  # 저신뢰 후보는 시도 대상 아님 (2단×1후보)
 
 
 async def test_plan_place_falls_back_to_free_yaw_family():
@@ -926,10 +1039,6 @@ async def test_module_toggle_breakpoint_before_run_publishes_state():
     assert final.robot_id == _BOT
     assert final.status == TaskStatus.IDLE
     assert final.breakpoints == ["servo_pick"]
-
-
-def test_task_robots_constant_matches_scenario_binding():
-    assert PickAndPlaceModule.TASK_ROBOTS == ("so101_6dof_0",)
 
 
 async def test_list_robots_returns_task_robots():

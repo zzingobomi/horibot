@@ -118,7 +118,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
 markers = [
-    "sim: Runtime/PyBullet/URDF boot 필요 — 수 초/test, 집 fast loop 에서 skip",
+    "sim: 무거운 부팅 필요 (Runtime/실 Zenoh 세션/PyBullet/URDF/subprocess/모델 import) — 수 초/test. fast loop(-m 'not sim') 에서 skip, 실물 handoff 전 full 에서 실행",
 ]
 
 [tool.pyright]

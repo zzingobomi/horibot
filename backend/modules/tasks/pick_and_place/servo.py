@@ -51,6 +51,15 @@ from .geometry import (
 # 방향이 2순위 (짧은 쪽이 조 개구에 들어갈 확률이 높다 — 관측 footprint 기준,
 # 모양 가정 아님). 폭 자체는 매 tick 점군에서 재측정 (width_along).
 _JAW_YAW_OFFSETS_DEG = (90.0, 0.0)
+# 근사 정사각/원형 물체의 yaw 확장 — 종횡비 ≤ 문턱이면 조 축을 OBB 에 묶을
+# 물리적 이유가 없다 (어느 방향이든 antipodal 성립). 90° 간격 2+flip 빗은
+# 위상이 OBB yaw(near-square 는 뷰마다 랜덤)에 묶여, 위치별 도달 yaw 밴드
+# (실측 30~40° 폭 — 2026-07-17 place 5° 스윕)를 통째로 미스하는 복권이었다
+# (같은 큐브 두 뷰가 yaw 84° 차로 전멸/채택 갈림 — 07-17 오후 실사고).
+# 확장 yaw 는 기존 축 **뒤에** — 순서 = 선호 (resolve 는 첫 통과 채택이라
+# 채택 비용 불변, 전멸 비용만 가족 수에 비례).
+_YAW_FREE_ASPECT_MAX = 1.25
+_YAW_FREE_EXTRA_OFFSETS_DEG = (30.0, 120.0, 60.0, 150.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +93,17 @@ class ServoConfig:
     # 윗면이 tick 사이 cm 급으로 움직이는 건 물리 불가 = 조 끝/가림 depth 오염
     # (2026-07-17 실물: top +2cm 점프 → 파지 목표 허공 → 이동 IK 거부로 중단).
     z_jump_max_m: float = 0.01
-    min_points: int = 50  # 점군 최소 (depth 붕괴/가림 gate)
+    # 점군 최소 (depth 붕괴/가림 gate). 50→30 (2026-07-17 저녁 실물): detector
+    # body_points 소스 청소 후엔 **진짜 물체 점만** 세어진다 — raw 시절 문턱
+    # 50 이 건강한 2cm 큐브 top-view(원거리 r≈0.32, 청소 후 49점)를 연속
+    # 기각해 소실 중단시킨 실사고. 진짜 붕괴/가림은 수~십수 점 급이라 30 도
+    # 잡는다 (기존 회귀 테스트 = 10점 기각 유지).
+    min_points: int = 30
+    # tick 관측 score 하한 — plan(_PICK_SCORE_MIN)과 동일 근거의 servo 판.
+    # 열화 관측(부분 뷰)이 **첫 앵커**가 되면 이후 정상 관측이 z 도약으로
+    # 연속 기각된다 (2026-07-17 13:53 실물: tick1 score 0.43·top z 16mm 낮은
+    # 관측이 앵커 → 정상 0.83 관측 2연속 기각 → 소실 중단).
+    min_score: float = 0.45
     fuse_last_k: int = 4  # 기하(z/폭) 융합에 쓰는 최근 채택 관측 수
     # 파지 z = 윗면(top band centroid z) − grip_below_top_m — **윗면 앵커**.
     # base_z 앵커 폐기 (2026-07-16 실물: 단일 top-view 의 base_z 는 실제 바닥이
@@ -134,6 +153,10 @@ class GraspFamily:
 class GateResult:
     obs: OrientedDetection | None
     reason: str  # 채택 시 "", 기각 시 사람이 읽을 사유 (trace 에 그대로)
+    # 도약/z 도약으로 기각된 **품질 통과** 후보 (score·점군은 통과) — 재앵커
+    # 판정 입력 (TrackState.consider_reanchor). 다른 기각 클래스는 None
+    # (저품질 관측으로 재앵커하면 안 됨).
+    rejected: OrientedDetection | None = None
 
 
 @dataclass(slots=True)
@@ -145,44 +168,69 @@ class TickDecision:
     lateral_m: float = 0.0
 
 
-def grasp_families(obs: OrientedDetection) -> list[GraspFamily]:
+def grasp_families(
+    obs: OrientedDetection, *, yaw_free: bool = False
+) -> list[GraspFamily]:
     """coarse 관측 → 파지 자세 후보 가족 (선호순) — 도달 판정은 motion resolve 몫.
 
     조 축 = OBB yaw 기준 2방향(짧은 변 우선) × flip(단일 가동 조 lateral 방향)
     × tilt 사다리(수직부터 — geometry._TILTS_DEG 재사용). 회전 구성은 open-loop
     plan_grasp 와 동일 규약 (tool x=접근, y=조 축, z=x×y).
+
+    yaw_free=True + 근사 정사각 footprint 면 확장 yaw(30° 격자)를 기존 축 **뒤에**
+    덧붙인다 (2단 resolve 용 — 호출부가 기존/확장 구간을 슬라이스: 1단 = 기존
+    52 로 빠른 채택, 전멸 시에만 확장분 스캔. 직사각 물체는 True 여도 확장 없음
+    — 조는 옆면에 수직이어야 하는 물리).
     """
     down = np.array([0.0, 0.0, -1.0])
+    # yaw 블록: 기존 축(52 — 이전과 완전 동일 순서)이 **통째로 앞**, 확장 yaw 는
+    # 통째로 뒤 — 호출부의 2단 슬라이스([:base_n] / [base_n:]) 성립 조건.
+    yaw_blocks: list[tuple[float, ...]] = [_JAW_YAW_OFFSETS_DEG]
+    aspect = (
+        obs.footprint[0] / obs.footprint[1] if obs.footprint[1] > 0 else 99.0
+    )
+    if yaw_free and aspect <= _YAW_FREE_ASPECT_MAX:
+        # 근사 정사각/원형 — yaw 자유 (상수 주석).
+        yaw_blocks.append(_YAW_FREE_EXTRA_OFFSETS_DEG)
     out: list[GraspFamily] = []
-    for tilt_deg in _TILTS_DEG:
-        for yaw_off_deg in _JAW_YAW_OFFSETS_DEG:
-            jaw_yaw = obs.grasp_yaw + math.radians(yaw_off_deg)
-            for flip in (1.0, -1.0):
-                y = np.array(
-                    [math.cos(jaw_yaw), math.sin(jaw_yaw), 0.0]
-                ) * flip
-                approach = Rotation.from_rotvec(
-                    y * math.radians(tilt_deg)
-                ).apply(down)
-                rot_m = np.column_stack([approach, y, np.cross(approach, y)])
-                qx, qy, qz, qw = (
-                    float(v) for v in Rotation.from_matrix(rot_m).as_quat()
-                )
-                out.append(
-                    GraspFamily(
-                        label=(
-                            f"jaw{'∥short' if yaw_off_deg else '∥long'} "
-                            f"tilt={tilt_deg:+d} flip={'+' if flip > 0 else '-'}"
-                        ),
-                        quat=(qx, qy, qz, qw),
-                        approach=(
-                            float(approach[0]), float(approach[1]),
-                            float(approach[2]),
-                        ),
-                        jaw_axis=(float(y[0]), float(y[1]), float(y[2])),
-                        tilt_deg=tilt_deg,
+    for yaw_offsets in yaw_blocks:
+        for tilt_deg in _TILTS_DEG:
+            for yaw_off_deg in yaw_offsets:
+                jaw_yaw = obs.grasp_yaw + math.radians(yaw_off_deg)
+                for flip in (1.0, -1.0):
+                    y = np.array(
+                        [math.cos(jaw_yaw), math.sin(jaw_yaw), 0.0]
+                    ) * flip
+                    approach = Rotation.from_rotvec(
+                        y * math.radians(tilt_deg)
+                    ).apply(down)
+                    rot_m = np.column_stack(
+                        [approach, y, np.cross(approach, y)]
                     )
-                )
+                    qx, qy, qz, qw = (
+                        float(v) for v in Rotation.from_matrix(rot_m).as_quat()
+                    )
+                    if yaw_off_deg == 90.0:
+                        jaw_label = "jaw∥short"
+                    elif yaw_off_deg == 0.0:
+                        jaw_label = "jaw∥long"
+                    else:
+                        jaw_label = f"jaw@{yaw_off_deg:+.0f}°"
+                    out.append(
+                        GraspFamily(
+                            label=(
+                                f"{jaw_label} tilt={tilt_deg:+d} "
+                                f"flip={'+' if flip > 0 else '-'}"
+                            ),
+                            quat=(qx, qy, qz, qw),
+                            approach=(
+                                float(approach[0]), float(approach[1]),
+                                float(approach[2]),
+                            ),
+                            jaw_axis=(float(y[0]), float(y[1]), float(y[2])),
+                            tilt_deg=tilt_deg,
+                        )
+                    )
     return out
 
 
@@ -198,7 +246,8 @@ def refit_family(
     미만이면 None (기존 유지, 마구 돌리지 않는다).
     """
     cand = next(
-        (f for f in grasp_families(obs) if f.label == fam.label), None
+        (f for f in grasp_families(obs, yaw_free=True) if f.label == fam.label),
+        None,
     )
     if cand is None:
         return None
@@ -334,6 +383,20 @@ def gate_observation(
             f"매치 실패 — 기대 위치 반경 {radius * 1000:.0f}mm 밖 "
             f"(최근접 {near * 1000:.0f}mm)",
         )
+    # 품질 게이트(score/점군)를 도약 게이트보다 먼저 — 열화 관측은 앵커도
+    # 재앵커 후보도 될 수 없다 (2026-07-17 13:53: score 0.43 부분 뷰가 앵커가
+    # 되어 정상 관측을 연속 기각).
+    if best.score < cfg.min_score:
+        return GateResult(
+            None,
+            f"저신뢰 관측 score {best.score:.2f} < {cfg.min_score:.2f} "
+            "(부분 뷰/오검출 의심)",
+        )
+    n = len(best.points or [])
+    if n < cfg.min_points:
+        return GateResult(
+            None, f"점군 부족 {n} < {cfg.min_points} (depth 붕괴/가림 의심)"
+        )
     if last_accepted is not None:
         jump = math.dist(best.position, last_accepted.position)
         if jump > cfg.jump_max_m:
@@ -341,6 +404,7 @@ def gate_observation(
                 None,
                 f"위치 도약 {jump * 1000:.0f}mm > {cfg.jump_max_m * 1000:.0f}mm "
                 "(mask 오검출 의심)",
+                rejected=best,
             )
         dz = abs(best.position[2] - last_accepted.position[2])
         if dz > cfg.z_jump_max_m:
@@ -350,12 +414,8 @@ def gate_observation(
                 None,
                 f"윗면 z 도약 {dz * 1000:.0f}mm > "
                 f"{cfg.z_jump_max_m * 1000:.0f}mm (조/가림 depth 오염 의심)",
+                rejected=best,
             )
-    n = len(best.points or [])
-    if n < cfg.min_points:
-        return GateResult(
-            None, f"점군 부족 {n} < {cfg.min_points} (depth 붕괴/가림 의심)"
-        )
     return GateResult(best, "")
 
 
@@ -423,6 +483,9 @@ class TrackState:
     move_fails: int = 0
     close_attempts: int = 0
     reacquiring: bool = False
+    # 직전 tick 의 도약-기각 관측 (품질 통과분만 — GateResult.rejected) —
+    # 재앵커 판정의 비교 기준.
+    last_rejected: OrientedDetection | None = None
 
     def note_accept(self, obs: OrientedDetection) -> None:
         """채택 관측 반영 — gate 기준/기대 위치 갱신 (융합은 호출부: 이력이
@@ -430,6 +493,36 @@ class TrackState:
         self.last = obs
         self.accepted.append(obs)
         self.expected_xy = obs.position
+        self.last_rejected = None
+
+    def consider_reanchor(
+        self, rejected: OrientedDetection | None, cfg: ServoConfig
+    ) -> OrientedDetection | None:
+        """연속 도약-기각 2건이 상호 일관하면 그 관측 채택(재앵커) — 반환값이
+        새 앵커, 아니면 None.
+
+        나쁜 앵커가 좋은 관측 스트림을 기각하는 역전 차단 (2026-07-17 13:53
+        실물: tick1 열화 관측이 앵커 → 정상 관측(0.83) 2연속 'z 도약' 기각 →
+        소실 중단 — 기각된 둘은 서로 1.4mm/0mm 일치였다). 일관 문턱 = 도약
+        게이트의 절반 (jump/2, z_jump/2 — 정상 연속 관측의 실측 일치는 mm 급).
+        위험 인지: 정지 상태의 조/가림 오염도 2연속 일관할 수 있음 — 그래서
+        score·점군 게이트를 통과한 기각만 후보(GateResult.rejected 계약)이고,
+        이후 이동 IK 거부 관용·close 파지 판정이 최종 안전망."""
+        if rejected is None:
+            self.last_rejected = None
+            return None
+        prev, self.last_rejected = self.last_rejected, rejected
+        if prev is None:
+            return None
+        dxy = math.hypot(
+            rejected.position[0] - prev.position[0],
+            rejected.position[1] - prev.position[1],
+        )
+        dz = abs(rejected.position[2] - prev.position[2])
+        if dxy <= cfg.jump_max_m / 2 and dz <= cfg.z_jump_max_m / 2:
+            self.last_rejected = None
+            return rejected
+        return None
 
     def update_grasp(
         self, obs: OrientedDetection, fused: OrientedDetection, cfg: ServoConfig

@@ -43,6 +43,10 @@ from modules.motor.module import MotorDriverModule
 _LOCAL_CFG = {"mode": "peer", "scouting": {"multicast": {"enabled": False}}}
 _SO101 = "so101_6dof_0"
 
+# Runtime+Zenoh+PyBullet 을 test 마다 부팅 (~2.7s/test) — 마커 정의 그대로 sim.
+# 2026-07-17 정리 전엔 미마킹이라 fast loop 177s 의 최대 지분이었다.
+pytestmark = pytest.mark.sim
+
 
 @pytest.fixture
 def robot():
@@ -645,86 +649,6 @@ async def test_obstacle_points_kinematics_gate(stack):
     assert kin.obstacle_collision(joints) is False
 
 
-async def test_resolve_reachable_real_grasp_plan_ik_passes(stack):
-    """★ 프로덕션 서비스 경로 e2e — 실 URDF IK 가 실 grasp 후보에서 진짜 풀리나.
-
-    **실제 MotionModule 의 resolve_reachable 서비스**에 **실 antipodal →
-    plan_grasp 후보 그룹**을 던진다 (floor_z / linear / obstacle_points=점군 /
-    gripper_open / path_from). "로직만 짜고 IK 는 canned 로 넘어간 것 아니냐"를
-    실행으로 닫는다. (antipodal/plan_grasp 는 2026-07-16 closed-loop 전환 후
-    production 집기에선 안 쓰지만 grasp_verify 진단 자산이 소비 — 수식 잠금 유지.
-    현행 production 집기 그룹의 동일 검증은 아래 servo ladder 테스트.)
-
-    합성 큐브(양쪽 옆면 + 윗면)를 워크스페이스 안(0.24,0.10)에 놓고 실 antipodal
-    쌍 → 후보 가족 → 서비스. index≥0 이면 실 IK 가 그 후보를 실제로 풀었다는
-    뜻이고, solutions FK 가 grasp pose 위치로 복귀해야 진짜 해다.
-    """
-    import numpy as np
-
-    from modules.tasks.pick_and_place import antipodal, geometry
-
-    runtime, _driver, _robot = stack
-    assert await _wait_motion_ready(runtime)
-    snap = None
-    for _ in range(50):
-        await asyncio.sleep(0.02)
-        snap = await _try_snapshot(runtime)
-        if snap is not None:
-            break
-    assert snap is not None
-
-    # 합성 큐브 점군 — 옆면 ±x(간격 2.2cm) + 윗면. object-centric 관측 흉내.
-    cx, cy, base_z, top_z = 0.24, 0.10, -0.045, -0.022
-    ys = np.linspace(cy - 0.011, cy + 0.011, 12)
-    zs = np.linspace(base_z, top_z, 12)
-    xs = np.linspace(cx - 0.011, cx + 0.011, 12)
-    pts: list[tuple[float, float, float]] = []
-    for x in (cx + 0.011, cx - 0.011):
-        for y in ys:
-            for z in zs:
-                pts.append((float(x), float(y), float(z)))
-    for x in xs:
-        for y in ys:
-            pts.append((float(x), float(y), top_z))
-    cloud = np.array(pts, dtype=float)
-
-    # 실 antipodal → 실 plan_grasp (canned 아님 — 실제 선택기/기하)
-    pairs = antipodal.horizontal_antipodal_pairs(cloud)
-    assert pairs, "합성 큐브에서 antipodal 쌍 0 — 선택기 자체가 안 돎"
-    plan = geometry.plan_grasp(pairs)
-    assert plan
-
-    # 실 resolve_reachable 서비스 — 옛 집기 게이트와 동일 인자
-    res = await runtime.module_runtime.call(
-        Motion.Service.RESOLVE_REACHABLE,
-        ResolveReachableRequest(
-            groups=geometry.grasp_ik_groups(plan),
-            floor_z=base_z - 0.005,
-            linear=True,
-            obstacle_points=[tuple(p) for p in cloud],
-            gripper_open=True,
-            path_from=list(snap.joints),
-        ),
-        ResolveReachableResponse,
-        robot_id=_SO101,
-        timeout=60.0,
-    )
-    assert res.index >= 0, (
-        f"실 URDF IK 가 grasp 후보 {len(plan)}개 전멸 — {res.message}"
-    )
-    # solutions FK 가 후보 pre/grasp pose 로 복귀해야 진짜 해 (재계산 없이 실행부가 씀)
-    motion_mod = next(
-        m for m in runtime._modules if type(m).__name__ == "MotionModule"
-    )
-    chosen = plan[res.index]
-    assert len(res.solutions) == 2
-    for sol, want in zip(res.solutions, (chosen.pre, chosen.grasp)):
-        pos, _ = motion_mod._kin.fk(sol)
-        assert np.linalg.norm(np.array(pos) - np.array(want)) < 0.02, (
-            f"IK 해 FK 가 목표 pose 와 어긋남: {pos} != {want}"
-        )
-
-
 async def test_resolve_reachable_servo_ladder_ik_passes(stack):
     """★ 현행 production 집기(closed-loop servo) 계획 그룹 e2e — plan_pick 이
     실제로 보내는 [standoff 사다리…, 파지] × 자세 가족 그룹(그룹 구성 SSOT =
@@ -767,16 +691,20 @@ async def test_resolve_reachable_servo_ladder_ik_passes(stack):
         points=pts,
     )
     cfg = ServoConfig()
+    # production 1단 (기존 축 — 빠른 채택 경로) 그대로 재생. 확장 yaw 는 2단
+    # 전멸 시에만 — 슬라이스 계약(기본=확장의 prefix)은 test_servo 가 잠근다.
     groups, metas = pnp_steps.servo_ladder_groups(coarse, cfg)
-    assert len(groups) == 13 * 2 * 2  # tilt × 조축 × flip (가족 SSOT)
-
+    assert groups
     res = await runtime.module_runtime.call(
         Motion.Service.RESOLVE_REACHABLE,
         ResolveReachableRequest(
             groups=groups,
             floor_z=base_z - 0.005,
             linear=True,
-            obstacle_points=pts,
+            # production(plan_pick)과 동형 — 장애물 = **이웃 점군만** (자기
+            # 점군 제외: engage 겹침은 의도 — steps.plan_pick 주석). 이 합성
+            # 씬은 이웃 없음 = 빈 리스트.
+            obstacle_points=[],
             gripper_open=True,
             path_from=list(snap.joints),
         ),

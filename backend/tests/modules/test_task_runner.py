@@ -361,25 +361,6 @@ async def test_unexpected_exception_becomes_failed():
     assert final.status == TaskStatus.FAILED and final.error
 
 
-async def test_ctx_call_undeclared_robot_rejected():
-    _, obs, runner, ctx = _make()
-
-    async def wrong_robot(c: TaskContext) -> None:
-        await c.call(
-            Motion.Service.MOVE_L,
-            MoveLRequest(target=PoseTarget(kind="pose", position=(0, 0, 0))),
-            MoveLResponse,
-            robot_id="other_bot",
-        )
-
-    runner.start(wrong_robot, ctx=ctx, robot_ids=[_BOT])
-    assert runner._run is not None and runner._run.handle is not None
-    await runner._run.handle
-    final = _last_state(obs)
-    assert final.status == TaskStatus.FAILED
-    assert final.error is not None and "other_bot" in final.error
-
-
 async def test_toggle_breakpoint_without_run_says_next_run_and_notifies():
     """run 밖 토글도 통지 — 프리뷰에서 미리 박은 breakpoint 가 UI 에 보여야
     (침묵 금지). run 이 없으니 IDLE 스냅샷 + breakpoints 만 의미."""
@@ -568,33 +549,6 @@ async def test_descriptor_instances_do_not_share_state():
     assert b.states[-1].status == TaskStatus.SUCCESS
 
 
-async def test_descriptor_subclass_override_wins():
-    """훅 해석 = getattr (MRO) — 서브클래스가 훅 메서드를 재정의하면 파생이 이긴다."""
-
-    class _Sub(_Mod):
-        def __init__(self) -> None:
-            super().__init__()
-            self.sub_states: list[RunState] = []
-
-        def _capture_state(self, s: RunState) -> None:
-            self.sub_states.append(s)
-
-    sub = _Sub()
-    assert sub.task.start(_noop3, ctx=_SpyCtx(_WireStub()), robot_ids=[_BOT]).accepted
-    assert sub.task._run is not None and sub.task._run.handle is not None
-    await sub.task._run.handle
-    assert sub.sub_states and sub.sub_states[-1].status == TaskStatus.SUCCESS
-    assert not sub.states  # 부모 훅으로는 안 감
-
-
-async def test_descriptor_headless_without_hook_decorators():
-    """훅 미선언 클래스 — headless 로 정상 실행 (전부 선택 계약 유지)."""
-
-    class _Bare:
-        task = TaskRunner()
-
-    bare = _Bare()
-    assert bare.task.start(_noop3, ctx=_SpyCtx(_WireStub()), robot_ids=[_BOT]).accepted
-    assert bare.task._run is not None and bare.task._run.handle is not None
-    await bare.task._run.handle
-    assert bare.task.status == TaskStatus.SUCCESS
+# (subclass 훅 override / 훅 미선언 headless descriptor 테스트는 2026-07-17 정리로
+# 삭제 — 전자는 실사용처 없는 getattr/MRO 언어 동작, 후자는
+# test_headless_run_without_callbacks 가 같은 계약을 커버.)

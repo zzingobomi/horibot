@@ -226,25 +226,10 @@ def test_step_rejects_sync_function():
         step(lambda: None)  # type: ignore[arg-type]
 
 
-# ─── FakeContext — 스크립트/실패 주입 ────────────────────────────────
-
-
-async def test_fake_context_scripts_by_key_and_injects_failure():
-    ctx = FakeContext(
-        robots=[_BOT],
-        service_script={
-            Motion.Service.MOVE_L: [
-                MoveLResponse(),
-                RemoteError("MotionRejected", "IK 불가"),
-            ],
-        },
-    )
-    req = MoveLRequest(target=PoseTarget(kind="pose", position=(0.1, 0.0, 0.1)))
-    await ctx.call(Motion.Service.MOVE_L, req, MoveLResponse, robot_id=_BOT)  # 성공
-    with pytest.raises(RemoteError, match="IK 불가"):
-        await ctx.call(  # 2차 — 실패 주입
-            Motion.Service.MOVE_L, req, MoveLResponse, robot_id=_BOT
-        )
+# ─── FakeContext — 인프라 스모크 1건만 (mock 자체 테스트는 두지 않는다) ──────
+# 미등록 키의 침묵 통과(vacuous pass)만은 인프라가 직접 잠근다 — 이게 뚫리면
+# 스크립트 오타가 초록으로 위장한다. 스크립트/실패 주입 동작은 실 소비
+# 테스트들(pick_and_place/handover/runner)이 전이적으로 증명.
 
 
 async def test_fake_context_unscripted_key_asserts():

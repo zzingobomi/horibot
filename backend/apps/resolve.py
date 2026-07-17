@@ -161,6 +161,49 @@ def resolve_host_deps(
                 gripper_held_threshold_raw=held,
             )
         return {"robots": task_specs}
+    if name == "handover":
+        # pick_and_place 와 같은 gripper spec 투영 (위 분기 복제 — 공유 helper
+        # 추출은 pick_and_place 실물 검증 완료 후: 지금은 그 분기를 안 건드리는
+        # 게 우선, 2026-07-17) + 크로스캘 base_pose / cross-robot 충돌 체커.
+        import math as _math
+
+        from modules.motor.contract import MotorKind
+        from modules.tasks.core.spec import TaskRobotSpec
+        from modules.tasks.handover.collision import BasePose, CrossRobotChecker
+
+        ho_specs: dict[str, TaskRobotSpec] = {}
+        for r in robots.values():
+            if not r.enabled:
+                continue
+            grip = next((m for m in r.motors if m.kind == MotorKind.GRIPPER), None)
+            if grip is None:
+                continue
+            open_raw, close_raw = grip.limit_max, grip.limit_min
+            held = close_raw + round((open_raw - close_raw) * 0.05)
+            ho_specs[r.id] = TaskRobotSpec(
+                gripper_open_raw=open_raw,
+                gripper_close_raw=close_raw,
+                gripper_index=r.motors.index(grip),
+                gripper_held_threshold_raw=held,
+            )
+        so = robots.get("so101_6dof_0")
+        omx = robots.get("omx_f_0")
+        base = None
+        checker = None
+        if omx is not None:
+            base = BasePose(
+                x=omx.base_pose.x,
+                y=omx.base_pose.y,
+                z=omx.base_pose.z,
+                yaw_rad=_math.radians(omx.base_pose.yaw_deg),
+            )
+            if so is not None:
+                checker = CrossRobotChecker(
+                    _ROBOT_DIR / so.type / "urdf" / f"{so.type}.urdf",
+                    _ROBOT_DIR / omx.type / "urdf" / f"{omx.type}.urdf",
+                    base,
+                )
+        return {"robots": ho_specs, "omx_base_pose": base, "checker": checker}
     if name == "bridge":
         from modules.bridge.contract import BasePoseInfo, RobotInfo
 

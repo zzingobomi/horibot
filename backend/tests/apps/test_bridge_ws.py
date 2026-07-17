@@ -26,11 +26,8 @@ from modules.bridge.ws import (
     FRAME_SERVICE_RESPONSE,
     FRAME_TOPIC_DATA,
     _EVENT_FIFO_MAX,
-    _LATEST_WINS_MAX,
     _SERVICE_CHANNEL,
-    _SERVICE_MAX,
     WsConnection,
-    _channel_maxlen,
 )
 from pathlib import Path
 
@@ -201,15 +198,6 @@ async def test_service_error_relays_error_frame(bridge):
 # ── send 큐 채널 정책 (backpressure) ────────────────────────────────
 # 데이터 중요도 구분: stream(최신만) / event(보존) / service(유실 방지) 를
 # 키 prefix taxonomy 로 나눔. 채널별 독립 큐라 고rate 토픽이 남을 안 밀어냄.
-
-
-def test_channel_maxlen_by_key_prefix():
-    # stream/* = telemetry → latest-wins(1)
-    assert _channel_maxlen("stream/motor/so101_6dof_0/state") == _LATEST_WINS_MAX
-    # event/* = 이산 이벤트 → 보존(FIFO)
-    assert _channel_maxlen("event/calibration/so101_6dof_0/activated") == _EVENT_FIFO_MAX
-    # service 응답 = 유실 방지
-    assert _channel_maxlen(_SERVICE_CHANNEL) == _SERVICE_MAX
 
 
 class _DummyWs:

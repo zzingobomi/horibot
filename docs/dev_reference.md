@@ -755,6 +755,76 @@ sub.undeclare(); session.close()
 > 예: "토크오프 + 책상 면 보는 자세로 PC 토글 → PC 면이 책상 수평이면 fix 완료.
 >  4° 이상 사선이면 hand_eye observability 가설로 진행."
 
+## 테스트 스위트 유지 원칙 (2026-07-17 대정리 — 이 절이 정본)
+
+> 배경: "기능 하나 구현할 때마다 테스트 돌리는 데 시간 다 쓰고, 돌리면 깨져서
+> 테스트 고치는 데 또 시간" — 원인 진단 결과 ① sim 마커가 3파일에만 붙어 있어
+> fast loop 가 452개/177s (Runtime/Zenoh/PyBullet 부팅 테스트가 전부 inner loop
+> 에 침입, 순수 JSON 파서 테스트조차 qwen 모듈 경유 torch import 로 20s)
+> ② 구현 구조를 그대로 미러링하는 change-detector 잠금(정확 개수/전체 목록/좌표
+> literal)이 정당한 변경마다 파손. 47파일 전수 분류 후 36개 삭제 + 잠금 완화 +
+> 마커 전면 재적용 + llm 순수 파서를 경량 모듈(drivers/parse.py)로 분리.
+> **결과: fast loop 348개/27s (6.6×), 전체 461→425개.**
+
+### 두 트랙 (마커 = `sim`)
+
+- **fast loop** `pytest -m "not sim"` — 순수 로직/상태머신/in-process 모듈/wire
+  인코딩. **매 구현 변경마다 도는 트랙** — 수십 초 안이어야 하고, 여기 들어오는
+  테스트는 부팅·소켓·sleep 폴링 금지.
+- **sim (pre-handoff 게이트)** — Runtime/실 Zenoh 세션/PyBullet/URDF/subprocess/
+  모델 import 가 필요한 전부. **실물 handoff 직전 full `pytest` 로 1회**. 새
+  테스트가 이 부류면 파일 단위 `pytestmark = pytest.mark.sim` 또는 개별 마킹을
+  반드시 붙일 것 — 안 붙이면 inner loop 가 다시 3분으로 썩는다 (이번 사태의 뿌리).
+
+### 지운 것 (다시 만들지 말 것 — 클래스로 기억)
+
+1. **구현 미러 잠금**: 서비스 키 전체 set 동치 / 가족·토픽 정확 개수(`len==52`) /
+   모듈 전체 목록 중복 잠금 / robots.yaml 좌표 literal / HTML 문자열 match / 프리뷰
+   step 트리 전체 목록. → 불변식 형태로 완화 (예: "기본 블록 = 확장의 prefix",
+   "robot-agnostic 키에 `{robot_id}` 없음", "phase 골격 순서 + 파지판정 ≥2").
+   같은 사실의 게이트가 이미 한 곳에 있으면 (FRONTEND_EXPOSED set 동치) 개수
+   재잠금은 중복이다.
+2. **mock 자체 테스트**: mock driver 의 no-op 응답 확인(reboot ok=True), Fake/
+   Scripted 인프라 자체 검증 (vacuous-pass 방지 스모크 1건만 예외 유지),
+   `isinstance(x, Protocol)` 구조 체크.
+3. **layer 중복**: 같은 회귀를 더 낮은 layer 가 이미 잡는 상위 재기술 (StrEnum=str
+   동일 경로, registry 단건 조회 = build_runtime 경유 커버 등).
+4. **vacuous 검증**: 뒤집어도(=구현을 부숴도) 초록인 테스트 — GIL 아래서 못 깨지는
+   thread race 검증, 필터를 제거해도 통과하던 robot-scoped event filter (스파이
+   카운터로 재작성함).
+5. **production 소비자 0 인 경로**: antipodal/plan_grasp 파이프라인 (2026-07-16
+   closed-loop 전환으로 대체, 소비자 = 진단 스크립트뿐) — 테스트 통삭제. 되살리면
+   git history.
+
+### 절대 보존 (지우자는 제안이 나오면 이 목록부터)
+
+- **실사고 재현 회귀** (docstring 에 날짜/사고 명시된 것 전부): mirror 늦은부팅
+  수렴(2026-07-07 침묵 identity-fallback), liveliness 4전이, boot rollback,
+  graceful shutdown hang, servo 게이트/재앵커/재플랜/withdraw 폴백(2026-07-17 실물
+  체인), IK multi-restart, 캘 세션 탈출구/신호등 hysteresis, z-앵커/body_points.
+- **안전 의미론**: TaskRunner 병렬 gather all-stop(CLAUDE.md 명시 잠금)·cancel
+  전파·paused 긴급정지, ctx.call 참여 명부 거부, on_abort 전원 STOP + best-effort.
+- **멀티robot 리트머스** (`test_single_instance_serves_so101_and_omx_isolated`
+  류): 6DOF/5DOF 혼입·교차오염은 이 클래스가 유일하게 잡는다.
+- **wire/데이터 계약**: bridge frame 인코딩·큐 의미론, contract export exposure
+  게이트, msgpack native bytes(base64 회귀), zstd depth 왕복, decode dedup,
+  alembic migration↔ORM 드리프트 + partial unique(active 캘 1개), FK 상호검증
+  (FkChain≡PyBullet), timeout 해석 순서.
+
+### 추가할 때의 기준
+
+새 assert 마다 "**뒤집으면 어떤 실물 버그가 잡히나**"에 한 문장으로 답할 수
+있어야 한다 (feedback_meaningful_tests). 답이 "구현이 바뀌었다는 사실"뿐이면
+그건 잠금이 아니라 유지비다. 실물 사고를 잡았으면 그 시나리오 그대로 회귀
+테스트 1개 — 이 클래스는 성역이고, 나머지는 위 삭제 클래스에 비추어 회의적으로.
+
+### 남은 개선 여지 (다음 손질 후보)
+
+- motor/camera/motion 류의 test 당 Runtime 재부팅 → module-scope 픽스처 공유
+  (state 누수 검토 필요해서 이번엔 보류; sim 마킹으로 inner loop 에선 이미 제거).
+- `_LOCAL_CFG`(멀티캐스트 off) 가 8개 파일에 중복 — 공용 conftest 픽스처로 단일화
+  하면 LAN 누출 footgun 제거 (현재는 전 파일 명시 off 확인됨).
+
 ## 관련 문서
 
 - [slice_abc_verify.md](slice_abc_verify.md) — Phase 2 dev 서버 검증 순차 가이드

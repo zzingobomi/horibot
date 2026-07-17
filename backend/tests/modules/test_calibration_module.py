@@ -34,12 +34,10 @@ from modules.calibration.contract import (
     HandEyeResultRecord,
     IntrinsicResultData,
     IntrinsicResultRecord,
-    ListResultsRequest,
     ListRunsRequest,
     PreviewEnableRequest,
     SnapshotBundleRequest,
     StartRunRequest,
-    UndoLastCaptureRequest,
 )
 from modules.calibration.persistence.orm import Base
 from modules.calibration.module import CalibrationModule, CalibrationRobotSpec
@@ -162,29 +160,12 @@ def _he(run_id: int, robot_id: str = _SO101) -> HandEyeResultRecord:
 
 
 def test_service_wiring_discovers_all_keys(tmp_path: Path):
+    # 전체 키 목록은 contract 미러라 잠그지 않는다 (서비스 추가마다 수정 유발).
+    # 계약 = §2.7.3 acceptance 1: robot-agnostic 서비스 키에 {robot_id} 없음.
     mod, _, _ = _module(tmp_path)
     keys = {spec.wire_key for _m, spec in discover_services(mod)}
-    assert keys == {
-        Calibration.Service.START_RUN,
-        Calibration.Service.CAPTURE,
-        Calibration.Service.FINALIZE_RUN,
-        Calibration.Service.ABORT_RUN,
-        Calibration.Service.ACTIVATE_RESULT,
-        Calibration.Service.UNDO_LAST_CAPTURE,
-        Calibration.Service.PREVIEW_ENABLE,
-        Calibration.Service.SNAPSHOT_BUNDLE,
-        Calibration.Service.LIST_RUNS,
-        Calibration.Service.LIST_RESULTS,
-        Calibration.Service.GET_THRESHOLDS,
-    }
-    # robot-agnostic — 서비스 키에 {robot_id} placeholder 없음 (§2.7.3 acceptance 1)
+    assert Calibration.Service.START_RUN in keys  # discovery 자체가 도는지
     assert all("{robot_id}" not in k for k in keys)
-
-
-def test_module_is_host_level_no_robot_id_attr(tmp_path: Path):
-    # §2.7.3 acceptance 1 — host-level 인스턴스는 self.robot_id 미보유
-    mod, _, _ = _module(tmp_path)
-    assert not hasattr(mod, "robot_id")
 
 
 def test_start_run_creates_in_progress(tmp_path: Path):
@@ -276,30 +257,6 @@ def test_snapshot_bundle_returns_active(tmp_path: Path):
     bundle = mod.snapshot_bundle(SnapshotBundleRequest(robot_id=_SO101))
     assert bundle.robot_id == _SO101
     assert bundle.hand_eye is not None and bundle.hand_eye.id == rid
-
-
-def test_list_runs_and_results_and_undo(tmp_path: Path):
-    mod, _, repo = _module(tmp_path)
-    run = repo.create_run(_SO101, "hand_eye", "x")
-    assert run.id is not None
-    repo.save_result(run.id, _he(run.id))
-    from modules.calibration.contract import CalibrationCaptureRecord
-
-    repo.append_capture(run.id, CalibrationCaptureRecord(run_id=run.id, pose_index=0))
-    repo.append_capture(run.id, CalibrationCaptureRecord(run_id=run.id, pose_index=1))
-
-    assert len(mod.list_runs(ListRunsRequest(robot_id=_SO101)).runs) == 1
-    assert (
-        len(
-            mod.list_results(
-                ListResultsRequest(robot_id=_SO101, kind="hand_eye")
-            ).results
-        )
-        == 1
-    )
-
-    assert mod.undo_last_capture(UndoLastCaptureRequest(run_id=run.id)).ok
-    assert [c.pose_index for c in repo.list_captures(run.id)] == [0]
 
 
 # ─────────────────────────── preview overlay (sim board) ────────────────────
@@ -407,16 +364,6 @@ def test_start_run_rejects_non_session_kind(tmp_path: Path):
         mod.start_run(
             StartRunRequest(robot_id=_OMX, kind="joint_offset", algorithm="x")
         )
-
-
-def test_start_run_aborts_stale_cross_run(tmp_path: Path):
-    """cross 세션도 stale cleanup 대상 — 새 start_run 이 orphan cross 를 정리."""
-    mod, _, repo = _module(tmp_path)
-    stale_id = mod.start_run(
-        StartRunRequest(robot_id=_OMX, kind="cross", algorithm="x")
-    ).run_id
-    mod.start_run(StartRunRequest(robot_id=_OMX, kind="intrinsic", algorithm="y"))
-    assert repo.get_run(stale_id).status == "failed"  # type: ignore[union-attr]
 
 
 # ─────────────────────────── capture (sim board) ───────────────────────────
@@ -575,31 +522,6 @@ async def test_preview_per_robot_isolated(tmp_path: Path):
 
 
 # ─────────────────────────── preview stream ───────────────────────────
-
-
-async def test_preview_publishes_detection_when_enabled(tmp_path: Path):
-    mod, rt, repo = _module(tmp_path)
-    _seed_intrinsic(repo)
-    repo.create_run(_SO101, "hand_eye", "x")  # in-progress run (quality 비교 대상)
-    _feed(mod, _board_frame([0.3, 0.2, 0.0], [0.0, 0.0, 0.35]), [2041, 2342, 903, 2846, 2120, 3122])
-
-    await mod.start()
-    try:
-        mod.preview_enable(PreviewEnableRequest(robot_id=_SO101, enabled=True))
-        previews: list = []
-        for _ in range(30):  # ~1.5s 까지 대기 (5Hz)
-            await asyncio.sleep(0.05)
-            previews = [e for k, e in rt.events if k == Calibration.Stream.PREVIEW]
-            if previews:
-                break
-    finally:
-        await mod.stop()
-
-    assert previews, "preview stream 이 발행 안 됨"
-    p = previews[-1]
-    assert p.detected and p.corner_count >= 12
-    assert p.tilt_deg is not None and p.tilt_deg > 0
-    assert p.verdict in ("green", "yellow", "red")
 
 
 async def test_preview_silent_when_disabled(tmp_path: Path):

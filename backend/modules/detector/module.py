@@ -260,6 +260,10 @@ class DetectorModule:
             )
             if base_pts is None:
                 continue
+            # 소스 청소 — 몸통 z 대역 밖(모서리 mask 의 먼 바닥/flying-pixel)
+            # 점 제거. 이후 지표/OBB/export/소비자 전부 이 점군 기준
+            # (geometry.body_points docstring — 2026-07-17 g_tcp 11.6cm 실사고).
+            base_pts = geometry.body_points(base_pts)
             metrics = geometry.object_metrics_from_points(base_pts)
             if metrics is None:
                 continue

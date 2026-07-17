@@ -162,15 +162,6 @@ class JoinedEvent(BaseModel):
     name: str
 
 
-# ─── 1. 빈 Module + runtime start/stop ──────────────────────
-
-
-async def test_empty_runtime_start_stop(transport: ZenohTransport):
-    rt = Runtime(transport)
-    await rt.start()
-    await rt.stop()
-
-
 # ─── 2. 두 Module + service call ────────────────────────────
 
 

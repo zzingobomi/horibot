@@ -33,6 +33,9 @@ modules:
   - name: detector
   - name: llm
   - name: pick_and_place
+  # handover (2026-07-17 신설, 실물 미검증) — mock 에선 활성 (터미널 실행/테스트
+  # 용: scripts/run_task.py srv/handover/run). 실 배포는 pc.yaml 주석 참조.
+  - name: handover
   - name: bridge
   - name: logcollector
   - name: host_monitor

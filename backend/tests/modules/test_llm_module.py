@@ -5,7 +5,8 @@
   - 빈 명령 → ok=False, 모델 호출 안 함 (guard)
   - backend None → ok=False (파싱 실패 전파)
   - start() 백그라운드 preload 호출
-  - _parse_json_response: 평문 JSON / markdown fence / JSON 없음 / pick 없음 / place null
+  - parse_json_response: 평문 JSON / markdown fence / JSON 없음 / pick 없음 / place null
+    (drivers/parse.py 경량 모듈 — qwen.py 를 import 하면 transformers ~20s 를 문다)
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import Any
 
 from modules.llm.contract import ParseCommandRequest
 from modules.llm.drivers.mock import MockLlmBackend
+from modules.llm.drivers.parse import parse_json_response
 from modules.llm.module import LlmModule
 
 
@@ -87,30 +89,22 @@ async def test_start_triggers_preload():
     await mod.stop()
 
 
-# ─── Qwen JSON 파싱 (순수 함수 — 모델 로드 없이) ──────────────────────
+# ─── Qwen JSON 파싱 (순수 함수 — 모델/torch 로드 없이) ────────────────
 
 
 def test_parse_json_response_plain():
-    from modules.llm.drivers.qwen import _parse_json_response
-
-    p = _parse_json_response('{"pick": "white cube", "place": "blue box"}')
+    p = parse_json_response('{"pick": "white cube", "place": "blue box"}')
     assert p is not None and p.pick == "white cube" and p.place == "blue box"
 
 
 def test_parse_json_response_markdown_fence():
-    from modules.llm.drivers.qwen import _parse_json_response
-
-    p = _parse_json_response('```json\n{"pick": "red ball", "place": null}\n```')
+    p = parse_json_response('```json\n{"pick": "red ball", "place": null}\n```')
     assert p is not None and p.pick == "red ball" and p.place is None
 
 
 def test_parse_json_response_no_json_returns_none():
-    from modules.llm.drivers.qwen import _parse_json_response
-
-    assert _parse_json_response("I cannot parse this command.") is None
+    assert parse_json_response("I cannot parse this command.") is None
 
 
 def test_parse_json_response_missing_pick_returns_none():
-    from modules.llm.drivers.qwen import _parse_json_response
-
-    assert _parse_json_response('{"place": "blue box"}') is None
+    assert parse_json_response('{"place": "blue box"}') is None

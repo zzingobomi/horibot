@@ -95,6 +95,10 @@ def resolve_host_deps(
             ),
             "object_store": _object_store(_require_object_uri("scan", deploy)),
             "robots": scan_specs,
+            # 빌드 프로세스 격리 — Open3D 가 bridge 릴레이를 굶기던 실사고
+            # (2026-07-19, modules/scan/isolated_build.py docstring). 배포는
+            # 항상 격리, in-process 는 테스트 전용 경로.
+            "isolate_build": True,
         }
     if name == "motion_preview":
         # robot-agnostic plan-only 미리보기 — motion 과 같은 값을 preview 전용으로
@@ -160,7 +164,15 @@ def resolve_host_deps(
                 gripper_index=r.motors.index(grip),
                 gripper_held_threshold_raw=held,
             )
-        return {"robots": task_specs}
+        # 로봇 베이스 점유 XY (robots.yaml base_pose, world=so101 base frame) —
+        # pick 후보의 구조적 제외 영역 (2026-07-19 실물: OMX 흰 모터가 "white
+        # small round cube" 로 score 0.57 을 받아 통계 컷(0.45)을 정면 돌파 →
+        # 로봇 베이스를 집으러 감. 로봇 위치는 아는 세계 — score 재튜닝(땜빵)
+        # 대신 기하로 제외).
+        bases = [
+            (r.base_pose.x, r.base_pose.y) for r in robots.values() if r.enabled
+        ]
+        return {"robots": task_specs, "robot_base_xy": bases}
     if name == "handover":
         # pick_and_place 와 같은 gripper spec 투영 (위 분기 복제 — 공유 helper
         # 추출은 pick_and_place 실물 검증 완료 후: 지금은 그 분기를 안 건드리는

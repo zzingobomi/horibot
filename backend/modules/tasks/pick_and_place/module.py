@@ -25,7 +25,7 @@ from modules.tasks.core.preview import build_preview
 from modules.tasks.core.runner import RunState, TaskRunner
 from modules.tasks.core.spec import TaskRobotSpec
 
-from . import steps
+from . import servo, steps
 from .contract import (
     ListRobotsRequest,
     ListRobotsResponse,
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 def _grasp_marker(
-    p: tuple[float, float, float], fam: steps.servo.GraspFamily
+    p: tuple[float, float, float], fam: servo.GraspFamily
 ) -> TaskMarker:
     """파지 마커 — 위치 + 가족 방향(approach/jaw_axis/quat) 동봉.
 
@@ -75,10 +75,16 @@ class PickAndPlaceModule:
     task = TaskRunner()
 
     def __init__(
-        self, runtime: ModuleRuntime, robots: dict[str, TaskRobotSpec] | None = None
+        self,
+        runtime: ModuleRuntime,
+        robots: dict[str, TaskRobotSpec] | None = None,
+        robot_base_xy: list[tuple[float, float]] | None = None,
     ) -> None:
         self.runtime = runtime
         self.contexts = TaskContextFactory(runtime, robots)
+        # 로봇 베이스 점유 XY (world) — pick 후보 구조 제외 (resolve.py 주입,
+        # robots.yaml SSOT. None/빈 리스트 = 제외 없음 — 테스트/구버전 호환).
+        self._robot_base_xy = list(robot_base_xy or [])
         self._seq = {"state": 0, "trace": 0, "markers": 0}
 
     async def stop(self) -> None:
@@ -228,7 +234,8 @@ class PickAndPlaceModule:
         # 파지 0). 놓을 곳이 도달 불가면 아무것도 집기 전에 실패한다 (물체 쥔 채
         # 멈추는 corrupt 방지). 놓기의 held 기하 = coarse 관측 (steps 주석).
         plan = await steps.plan_pick(
-            ctx, so101, pick_object, home, found.get(pick_object, [])
+            ctx, so101, pick_object, home, found.get(pick_object, []),
+            exclude_xy=self._robot_base_xy,
         )
         markers.append(_grasp_marker(plan.grasp_point0, plan.family))
 
@@ -255,7 +262,7 @@ class PickAndPlaceModule:
         # latest-wins 라 매 채택 발행이 곧 실시간 표시). fam 도 함께 — refit/
         # 재플랜으로 파지 방향이 바뀌면 화살표·조 축 바가 실시간 따라간다.
         def on_grasp(
-            p: tuple[float, float, float], fam: steps.servo.GraspFamily
+            p: tuple[float, float, float], fam: servo.GraspFamily
         ) -> None:
             self._publish_markers(so101, [
                 _grasp_marker(p, fam),

@@ -250,7 +250,7 @@ round cube" / place "blue box".
 | --- | --- | --- |
 | plan 전멸 "자세 IK 실패 N" | solver false-neg 는 walk 로 해소됨 — 지금 전멸은 ① 오염 뷰 coarse (공중 부양 포함 — base_z 대역 후순위가 07-17 방어) ② yaw 위상: place 는 yaw 빗이 spot OBB yaw 에 고정, pick 도 IK 층 생존 가족 수(1~3/52)가 뷰 OBB yaw 에 좌우 (near-square 물체 OBB yaw = 뷰마다 랜덤) — **미수정**, 잔존 빈도로 yaw 격자 판단 | `steps.plan_pick`/`plan_place` (base_z 대역 정렬), `pybullet.ik`(walk), offline 재생 `scripts/grasp_verify/servo_reach_replay.py <detect세션>` |
 | plan 전멸 "장애물(그리퍼↔물체) 기각 N" = IK 생존 전부 | **낡은 불변식** (07-17 오후 확정): engage(조를 대상 쪽으로 밀어 물기) 도입 후 grasp 자세의 조↔대상 겹침은 의도인데, 자기 점군을 장애물로 검사해 관측면 쪽 조가 걸림 — 같은 큐브·같은 파지가 "카메라가 어느 면을 봤나"로 전멸 (실측 침투 -3.6~-9.6mm = engage 겹침, 스침 아님) | `steps.plan_pick` 장애물=**이웃 점군만** (07-17 수정) — 대상 보호 = antipodal 구성 + servo closed-loop + 파지 판정 (MoveIt ACM 등가) |
-| 엉뚱한 물체를 집으러 감 | 진짜 후보 전멸 → 도달성 우선 순회가 저신뢰 오검출로 폴백 (07-17: score 0.31 로봇 옆 흰 물체 채택 → 사용자 STOP. 실측 분리: 진짜 큐브 min 0.49 / 오검출 max 0.44) | `steps._PICK_SCORE_MIN` (0.45) 컷 — 미달만 남으면 명시 실패 (pick 전용 — place 는 진짜 spot 0.34 실측이 반례) |
+| 엉뚱한 물체를 집으러 감 | 진짜 후보 전멸 → 도달성 우선 순회가 저신뢰 오검출로 폴백 (07-17: score 0.31 로봇 옆 흰 물체 채택 → 사용자 STOP. 실측 분리: 진짜 큐브 min 0.49 / 오검출 max 0.44). **07-19 22:26 강화판: OMX 흰 원형 모터가 score 0.57 로 통계 컷 정면 돌파 → OMX 베이스 집으러 감** | ① `steps.plan._PICK_SCORE_MIN` (0.45) 컷 ② **로봇 베이스 점유 반경 구조 제외** (07-19 — `_ROBOT_BASE_EXCLUDE_M` 13cm, robots.yaml base_pose 를 resolve.py 가 주입. score 재튜닝은 다음 조명에서 또 뚫리는 땜빵 — 로봇 위치는 아는 세계, 기하로 컷. 한계: 베이스 XY 만 — 팔 링크 오검출 재발 시 FK 점유 제외가 다음 단계. handover pick 도 동일 게이트 필요 — 미적용 TODO) |
 | **[미수정·1순위]** 계획 g_tcp 가 관측에서 수 cm~11cm 이탈 / lateral 폭주 / 조 개구 3배 물체 채택 | **detector `points` 가 raw** — Fix 1(질량 군집)이 지표(base_z/top/pos)만 청소하고 점군은 안 씻음. 테이블 모서리 근처 mask 가 먼 바닥으로 새면 점군 과반이 1m 밖 쓰레기 (07-17 오후 실측: 채택 후보 399점 중 과반 median (0.9,0.07,−1.0)) → antipodal 쌍/width_along/융합/장애물이 전부 오염 소비 (13:52 g_tcp 11.6cm 이탈 = tick1 lat 110.6mm, 13:56 blob lateral 47mm) | **detector 가 points 도 몸통 군집(base_z~top 대역)으로 필터해 내보내기 — Fix 1 의 완결** (한 곳 수정, 소비자 전부 치유) |
 | **[미수정]** score 0.45 넘는 큰 오검출 채택 (13:56: 손에 든 큐브 전멸 후 footprint 116mm blob 을 "small cube" 로 채택 — "완전 다른 데로") | 파지 물리 게이트 부재 — 조 최대 개구 35mm (`antipodal._JAW_OPEN_MAX_M` SSOT) 초과 물체는 물리적으로 못 무는데 plan 후보를 통과 (antipodal 쌍 필터는 쓰레기 점군 안 우연 쌍으로 우회됨) | plan 후보 footprint 짧은 변 ≤ 개구+관측번짐여유(실측 번짐: 실물 20→33mm) 컷 — 후보 레벨 게이트 신설 |
 | **[미수정]** servo 첫 관측이 열화(부분 뷰)면 이후 정상 관측 연속 기각 → 소실 중단 (13:53: tick1 top z 16mm 낮은 score 0.43 관측이 앵커 → 정상 0.83 관측 2연속 "z 도약" 기각) | 나쁜 앵커가 좋은 관측을 기각하는 역전 — servo tick 은 score 하한도 없음 (plan 만 0.45) | ① servo gate 에 score 하한 ② 연속 기각 2건이 서로 일관하면(xy·z 일치) 재앵커 (기각된 쪽이 다수결 진실) |
@@ -290,7 +290,63 @@ TSDF voxel(m). UI 4단 셀렉터 (1/2/4/8mm, `scanStore.VOXEL_TIERS` SSOT — Sc
 포함. 로그: `world_capture pose=N` (크리티컬 패스 실측) / `world_build (bg)`
 (백그라운드 빌드 ms). 같은 날 detector 디버그 덤프(PNG+16bit depth+PLY 동기
 쓰기)도 fire-and-forget 스레드로 이동 — 검출 응답에서 파일 I/O 제거 (내용
-무손실, 실패는 콜백 로깅).
+무손실, 실패는 콜백 로깅). **실측 (16:11 런): 스윕 59.5→45.6s** (이론치 미달
+~12s = 백그라운드 빌드의 동일 프로세스 CPU 경쟁 — Open3D ICP 가 스캔 수에
+초선형 156→1311ms).
+
+**capture∥detect 병렬 — 도입 후 즉시 원복 (2026-07-19 저녁, 실물 1런 만에 기각)**:
+capture 를 검출과 `gather` 동시 실행해 ~9s 를 숨기려 했으나 **첫 실물 런(22:13)
+에서 pose1 스캔이 정합 전멸** — 인접 1→0 fitness 0.09/FK 87mm 발산, loop 전부
+fitness 0.00·보정 1.4~1.8m → 부챗살 메시 + TSDF 가 어긋난 스캔을 평균해 파란
+상자가 테이블 위 색 번짐으로 깎임. 유력 기전: 직렬일 땐 capture 가 "settle
+0.3s + 검출 2~3s" 뒤 = 잔진동 사후였는데, 병렬은 도착 0.3s 후 즉시 캡처 —
+진입 대이동 직후 pose1 손목 진동이 depth 오염 (검출은 cm 관용이라 무사, TSDF
+는 mm 민감. 병렬화 전 런들은 인접 pair 전부 건강 — 시점 상관 확정). **재도입
+조건 = capture 앞 모터 스트림 속도 기반 정지 판정 게이트** (추측 지연 상수
+금지 원칙). 프론트 렌더 경로(같은 날 Web Worker 파싱)는 용의선상 제외 —
+worker 조립 geometry 가 옛 동기 파싱과 4속성 byte-identical 임을 실물 PLY 로
+검증.
+
+**world 메시 전송 계측 (meshopt 재검토, 2026-07-19)**: `get_mesh` 실측 = 런당
+PLY **2.9→6.8MB × 6~7회** (bridge WS 로 프론트 전송, 매 빌드 done 마다 재로드).
+전송/파싱은 **run 크리티컬 패스와 무관** (백그라운드 갱신) — Draco/meshopt 압축
+도입의 이득은 성공률/run 시간이 아니라 UI 뿐이라 **보류**.
+
+**World 파싱 Web Worker 이동 (2026-07-19 저녁 — 히칭 실체감 리포트)**: 사용자가
+월드 갱신 순간 3D 뷰 버벅임 체감 → 실측 (실물 7.6MB/106k verts PLY, node V8):
+`PLYLoader.parse` **110~127ms 가 메인 스레드 동기** (World.tsx useMemo) × 스윕 중
+6~7회 = 갱신마다 7~8프레임 드랍. **수정 = 파싱을 Web Worker 로** (typed array
+transfer 반환 — 복사 0, 메인 몫은 BufferGeometry 조립+GPU 업로드만. seq 가드
+latest-wins, jsdom 폴백 = 옛 동기 경로). 압축(Draco)과 별개 축 — 압축해도
+디코드가 메인에 있으면 히칭은 남는다, 스레드 이동이 구조적 수정. 브라우저
+콘솔 `[world] mesh N MB — 파싱 Nms(worker, 비차단) + 조립 Nms` 계측 로그로
+다음 런에서 잔여 메인 비용 확인. Draco 재검토 조건 = worker 후에도 조립/GPU
+업로드 히칭 잔존 or 메시 수십 MB 진입.
+
+**[jank] 계측 판정 (2026-07-19 밤)**: worker 파싱+빌드 격리+15s 스로틀 후에도
+히칭 잔존 → `[jank]` 콘솔 상관으로 범인 확정 — **모든 jank 가 [world] 갱신
+순간에만 몰림** (83~167ms + GC 1.5s 단발, 사이 구간 깨끗). 갱신 1회당 7.6MB
+수신/디코드+GPU 업로드는 메인 스레드의 **구조적 바닥** — worker/Draco/스로틀
+로 0이 안 된다. ⚠ "run 중 반영 보류" 를 assistant 가 일방 적용했다가 **원복**
+(사용자 소유 UX(자라는 월드)를 임의 제거한 월권 + 종료 트리거가 stale done
+에 안 걸리는 구멍). 현행 = 15s 스로틀 (run 중에도 자람, 갱신 순간 짧은 걸림
+2~3회/런). 다음 선택지는 사용자 결정 대기: ① 현행 유지 ② run 중 보류·종료
+반영 (매끈 우선 — 재구현 시 done stale 구멍 없는 트리거로) ③ 간격 확대.
+Draco 는 이 바닥을 못 없애므로 보류 판정 유지.
+
+**scan 빌드 프로세스 격리 (2026-07-19 밤 — 구현 완료)**: build_world on 이면
+스윕 중 3D 로봇이 버벅인다는 리포트 → build_world off 대조 실험으로 원인 확정
+(Open3D 백그라운드 빌드가 같은 프로세스의 bridge WS 릴레이를 굶겨 20Hz 로봇
+스트림이 몰아서 도착). 수정 = `modules/scan/isolated_build.py`: build_mesh 를
+**별도 프로세스**(spawn, max_workers=1, BELOW_NORMAL 우선순위 — 경쟁 시에만
+양보, 유휴 시 풀스피드)로. progress + build.py pair 진단 로그(정합 사고를 잡는
+그 로그)는 Manager Queue 릴레이로 **관측성 무손실**. 워커 사망 = 풀 재생성 +
+기존 실패 경로, ScanModule.stop 이 워커 종료 (유령 방지). 배선 =
+`ScanModule(isolate_build=True)` (resolve.py 주입 — in-process 는 테스트 전용
+경로). e2e 잠금 = test_scan_isolated_build (sim — 실 subprocess/실 Open3D/릴레이
+/pid 검증). **부수 효과 기대: 스윕 중 검출의 CPU 경쟁 ~12s 도 회수** — 다음
+실물 런 detect 총합으로 확인. 남은 레버 = 증분 integrate (ICP 초선형 완화 —
+multiway 품질 트레이드 검토 필요).
 
 ### 4.3.2 place 중심 융합 (2026-07-18 실물 — 모서리 적치 버그)
 

@@ -51,6 +51,7 @@ from modules.scene3d.contract import Scene3d, SnapshotRequest, SnapshotResponse
 
 from . import blob as scan_blob
 from . import build as recon
+from . import isolated_build
 from .contract import (
     BuildProgress,
     BuildRequest,
@@ -107,11 +108,18 @@ class ScanModule:
         repository: ScanRepository,
         object_store: ObjectStore,
         robots: dict[str, ScanRobotSpec],
+        isolate_build: bool = False,
     ) -> None:
         self.runtime = runtime
         self._repo = repository
         self._blob = object_store
         self._robots = robots
+        # build_mesh 를 별도 프로세스(낮은 우선순위)에서 — Open3D 가 같은
+        # 프로세스의 bridge 릴레이를 굶겨 로봇 스트림이 버벅이던 실사고
+        # (2026-07-19, isolated_build.py docstring). 배포는 resolve.py 가
+        # True 주입 — 기본 False 는 테스트(수백 개 fast)가 워커 풀 부팅
+        # 없이 in-process 경로를 그대로 쓰기 위함.
+        self._isolate_build = isolate_build
         # runtime state — robot_id 키 dict (실행 중에만 존재)
         self._latest_raw: dict[str, list[int]] = {}
         self._progress_seq: dict[str, int] = {}
@@ -124,6 +132,8 @@ class ScanModule:
 
     async def stop(self) -> None:
         logger.info("ScanModule stop (host-level)")
+        if self._isolate_build:
+            await asyncio.to_thread(isolated_build.shutdown)  # 워커 유령 방지
 
     @subscriber(Motor.Stream.RAW_STATE)
     def on_motor_raw(self, state: JointState) -> None:
@@ -344,11 +354,20 @@ class ScanModule:
             self._publish_progress(robot_id, req.session_row_id, stage, percent, message)
 
         try:
-            # heavy Open3D TSDF/ICP — event loop 를 안 막게 thread 로 offload.
-            # progress 콜백은 그 thread 에서 runtime.publish (sync, thread-safe) 호출.
-            result = await asyncio.to_thread(
-                recon.build_mesh, inputs, progress=_progress, **kwargs
-            )
+            if self._isolate_build:
+                # 별도 프로세스 + 낮은 우선순위 — bridge/검출과 CPU 경쟁 차단
+                # (isolated_build docstring). progress/pair 진단 로그는 큐로
+                # 릴레이돼 관측성 무손실.
+                result = await isolated_build.run_isolated(
+                    inputs, kwargs, _progress
+                )
+            else:
+                # in-process 경로 (테스트/격리 불가 환경) — event loop 를 안
+                # 막게 thread 로 offload. progress 콜백은 그 thread 에서
+                # runtime.publish (sync, thread-safe) 호출.
+                result = await asyncio.to_thread(
+                    recon.build_mesh, inputs, progress=_progress, **kwargs
+                )
         except Exception as e:
             logger.exception("build_mesh 실패 robot=%s", robot_id)
             self._publish_progress(robot_id, req.session_row_id, "failed", 1.0, str(e))

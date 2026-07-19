@@ -228,9 +228,11 @@ def _search_responses(n_members: int = 1, sweeps: int = 1) -> dict:
 
 @pytest.fixture(autouse=True)
 def _fast_servo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setattr(steps, "_GRIPPER_SETTLE_S", 0.0)
-    monkeypatch.setattr(steps, "_SEARCH_SETTLE_S", 0.0)
-    monkeypatch.setattr(steps, "_SERVO_CFG", _CFG)
+    # 노브는 소유 모듈에 패치 (steps 패키지 분리 2026-07-19) — 소비 코드
+    # (plan_pick/servo_pick)가 primitives._SERVO_CFG 모듈 참조로 읽는다.
+    monkeypatch.setattr(steps.primitives, "_GRIPPER_SETTLE_S", 0.0)
+    monkeypatch.setattr(steps.search, "_SEARCH_SETTLE_S", 0.0)
+    monkeypatch.setattr(steps.primitives, "_SERVO_CFG", _CFG)
     # trace 는 실제로 쓴다 (기록 자체가 요구사항) — 저장소만 tmp 로
     monkeypatch.setattr(servo_trace, "_TRACE_ROOT", tmp_path / "servo_pick")
 
@@ -623,13 +625,14 @@ async def test_run_with_build_world_piggybacks_scan_session():
     assert caps[0]["req"].session_row_id == 7  # 진행 자원 = row id 파생
     # 캡처 킥 1 + finalize 재킥 1 (in-flight 중 finalize → dirty → 완주 후 1회)
     assert len(ctx.calls(_SCAN_BUILD)) == 2
-    # 순서: pose 관측(DETECT) 직후 capture (pick-critical 경로 먼저)
+    # 순서: capture 는 그 pose 관측(DETECT 시작) 뒤 (같은 정지 창 — capture 가
+    # 관측보다 먼저 팔을 잡아두지 않음), 빌드는 capture 뒤. 빌드 wire 호출의
+    # 정확한 착지 지점은 백그라운드 task 스케줄링 디테일 — 잠그지 않는다
+    # (비차단성은 "스윕이 빌드 응답을 기다리지 않음" = capture/detect 카운트와
+    # dirty 병합 테스트가 잠근다).
     keys = ctx.keys()
     assert keys.index(_SCAN_CAP) > keys.index(_DETECT)
     assert keys.index(_SCAN_BUILD) > keys.index(_SCAN_CAP)
-    # 백그라운드 계약: 빌드가 스윕(=plan resolve 이전)을 막지 않는다 — 첫
-    # 빌드 wire 호출이 계획(_SELECT) 뒤에 온다 (크리티컬 패스 이탈의 관측).
-    assert keys.index(_SCAN_BUILD) > keys.index(_SELECT)
 
 
 async def _drain_bg_builds(ctx: FakeContext, n: int, tries: int = 500) -> None:
@@ -852,13 +855,12 @@ async def test_servo_nonconvergence_aborts_with_history():
         _FUSE: [FuseOrientedResponse(candidates=[far])],
         _MOVE_L: [MoveLResponse()],  # correct 1회
     }))
-    import modules.tasks.pick_and_place.steps as steps_mod
-    steps_mod._SERVO_CFG = cfg  # 이 테스트만 보정 상한 1
+    steps.primitives._SERVO_CFG = cfg  # 이 테스트만 보정 상한 1
     try:
         with pytest.raises(ServoFailed, match="수렴 실패"):
             await _module_for_scenario().scenario(ctx, pick_object="white cube")
     finally:
-        steps_mod._SERVO_CFG = _CFG
+        steps.primitives._SERVO_CFG = _CFG
 
 
 async def test_scenario_with_place_branch_places_after_servo():
@@ -1254,6 +1256,41 @@ async def test_plan_pick_rejects_ungraspable_width():
     with pytest.raises(DetectionNotFound):  # blob 만 = 명시 실패
         await steps.plan_pick(ctx2, _BOT, "white cube", _home_record(), [blob])
     assert ctx2.calls(_SELECT) == []
+
+
+async def test_plan_pick_excludes_robot_base_area_candidates():
+    """★ 2026-07-19 22:26 실물 사고 그대로: OMX 흰 원형 모터가 "white small
+    round cube" 로 score 0.57 을 받아 통계 컷(0.45)을 정면 돌파 — 로봇이 OMX
+    베이스를 집으러 감. 로봇 위치는 크로스캘로 아는 세계 → score 재튜닝(다음
+    조명에서 또 뚫리는 땜빵)이 아니라 **베이스 점유 반경 구조 제외**. 실측:
+    오검출↔OMX base 7.8cm / 정상 큐브 최근접 21.2cm (컷 13cm)."""
+    omx_base = (0.045, 0.243)
+    impostor = _det(score=0.57, position=(0.115, 0.208, 0.009), base_z=-0.007)
+    real_cube = _det(score=0.50, position=(0.241, 0.162, 0.018), base_z=-0.004)
+    ctx = _ctx({_SELECT: [_resolve_ok()]})
+    plan = await steps.plan_pick(
+        ctx, _BOT, "white small round cube", _home_record(),
+        [impostor, real_cube], exclude_xy=[(0.0, 0.0), omx_base],
+    )
+    # score 는 오검출(0.57)이 더 높지만 로봇 영역이라 제외 — 진짜 큐브 채택
+    assert plan.coarse.score == pytest.approx(0.50)
+    assert len(ctx.calls(_SELECT)) == 1  # 오검출에 resolve 소모 0
+
+    # 전 후보가 로봇 영역이면 명시 실패 (맹목 파지 금지 — 사유에 안내)
+    ctx2 = _ctx({})
+    with pytest.raises(DetectionNotFound, match="로봇 베이스 점유"):
+        await steps.plan_pick(
+            ctx2, _BOT, "white small round cube", _home_record(),
+            [impostor], exclude_xy=[omx_base],
+        )
+    assert ctx2.calls(_SELECT) == []
+
+    # exclude_xy 미주입(구버전/테스트 호환) = 제외 없음 — 기존 동작 그대로
+    ctx3 = _ctx({_SELECT: [_resolve_ok()]})
+    plan3 = await steps.plan_pick(
+        ctx3, _BOT, "white small round cube", _home_record(), [impostor],
+    )
+    assert plan3.coarse.score == pytest.approx(0.57)
 
 
 async def test_plan_pick_low_score_excluded_from_fallback():

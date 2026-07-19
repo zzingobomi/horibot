@@ -11,6 +11,8 @@ servo 순수 계산(가족/gate/decide_tick) 잠금은 test_servo.py.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -56,6 +58,19 @@ from modules.tasks.pick_and_place.contract import (
     RunRequest,
     TaskMarkers,
 )
+from modules.scan.contract import (
+    BuildResponse as ScanBuildResponse,
+)
+from modules.scan.contract import (
+    CaptureResponse as ScanCaptureResponse,
+)
+from modules.scan.contract import (
+    NewSessionResponse as ScanNewSessionResponse,
+)
+from modules.scan.contract import (
+    Scan,
+    ScanSessionRecord,
+)
 from modules.tasks.pick_and_place.module import PickAndPlaceModule
 from modules.waypoint.contract import (
     ListGroupMembersResponse,
@@ -86,17 +101,22 @@ _TCP_SNAP = str(Motion.Service.TCP_SNAPSHOT)
 _LIST_WP = str(Waypoint.Service.LIST)
 _LIST_GROUPS = str(Waypoint.Service.LIST_GROUPS)
 _LIST_MEMBERS = str(Waypoint.Service.LIST_GROUP_MEMBERS)
+_SCAN_NEW = str(Scan.Service.NEW_SESSION)
+_SCAN_CAP = str(Scan.Service.CAPTURE)
+_SCAN_BUILD = str(Scan.Service.BUILD)
 _TS = datetime.fromtimestamp(0, UTC)
 
 _HOME_JOINTS = [0.0, 0.5, -1.0, 0.0, 0.5, 1.5]  # 티칭된 home (임의 유효값)
 
 # 테스트용 servo 설정 — 2단 사다리 + settle 0 (결정적·빠름). 실 기본값의
-# 상태 전이 자체는 test_servo 가 잠근다.
+# 상태 전이 자체는 test_servo 가 잠근다. commit 2단 하강(midstop)은 실 기본
+# 그대로 켠다 — 시나리오 테스트가 production 경로를 돌아야 한다.
 _CFG = servo.ServoConfig(
     standoffs=(0.10, 0.05),
     eps_descend_m=(0.008, 0.004),
     corrections_per_rung=3,
     settle_s=0.0,
+    commit_settle_s=0.0,
 )
 
 
@@ -161,9 +181,11 @@ def _det(
     footprint: tuple[float, float] = (0.025, 0.022),
     points: list | None = None,
     score: float = 0.9,
+    prompt: str = "white cube",  # 스윕 통합 후 prompt 귀속으로 버킷 분리 — 기본
+    # 은 시나리오 pick prompt 와 일치 (detector 가 요청 prompt 를 찍는 계약)
 ) -> OrientedDetection:
     return OrientedDetection(
-        prompt="cube", position=position, score=score, base_z=base_z,
+        prompt=prompt, position=position, score=score, base_z=base_z,
         height=height, grasp_yaw=grasp_yaw, footprint=footprint,
         points=_pts() if points is None else points,
     )
@@ -180,6 +202,8 @@ _G_TCP = servo.grasp_tcp(_G_POINT, _FAM, _LAT, _CFG.engage_m)
 _SO0 = servo.standoff(_G_TCP, _FAM, _CFG.standoffs[0])
 _SO1 = servo.standoff(_G_TCP, _FAM, _CFG.standoffs[1])
 _WITHDRAW = servo.standoff(_G_TCP, _FAM, _CFG.withdraw_standoff_m)
+# commit 2단 하강 — midstop 시퀀스 [mid, mid+dither, mid], settle 실측점 = mid
+_MIDSTOP = servo.standoff(_G_TCP, _FAM, _CFG.commit_midstop_m)
 
 
 def _search_responses(n_members: int = 1, sweeps: int = 1) -> dict:
@@ -235,11 +259,13 @@ def _pick_script(**overrides) -> dict:
         ],
         _SELECT: [_resolve_ok()],
         # tick1 TCP = rung0 standoff (오차 0 → 하강), tick2 = rung1 (→ commit),
-        # commit 후 touch-up 검증 (잔차 0 → 추가 이동 없음) + 도달 로깅.
-        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP), _tcp(_G_TCP)],
+        # midstop settle 실측(잔차 0), commit 후 touch-up (잔차 0) + 도달 로깅.
+        _TCP_SNAP: [
+            _tcp(_SO0), _tcp(_SO1), _tcp(_MIDSTOP), _tcp(_G_TCP), _tcp(_G_TCP),
+        ],
         _FUSE: [FuseOrientedResponse(candidates=[_OBS])],  # tick2 (관측 2건부터)
         _MOVE_J: [MoveJResponse()] * 4,  # 스윕 + servo home + rung0 + 종료 home
-        _MOVE_L: [MoveLResponse()] * 3,  # 하강 + commit + withdraw
+        _MOVE_L: [MoveLResponse()] * 6,  # 하강 + midstop×3 + final + withdraw
         _GRIP: [SetGripperResponse()] * 2,  # open + close
         _READ_STATE: [_joint_state(_HELD_RAW)] * 2,  # close/withdraw 판정
     }
@@ -264,7 +290,8 @@ async def test_scenario_servo_pick_only_sequence():
         _DETECT, _TCP_SNAP,  # tick1 (관측 1건 — 융합 생략)
         _MOVE_L,  # rung1 하강
         _DETECT, _TCP_SNAP, _FUSE,  # tick2 (관측 2건 융합)
-        _MOVE_L, _TCP_SNAP, _TCP_SNAP,  # commit (blind) + touch-up 검증 + 도달 로깅
+        _MOVE_L, _MOVE_L, _MOVE_L, _TCP_SNAP,  # commit midstop×3 + settle 실측
+        _MOVE_L, _TCP_SNAP, _TCP_SNAP,  # final 하강 + touch-up 검증 + 도달 로깅
         _GRIP, _READ_STATE,  # close + 판정 ①
         _MOVE_L, _READ_STATE,  # withdraw + 판정 ②
         _MOVE_J,  # 종료 home
@@ -275,12 +302,17 @@ async def test_scenario_servo_pick_only_sequence():
     # servo 이동 목표 = production servo 함수 산출값 (common-mode 상대 명령 배선)
     ml = [c["req"].target for c in ctx.calls(_MOVE_L)]
     assert ml[0].position == pytest.approx(_SO1, abs=1e-9)  # 하강
-    assert ml[1].position == pytest.approx(_G_TCP, abs=1e-9)  # commit
-    assert ml[2].position == pytest.approx(_WITHDRAW, abs=1e-9)  # 후퇴
-    # 접촉 인접 이동(commit/후퇴)은 감속 — withdraw 중 흘림 실사고 (2026-07-17)
+    # commit 2단: midstop → dither 후방 → midstop (하강방향 재안착) → final
+    assert ml[1].position == pytest.approx(_MIDSTOP, abs=1e-9)
+    assert ml[2].position[2] == pytest.approx(
+        _MIDSTOP[2] + _CFG.commit_dither_m, abs=1e-9
+    )
+    assert ml[3].position == pytest.approx(_MIDSTOP, abs=1e-9)
+    assert ml[4].position == pytest.approx(_G_TCP, abs=1e-9)  # final (잔차 0)
+    assert ml[5].position == pytest.approx(_WITHDRAW, abs=1e-9)  # 후퇴
+    # 접촉 인접 이동(commit 전 구간/후퇴)은 감속 — withdraw 중 흘림 실사고
     scales = [c["req"].speed_scale for c in ctx.calls(_MOVE_L)]
-    assert scales[1] == _CFG.gentle_speed_scale  # commit
-    assert scales[2] == _CFG.gentle_speed_scale  # withdraw
+    assert all(s == _CFG.gentle_speed_scale for s in scales[1:6])
     assert all(m.quaternion == pytest.approx(_FAM.quat, abs=1e-9) for m in ml)
     # 계획 resolve 계약: 사다리+파지 직선(linear) + 그리퍼 벌림 충돌 + 바닥 +
     # home 경로 게이트, 그룹당 pose = standoff 2 + grasp 1.
@@ -310,7 +342,9 @@ async def test_servo_outlier_tick_holds_without_motion():
             DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick2 채택
             DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick3
         ],
-        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP)],
+        _TCP_SNAP: [
+            _tcp(_SO0), _tcp(_SO0), _tcp(_SO1), _tcp(_MIDSTOP), _tcp(_G_TCP),
+        ],
         _FUSE: [FuseOrientedResponse(candidates=[_OBS])],
     }))
     await _module_for_scenario().scenario(ctx, pick_object="white cube")
@@ -321,7 +355,7 @@ async def test_servo_outlier_tick_holds_without_motion():
     assert keys[i1 : i1 + 5] == [_DETECT, _TCP_SNAP, _DETECT, _TCP_SNAP, _MOVE_L]
     # 파지는 정상 관측 기준 (오검출이 목표에 안 섞임)
     ml = [c["req"].target.position for c in ctx.calls(_MOVE_L)]
-    assert ml[1] == pytest.approx(_G_TCP, abs=1e-9)
+    assert ml[4] == pytest.approx(_G_TCP, abs=1e-9)  # final 하강
 
 
 async def test_servo_lost_at_start_fails_with_reason_and_trace(tmp_path: Path):
@@ -358,12 +392,14 @@ async def test_servo_lost_after_convergence_commits_blind():
             DetectOrientedResponse(found=False, candidates=[]),  # tick2 miss(hold)
             DetectOrientedResponse(found=False, candidates=[]),  # tick3 → commit
         ],
-        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO1), _tcp(_SO1), _tcp(_G_TCP)],
+        _TCP_SNAP: [
+            _tcp(_SO0), _tcp(_SO1), _tcp(_SO1), _tcp(_MIDSTOP), _tcp(_G_TCP),
+        ],
         _FUSE: [],  # 융합 없음 (채택 관측 1건뿐)
     }))
     await _module_for_scenario().scenario(ctx, pick_object="white cube")
     ml = [c["req"].target.position for c in ctx.calls(_MOVE_L)]
-    assert ml[1] == pytest.approx(_G_TCP, abs=1e-9)  # 직전 관측 기준 commit
+    assert ml[4] == pytest.approx(_G_TCP, abs=1e-9)  # 직전 관측 기준 commit
 
 
 async def test_servo_empty_close_retries_from_standoff_then_succeeds():
@@ -378,12 +414,13 @@ async def test_servo_empty_close_retries_from_standoff_then_succeeds():
         ],
         _TCP_SNAP: [
             _tcp(_SO0), _tcp(_SO1),  # tick1/2
-            _tcp(_G_TCP), _tcp(_G_TCP),  # commit① touch-up + 도달로깅
+            _tcp(_MIDSTOP), _tcp(_G_TCP), _tcp(_G_TCP),  # commit① settle+touchup+도달
             _tcp(_SO1),  # 재시도 tick
-            _tcp(_G_TCP), _tcp(_G_TCP),  # commit② touch-up + 도달로깅
+            _tcp(_MIDSTOP), _tcp(_G_TCP), _tcp(_G_TCP),  # commit② settle+touchup+도달
         ],
         _FUSE: [FuseOrientedResponse(candidates=[_OBS])],
-        _MOVE_L: [MoveLResponse()] * 6,  # 하강+commit + 후퇴 + commit2 + withdraw
+        # 하강 + (midstop×3+final) + 후퇴 + (midstop×3+final) + withdraw
+        _MOVE_L: [MoveLResponse()] * 11,
         _GRIP: [SetGripperResponse()] * 4,  # open,close, open(재시도),close
         _READ_STATE: [
             _joint_state(_EMPTY_RAW),  # close① = 빈 파지
@@ -400,8 +437,9 @@ async def test_servo_empty_close_retries_from_standoff_then_succeeds():
     ]
     ml = [c["req"].target.position for c in ctx.calls(_MOVE_L)]
     # 실패 후 후퇴 = rung1 standoff (재관측 자리), 이후 재 commit
-    assert ml[2] == pytest.approx(_SO1, abs=1e-9)
-    assert ml[3] == pytest.approx(_G_TCP, abs=1e-9)
+    # (하강0, midstop1-3, final4, 후퇴5, midstop6-8, final9, withdraw10)
+    assert ml[5] == pytest.approx(_SO1, abs=1e-9)
+    assert ml[9] == pytest.approx(_G_TCP, abs=1e-9)
 
 
 async def test_servo_empty_close_exhausted_raises():
@@ -410,12 +448,12 @@ async def test_servo_empty_close_exhausted_raises():
         _DETECT: [DetectOrientedResponse(found=True, candidates=[_OBS])] * 4,
         _TCP_SNAP: [
             _tcp(_SO0), _tcp(_SO1),
-            _tcp(_G_TCP), _tcp(_G_TCP),  # commit① touch-up + 도달로깅
+            _tcp(_MIDSTOP), _tcp(_G_TCP), _tcp(_G_TCP),  # commit① settle+touchup+도달
             _tcp(_SO1),
-            _tcp(_G_TCP), _tcp(_G_TCP),  # commit② touch-up + 도달로깅
+            _tcp(_MIDSTOP), _tcp(_G_TCP), _tcp(_G_TCP),  # commit② settle+touchup+도달
         ],
         _FUSE: [FuseOrientedResponse(candidates=[_OBS])],
-        _MOVE_L: [MoveLResponse()] * 6,
+        _MOVE_L: [MoveLResponse()] * 10,  # 하강+(midstop×3+final)+후퇴+(midstop×3+final)
         _GRIP: [SetGripperResponse()] * 4,
         _READ_STATE: [_joint_state(_EMPTY_RAW)] * 2,  # 두 attempt 모두 빈 파지
     }))
@@ -436,12 +474,15 @@ async def test_servo_move_rejected_falls_back_to_movej():
             DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick2 하강
             DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick3 commit
         ],
-        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP)],
+        _TCP_SNAP: [
+            _tcp(_SO0), _tcp(_SO0), _tcp(_SO1), _tcp(_MIDSTOP), _tcp(_G_TCP),
+        ],
         _FUSE: [FuseOrientedResponse(candidates=[_OBS])] * 2,
         _MOVE_L: [
             RemoteError("MotionRejected", "경로 IK 실패"),  # correct 이동 거부
             MoveLResponse(),  # 하강
-            MoveLResponse(),  # commit
+            MoveLResponse(), MoveLResponse(), MoveLResponse(),  # commit midstop×3
+            MoveLResponse(),  # final
             MoveLResponse(),  # withdraw
         ],
         _MOVE_J: [MoveJResponse()] * 5,  # 스윕+home+rung0 + 폴백 + 종료 home
@@ -507,6 +548,7 @@ async def test_servo_move_rejected_twice_replans_family_and_continues():
         _TCP_SNAP: [
             _tcp(_SO0), _tcp(_SO0),  # tick1/2 (거부 국면)
             _tcp(_SO0), _tcp(_SO1),  # tick3 rung0 수렴 → tick4 rung1 수렴
+            _tcp(_MIDSTOP),  # commit settle 실측
             _tcp(_G_TCP), _tcp(_G_TCP),  # touch-up + 도달 로깅
         ],
         _FUSE: [FuseOrientedResponse(candidates=[_OBS])] * 2,  # tick3/4
@@ -521,7 +563,8 @@ async def test_servo_move_rejected_twice_replans_family_and_continues():
             RemoteError("MotionRejected", "경로 IK 실패"),  # 거부①
             RemoteError("MotionRejected", "경로 IK 실패"),  # 거부②
             MoveLResponse(),  # tick3 하강
-            MoveLResponse(),  # commit
+            MoveLResponse(), MoveLResponse(), MoveLResponse(),  # commit midstop×3
+            MoveLResponse(),  # final
             MoveLResponse(),  # withdraw
         ],
         _GRIP: [SetGripperResponse()] * 2,
@@ -544,7 +587,8 @@ async def test_withdraw_rejected_falls_back_to_rung0_joints_while_holding():
     ctx = _ctx(_pick_script(**{
         _MOVE_L: [
             MoveLResponse(),  # 하강
-            MoveLResponse(),  # commit
+            MoveLResponse(), MoveLResponse(), MoveLResponse(),  # commit midstop×3
+            MoveLResponse(),  # final
             RemoteError("MotionRejected", "경로 IK 실패"),  # withdraw 거부
         ],
         _MOVE_J: [MoveJResponse()] * 5,  # 스윕+home+rung0+**폴백**+종료 home
@@ -553,6 +597,241 @@ async def test_withdraw_rejected_falls_back_to_rung0_joints_while_holding():
     fallback = ctx.calls(_MOVE_J)[3]["req"].target
     assert fallback.kind == "joint" and fallback.joints == [0.1] * 6
     assert len(ctx.calls(_READ_STATE)) == 2  # withdraw-후 슬립 판정까지 계속
+
+
+async def test_run_with_build_world_piggybacks_scan_session():
+    """build_world=True — pick search 스윕에 편승해 scan 세션이 돈다: 세션 1회
+    → pose 당 (관측 직후) capture → **빌드는 백그라운드** (2026-07-19 최적화 —
+    실측 스윕 59.5s 중 빌드 ~28s 가 크리티컬 패스를 떠남). World 레이어의
+    backend 절반. 기본(off)은 기존 성공 시나리오의 exact keys 잠금이 scan
+    호출 0 을 이미 보장."""
+    ctx = _ctx(_pick_script(**{
+        _SCAN_NEW: [ScanNewSessionResponse(session=ScanSessionRecord(
+            id=7, robot_id=_BOT, session_id="s", created_at=_TS,
+        ))],
+        _SCAN_CAP: [ScanCaptureResponse(accepted=True, scan_count=1)],
+        # 킥(캡처 직후) + finalize 재킥(마지막 캡처 포함 보장) = 빌드 2회
+        _SCAN_BUILD: [ScanBuildResponse(accepted=True)] * 2,
+    }))
+    await _module_for_scenario().scenario(
+        ctx, pick_object="white cube", build_world=True
+    )
+    await _drain_bg_builds(ctx, n=2)
+    assert len(ctx.calls(_SCAN_NEW)) == 1
+    caps = ctx.calls(_SCAN_CAP)
+    assert len(caps) == 1  # search 1 pose = capture 1
+    assert caps[0]["req"].session_row_id == 7  # 진행 자원 = row id 파생
+    # 캡처 킥 1 + finalize 재킥 1 (in-flight 중 finalize → dirty → 완주 후 1회)
+    assert len(ctx.calls(_SCAN_BUILD)) == 2
+    # 순서: pose 관측(DETECT) 직후 capture (pick-critical 경로 먼저)
+    keys = ctx.keys()
+    assert keys.index(_SCAN_CAP) > keys.index(_DETECT)
+    assert keys.index(_SCAN_BUILD) > keys.index(_SCAN_CAP)
+    # 백그라운드 계약: 빌드가 스윕(=plan resolve 이전)을 막지 않는다 — 첫
+    # 빌드 wire 호출이 계획(_SELECT) 뒤에 온다 (크리티컬 패스 이탈의 관측).
+    assert keys.index(_SCAN_BUILD) > keys.index(_SELECT)
+
+
+async def _drain_bg_builds(ctx: FakeContext, n: int, tries: int = 500) -> None:
+    """백그라운드 빌드 task 가 wire 호출을 n 회 남길 때까지 이벤트 루프 양보."""
+    for _ in range(tries):
+        if len(ctx.calls(_SCAN_BUILD)) >= n:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(
+        f"백그라운드 빌드 {n}회 미도달 (현재 {len(ctx.calls(_SCAN_BUILD))})"
+    )
+
+
+async def test_build_world_inflight_capture_coalesces_to_one_rebuild():
+    """빌드 in-flight 중 도착한 캡처들은 **dirty 1회로 병합** — 완료 후 재킥
+    1번만 (전체 재빌드라 최신 스캔 전부 포함). 캡처마다 빌드를 쌓으면 백그라운드
+    큐가 스윕보다 뒤처져 폭주한다 (상한 = in-flight 1 + 재킥 1)."""
+
+    class _SlowBuildCtx(FakeContext):
+        async def call(self, key, req, res_cls, *, robot_id=None, timeout=None):
+            res = await super().call(
+                key, req, res_cls, robot_id=robot_id, timeout=timeout
+            )
+            if str(key) == _SCAN_BUILD:
+                await asyncio.sleep(0.05)  # 스윕 나머지(모의 즉시완료)보다 느리게
+            return res
+
+    script = _pick_script(**{
+        **_search_responses(n_members=3),
+        _DETECT: [DetectOrientedResponse(found=True, candidates=[_OBS])] * 5,
+        _MOVE_J: [MoveJResponse()] * 6,
+        _SCAN_NEW: [ScanNewSessionResponse(session=ScanSessionRecord(
+            id=7, robot_id=_BOT, session_id="s", created_at=_TS,
+        ))],
+        _SCAN_CAP: [ScanCaptureResponse(accepted=True, scan_count=1)] * 3,
+        _SCAN_BUILD: [ScanBuildResponse(accepted=True)] * 3,
+    })
+    ctx = _SlowBuildCtx(robots=[_BOT], specs={_BOT: _SPEC}, service_script=script)
+    await _module_for_scenario().scenario(
+        ctx, pick_object="white cube", build_world=True
+    )
+    await asyncio.sleep(0.15)  # 잔여 빌드 완주 대기
+    assert len(ctx.calls(_SCAN_CAP)) == 3
+    # 캡처 3 + finalize 여도 빌드는 2회: pose1 킥 + (pose2/3+finalize 병합) 재킥
+    assert len(ctx.calls(_SCAN_BUILD)) == 2
+
+
+async def test_build_world_voxel_passes_through_to_scan_build():
+    """RunRequest.world_voxel_size → scan BUILD voxel_size 관통 (UI 4단 셀렉터의
+    backend 절반). 셀렉터가 고른 값이 recon row 까지 그대로 가야 "이 메시가 왜
+    이 모양" 분석이 성립한다 — 중간에서 잃으면 침묵 기본값."""
+    ctx = _ctx(_pick_script(**{
+        _SCAN_NEW: [ScanNewSessionResponse(session=ScanSessionRecord(
+            id=7, robot_id=_BOT, session_id="s", created_at=_TS,
+        ))],
+        _SCAN_CAP: [ScanCaptureResponse(accepted=True, scan_count=1)],
+        _SCAN_BUILD: [ScanBuildResponse(accepted=True)] * 2,
+    }))
+    await _module_for_scenario().scenario(
+        ctx, pick_object="white cube", build_world=True, world_voxel_size=0.004
+    )
+    await _drain_bg_builds(ctx, n=1)
+    builds = ctx.calls(_SCAN_BUILD)
+    assert builds[0]["req"].voxel_size == 0.004
+
+
+async def test_build_world_failure_does_not_kill_pick():
+    """월드 스캔 = best-effort 계약 — capture 가 죽어도 pick 은 완주하고, 이후
+    scan 호출은 비활성 (재시도로 pick 을 더 늦추지 않음). 이게 뒤집히면 배경
+    강화 기능이 본업(파지)을 죽인다."""
+    ctx = _ctx(_pick_script(**{
+        _SCAN_NEW: [ScanNewSessionResponse(session=ScanSessionRecord(
+            id=7, robot_id=_BOT, session_id="s", created_at=_TS,
+        ))],
+        _SCAN_CAP: [RemoteError("ScanFailed", "camera 프레임 없음")],
+    }))
+    await _module_for_scenario().scenario(
+        ctx, pick_object="white cube", build_world=True
+    )  # raise 없음 = pick 완주
+    for _ in range(20):  # 백그라운드 잔여가 있어도 build 미발생을 확정
+        await asyncio.sleep(0)
+    assert ctx.calls(_SCAN_BUILD) == []  # capture 실패 후 build 시도 없음
+    grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
+    assert grips[-1] == _SPEC.gripper_close_raw  # close 까지 완주
+
+
+async def test_commit_midstop_release_drops_stale_comp_from_final_command():
+    """스틱션 release 회귀 (2026-07-17 42런 잔차 분석 — comp z ±5~13mm 널뜀):
+    tick 국면에서 comp 가 +8mm 미달을 학습해도, midstop 실측이 "이미 해소"
+    (측정 = 명령) 를 보이면 최종 하강은 g_tcp 그대로 — stale comp 가 최종
+    명령에 남으면(과보상) 조 끝이 착지에서 어긋나는 메커니즘을 명령 수준에서
+    차단한다."""
+    low = 0.008
+    so1_low = (_SO1[0], _SO1[1], _SO1[2] - low)  # tick2 실측 8mm 미달 → comp +8
+    cmd1 = (_MIDSTOP[0], _MIDSTOP[1], _MIDSTOP[2] + low)  # midstop 명령 (comp 포함)
+    ctx = _ctx(_pick_script(**{
+        _TCP_SNAP: [
+            _tcp(_SO0), _tcp(so1_low),
+            _tcp(cmd1),  # settle 실측 = 명령 그대로 (release — 미달 소멸)
+            _tcp(_G_TCP), _tcp(_G_TCP),
+        ],
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    moves = [c["req"].target.position for c in ctx.calls(_MOVE_L)]
+    # midstop 이동엔 comp(+8mm) 적용 (측정 전까지는 기존 보상 유지)
+    assert moves[1][2] == pytest.approx(_MIDSTOP[2] + low, abs=1e-9)
+    # 최종 하강 = 실측 재앵커 — stale comp 제거 (g_tcp 그대로)
+    assert moves[4] == pytest.approx(_G_TCP, abs=1e-9)
+
+
+async def test_commit_midstop_persisting_deficit_keeps_compensation():
+    """반대 분기 — midstop 실측이 여전히 8mm 미달이면 최종 하강이 +8mm 보상
+    (오늘과 동일 동작). 재앵커가 "보상을 없애는" 게 아니라 "실측으로 갱신하는"
+    것임을 잠금 — 이게 뒤집히면 stall 국면에서 파지 z 가 낮아져 nip."""
+    low = 0.008
+    mid_low = (_MIDSTOP[0], _MIDSTOP[1], _MIDSTOP[2] - low)  # 여전히 미달
+    ctx = _ctx(_pick_script(**{
+        _TCP_SNAP: [
+            _tcp(_SO0), _tcp(_SO1),
+            _tcp(mid_low),
+            _tcp(_G_TCP), _tcp(_G_TCP),
+        ],
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    final = ctx.calls(_MOVE_L)[4]["req"].target.position
+    assert final[2] == pytest.approx(_G_TCP[2] + low, abs=1e-9)
+
+
+async def test_commit_midstop_move_rejected_falls_back_to_single_shot(
+    tmp_path: Path,
+):
+    """midstop 경로 실패 = 오늘의 단발 하강으로 폴백 (이 수정으로 IK 사망
+    경로가 생기지 않는다는 계약) — 사유는 trace midstop_skipped 로 남는다."""
+    ctx = _ctx(_pick_script(**{
+        _MOVE_L: [
+            MoveLResponse(),  # 하강
+            RemoteError("MotionRejected", "경로 IK 실패"),  # midstop 1구간 거부
+            MoveLResponse(),  # 폴백 단발 하강
+            MoveLResponse(),  # withdraw
+        ],
+        # settle 실측이 없다 (midstop 실패) — touch-up/도달 로깅만
+        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO1), _tcp(_G_TCP), _tcp(_G_TCP)],
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    moves = [c["req"].target.position for c in ctx.calls(_MOVE_L)]
+    assert len(moves) == 4
+    assert moves[2] == pytest.approx(_G_TCP, abs=1e-9)  # 단발 = comp.apply(g_tcp)
+    rows = [
+        json.loads(line)
+        for p in (tmp_path / "servo_pick").glob("*/trace.jsonl")
+        for line in p.read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(r.get("action") == "midstop_skipped" for r in rows)
+
+
+async def test_commit_descent_profile_records_samples_and_suspect(
+    tmp_path: Path,
+):
+    """하강 프로파일 관측성 — 시간이 걸리는 실 이동 중 FK z/load 샘플이 trace
+    에 남고, arm load 스파이크가 floor_contact_suspect 로 summary 에 표면화.
+    (실패 시 "닿았는지/언제/얼마나"를 데이터가 답하게 하는 요구의 잠금.)"""
+    held_arm_load = JointState(
+        robot_id=_BOT, seq=0, timestamp_unix=0.0,
+        positions_raw=[0, 0, 0, 0, 0, _HELD_RAW],
+        velocities_raw=None,
+        loads_raw=[0, 300, 0, 0, 0, 0],  # joint2 스파이크 (>150) — 접촉 의심
+    )
+
+    class _SlowFinalCtx(FakeContext):
+        async def call(self, key, req, res_cls, *, robot_id=None, timeout=None):
+            res = await super().call(
+                key, req, res_cls, robot_id=robot_id, timeout=timeout
+            )
+            target = getattr(req, "target", None)
+            if (
+                str(key) == _MOVE_L
+                and target is not None
+                and abs(target.position[2] - _G_TCP[2]) < 1e-9
+            ):
+                await asyncio.sleep(0.06)  # 최종 하강만 실 소요 — 샘플링 창
+            return res
+
+    script = _pick_script(**{
+        _TCP_SNAP: [_tcp(_SO0), _tcp(_SO1), _tcp(_MIDSTOP)]
+        + [_tcp(_G_TCP)] * 10,  # 샘플/touch-up/도달 — 전부 동일값 (결정성)
+        _READ_STATE: [held_arm_load] * 10,  # 샘플 + close/withdraw 판정
+    })
+    ctx = _SlowFinalCtx(robots=[_BOT], specs={_BOT: _SPEC}, service_script=script)
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+
+    rows = [
+        json.loads(line)
+        for p in (tmp_path / "servo_pick").glob("*/trace.jsonl")
+        for line in p.read_text(encoding="utf-8").splitlines()
+    ]
+    prof = [r for r in rows if r.get("action") == "descent_profile"]
+    assert prof and prof[-1]["samples"], "하강 프로파일 샘플이 안 남음"
+    assert prof[-1]["floor_contact_suspect"] is True
+    summaries = list((tmp_path / "servo_pick").glob("*/summary.json"))
+    assert summaries
+    summ = json.loads(summaries[-1].read_text(encoding="utf-8"))
+    assert summ["floor_contact_suspect"] is True
 
 
 async def test_servo_nonconvergence_aborts_with_history():
@@ -583,18 +862,24 @@ async def test_servo_nonconvergence_aborts_with_history():
 
 
 async def test_scenario_with_place_branch_places_after_servo():
-    place_spot = _det(position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3)
+    # 스윕 통합 (2026-07-19): pick+place 가 **한 스윕** — pose 당 DETECT 1회가
+    # 두 prompt 후보를 함께 반환, 귀속은 per-candidate prompt.
+    place_spot = _det(
+        position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3,
+        prompt="red box",
+    )
     ctx = _ctx(_pick_script(**{
-        **_search_responses(sweeps=2),
+        **_search_responses(),
         _DETECT: [
-            DetectOrientedResponse(found=True, candidates=[_OBS]),  # pick 스윕
-            DetectOrientedResponse(found=True, candidates=[place_spot]),  # place 스윕
+            DetectOrientedResponse(
+                found=True, candidates=[_OBS, place_spot]
+            ),  # 통합 스윕 (pick+place)
             DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick1
             DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick2
         ],
         _SELECT: [_resolve_ok(), _resolve_ok()],  # servo 계획 + place 정렬 가족
-        _MOVE_J: [MoveJResponse()] * 8,
-        _MOVE_L: [MoveLResponse()] * 5,  # servo 3 + insert + retreat
+        _MOVE_J: [MoveJResponse()] * 7,
+        _MOVE_L: [MoveLResponse()] * 8,  # servo 6 (midstop 포함) + insert + retreat
         _GRIP: [SetGripperResponse()] * 4,  # open/close/release/마무리 close
         _READ_STATE: [_joint_state(_HELD_RAW)] * 3,  # close/withdraw/적치 직전
     }))
@@ -607,6 +892,11 @@ async def test_scenario_with_place_branch_places_after_servo():
         _SPEC.gripper_open_raw,
         _SPEC.gripper_close_raw,  # 종료 정리 자세 (2026-07-17 사용자 요청)
     ]
+    # 스윕 통합 불변식: 검출 wire 호출 = 스윕 pose 1 + servo tick 2 (place 전용
+    # 재스윕 없음), 스윕 요청엔 두 prompt 가 함께 실린다.
+    assert len(ctx.calls(_DETECT)) == 3
+    sweep_req = ctx.calls(_DETECT)[0]["req"]
+    assert sweep_req.prompts == ["white cube", "red box"]
     # 계획 우선 불변식: 놓기 도달성 판정(RESOLVE ×2)이 전부 끝난 뒤에야 servo
     # 진입(GRIP/MOVE_L) — 못 놓을 물체를 집지 않는다.
     keys = ctx.keys()
@@ -619,18 +909,22 @@ async def test_place_retreat_movel_failure_falls_back_to_pre_joints():
     중 IK 실패로 죽어 task 전체가 실패 처리됐다 (사전 검증은 통과 — 실행 seed
     연쇄 복권). pre 는 resolve 가 관절해까지 증명한 자세 — MoveL 실패 시 그
     관절해(pre_joints) MoveJ 폴백으로 run 을 살린다."""
-    place_spot = _det(position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3)
+    place_spot = _det(
+        position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3,
+        prompt="red box",
+    )
     ctx = _ctx(_pick_script(**{
-        **_search_responses(sweeps=2),
+        **_search_responses(),
         _DETECT: [
-            DetectOrientedResponse(found=True, candidates=[_OBS]),  # pick 스윕
-            DetectOrientedResponse(found=True, candidates=[place_spot]),
+            DetectOrientedResponse(
+                found=True, candidates=[_OBS, place_spot]
+            ),  # 통합 스윕
             DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick1
             DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick2
         ],
         _SELECT: [_resolve_ok(), _resolve_ok()],
-        _MOVE_J: [MoveJResponse()] * 9,  # 성공 시나리오 8 + retreat 폴백 1
-        _MOVE_L: [MoveLResponse()] * 4 + [
+        _MOVE_J: [MoveJResponse()] * 8,  # 성공 시나리오 7 + retreat 폴백 1
+        _MOVE_L: [MoveLResponse()] * 7 + [  # servo 6 (midstop 포함) + insert
             RemoteError("MotionFailed", "MoveL failed"),  # retreat 실행 실패
         ],
         _GRIP: [SetGripperResponse()] * 4,
@@ -650,19 +944,20 @@ async def test_place_retreat_movel_failure_falls_back_to_pre_joints():
 async def test_scenario_place_unreachable_fails_before_pick():
     """놓을 곳 도달 불가 → 집기 **전에** 실패 (쥔 채 멈춤 corrupt 방지) —
     servo 모션·파지 0."""
-    place_spot = _det(position=(0.15, 0.10, 0.22), base_z=0.20)
+    place_spot = _det(position=(0.15, 0.10, 0.22), base_z=0.20, prompt="red box")
     ctx = _ctx({
-        **_search_responses(sweeps=2),
+        **_search_responses(),
         _DETECT: [
-            DetectOrientedResponse(found=True, candidates=[_OBS]),
-            DetectOrientedResponse(found=True, candidates=[place_spot]),
+            DetectOrientedResponse(
+                found=True, candidates=[_OBS, place_spot]
+            ),  # 통합 스윕
         ],
         _SELECT: [
             _resolve_ok(),  # servo 계획
             ResolveReachableResponse(index=-1, message="정렬 전멸"),
             ResolveReachableResponse(index=-1, message="자유 전멸"),
         ],
-        _MOVE_J: [MoveJResponse()] * 2,  # 스윕 2회 (pick/place)
+        _MOVE_J: [MoveJResponse()],  # 통합 스윕 1 pose
     })
     with pytest.raises(NoReachableGrasp, match="놓을 자리 도달 불가"):
         await _module_for_scenario().scenario(
@@ -702,7 +997,7 @@ async def test_scenario_detect_fail_raises_after_search():
 
 async def test_search_sweep_accumulates_and_selects_best_score():
     """검색 원리: search 자세를 전부 돌며 누적, select 는 누적 전체 최고 score
-    (첫 자세서 안 멈춤)."""
+    (첫 자세서 안 멈춤). 스윕 통합 후 반환은 prompt 별 dict."""
     ctx = _ctx({
         **_search_responses(n_members=2),
         _DETECT: [
@@ -711,11 +1006,36 @@ async def test_search_sweep_accumulates_and_selects_best_score():
         ],
         _MOVE_J: [MoveJResponse()] * 2,
     })
-    cands = await steps.detect(ctx, _BOT, "white cube")
+    found = await steps.detect(ctx, _BOT, ["white cube"])
+    cands = found["white cube"]
     assert len(ctx.calls(_MOVE_J)) == 2
     assert [c.score for c in cands] == [0.4, 0.95]
     coarse = geometry.select_target_by_score(cands, prompt="white cube")
     assert coarse.score == 0.95
+
+
+async def test_search_sweep_buckets_by_prompt_single_pass():
+    """★ 스윕 통합 계약 (2026-07-19): pose 당 DETECT wire 1호출에 두 prompt 가
+    함께 실리고, 응답 후보는 per-candidate prompt 로 버킷 분리 — place 전용
+    재스윕(같은 자세 MoveJ ×2)이 사라졌다. 요청 밖 prompt 귀속은 무시(로그)."""
+    cube = _det(score=0.9)
+    box = _det(position=(0.25, -0.05, 0.04), prompt="red box", score=0.7)
+    alien = _det(position=(0.4, 0.3, 0.02), prompt="green ball", score=0.8)
+    ctx = _ctx({
+        **_search_responses(n_members=2),
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[cube, box, alien]),
+            DetectOrientedResponse(found=True, candidates=[box]),
+        ],
+        _MOVE_J: [MoveJResponse()] * 2,
+    })
+    found = await steps.detect(ctx, _BOT, ["white cube", "red box"])
+    assert len(ctx.calls(_DETECT)) == 2  # pose 당 1호출 (prompt 당 아님)
+    for c in ctx.calls(_DETECT):
+        assert c["req"].prompts == ["white cube", "red box"]
+    assert [c.score for c in found["white cube"]] == [0.9]
+    assert [c.score for c in found["red box"]] == [0.7, 0.7]  # 자세별 누적
+    assert "green ball" not in found  # 요청 밖 귀속은 버킷 미생성 (무시)
 
 
 async def test_search_group_missing_fails_explicitly():
@@ -744,11 +1064,12 @@ async def test_servo_success_writes_trace_and_summary(tmp_path: Path):
     runs = list((tmp_path / "servo_pick").iterdir())
     assert len(runs) == 1
     lines = (runs[0] / "trace.jsonl").read_text(encoding="utf-8").splitlines()
-    # tick1 + tick2 + commit + close held + withdraw held (성공 근거도 기록 —
-    # 실패만 기록하면 "잡았을 때 raw/부하 분포"를 영영 못 본다)
-    assert len(lines) == 5
+    # tick1 + tick2 + commit + midstop_reanchor + close held + withdraw held
+    # (성공 근거도 기록 — 실패만 기록하면 "잡았을 때 raw/부하 분포"를 못 본다)
+    assert len(lines) == 6
     summary = (runs[0] / "summary.json").read_text(encoding="utf-8")
     assert '"result": "success"' in summary
+    assert '"midstop_resid_mm"' in summary  # 재앵커 잔차가 summary 에 표면화
 
 
 # ─── 놓기 geometry/step (open-loop 유지 — 기존 잠금 계승) ─────────────
@@ -783,22 +1104,16 @@ async def test_plan_place_falls_back_to_reachable_spot():
     high_score = _det(score=0.80, position=(0.15, 0.10, 0.03), base_z=0.005)
     low_score = _det(score=0.73, position=(0.24, -0.11, 0.05), base_z=0.005)
     ctx = _ctx({
-        **_search_responses(),
-        _DETECT: [
-            DetectOrientedResponse(
-                found=True, candidates=[high_score, low_score]
-            )
-        ],
         _SELECT: [
             ResolveReachableResponse(index=-1, message="IK 전멸"),
             ResolveReachableResponse(index=-1, message="IK 전멸"),
             _resolve_ok(),
         ],
-        _MOVE_J: [MoveJResponse()],
     })
     held = _det(height=0.023)
     chosen, _pre = await steps.plan_place(
-        ctx, _BOT, "blue box", held=held, lateral=0.008, home=_home_record()
+        ctx, _BOT, "blue box", held=held, lateral=0.008, home=_home_record(),
+        spots=[high_score, low_score],
     )
     assert chosen.place[2] == pytest.approx(0.05 + 0.023 / 2 + 0.005)
     assert len(ctx.calls(_SELECT)) == 3
@@ -814,22 +1129,76 @@ async def test_plan_place_defers_implausible_base_z_spots():
     sunken = _det(score=0.90, position=(0.20, 0.10, 0.02), base_z=-0.10)
     box = _det(score=0.50, position=(0.24, -0.11, 0.03), base_z=-0.016)
     ctx = _ctx({
-        **_search_responses(),
-        _DETECT: [
-            DetectOrientedResponse(
-                found=True, candidates=[floating, sunken, box]
-            )
-        ],
         _SELECT: [_resolve_ok()],
-        _MOVE_J: [MoveJResponse()],
     })
     chosen, _pre = await steps.plan_place(
         ctx, _BOT, "blue box", held=_det(height=0.023), lateral=0.008,
-        home=_home_record(),
+        home=_home_record(), spots=[floating, sunken, box],
     )
     # 타당 spot(box — base_z=-0.016 은 place 대역 안, score 최하)이 첫 시도
     assert len(ctx.calls(_SELECT)) == 1
     assert chosen.place[2] == pytest.approx(0.03 + 0.023 / 2 + 0.005)
+
+
+def test_fuse_place_center_averages_cluster_and_drops_garbage():
+    """★ place 중심 융합 (2026-07-18 실물 모서리 적치): 정적 상자의 스윕 관측이
+    부분-림 편향으로 2~3cm 흔들려(실측), 단일 검출은 작은 상자에서 모서리 적치를
+    유발. plausible base_z 검출을 클러스터링해 score-가중 평균 중심을 쓴다.
+    base_z 이상 garbage(공중 오검출)는 제외 — 안 그러면 융합 중심이 딴 데로 샌다."""
+    box = [
+        steps.OrientedDetection(
+            prompt="blue box", position=(0.28, 0.11, 0.03), score=0.71,
+            base_z=-0.01, height=0.04, grasp_yaw=0.0, footprint=(0.07, 0.05),
+        ),
+        steps.OrientedDetection(
+            prompt="blue box", position=(0.29, 0.10, 0.03), score=0.89,
+            base_z=-0.01, height=0.04, grasp_yaw=0.0, footprint=(0.07, 0.05),
+        ),
+        steps.OrientedDetection(
+            prompt="blue box", position=(0.30, 0.09, 0.03), score=0.82,
+            base_z=-0.02, height=0.04, grasp_yaw=0.0, footprint=(0.07, 0.05),
+        ),
+    ]
+    garbage = steps.OrientedDetection(  # 공중 부양 오검출 (base_z 대역 밖)
+        prompt="blue box", position=(0.15, -0.12, 0.14), score=0.42,
+        base_z=0.13, height=0.015, grasp_yaw=0.0, footprint=(0.04, 0.02),
+    )
+    fused = steps._fuse_place_center([*box, garbage])
+    assert fused is not None
+    wsum = 0.71 + 0.89 + 0.82
+    exp_x = (0.28 * 0.71 + 0.29 * 0.89 + 0.30 * 0.82) / wsum
+    assert fused.position[0] == pytest.approx(exp_x, abs=1e-4)
+    assert fused.position[0] > 0.27  # garbage(0.15)로 안 끌려감 = 제외 확인
+
+
+def test_fuse_place_center_none_when_single_view():
+    """융합할 이웃이 없으면(plausible 1개) None → 호출부가 기존 단일-spot 유지."""
+    solo = steps.OrientedDetection(
+        prompt="blue box", position=(0.28, 0.11, 0.03), score=0.9,
+        base_z=-0.01, height=0.04, grasp_yaw=0.0, footprint=(0.07, 0.05),
+    )
+    assert steps._fuse_place_center([solo]) is None
+
+
+def test_fuse_place_center_picks_dominant_cluster():
+    """두 후보 군집이면 score 합 큰 쪽 채택 (5cm 밖 딴 물체로 안 샌다)."""
+    near = [
+        steps.OrientedDetection(
+            prompt="blue box", position=(0.28, 0.11, 0.03), score=0.9,
+            base_z=-0.01, height=0.04, grasp_yaw=0.0, footprint=(0.07, 0.05),
+        ),
+        steps.OrientedDetection(
+            prompt="blue box", position=(0.29, 0.10, 0.03), score=0.9,
+            base_z=-0.01, height=0.04, grasp_yaw=0.0, footprint=(0.07, 0.05),
+        ),
+    ]
+    far = steps.OrientedDetection(  # 5cm 밖 = 딴 군집, score 낮음
+        prompt="blue box", position=(0.10, 0.40, 0.03), score=0.5,
+        base_z=-0.01, height=0.04, grasp_yaw=0.0, footprint=(0.07, 0.05),
+    )
+    fused = steps._fuse_place_center([*near, far])
+    assert fused is not None
+    assert fused.position[0] > 0.25 and fused.position[1] > 0.05  # near 군집
 
 
 async def test_plan_pick_defers_floating_candidate():
@@ -840,14 +1209,11 @@ async def test_plan_pick_defers_floating_candidate():
     floating = _det(score=0.95, position=(0.2, 0.05, 0.22), base_z=0.20)
     healthy = _det(score=0.50)  # base_z=0.0 — 타당
     ctx = _ctx({
-        **_search_responses(),
-        _DETECT: [
-            DetectOrientedResponse(found=True, candidates=[floating, healthy])
-        ],
         _SELECT: [_resolve_ok()],
-        _MOVE_J: [MoveJResponse()],
     })
-    plan = await steps.plan_pick(ctx, _BOT, "white cube", _home_record())
+    plan = await steps.plan_pick(
+        ctx, _BOT, "white cube", _home_record(), [floating, healthy]
+    )
     assert plan.coarse.score == pytest.approx(0.50)  # 타당 후보 채택
     assert len(ctx.calls(_SELECT)) == 1  # 오염 후보에 resolve 소모 0
 
@@ -856,16 +1222,12 @@ async def test_plan_pick_rejects_all_low_score_candidates():
     """저신뢰(오검출 가능) 후보만 남으면 명시 실패 — 2026-07-17 실물: 진짜
     큐브 전멸 후 순회가 score 0.31 오검출(로봇 옆 흰 물체)로 폴백, 엉뚱한
     물체를 집으러 가 사용자 STOP. 오동작(맹목 파지)보다 정직한 실패."""
-    ctx = _ctx({
-        **_search_responses(),
-        _DETECT: [DetectOrientedResponse(found=True, candidates=[
+    ctx = _ctx({})
+    with pytest.raises(DetectionNotFound):
+        await steps.plan_pick(ctx, _BOT, "white cube", _home_record(), [
             _det(score=0.35),
             _det(score=0.31, position=(0.1, 0.22, 0.012)),
-        ])],
-        _MOVE_J: [MoveJResponse()],
-    })
-    with pytest.raises(DetectionNotFound):
-        await steps.plan_pick(ctx, _BOT, "white cube", _home_record())
+        ])
     assert ctx.calls(_SELECT) == []  # 저신뢰 후보에 resolve 예산 소모 0
 
 
@@ -880,22 +1242,17 @@ async def test_plan_pick_rejects_ungraspable_width():
     )
     cube = _det(score=0.50)  # footprint 기본 (0.025, 0.022) — 통과
     ctx = _ctx({
-        **_search_responses(),
-        _DETECT: [DetectOrientedResponse(found=True, candidates=[blob, cube])],
         _SELECT: [_resolve_ok()],
-        _MOVE_J: [MoveJResponse()],
     })
-    plan = await steps.plan_pick(ctx, _BOT, "white cube", _home_record())
+    plan = await steps.plan_pick(
+        ctx, _BOT, "white cube", _home_record(), [blob, cube]
+    )
     assert plan.coarse.score == pytest.approx(0.50)  # blob 아닌 큐브
     assert len(ctx.calls(_SELECT)) == 1  # blob 에 resolve 소모 0
 
-    ctx2 = _ctx({
-        **_search_responses(),
-        _DETECT: [DetectOrientedResponse(found=True, candidates=[blob])],
-        _MOVE_J: [MoveJResponse()],
-    })
+    ctx2 = _ctx({})
     with pytest.raises(DetectionNotFound):  # blob 만 = 명시 실패
-        await steps.plan_pick(ctx2, _BOT, "white cube", _home_record())
+        await steps.plan_pick(ctx2, _BOT, "white cube", _home_record(), [blob])
     assert ctx2.calls(_SELECT) == []
 
 
@@ -903,35 +1260,27 @@ async def test_plan_pick_low_score_excluded_from_fallback():
     """진짜 후보가 전멸해도 저신뢰 후보로 **폴백하지 않는다** — 도달성 우선
     순회의 바닥은 신뢰 후보까지. 전멸이면 엉뚱한 물체 대신 명시 실패."""
     ctx = _ctx({
-        **_search_responses(),
-        _DETECT: [DetectOrientedResponse(found=True, candidates=[
-            _det(score=0.76),
-            _det(score=0.31, position=(0.1, 0.22, 0.012)),
-        ])],
         # 2단: 진짜 후보의 기존 축 + 확장 yaw 모두 전멸
         _SELECT: [ResolveReachableResponse(index=-1, message="전멸")] * 2,
-        _MOVE_J: [MoveJResponse()],
     })
     with pytest.raises(NoReachableGrasp, match="후보 1개 전부 전멸"):
-        await steps.plan_pick(ctx, _BOT, "white cube", _home_record())
+        await steps.plan_pick(ctx, _BOT, "white cube", _home_record(), [
+            _det(score=0.76),
+            _det(score=0.31, position=(0.1, 0.22, 0.012)),
+        ])
     assert len(ctx.calls(_SELECT)) == 2  # 저신뢰 후보는 시도 대상 아님 (2단×1후보)
 
 
 async def test_plan_place_falls_back_to_free_yaw_family():
     ctx = _ctx({
-        **_search_responses(),
-        _DETECT: [
-            DetectOrientedResponse(found=True, candidates=[_det(grasp_yaw=0.3)])
-        ],
         _SELECT: [
             ResolveReachableResponse(index=-1, message="정렬 yaw 전멸"),
             _resolve_ok(),
         ],
-        _MOVE_J: [MoveJResponse()],
     })
     chosen, _pre = await steps.plan_place(
         ctx, _BOT, "cube", held=_det(height=0.023), lateral=0.008,
-        home=_home_record(),
+        home=_home_record(), spots=[_det(grasp_yaw=0.3)],
     )
     assert len(ctx.calls(_SELECT)) == 2
     assert chosen.label == "tilt=+0 yaw=47"  # 자유 가족 첫 후보 (30°+17°)
@@ -1004,8 +1353,15 @@ async def test_scenario_republishes_grasp_marker_during_servo():
     # 계획 확정 1회 + servo 채택 tick 마다 (script = 2 tick 채택)
     assert len(marker_events) >= 3, [k for k, _ in rt.published]
     for ev in marker_events:
-        assert ev.markers[0].label == "grasp"
-        assert len(ev.markers[0].position) == 3
+        m = ev.markers[0]
+        assert m.label == "grasp"
+        assert len(m.position) == 3
+        # 파지 방향 동봉 (2026-07-19) — 화살표(approach)/조 축 바(jaw_axis)/
+        # 자세(quat)의 시각화 소스. 계획·servo 갱신 발행 모두 실려야 한다
+        # (빼면 "이 면을 이 방향으로" 오버레이가 죽는 회귀).
+        assert m.approach == pytest.approx(_FAM.approach)
+        assert m.jaw_axis == pytest.approx(_FAM.jaw_axis)
+        assert m.quaternion == pytest.approx(_FAM.quat)
     # seq 단조 증가 (latest-wins 스트림 계약)
     seqs = [ev.seq for ev in marker_events]
     assert seqs == sorted(seqs)
@@ -1021,7 +1377,8 @@ async def test_module_preview_returns_static_tree_without_wire():
     mod = PickAndPlaceModule(_WireStub(), {})  # type: ignore[arg-type]
     res = await mod.preview(PreviewRequest())
     assert [e.name for e in res.entries if e.depth == 0] == [
-        "home_waypoint", "plan_pick", "plan_place", "servo_pick", "execute_place",
+        "home_waypoint", "detect", "plan_pick", "plan_place", "servo_pick",
+        "execute_place",
     ]
     assert not mod._seq["state"]
 

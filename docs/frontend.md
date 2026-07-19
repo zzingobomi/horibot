@@ -700,6 +700,29 @@ fetch 가 identity 로 굳던" 사고의 fix 라 불변).
   자세가 되나"를 실행 전에 봄. waypoint 는 joint 구성이라 점 마커가 아니라 ghost 가
   정직한 시각화 (팔꿈치 configuration 까지 보임). cartesian 지도/그룹 polyline 은
   후속 (§5 파생 pose 기각 참조).
+- **World 씬 객체** ([objects/World.tsx](../frontend/src/components/scene/objects/World.tsx),
+  2026-07-18 — 옛 ScanMesh 승격) — 작업 셀 배경 레이어(재구성 메시). 설계 원칙:
+  **World 는 Scan 의 부산물이 아니라 레이어** — producer(오늘 = scan 재구성, 미래
+  SLAM/수동 임포트)와 무관하게 UI 는 scanStore 의 mesh slot 만 본다. 백엔드에
+  World 모듈/DTO 를 만들지 않는다 (YAGNI — 두 번째 producer 실존 전 계약 신설
+  금지). 데이터 소유 = 자기 구독: 마운트 시 최신 reconstruction 자동 로드 +
+  `BUILD_PROGRESS` done 수신 시 재조회 (RunRequest.build_world 편승 스캔이 search
+  pose 마다 빌드 → "세상이 자라는" UX). **토글 2종 분리** (사용자 UX 결정):
+  표시 = `scanStore.worldVisible` (workcell 전역 — 월드는 robot 이 아니라 셀
+  소유, per-robot Record 규칙의 정당한 예외. 비용 0, 기본 ON) / 갱신 =
+  `RunRequest.build_world` (pose 당 +1~2s, 기본 OFF = "빨리 픽앤플레이스만",
+  PickAndPlacePanel 체크박스 + localStorage 기억). stale 월드 침묵 금지 —
+  패널에 "N시간 전 스캔 · N verts · Nmm" 라벨 (meshMeta.createdAt/voxelSizeM).
+  **품질(voxel) 셀렉터** (2026-07-18) = `scanStore.VOXEL_TIERS` SSOT (1/2/4/8mm,
+  실제 조절값 명시 — 막연한 low/high X, recon row 에 저장돼 분석 데이터). PnP 월드
+  갱신(`world_voxel_size`)과 ScanPanel 수동 빌드(`voxel_size`)가 공유, localStorage
+  키만 분리. 기본 2mm (계측 전 기본 묵시 변경 안 함).
+- **마커 전경 규약** (TaskMarkersOverlay, 2026-07-18): 파지/적치 마커는
+  `depthTest:false` + 높은 `renderOrder` 로 **항상 최전면**. 마커는 물체·테이블
+  표면 그 자체 위치라 World 배경 메시가 켜지면 파묻힌다 — 게임엔진/Blender 기즈모
+  관례(진단 마커는 깊이 무시). 팔이 앞을 지나도 비쳐 보이는 건 의도된 동작.
+  "표면 위 진단 시각화" 클래스 (현재 이 오버레이 하나 — 검출 박스 씬 표시 신설 시
+  같은 규약).
 
 ## 9. 색 시스템 (시각적 의미 SSOT)
 

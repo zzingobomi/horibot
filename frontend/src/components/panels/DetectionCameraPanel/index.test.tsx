@@ -174,6 +174,69 @@ describe("DetectionCameraPanel", () => {
     expect(text.textContent).toContain("∠30°");
   });
 
+  it("멀티 프롬프트 합본 update → prompt 별 best 각각 초록 강조 + 라벨", () => {
+    // 스윕 통합 (2026-07-19): 한 관측 update 에 pick/place 후보가 합본으로 온다
+    // (backend 가 latest-wins 덮임 방지로 프레임당 1건 발행). 각 물체의 best 가
+    // 따로 강조/라벨돼야 "카메라 패널에 픽/플레이스 둘 다" 가 성립.
+    useFrameworkStore.setState({
+      topicData: {
+        [WIRE]: {
+          robot_id: ROBOT_ID,
+          seq: 1,
+          timestamp_unix: Date.now() / 1000,
+          prompt: "white cube, blue box",
+          image_width: 1280,
+          image_height: 720,
+          candidates: [
+            // score desc — cube best, cube 2등, box best
+            {
+              prompt: "white cube",
+              position: [0.2, 0, 0.05],
+              score: 0.9,
+              base_z: 0,
+              height: 0.05,
+              bbox_2d: [100, 200, 300, 400],
+            },
+            {
+              prompt: "white cube",
+              position: [0.1, 0.1, 0.05],
+              score: 0.7,
+              base_z: 0,
+              height: 0.05,
+              bbox_2d: [500, 100, 600, 250],
+            },
+            {
+              prompt: "blue box",
+              position: [0.25, -0.05, 0.04],
+              score: 0.6,
+              base_z: 0,
+              height: 0.04,
+              bbox_2d: [800, 300, 1100, 600],
+            },
+          ],
+        },
+      },
+      serviceData: {},
+      bridgeConnected: true,
+    });
+    const { getAllByTestId } = renderPanel();
+    const boxes = getAllByTestId("detection-bbox");
+    expect(boxes.length).toBe(3);
+    const strokes = boxes.map(
+      (g) => g.querySelector("rect")!.getAttribute("stroke"),
+    );
+    // cube best(0) + box best(2) = 초록, cube 2등(1) = 회색
+    expect(strokes[0]).toBe("#34d399");
+    expect(strokes[1]).not.toBe("#34d399");
+    expect(strokes[2]).toBe("#34d399");
+    const labels = boxes
+      .map((g) => g.querySelector("text")?.textContent ?? null)
+      .filter((t) => t != null);
+    expect(labels.length).toBe(2);
+    expect(labels[0]).toContain("white cube");
+    expect(labels[1]).toContain("blue box");
+  });
+
   it("oriented 가 plain 보다 우선 (둘 다 fresh)", () => {
     // plain(2 후보) + oriented(1 후보, obb 有) 동시 → oriented 렌더 (obb 존재).
     seed(Date.now() / 1000);

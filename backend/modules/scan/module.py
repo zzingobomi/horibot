@@ -329,6 +329,10 @@ class ScanModule:
         kwargs: dict[str, float] = {}
         if req.voxel_size is not None:
             kwargs["voxel_size"] = req.voxel_size
+            # sdf_trunc 는 voxel 에 물리적으로 결합 (band ≲2 voxel = 구멍) —
+            # 호출자가 voxel 만 고르면 여기서 파생 (모든 호출자 공통 규칙).
+            if req.sdf_trunc is None:
+                kwargs["sdf_trunc"] = recon.sdf_trunc_for(req.voxel_size)
         if req.sdf_trunc is not None:
             kwargs["sdf_trunc"] = req.sdf_trunc
         if req.depth_trunc is not None:
@@ -373,12 +377,22 @@ class ScanModule:
                 elapsed=result.elapsed,
             )
         )
+        # 성능 계측 요약 — done message + 로그 (한 런 후 병목 판정 데이터).
+        stages = " ".join(f"{k}={v:.0f}ms" for k, v in result.stage_ms.items())
+        logger.info(
+            "scan build robot=%s recon=%s: %d scans %d edges, %d verts %d tris, "
+            "ply %.0fKB | %s",
+            robot_id, saved.id, result.n_scans, result.n_edges,
+            result.vertex_count, result.triangle_count,
+            len(result.mesh_bytes) / 1024.0, stages,
+        )
         self._publish_progress(
             robot_id,
             req.session_row_id,
             "done",
             1.0,
-            f"완료 ({result.vertex_count} verts)",
+            f"완료 ({result.vertex_count} verts, {result.triangle_count} tris"
+            f" · {stages})",
             recon_id=saved.id,
         )
         return BuildResponse(accepted=True, reconstruction=saved)
@@ -397,6 +411,12 @@ class ScanModule:
         if rec is None:
             raise RuntimeError(f"reconstruction {req.reconstruction_row_id} 없음")
         ply = self._blob.get(rec.blob_key)
+        # 전송 크기 계측 — "전송이 병목이면 GLB/압축 검토" 판정의 입력.
+        logger.info(
+            "get_mesh recon=%d: %.0f KB (%d verts, %d tris)",
+            req.reconstruction_row_id, len(ply) / 1024.0,
+            rec.vertex_count, rec.triangle_count,
+        )
         return GetMeshResponse(
             ply_bytes=ply,
             vertex_count=rec.vertex_count,

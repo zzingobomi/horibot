@@ -227,7 +227,7 @@ async def detect(
         await asyncio.sleep(_SEARCH_SETTLE_S)
         res = await ctx.call(
             Detector.Service.DETECT_ORIENTED,
-            DetectRequest(robot_id=so101, prompt=prompt, top_k=_TOP_K),
+            DetectRequest(robot_id=so101, prompts=[prompt], top_k=_TOP_K),
             DetectOrientedResponse,
         )
         cands.extend(res.candidates)

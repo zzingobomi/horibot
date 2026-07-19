@@ -364,7 +364,7 @@ def _detector_backend(deploy: DeploymentConfig) -> DetectorBackend:
 
     from modules.detector.drivers.grounded_sam import GroundedSamBackend
 
-    return GroundedSamBackend()
+    return GroundedSamBackend(joint_inference=deploy.detector_joint_inference)
 
 
 def _llm_backend(deploy: DeploymentConfig) -> LlmBackend:

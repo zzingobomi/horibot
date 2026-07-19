@@ -121,15 +121,29 @@ class _Cand:
     centroid, base_z=점군 바닥 percentile, height=top−bottom (object-centric).
     depth 무효로 점군을 못 만든 후보는 애초에 제외 (기하 산출 불가 = 후보 아님).
     mask: SAM 픽셀 mask (윤곽 오버레이 소스, detect 는 무시).
+    prompt: 이 후보가 귀속된 요청 prompt (멀티 프롬프트 — driver 가 찍음).
     """
 
     bbox: Bbox
     score: float
+    prompt: str
     position: tuple[float, float, float]
     base_z: float
     height: float
     base_points: np.ndarray
     mask: np.ndarray
+
+
+def _req_prompts(req: DetectRequest) -> list[str]:
+    """요청 정규화 — prompts 우선, 없으면 prompt(하위호환). strip + 빈 항목 제거
+    + 순서 보존 dedupe. 빈 결과 = 호출부가 found=False 로 응답."""
+    raw = req.prompts if req.prompts else ([req.prompt] if req.prompt else [])
+    out: list[str] = []
+    for p in raw:
+        s = p.strip()
+        if s and s not in out:
+            out.append(s)
+    return out
 
 
 @dataclass(slots=True)
@@ -169,6 +183,10 @@ class DetectorModule:
         # 디버그 덤프 — backend 세션마다 폴더 1개, 매 호출(detect/fuse)을 순번으로 쌓음.
         self._dump_dir = _DETECT_DUMP_ROOT / time.strftime("%Y%m%d_%H%M%S")
         self._dump_seq = 0
+        # 진행 중 덤프 task (fire-and-forget — 2026-07-19 최적화: PNG×N+16bit
+        # depth+PLY 동기 쓰기가 검출 응답을 수백 ms 잡아먹던 것을 스레드로).
+        # set 보관 = GC 방지 + stop() 드레인.
+        self._dump_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
         logger.info("DetectorModule start (host-level)")
@@ -187,14 +205,19 @@ class DetectorModule:
         if self._preload_task is not None:
             self._preload_task.cancel()
             self._preload_task = None
+        if self._dump_tasks:  # 쓰다 만 덤프 파일 방지 — 완료까지 짧게 대기
+            await asyncio.gather(*self._dump_tasks, return_exceptions=True)
+            self._dump_tasks.clear()
 
     async def _detect_candidates(
-        self, robot_id: str, prompt: str, top_k: int
+        self, robot_id: str, prompts: list[str], top_k: int
     ) -> _DetectResult:
         """공통 파이프라인 — 캘/frame/backend 검출 → 후보별 base 투영. SSOT.
 
         detect(AABB) / detect_oriented(OBB) 가 공유. 실패는 빈 cands + 사용자 message
         (found=False 로 매핑). blocking 추론(GPU)만 to_thread, 나머지 순수 계산.
+        멀티 프롬프트: **한 frame** 스냅샷으로 N prompt 를 함께 검출 (같은 장면
+        보장) — 추론 전략은 backend 내부 (drivers/grounded_sam docstring).
         """
         # 1. intrinsic + hand_eye (같은 캘 출처 → 일관). 없으면 검출 불가.
         # calibration 도 robot-agnostic — 대상 robot 은 req 필드.
@@ -228,10 +251,13 @@ class DetectorModule:
             depth_f.height, depth_f.width
         )
 
-        # 4. adapter 검출 (Top-K RawDetection: bbox+mask+score). blocking(GPU) → to_thread.
-        raws = await asyncio.to_thread(self._backend.detect, img, prompt, top_k)
+        # 4. adapter 검출 (prompt 별 Top-K RawDetection). blocking(GPU) → to_thread.
+        raws = await asyncio.to_thread(self._backend.detect, img, prompts, top_k)
         if not raws:
-            return _DetectResult([], color.width, color.height, f"'{prompt}' 감지 실패")
+            return _DetectResult(
+                [], color.width, color.height,
+                f"'{', '.join(prompts)}' 감지 실패",
+            )
 
         # 5. 후보 공통 자원 1회 — TCP pose (ee → base) + intrinsic + hand_eye (cam → ee).
         tcp = await self.runtime.call(
@@ -272,6 +298,7 @@ class DetectorModule:
                 _Cand(
                     bbox=raw.bbox,
                     score=float(raw.score),
+                    prompt=raw.prompt,
                     position=position,
                     base_z=bottom_z,
                     height=height,
@@ -279,6 +306,9 @@ class DetectorModule:
                     mask=raw.mask,
                 )
             )
+        # 전역 score desc — 단일 prompt 는 driver 가 이미 desc (no-op), 멀티는
+        # prompt-major 로 이어붙어 섞임 (응답/오버레이/덤프 순서 일관용).
+        cands.sort(key=lambda c: c.score, reverse=True)
         msg = "" if cands else "후보 mask depth 전부 무효"
         proj = _Proj(fx, fy, cx, cy, r_be, t_be, r_ce, t_ce)
         return _DetectResult(
@@ -288,13 +318,13 @@ class DetectorModule:
 
     @service(Detector.Service.DETECT)
     async def detect(self, req: DetectRequest) -> DetectResponse:
-        prompt = req.prompt.strip()
-        if not prompt:
+        prompts = _req_prompts(req)
+        if not prompts:
             return DetectResponse(found=False, message="prompt 필요")
-        result = await self._detect_candidates(req.robot_id, prompt, req.top_k)
+        result = await self._detect_candidates(req.robot_id, prompts, req.top_k)
         detections = [
             Detection(
-                prompt=prompt,
+                prompt=c.prompt,
                 position=c.position,
                 score=c.score,
                 base_z=c.base_z,
@@ -303,10 +333,14 @@ class DetectorModule:
             )
             for c in result.cands
         ]
-        # frontend 카메라 오버레이 — frame 확보 시 결과 스냅샷 publish (빈 결과 포함).
+        # frontend 카메라 오버레이 — frame 확보 시 **프레임당 1건** (전 prompt
+        # 후보 합본 — 후보별 prompt 귀속이 라벨 소스, 빈 결과 포함 = clear).
+        # prompt 별로 나눠 쏘면 latest-wins 스트림에서 마지막 발행만 남아 pick
+        # 오버레이가 place 에 즉시 덮인다 (2026-07-19 사용자 리포트).
         if result.color_w > 0:
             self._publish_detections(
-                req.robot_id, prompt, result.color_w, result.color_h, detections
+                req.robot_id, ", ".join(prompts), result.color_w,
+                result.color_h, detections,
             )
         if not detections:
             return DetectResponse(found=False, message=result.message)
@@ -322,10 +356,10 @@ class DetectorModule:
         shape 굳으면 Detection 승격 + DETECT 흡수. depth 점군 부족으로 OBB 못 만든 후보는
         누락 (draft — 실물에서 임계 tuning).
         """
-        prompt = req.prompt.strip()
-        if not prompt:
+        prompts = _req_prompts(req)
+        if not prompts:
             return DetectOrientedResponse(found=False, message="prompt 필요")
-        result = await self._detect_candidates(req.robot_id, prompt, req.top_k)
+        result = await self._detect_candidates(req.robot_id, prompts, req.top_k)
         oriented: list[OrientedDetection] = []
         debug_rows: list[tuple[np.ndarray, list[tuple[float, float]] | None]] = []
         for c in result.cands:
@@ -359,7 +393,7 @@ class DetectorModule:
                 ds = ds[:: len(ds) // _MAX_WIRE_POINTS + 1]
             oriented.append(
                 OrientedDetection(
-                    prompt=prompt,
+                    prompt=c.prompt,
                     position=c.position,
                     score=c.score,
                     base_z=c.base_z,
@@ -372,22 +406,27 @@ class DetectorModule:
                     points=[(float(p[0]), float(p[1]), float(p[2])) for p in ds],
                 )
             )
-        # 오버레이 스냅샷 publish — frame 확보 시 (빈 결과 포함, clear).
+        # 오버레이 스냅샷 publish — 프레임당 1건 합본 (detect 와 동일 근거 —
+        # latest-wins 덮임 방지, 후보별 prompt 귀속이 라벨 소스).
         if result.color_w > 0:
             self._publish_oriented(
-                req.robot_id, prompt, result.color_w, result.color_h, oriented
+                req.robot_id, ", ".join(prompts), result.color_w,
+                result.color_h, oriented,
             )
         # 디버그 덤프 — 오버레이 PNG + raw(color/depth/mask) + intrinsic/hand_eye/
-        #   TCP pose JSON (실패해도 서비스는 무사).
+        #   TCP pose JSON. **fire-and-forget** (2026-07-19): 파일 쓰기 수백 ms 가
+        #   검출 응답(=servo tick/스윕 pose 시간)을 잡아먹지 않게 스레드로.
+        #   내용 무손실 (같은 함수), 실패는 콜백에서 로깅 — 서비스는 무사.
+        #   입력 배열(img/depth/mask)은 이후 아무도 mutate 안 함 — 복사 불필요.
         if result.img is not None and debug_rows:
-            try:
-                self._dump_debug_image(
-                    result.img, oriented, debug_rows,
-                    proj=result.proj, depth=result.depth,
-                    depth_scale=result.depth_scale,
-                )
-            except Exception:
-                logger.exception("detect_oriented 디버그 덤프 실패 (서비스 영향 없음)")
+            t = asyncio.create_task(asyncio.to_thread(
+                self._dump_debug_image,
+                result.img, oriented, debug_rows,
+                proj=result.proj, depth=result.depth,
+                depth_scale=result.depth_scale,
+            ))
+            self._dump_tasks.add(t)
+            t.add_done_callback(self._on_dump_done)
         if not oriented:
             return DetectOrientedResponse(
                 found=False, message=result.message or "OBB 산출 실패"
@@ -465,6 +504,15 @@ class DetectorModule:
         msg = f"점군 없는 군집 {skipped}개 제외" if skipped else ""
         return FuseOrientedResponse(candidates=fused, message=msg)
 
+    def _on_dump_done(self, t: asyncio.Task[None]) -> None:
+        """백그라운드 덤프 종료 콜백 — 실패 로깅 (침묵 금지) + 추적 set 정리."""
+        self._dump_tasks.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.error(
+                "detect_oriented 디버그 덤프 실패 (서비스 영향 없음): %s",
+                t.exception(),
+            )
+
     def _next_dump_prefix(self, kind: str, prompt: str) -> Path:
         """세션 폴더 안 다음 순번 파일 prefix (예: .../0007_det_blue_box). mkdir 포함."""
         self._dump_dir.mkdir(parents=True, exist_ok=True)
@@ -520,7 +568,7 @@ class DetectorModule:
                     2,
                 )
             cand_summ.append(
-                f"c{i}: score={det.score:.2f} base_z={det.base_z:.3f}m "
+                f"c{i}[{det.prompt}]: score={det.score:.2f} base_z={det.base_z:.3f}m "
                 f"height={det.height * 100:.1f}cm "
                 f"pos=({det.position[0]:.3f},{det.position[1]:.3f},"
                 f"{det.position[2]:.3f}) footprint="
@@ -588,6 +636,7 @@ class DetectorModule:
             "candidates": [
                 {
                     "index": i,
+                    "prompt": d.prompt,  # 멀티 프롬프트 귀속 (2026-07-19)
                     "mask_png": Path(f"{prefix.name}_mask_c{i}.png").name,
                     "score": float(d.score),
                     "position": [float(v) for v in d.position],

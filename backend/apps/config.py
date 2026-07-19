@@ -202,6 +202,11 @@ class DeploymentConfig(BaseModel):
     object_uri: str | None = None
     bridge_port: int = 8000
     dev_console: bool = False  # 개발용 콘솔
+    # detector GDINO 합동 추론 (멀티 프롬프트 1-forward — pose 당 추론 N→1회).
+    # 합동 쿼리는 단독과 score 분포가 다를 수 있어 기본 off — 켜기 전
+    # scripts/compare_joint_prompt_scores.py 로 실물 덤프 분포 확인 (task 의
+    # _PICK_SCORE_MIN 컷 마진과 비교). drivers/grounded_sam docstring 참조.
+    detector_joint_inference: bool = False
 
 
 def load_deployment(path: Path | str) -> DeploymentConfig:

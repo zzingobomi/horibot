@@ -17,7 +17,7 @@ import { OrbitControls, Grid, Environment } from "@react-three/drei";
 import * as THREE from "three";
 import { Robots } from "./objects/Robots";
 import { Cameras } from "./objects/Cameras";
-import { ScanMesh } from "./objects/ScanMesh";
+import { World } from "./objects/World";
 import { AxisFrame } from "./shared/AxisFrame";
 import { TaskMarkersOverlay } from "./overlays/TaskMarkersOverlay";
 import { ScenePartHost } from "./overlays/ScenePartHost";
@@ -91,7 +91,8 @@ function SceneContent({
       />
       {/* rgbd robot 파생 카메라 — frustum(cameraStore)/live cloud(scanStore) gate */}
       <Cameras robots={robots} focusId={focusId ?? null} />
-      <ScanMesh robots={robots} focusId={focusId ?? null} />
+      {/* World 배경 레이어 — 최신 재구성 자동 로드 (worldVisible gate) */}
+      <World robots={robots} focusId={focusId ?? null} />
 
       {/* ── Feature overlays — 기능이 보여주는 것 ── */}
       <TaskMarkersOverlay robots={robots} focusId={focusId ?? null} />

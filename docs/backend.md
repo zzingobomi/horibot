@@ -20,12 +20,42 @@
 > [backend.md](backend.md) (framework §1–§14 + Module catalog §16 + Task-first §17).
 > 본 문서 = "지금 어디까지 됐고 다음 뭐 할지" 만 — 설계 결정은 여기 안 둠.
 
-## 현재 상태 (2026-07-17)
+## 현재 상태 (2026-07-19)
 
 **closed-loop PnP 실물 첫 완주 성공 (2026-07-17 새벽, 2연속 포함) — 재현성 통계
 수집 단계.** framework + 전 Module 가동 + Task 아키텍처 확정. 실물 테스트
 확인/분석/수정 절차 = **[task.md](task.md) §4 "PnP 실물 디버깅 runbook"** (다음
 세션 진입점 — trace 읽는 법, 실패 모드→수정 위치 사전, 노브 SSOT, 배포 매트릭스).
+
+### 2026-07-19 — PnP 스윕 통합 + detector 멀티 프롬프트 일반화 (sim 완료, 실물 대기)
+
+pick/place 가 같은 search 자세를 두 번 돌던 구조를 **한 스윕**으로 통합 (검출
+1회에 pick+place+world — 런당 MoveJ 자세 N개 절약 ≈ 15~25s). detector wire 는
+`DetectRequest.prompts` 일반형 (top_k = 프롬프트별, 응답 per-candidate prompt
+귀속, prompt 하위호환), 추론 전략은 detector 내부 — 기본 N-loop (score 불변),
+GDINO 합동 1-forward 는 `detector_joint_inference` opt-in. **합동은 실물 덤프
+36장 특성화로 기본 OFF 판정** (pick 컷 headroom 0.07→0.03 — 수치/재보정 조건 =
+[perception.md](perception.md) 멀티 프롬프트 부, 상세 = [task.md](task.md)
+§4.3.3). 전 스위트 fast 371 + frontend 161 초록, contract regen 완료.
+**실물 미검증**: 통합 스윕 첫 런 (기존과 동작 등가 — 스윕 순서만 변경).
+부수 수정: pytest 가 debug/detect/ 에 흑색 합성 덤프를 남기던 오염 차단
+(test_detector_module `_dump_to_tmp` — 특성화 1차 런 통계를 실제로 뒤집은 사고).
+
+같은 날 후속 3건: ① **카메라 패널 멀티 prompt 오버레이** — prompt 별 발행이
+latest-wins 에 덮여 pick 이 place 에 가려지던 것을 프레임당 1건 합본 + 패널
+prompt 별 best 강조/라벨로 수정 (사용자 리포트). ② **파지 방향 시각화** —
+TaskMarker 에 approach/jaw_axis/quat(optional) 동봉, TaskMarkersOverlay 가
+진입 화살표+조 축 바 렌더 (servo refit 실시간 — 소스 = servo.GraspFamily).
+③ **스윕 크리티컬 패스 최적화** — 15:50 실물 런 분해 (59.5s 중 world build
+~28s + capture ~7s): 빌드 백그라운드화(+finalize 최종 빌드 보장) + detector
+디버그 덤프 fire-and-forget. 상세 = task.md §4.3.1/§4.3.3. **실측 (16:11 런):
+스윕 59.5→45.6s.** 이론치(~30s) 미달 원인 = 백그라운드 빌드의 동일 프로세스
+CPU 경쟁(GIL/Open3D)이 검출을 늦춤 (~12s) — 다음 레버 = scan 빌드 프로세스
+격리.
+
+**재현성 (07-19 실물)**: 스윕 통합 코드로 **연속 4런 성공** (pick/place 위치
+스왑 포함). 생존 체인 실물 검증 2종 — MoveL 거부 2연속→가족 재플랜 재진입
+(16:11 trace, 경계쪽 큐브) / 파지 실패→후퇴·재관측 재시도 성공.
 
 ### 2026-07-17 — 실물 첫 완주 (밤샘 수정 체인 8개 + servo_pick 리팩토링)
 

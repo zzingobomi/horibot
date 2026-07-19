@@ -84,9 +84,19 @@ class Detector:
 
 
 class DetectRequest(BaseModel):
+    """멀티 프롬프트 일반형 (2026-07-19) — 한 정지 관측(같은 frame)에서 N 클래스
+    동시 검출. prompts 우선, 단일 호출부는 prompt(하위호환) — 서비스가 [prompt]
+    로 정규화, 둘 다 비면 found=False. 응답은 flat list 그대로 — 후보마다 자기
+    prompt 가 찍혀 온다 (귀속). 추론 전략(prompt 별 단독 N회 vs GDINO 합동
+    1-forward)은 detector 내부 설정(deployment detector_joint_inference) — wire
+    는 "무엇을 찾을지"만 안다."""
+
     robot_id: str  # 어느 로봇의 camera/캘/base frame 으로 검출할지 (host당 1 dispatch)
-    prompt: str
-    top_k: int = 5  # 상위 몇 후보 반환 (§17.5 Top-K). 소비자(task)가 조절.
+    prompts: list[str] | None = None
+    prompt: str | None = None  # 하위호환 (단일) — prompts 없을 때만 사용
+    # **프롬프트별** 상위 후보 수 (전체 아님) — 한 prompt 가 상위를 독식해도
+    # 다른 prompt 후보가 잘리지 않는다 (§17.5 Top-K). 소비자(task)가 조절.
+    top_k: int = 5
 
 
 class DetectResponse(BaseModel):

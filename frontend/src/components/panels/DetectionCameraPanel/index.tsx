@@ -36,11 +36,29 @@ function points(pts: [number, number][]): string {
 // DETECTIONS_ORIENTED(전부) 두 스트림 candidate 를 하나로 취급.
 type OverlayCand = {
   score: number;
+  prompt?: string | null; // 멀티 프롬프트 귀속 (2026-07-19) — 라벨/강조 축
   bbox_2d?: [number, number, number, number] | null;
   obb_2d?: [number, number][] | null;
   mask_contour?: [number, number][] | null;
   grasp_yaw?: number | null;
 };
+
+// prompt 별 best(첫 등장 — 응답이 score desc) 인덱스. 멀티 프롬프트 스윕에선
+// 한 update 에 pick/place 후보가 합본으로 오므로 (backend detector — latest-wins
+// 덮임 방지) 각 물체의 best 를 따로 강조/라벨해야 둘 다 보인다 (2026-07-19).
+// 단일 prompt 면 {0} — 기존 렌더와 동일.
+function bestPerPrompt(cands: OverlayCand[]): Set<number> {
+  const seen = new Set<string>();
+  const best = new Set<number>();
+  cands.forEach((c, i) => {
+    const p = c.prompt ?? "";
+    if (!seen.has(p)) {
+      seen.add(p);
+      best.add(i);
+    }
+  });
+  return best;
+}
 
 export function DetectionCameraPanel() {
   const robotId = useRobotId();
@@ -56,6 +74,7 @@ export function DetectionCameraPanel() {
   const plain = det.value != null && !det.stale ? det.value : null;
   const src = oriented ?? plain;
   const candidates = (src?.candidates ?? []) as OverlayCand[];
+  const best = bestPerPrompt(candidates);
   const show = src != null && candidates.length > 0;
 
   return (
@@ -70,7 +89,8 @@ export function DetectionCameraPanel() {
           >
             {candidates.map((c, i) => {
               const b = c.bbox_2d;
-              const color = i === 0 ? BEST : REST;
+              const isBest = best.has(i); // prompt 별 best (단일 prompt = i===0)
+              const color = isBest ? BEST : REST;
               // oriented 후보만 obb/contour/yaw 보유 (DRAFT — 회전 파지). plain=undefined.
               const obb = c.obb_2d;
               const contour = c.mask_contour;
@@ -81,7 +101,7 @@ export function DetectionCameraPanel() {
                     <polygon
                       data-testid="detection-contour"
                       points={points(contour)}
-                      fill={i === 0 ? CONTOUR : "none"}
+                      fill={isBest ? CONTOUR : "none"}
                       fillOpacity={0.3}
                       stroke={CONTOUR}
                       strokeWidth={2}
@@ -105,12 +125,13 @@ export function DetectionCameraPanel() {
                       height={b[3] - b[1]}
                       fill="none"
                       stroke={color}
-                      strokeWidth={i === 0 ? 4 : 2}
+                      strokeWidth={isBest ? 4 : 2}
                     />
                   )}
-                  {/* 라벨은 best 후보만 — top_k 후보가 같은 물체에 겹치면 같은 자리
-                      텍스트가 뭉개져 깨짐 (2026-07-09 실물 확인). */}
-                  {b && i === 0 && (
+                  {/* 라벨은 prompt 별 best 만 — top_k 후보가 같은 물체에 겹치면
+                      같은 자리 텍스트가 뭉개져 깨짐 (2026-07-09 실물 확인).
+                      pick/place 는 다른 위치라 각자 라벨 (2026-07-19 스윕 통합). */}
+                  {b && isBest && (
                     <text
                       x={b[0]}
                       y={Math.max(b[1] - 6, 14)}
@@ -118,7 +139,7 @@ export function DetectionCameraPanel() {
                       fontSize={18}
                       fontFamily="monospace"
                     >
-                      {src.prompt} {(c.score * 100).toFixed(0)}%
+                      {c.prompt ?? src.prompt} {(c.score * 100).toFixed(0)}%
                       {yaw != null ? ` ∠${((yaw * 180) / Math.PI).toFixed(0)}°` : ""}
                     </text>
                   )}

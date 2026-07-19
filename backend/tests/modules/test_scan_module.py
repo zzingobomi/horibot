@@ -386,11 +386,13 @@ async def test_build_applies_fresh_calibration_to_fk(tmp_path: Path, monkeypatch
             )
         )
 
-    # heavy Open3D 대신 inputs 캡처 (여기 관심 = FK/pose 준비 정확성)
+    # heavy Open3D 대신 inputs/kwargs 캡처 (여기 관심 = build 준비 정확성)
     captured: list[list[recon.BuildScanInput]] = []
+    captured_kwargs: list[dict] = []
 
     def fake_build_mesh(inputs, *, progress, **kwargs):  # noqa: ANN001, ANN002, ANN003
         captured.append(list(inputs))
+        captured_kwargs.append(dict(kwargs))
         return recon.BuildResult(
             mesh_bytes=b"ply", vertex_count=1, triangle_count=1,
             n_scans=len(inputs), n_edges=0,
@@ -424,3 +426,16 @@ async def test_build_applies_fresh_calibration_to_fk(tmp_path: Path, monkeypatch
         f"hand_eye 합성 어긋남: {t_init[:3, 3]}"
     )
     assert np.allclose(t_init[:3, :3], np.eye(3))
+
+    # ④ voxel 만 고르면 sdf_trunc 파생 (결합 규칙 — build.sdf_trunc_for).
+    # 명시 sdf_trunc 는 파생을 이긴다. 기본 build(위) 는 kwargs 빈 채 통과.
+    assert captured_kwargs[0] == {}
+    res = await mod.build(BuildRequest(session_row_id=sid, voxel_size=0.008))
+    assert res.accepted, res.message
+    assert captured_kwargs[1]["voxel_size"] == 0.008
+    assert captured_kwargs[1]["sdf_trunc"] == pytest.approx(0.04)
+    res = await mod.build(
+        BuildRequest(session_row_id=sid, voxel_size=0.008, sdf_trunc=0.05)
+    )
+    assert res.accepted, res.message
+    assert captured_kwargs[2]["sdf_trunc"] == 0.05

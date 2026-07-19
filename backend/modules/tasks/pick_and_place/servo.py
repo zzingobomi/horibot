@@ -135,6 +135,25 @@ class ServoConfig:
     # gap 210 → withdraw 후 36 = 17% — 매달려는 있지만 이송 불가 파지) →
     # 내려놓고 재시도. 공중 open 금지 (튀어 도망감).
     slip_retention: float = 0.6
+    # ── commit 2단 하강 (2026-07-17 스틱션 release 스침 대응) ─────────────
+    # 42런 comp z 잔차 분석: sag 모델(active) 통과 후에도 같은 자리 인접 tick 간
+    # ±5~13mm 널뜀(부호 반전 −5.7 포함) = 불연속 stick-slip/유격 — comp 가
+    # stall 국면에서 배운 +z 선보상이 blind 하강 중 release 되면 과보상으로
+    # 조 끝이 바닥을 긁는다. 대응 = 물체 위 midstop 에서 하강방향 재안착 후
+    # **그 순간의 FK 실측 잔차**로 마지막 구간을 재앵커 (stale comp 대체).
+    commit_midstop_m: float = 0.020  # 접근축 후방 중간 정지 거리 (0 = 기능 off)
+    # midstop 재안착 왕복 폭 — 후방 +dither 갔다가 되-내려와 기어열을 하강쪽
+    # 플랭크에 앉힌다 (unidirectional approach 관례). 0 = 왕복 생략.
+    commit_dither_m: float = 0.003
+    commit_settle_s: float = 0.15  # 재안착 후 FK 안정 대기
+    commit_residual_max_m: float = 0.02  # 재앵커 잔차 clamp (오염 실측 방어)
+    # 하강 프로파일 샘플링 (진단 전용 — 제어 무관): 하강 이동 중 20Hz 로
+    # FK z + 관절 load 를 trace 에 남긴다 → release 가 **언제** 났는지 /
+    # 바닥 접촉 load 지문이 데이터로 남는다. ≤0 = off.
+    descent_sample_hz: float = 20.0
+    # 바닥 접촉 의심 arm load 문턱 (진단 플래그 전용) — 실물 특성화 런으로
+    # 튜닝할 것 (초기값은 자유이동 load << HELD 부하 ~300 사이 추정치).
+    descent_load_suspect_raw: int = 150
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,6 +347,59 @@ def standoff(tcp: Vec3, family: GraspFamily, s_m: float) -> Vec3:
     """파지 TCP 에서 접근축 후방 s_m 의 standoff TCP."""
     a = family.approach
     return (tcp[0] - a[0] * s_m, tcp[1] - a[1] * s_m, tcp[2] - a[2] * s_m)
+
+
+def midstop_sequence(g_tcp: Vec3, family: GraspFamily, cfg: ServoConfig) -> list[Vec3]:
+    """commit 2단 하강의 중간 정지 시퀀스 — 마지막 원소 도달 후 FK 실측.
+
+    [midstop, midstop+dither(후방), midstop] — 마지막 이동이 **하강(접근) 방향**
+    이 되도록 왕복해 기어열을 착지 때와 같은 플랭크에 앉힌다 (재안착 없이 재면
+    stall 국면 잔차를 재서 release 시 또 과보상). dither=0 이면 왕복 생략,
+    midstop=0 이면 기능 자체 off (빈 시퀀스 — 호출부는 단발 하강)."""
+    if cfg.commit_midstop_m <= 0.0:
+        return []
+    mid = standoff(g_tcp, family, cfg.commit_midstop_m)
+    if cfg.commit_dither_m <= 0.0:
+        return [mid]
+    back = standoff(g_tcp, family, cfg.commit_midstop_m + cfg.commit_dither_m)
+    return [mid, back, mid]
+
+
+def reanchor(
+    g_tcp: Vec3, cmd1: Vec3, measured: Sequence[float], max_m: float
+) -> tuple[Vec3, Vec3]:
+    """midstop 실측 잔차로 최종 하강 명령 재앵커 → (resid, cmd2).
+
+    resid = 방금 그 자세에서 잰 플랜트 미달 (cmd1 − 실측 FK, 축별 ±max_m clamp
+    — 오염 실측 방어). cmd2 = g_tcp + resid: release 됐으면 resid≈0 → 과보상
+    없음(스침 소멸), 안 풀렸으면 resid ≈ 기존 comp → 오늘과 동일 동작."""
+    resid = np.clip(
+        np.asarray(cmd1, dtype=float) - np.asarray(measured, dtype=float),
+        -max_m, max_m,
+    )
+    cmd2 = (
+        float(g_tcp[0] + resid[0]),
+        float(g_tcp[1] + resid[1]),
+        float(g_tcp[2] + resid[2]),
+    )
+    return (float(resid[0]), float(resid[1]), float(resid[2])), cmd2
+
+
+def descent_suspect(
+    samples: list[dict], gripper_index: int, load_thr_raw: int
+) -> bool:
+    """하강 프로파일에서 바닥 접촉 의심 — arm 관절 load 스파이크 (진단 전용).
+
+    gripper load 는 close 국면 신호라 제외. 문턱은 ServoConfig 주석대로 실물
+    특성화로 튜닝 (플래그가 제어를 바꾸지 않으므로 오판은 노이즈일 뿐)."""
+    for s in samples:
+        loads = s.get("loads")
+        if not loads:
+            continue
+        arm = [v for i, v in enumerate(loads) if i != gripper_index]
+        if arm and max(abs(int(v)) for v in arm) >= load_thr_raw:
+            return True
+    return False
 
 
 def split_error(delta: Vec3, family: GraspFamily) -> tuple[float, float]:

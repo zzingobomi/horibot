@@ -184,10 +184,12 @@ def test_pick_and_place_scenario_tree():
     mod = PickAndPlaceModule(_DeadRuntime(), {})  # type: ignore[arg-type]
     entries = build_preview(mod.scenario)
 
-    # phase 골격 (depth 0) — 시나리오의 뼈대 순서
+    # phase 골격 (depth 0) — 시나리오의 뼈대 순서 (2026-07-19 스윕 통합:
+    # detect 가 시나리오 직속 step 으로 승격 — pick/place/world 한 스윕)
     top = [e.name for e in entries if e.depth == 0]
     assert top == [
-        "home_waypoint", "plan_pick", "plan_place", "servo_pick", "execute_place",
+        "home_waypoint", "detect", "plan_pick", "plan_place", "servo_pick",
+        "execute_place",
     ]
     by_top = {e.name: e for e in entries if e.depth == 0}
     # place 경로는 `if place_object:` 안 — 조건부 표시, pick 은 무조건

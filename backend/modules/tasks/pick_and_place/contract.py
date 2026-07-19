@@ -29,6 +29,14 @@ class PickAndPlace:
 class RunRequest(StrictModel):
     pick_object: str
     place_object: str = ""
+    # search 스윕에 편승해 scan 세션(capture→build)을 돌려 3D World 배경을
+    # 갱신할지 — 기본 off ("빨리 픽앤플레이스만" 이 기본, 2026-07-18 UX 결정).
+    # best-effort: 월드 갱신 실패는 pick 을 죽이지 않는다 (steps.WorldScan).
+    build_world: bool = False
+    # 월드 갱신 TSDF voxel (m). None = scan 기본(2mm). UI 는 1/2/4/8mm 4단 —
+    # 막연한 low/high 가 아니라 실제 조절값을 노출 (recon row 에 저장돼
+    # "이 메시가 왜 이 모양" 분석 데이터가 된다). sdf_trunc 는 scan 모듈이 파생.
+    world_voxel_size: float | None = None
 
 
 class ListRobotsRequest(StrictModel):
@@ -47,8 +55,19 @@ class ListRobotsResponse(StrictModel):
 
 
 class TaskMarker(StrictModel):
+    """계획 산출 마커 — 위치 + (optional) 파지/적치 방향 (2026-07-19).
+
+    approach/jaw_axis = base frame 단위벡터 (그리퍼 진입 방향 / 조 이동 축),
+    quaternion = TCP 자세. 셋 다 optional — 방향 없는 마커(단순 지점) 호환.
+    프론트 TaskMarkersOverlay 가 화살표(approach) + 양방향 바(jaw_axis)로
+    "어느 면을 어느 방향으로 무는지"를 렌더. 값 출처 = servo.GraspFamily
+    (파지 자세 정본 — antipodal 은 진단 전용 잔재) / PlaceCandidate(적치)."""
+
     label: str
     position: tuple[float, float, float]
+    approach: tuple[float, float, float] | None = None
+    jaw_axis: tuple[float, float, float] | None = None
+    quaternion: tuple[float, float, float, float] | None = None
 
 
 class TaskMarkers(StrictModel):

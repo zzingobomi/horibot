@@ -19,6 +19,7 @@ _ensure_loaded (lock 안) 로 미룬다.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
 import numpy as np
 import torch
@@ -27,6 +28,7 @@ from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 from infra.ml.loader import transformers_load_lock
 
+from . import prompts as joint_prompts
 from .protocol import Bbox
 
 logger = logging.getLogger(__name__)
@@ -84,6 +86,30 @@ class GroundingDino:
             )
             logger.info("Grounding DINO 로드 완료 (device=%s)", self._model.device)
 
+    def _infer(self, image_bgr: np.ndarray, text: str) -> dict:
+        """공통 forward + 후처리 — 단독/합동 경로가 공유하는 유일한 추론 자리.
+
+        단독 경로의 텍스트 조립/threshold 를 그대로 쓰므로, 합동 경로와의 score
+        차이는 오로지 "쿼리를 합쳤다"는 모델 내부 효과만 반영한다 (특성화 비교의
+        전제 — scripts/compare_joint_prompt_scores.py)."""
+        self._ensure_loaded()
+        assert self._processor is not None and self._model is not None
+        rgb = image_bgr[..., ::-1]
+        pil_image = Image.fromarray(np.ascontiguousarray(rgb))
+        inputs = self._processor(
+            images=pil_image, text=text, return_tensors="pt"
+        ).to(self._model.device)
+        with torch.no_grad():
+            outputs = self._model(**inputs)
+        # v5: input_ids 는 optional (없으면 outputs 에서 취함) 이나 명시 전달 (옛 동형).
+        return self._processor.post_process_grounded_object_detection(
+            outputs,
+            inputs.input_ids,
+            threshold=self._box_threshold,
+            text_threshold=self._text_threshold,
+            target_sizes=[pil_image.size[::-1]],  # (H, W)
+        )[0]
+
     def detect_boxes(
         self, image_bgr: np.ndarray, prompt: str, top_k: int
     ) -> list[tuple[Bbox, float]]:
@@ -93,29 +119,7 @@ class GroundingDino:
         → 내부에서 마침표 보장. Top-K (§17.5) — 최종 선택은 소비자(task SelectTarget).
         SAM2 는 이 box 를 prompt 로 mask 를 뽑는다 (grounded_sam).
         """
-        self._ensure_loaded()
-        assert self._processor is not None and self._model is not None
-
-        rgb = image_bgr[..., ::-1]
-        pil_image = Image.fromarray(np.ascontiguousarray(rgb))
-        text = prompt.strip().rstrip(".") + "."
-
-        inputs = self._processor(
-            images=pil_image, text=text, return_tensors="pt"
-        ).to(self._model.device)
-
-        with torch.no_grad():
-            outputs = self._model(**inputs)
-
-        # v5: input_ids 는 optional (없으면 outputs 에서 취함) 이나 명시 전달 (옛 동형).
-        results = self._processor.post_process_grounded_object_detection(
-            outputs,
-            inputs.input_ids,
-            threshold=self._box_threshold,
-            text_threshold=self._text_threshold,
-            target_sizes=[pil_image.size[::-1]],  # (H, W)
-        )[0]
-
+        results = self._infer(image_bgr, prompt.strip().rstrip(".") + ".")
         boxes = results["boxes"].detach().cpu().numpy()
         scores = results["scores"].detach().cpu().numpy()
         if len(boxes) == 0:
@@ -135,3 +139,50 @@ class GroundingDino:
             )
             for i in order
         ]
+
+    def detect_boxes_joint(
+        self, image_bgr: np.ndarray, prompts: Sequence[str], top_k: int
+    ) -> list[tuple[Bbox, float, str]]:
+        """N prompt **1-forward** 합동 검출 → 프롬프트별 Top-K [(bbox, score, prompt)].
+
+        GDINO 는 마침표 연결 텍스트("white cube. box.")로 여러 phrase 를 한 번에
+        찾고, 후처리가 box 마다 매칭 phrase(label)를 준다 — prompt 귀속/Top-K 는
+        prompts.py 순수 함수 (단위테스트 잠금). 귀속 불가 label 은 **버리고 로그**
+        (오귀속 파지보다 후보 손실이 낫다).
+
+        ⚠ 합동 쿼리는 단독 쿼리와 같은 물체에 다른 score 를 줄 수 있다 (텍스트
+        토큰 정렬 상호작용) — 기본 off, 켜기 전 특성화 스크립트로 분포 확인
+        (grounded_sam.joint_inference / deployment detector_joint_inference).
+        """
+        results = self._infer(image_bgr, joint_prompts.build_joint_text(prompts))
+        boxes = results["boxes"].detach().cpu().numpy()
+        scores = results["scores"].detach().cpu().numpy()
+        # transformers 버전에 따라 매칭 phrase 키가 다르다 — v4.51+ text_labels
+        # (str), 구버전 labels (str). 둘 다 없거나 str 이 아니면 귀속 불가.
+        labels = results.get("text_labels", results.get("labels", []))
+        if len(boxes) == 0:
+            return []
+        triples: list[tuple[Bbox, float, str]] = []
+        dropped: list[str] = []
+        for i in range(len(boxes)):
+            label = labels[i] if i < len(labels) else ""
+            matched = joint_prompts.match_prompt(str(label), prompts)
+            if matched is None:
+                dropped.append(str(label))
+                continue
+            triples.append((
+                (
+                    float(boxes[i][0]),
+                    float(boxes[i][1]),
+                    float(boxes[i][2]),
+                    float(boxes[i][3]),
+                ),
+                float(scores[i]),
+                matched,
+            ))
+        if dropped:
+            logger.warning(
+                "GDINO 합동 추론: phrase 귀속 실패 %d건 버림 (labels=%s, "
+                "prompts=%s)", len(dropped), dropped, list(prompts),
+            )
+        return joint_prompts.top_k_per_prompt(triples, top_k)

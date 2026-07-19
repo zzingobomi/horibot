@@ -299,6 +299,54 @@ def test_track_state_reanchors_on_two_consistent_rejections():
     assert run.last_rejected is None
 
 
+# ─── commit 2단 하강 (스틱션 release 스침 대응, 2026-07-17) ──────────
+
+
+def test_midstop_sequence_reseats_in_descent_direction():
+    """midstop 시퀀스 계약 — 마지막 이동이 접근(하강) 방향 재안착: 후방 dither
+    갔다가 midstop 으로 되-내려온다 (기어열을 착지와 같은 플랭크에 앉힌 채
+    실측해야 stall 잔차가 착지 상태를 대표). off 스위치 2단계도 잠금."""
+    fam = servo.grasp_families(_det())[0]  # approach = (0,0,-1)
+    cfg = servo.ServoConfig()
+    g = (0.2, 0.05, 0.01)
+    seq = servo.midstop_sequence(g, fam, cfg)
+    assert len(seq) == 3
+    mid, back, last = seq
+    assert last == mid  # 마지막 원소 = midstop (하강 방향으로 도달)
+    assert mid[2] == pytest.approx(g[2] + cfg.commit_midstop_m)
+    assert back[2] == pytest.approx(mid[2] + cfg.commit_dither_m)
+    # dither off → 정지점 1개 / midstop off → 기능 자체 off (빈 시퀀스)
+    no_dither = servo.ServoConfig(commit_dither_m=0.0)
+    assert servo.midstop_sequence(g, fam, no_dither) == [mid]
+    off = servo.ServoConfig(commit_midstop_m=0.0)
+    assert servo.midstop_sequence(g, fam, off) == []
+
+
+def test_reanchor_uses_measured_residual_with_clamp():
+    """재앵커 수식 — resid = cmd1 − 실측 (축별 clamp), cmd2 = g_tcp + resid.
+    release(실측=명령) → cmd2 = g_tcp (과보상 0), 미달 지속 → 기존 comp 등가,
+    오염 실측(50mm) → clamp 가 폭주 차단."""
+    g = (0.2, 0.05, 0.010)
+    cmd1 = (0.2, 0.05, 0.030)
+    resid, cmd2 = servo.reanchor(g, cmd1, (0.2, 0.05, 0.022), 0.02)  # 8mm 미달
+    assert resid[2] == pytest.approx(0.008)
+    assert cmd2[2] == pytest.approx(0.018)
+    resid0, cmd0 = servo.reanchor(g, cmd1, cmd1, 0.02)  # release — 미달 소멸
+    assert resid0 == pytest.approx((0.0, 0.0, 0.0))
+    assert cmd0 == pytest.approx(g)
+    residc, _ = servo.reanchor(g, cmd1, (0.2, 0.05, -0.020), 0.02)  # 50mm 오염
+    assert residc[2] == pytest.approx(0.02)  # clamp
+
+
+def test_descent_suspect_flags_arm_load_not_gripper():
+    """바닥 접촉 의심 플래그 — arm 관절 load 만 본다 (gripper load 는 close
+    국면 신호). load 없는 샘플은 무시 (프로파일 구멍 허용)."""
+    thr = 150
+    assert not servo.descent_suspect([{"loads": [0, 0, 0, 0, 0, 999]}], 5, thr)
+    assert servo.descent_suspect([{"loads": [0, 200, 0, 0, 0, 0]}], 5, thr)
+    assert not servo.descent_suspect([{"loads": None}, {"z": 0.01}], 5, thr)
+
+
 # ─── decide_tick 상태 전이 (handoff §2 표) ────────────────────────────
 
 

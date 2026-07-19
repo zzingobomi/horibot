@@ -90,7 +90,59 @@ describe("PickAndPlacePanel", () => {
       String(c[0]) === "srv/pick_and_place/run",
     );
     expect(calls.length).toBe(1);
-    expect(calls[0][1]).toEqual({ pick_object: "white cube", place_object: "" });
+    expect(calls[0][1]).toEqual({
+      pick_object: "white cube",
+      place_object: "",
+      build_world: false, // 기본 off — "빨리 픽앤플레이스만" 이 기본 (2026-07-18)
+      world_voxel_size: 0.002, // 기본 2mm (계측 전 기본 묵시 변경 안 함)
+    });
+  });
+
+  it("월드 갱신 체크 → build_world=true 로 실행 + localStorage 기억", async () => {
+    const spy = mockBridge({
+      "srv/pick_and_place/run": { accepted: true, message: "" },
+    });
+    const { getByTestId } = render(<PickAndPlacePanel />);
+
+    fireEvent.click(getByTestId("pnp-build-world"));
+    fireEvent.change(getByTestId("pnp-pick"), { target: { value: "cube" } });
+    await act(async () => {
+      fireEvent.click(getByTestId("pnp-run"));
+    });
+
+    const calls = spy.mock.calls.filter(
+      (c) => String(c[0]) === "srv/pick_and_place/run",
+    );
+    expect(calls.length).toBe(1);
+    expect((calls[0][1] as { build_world?: boolean }).build_world).toBe(true);
+    expect(localStorage.getItem("pnp.buildWorld")).toBe("1");
+    localStorage.removeItem("pnp.buildWorld"); // 같은 파일 뒤 테스트 오염 방지
+  });
+
+  it("월드 갱신 체크 시 voxel 셀렉터 노출 → 선택이 world_voxel_size 로 실행 + 기억", async () => {
+    const spy = mockBridge({
+      "srv/pick_and_place/run": { accepted: true, message: "" },
+    });
+    const { getByTestId, queryByTestId } = render(<PickAndPlacePanel />);
+
+    // 갱신 off 면 voxel 셀렉터 숨김 (관련 없는 노브 노출 안 함)
+    expect(queryByTestId("pnp-world-voxel")).toBeNull();
+    fireEvent.click(getByTestId("pnp-build-world"));
+    fireEvent.change(getByTestId("pnp-world-voxel"), { target: { value: "0.004" } });
+    fireEvent.change(getByTestId("pnp-pick"), { target: { value: "cube" } });
+    await act(async () => {
+      fireEvent.click(getByTestId("pnp-run"));
+    });
+
+    const calls = spy.mock.calls.filter(
+      (c) => String(c[0]) === "srv/pick_and_place/run",
+    );
+    expect((calls[0][1] as { world_voxel_size?: number }).world_voxel_size).toBe(
+      0.004,
+    );
+    expect(localStorage.getItem("pnp.worldVoxelM")).toBe("0.004");
+    localStorage.removeItem("pnp.buildWorld");
+    localStorage.removeItem("pnp.worldVoxelM");
   });
 
   it("실행 거부 → 사유 표시 (침묵 금지)", async () => {

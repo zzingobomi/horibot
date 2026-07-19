@@ -35,6 +35,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from framework.transport.protocol import RemoteError
 from modules.detector.contract import (
     DetectOrientedResponse,
     DetectRequest,
@@ -72,6 +73,15 @@ from modules.tasks.core.errors import (
     ServoFailed,
     TaskError,
 )
+from modules.scan.contract import (
+    BuildRequest,
+    BuildResponse,
+    NewSessionRequest,
+    NewSessionResponse,
+    Scan,
+)
+from modules.scan.contract import CaptureRequest as ScanCaptureRequest
+from modules.scan.contract import CaptureResponse as ScanCaptureResponse
 from modules.tasks.core.step import step
 from modules.waypoint.contract import (
     ListGroupMembersRequest,
@@ -222,11 +232,156 @@ def servo_ladder_groups(
     return groups, metas
 
 
+class WorldScan:
+    """search 스윕 편승 월드 스캔 (RunRequest.build_world) — scan 모듈 재사용.
+
+    목적 = 3D 뷰 배경(World 레이어) 갱신이지 pick 의 일부가 아니다 → **best-effort**:
+    어떤 실패도 pick 을 죽이지 않는다 (경고 로그 + 이후 비활성, 취소(STOP)만
+    capture 경로에서 그대로 전파).
+
+    **빌드 = 백그라운드 (2026-07-19 최적화)**: 크리티컬 패스에는 capture(정지
+    필요, 실측 1.2~1.6s)만 남기고, 전체 재빌드(스캔 누적에 따라 3.8→8.4s 증가)
+    는 asyncio task 로 던져 다음 pose 의 MoveJ/검출과 겹친다 — 실측 59.5s 스윕
+    중 빌드 몫 ~28s 가 크리티컬 패스에서 사라진다 (품질 무영향: 같은 스캔,
+    같은 빌드 — 마지막 결과가 전 스캔 포함). 규약:
+    - in-flight 1개 (busy 면 dirty 만 표시 → 완료 후 1회 재킥 — 중간 상태
+      일부는 건너뛰지만 각 빌드가 전체 재빌드라 최종 메시는 항상 완전).
+    - detect 스윕 종료 시 finalize() — 마지막 캡처까지 포함한 빌드가 반드시
+      돌게 킥 (대기 안 함 — task 는 계획/실행으로 진행, 프론트 World 는
+      BUILD_PROGRESS done 으로 늦게라도 갱신).
+    - STOP/취소: 스윕 취소는 capture 에서 전파. 이미 떠 있는 빌드 task 는
+      모션 무관 순수 계산이라 자연 종료에 맡긴다 (상한 = 잔여 ≤2회).
+    """
+
+    def __init__(
+        self, ctx: TaskContext, robot_id: str, voxel_size: float | None = None
+    ) -> None:
+        self._ctx = ctx
+        self._robot_id = robot_id
+        self._voxel = voxel_size  # None = scan 기본 (RunRequest.world_voxel_size)
+        self._session_row_id: int | None = None
+        self._dead = False  # 첫 실패 후 비활성 (재시도로 pick 을 더 늦추지 않음)
+        self._pose_idx = 0  # 계측 로그용 (world_build pose=N)
+        self._build_task: asyncio.Task[None] | None = None
+        self._build_dirty = False  # busy 중 새 capture 도착 — 완료 후 재킥
+
+    async def start(self) -> None:
+        if self._dead:
+            return
+        try:
+            res = await self._ctx.call(
+                Scan.Service.NEW_SESSION,
+                NewSessionRequest(
+                    robot_id=self._robot_id, label="world (pick_and_place)"
+                ),
+                NewSessionResponse,
+            )
+            self._session_row_id = res.session.id
+            if self._session_row_id is None:
+                self._dead = True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._dead = True
+            logger.warning("world 스캔 세션 시작 실패 (%s) — 월드 갱신 없이 계속", e)
+
+    async def capture(self) -> None:
+        """현재(정지) 자세에서 capture + 백그라운드 빌드 킥. 실패 = 경고 + 비활성.
+
+        pose 당 capture ms 를 로그에 남긴다 — "편승이 스윕을 얼마나 늦추나"는
+        이제 이 값만이다 (build ms 는 백그라운드 로그 — world_build 라인)."""
+        if self._dead or self._session_row_id is None:
+            return
+        self._pose_idx += 1
+        try:
+            t_cap = time.perf_counter()
+            cap = await self._ctx.call(
+                Scan.Service.CAPTURE,
+                ScanCaptureRequest(session_row_id=self._session_row_id),
+                ScanCaptureResponse,
+                timeout=20.0,
+            )
+            cap_ms = (time.perf_counter() - t_cap) * 1000.0
+            if not cap.accepted:
+                logger.warning(
+                    "world 스캔 capture 거부 (%s) — 이 pose 건너뜀", cap.message
+                )
+                return
+            logger.info(
+                "world_capture pose=%d: %.0fms (빌드는 백그라운드)",
+                self._pose_idx, cap_ms,
+            )
+            self._kick_build()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._dead = True
+            logger.warning("world 스캔 실패 (%s) — 이후 pose 비활성, pick 계속", e)
+
+    def finalize(self) -> None:
+        """스윕 종료 — 마지막 캡처까지 포함한 빌드 보장 킥 (대기 안 함)."""
+        self._kick_build()
+
+    def _kick_build(self) -> None:
+        if self._dead or self._session_row_id is None:
+            return
+        if self._build_task is not None and not self._build_task.done():
+            self._build_dirty = True  # 완료 후 1회 재킥 (전체 재빌드라 충분)
+            return
+        self._build_dirty = False
+        self._build_task = asyncio.create_task(self._build_bg())
+
+    async def _build_bg(self) -> None:
+        """전체 재빌드 1회 (백그라운드) — 실패는 경고 + 비활성 (기존 계약),
+        완료 시 dirty 면 재킥 (그 사이 캡처분 포함 최신화)."""
+        assert self._session_row_id is not None
+        try:
+            t_build = time.perf_counter()
+            build = await self._ctx.call(
+                Scan.Service.BUILD,
+                BuildRequest(
+                    session_row_id=self._session_row_id, voxel_size=self._voxel
+                ),
+                BuildResponse,
+                timeout=120.0,  # scan 은 timeout 미선언 — DEFAULT 로는 빌드가 잘림
+            )
+            build_ms = (time.perf_counter() - t_build) * 1000.0
+            if not build.accepted:
+                logger.warning(
+                    "world 빌드 거부 (%s) — 다음 킥에서 재시도", build.message
+                )
+            else:
+                rec = build.reconstruction
+                logger.info(
+                    "world_build (bg): build %.0fms"
+                    " (scans=%d, %d verts, %d tris, voxel=%.1fmm)",
+                    build_ms,
+                    rec.n_scans if rec else -1,
+                    rec.vertex_count if rec else -1,
+                    rec.triangle_count if rec else -1,
+                    (rec.voxel_size if rec else 0.0) * 1000.0,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._dead = True
+            logger.warning("world 빌드 실패 (%s) — 월드 갱신 비활성, pick 계속", e)
+        finally:
+            if self._build_dirty and not self._dead:
+                self._build_dirty = False
+                self._build_task = asyncio.create_task(self._build_bg())
+
+
 @step(title="집기 계획")
 async def plan_pick(
-    ctx: TaskContext, robot_id: str, prompt: str, home: WaypointRecord
+    ctx: TaskContext,
+    robot_id: str,
+    prompt: str,
+    home: WaypointRecord,
+    cands: list[OrientedDetection],
 ) -> ServoPlan:
-    """찾기(coarse) + servo 접근 계획 (모션 0) → ServoPlan.
+    """스윕 누적 후보(cands — detect step 산출) → servo 접근 계획 (모션 0) →
+    ServoPlan. 검출은 detect step 몫 (2026-07-19 스윕 통합 — 계획은 순수 판정).
 
     **도달성 우선 선택 (2026-07-16)**: score 1등에 커밋하지 않는다 — 스윕 뷰 간
     검출 위치는 FK 계통 오차로 1.5~3.3cm 어긋나며 (detector FUSE_ORIENTED
@@ -241,7 +396,6 @@ async def plan_pick(
     충돌 + home→rung0 관절 경로 + 사다리 구간 직선(linear). 파지 대상 자신의
     점군은 장애물이 아니다 (engage 겹침은 의도 — resolve 호출부 주석).
     """
-    cands = await detect(ctx, robot_id, prompt)
     if not cands:
         raise DetectionNotFound(prompt, candidates=0, reason="검출 0건")
     cfg = _SERVO_CFG
@@ -384,6 +538,45 @@ async def plan_pick(
     )
 
 
+def _fuse_place_center(spots: list[OrientedDetection]) -> OrientedDetection | None:
+    """스윕에서 모인 같은 상자 검출들을 융합 → 안정된 중심 (2026-07-18 실물 버그).
+
+    상자는 **정적**이라 여러 search pose 관측이 한 자리에 몰린다. 그런데 단일
+    검출 중심은 부분-림 관측으로 pose 마다 2~3cm 흔들려(실측 dump: 같은 상자가
+    X 0.276→0.298 / Y 0.085→0.117), 7cm 짜리 상자에선 그 오차가 곧 **모서리 적치**
+    였다 (pick 은 closed-loop servo 로 잡지만 place 는 open-loop 라 coarse 오차를
+    그대로 물려받음). closed-loop place 는 물체를 든 채라 상자가 가려 어렵다 —
+    대신 **집기 전 스윕의 가림 없는 관측들을 융합**해 occlusion 을 아예 회피한다.
+
+    plausible base_z 검출을 XY 클러스터링 → 최대 score 군집의 score-가중 평균
+    중심을 **대표(최고 score) 검출에 덮어** 반환 (산포 √N 감소). footprint/yaw/
+    base_z/points 는 대표 실검출 값 유지 — 위치만 융합 (기하 fabricate 최소).
+    군집이 1개(융합 이득 없음)면 None → 호출부가 기존 단일-spot 경로 유지."""
+    good = [
+        s
+        for s in spots
+        if _PLACE_BASE_Z_MIN_M <= s.base_z <= _BASE_Z_PLAUSIBLE_MAX_M
+    ]
+    if len(good) < 2:
+        return None
+    clusters: list[list[OrientedDetection]] = []
+    for s in sorted(good, key=lambda d: -d.score):
+        for cl in clusters:
+            if _xy_dist(s.position, cl[0].position) <= _VIEW_MATCH_RADIUS_M:
+                cl.append(s)
+                break
+        else:
+            clusters.append([s])
+    best = max(clusters, key=lambda cl: sum(d.score for d in cl))
+    if len(best) < 2:
+        return None  # 대표 뷰가 하나뿐 = 융합할 이웃 없음
+    wsum = sum(d.score for d in best) or 1.0
+    fx = sum(d.position[0] * d.score for d in best) / wsum
+    fy = sum(d.position[1] * d.score for d in best) / wsum
+    rep = max(best, key=lambda d: d.score)
+    return rep.model_copy(update={"position": (fx, fy, rep.position[2])})
+
+
 @step(title="놓기 계획")
 async def plan_place(
     ctx: TaskContext,
@@ -393,15 +586,16 @@ async def plan_place(
     held: OrientedDetection,
     lateral: float,
     home: WaypointRecord,
+    spots: list[OrientedDetection],
 ) -> tuple[PlaceCandidate, list[float]]:
-    """검출 + 적치 후보 게이트 판정 (모션 0) → (적치 후보, pre 관절해).
+    """스윕 누적 spot(spots — detect step 산출, 2026-07-19 스윕 통합) 게이트
+    판정 (모션 0) → (적치 후보, pre 관절해).
 
     **도달성 우선 선택 (2026-07-14)**: 점수 1등에 무조건 커밋하지 않는다 — spot
     을 점수순으로 돌며 팔이 실제로 닿는 첫 spot 채택. spot 마다 yaw 두 가족 순차
     (① 상자 방위 정렬 ② 전멸 시 자유 — 삐딱하게라도 놓는 게 task 실패보다 낫다).
     held/lateral 은 coarse 관측·계획 lateral (servo 확정값과 수 mm 차 가능 —
     상자 적치는 관대)."""
-    spots = await detect(ctx, robot_id, prompt)
     if not spots:
         raise TaskError(
             f"'{prompt}' 적치 대상 검출 0건 — 물체 배치/조명 확인 후 다시 "
@@ -419,6 +613,19 @@ async def plan_place(
             -s.score,
         ),
     )
+    # 상자 중심 융합 (정적 상자 = 스윕 관측 몰림). 융합 중심을 **먼저** 시도하고
+    # 도달 불가/실패 시 기존 단일-spot 순회로 폴백 (안전 — 동작 후퇴 없음).
+    fused = _fuse_place_center(spots)
+    if fused is not None:
+        best_single = ranked[0]
+        logger.info(
+            "plan_place(%s): 상자 중심 융합 — 단일 best (%.3f,%.3f) → 융합 "
+            "(%.3f,%.3f), 이동 %.1fcm (모서리 적치 방지)",
+            prompt, best_single.position[0], best_single.position[1],
+            fused.position[0], fused.position[1],
+            _xy_dist(fused.position, best_single.position) * 100.0,
+        )
+        ranked = [fused, *ranked]
     for spot in ranked:
         for family, pplan in (
             ("정렬", geometry.plan_place(spot, held=held, lateral=lateral)),
@@ -461,7 +668,7 @@ async def servo_pick(
     plan: ServoPlan,
     prompt: str,
     home: WaypointRecord,
-    on_grasp: Callable[[Vec3], None] | None = None,
+    on_grasp: Callable[[Vec3, servo.GraspFamily], None] | None = None,
 ) -> None:
     """closed-loop 파지 실행 — home 경유 → rung0 진입 → tick 루프 → commit →
     close → 판정(재시도) → 후퇴 → 판정 → home.
@@ -473,9 +680,10 @@ async def servo_pick(
       ServoFailed 메시지 + trace 에 남는다.
     - trace: 매 tick JSONL + 종료 summary (debug/servo_pick/<ts>/ —
       실패 재구성이 하드웨어 없이 가능해야 한다는 요구의 구현).
-    - on_grasp: 채택 관측이 파지점을 갱신할 때마다 호출 (호출자=module 이
-      마커 스트림 재발행 — 계획 시점 마커가 실행 내내 고정 표시되던 UI 구멍,
-      2026-07-17 사용자 리포트).
+    - on_grasp: 채택 관측이 파지점을 갱신할 때마다 (파지점, 현재 가족) 호출
+      (호출자=module 이 마커 스트림 재발행 — 계획 시점 마커가 실행 내내 고정
+      표시되던 UI 구멍, 2026-07-17 사용자 리포트. 가족 동봉 = 파지 방향
+      화살표/조 축 바의 실시간 소스, 2026-07-19).
     """
     cfg = _SERVO_CFG
     trace = ServoTrace(prompt, robot_id)
@@ -492,6 +700,8 @@ async def servo_pick(
     comp = servo.PlantComp()  # 명령-실측 잔차 보상 (근거 = servo.py docstring)
     tcp: TcpState | None = None
     summary: dict = {"result": "unknown", "family": run.fam.label}
+    floor_suspect = False  # 하강 프로파일의 바닥 접촉 의심 (진단 — summary 로)
+    midstop_resid_mm: list[float] | None = None  # 마지막 commit 재앵커 잔차
 
     try:
         await go_home(ctx, robot_id, home)
@@ -504,7 +714,9 @@ async def servo_pick(
                 await asyncio.sleep(cfg.settle_s)
                 det = await ctx.call(
                     Detector.Service.DETECT_ORIENTED,
-                    DetectRequest(robot_id=robot_id, prompt=prompt, top_k=_TOP_K),
+                    DetectRequest(
+                        robot_id=robot_id, prompts=[prompt], top_k=_TOP_K
+                    ),
                     DetectOrientedResponse,
                 )
                 tcp = await ctx.call(
@@ -565,7 +777,7 @@ async def servo_pick(
                         ctx, run.accepted[-cfg.fuse_last_k:], gate.obs
                     )
                     run.update_grasp(gate.obs, fused, cfg)
-                    _notify_grasp(on_grasp, run.g_point)  # 마커 재발행
+                    _notify_grasp(on_grasp, run.g_point, run.fam)  # 마커 재발행
                     target_so = servo.standoff(
                         run.g_tcp, run.fam, cfg.standoffs[state.rung]
                     )
@@ -666,7 +878,6 @@ async def servo_pick(
                 "servo commit: rung=%d blind=%.1fmm grasp_tcp=%s (%s)",
                 state.rung, blind_m * 1000.0, _fmt(run.g_tcp), run.fam.label,
             )
-            grasp_cmd = comp.apply(run.g_tcp)
             await _trace_emit(trace, {
                 "phase": "commit",
                 "tick": state.ticks,
@@ -674,15 +885,81 @@ async def servo_pick(
                 "blind_mm": round(blind_m * 1000, 1),
                 "grasp_tcp": [round(v, 4) for v in run.g_tcp],
                 "comp_mm": comp.mm,
-                "cmd": [round(v, 4) for v in grasp_cmd],
                 "action": "commit",
                 "reason": f"blind {blind_m * 1000:.1f}mm 최종 접근",
             })
-            await _move_l(
+            # ── 2단 하강 (2026-07-17 스틱션 release 스침 대응) — midstop 에서
+            # 하강방향 재안착 후 **그 순간의 FK 실측 잔차**로 마지막 구간 재앵커
+            # (근거·분기별 무해성 = servo.midstop_sequence/reanchor docstring).
+            # midstop 경로가 어떤 이유로든 실패하면 오늘의 단발 하강으로 폴백 —
+            # 이 수정으로 IK 사망 경로가 새로 생기지 않는다.
+            profile: list[dict] = []
+            t_descent0 = time.monotonic()
+            grasp_cmd = comp.apply(run.g_tcp)  # 폴백/미사용(midstop off) 기본값
+            seq = servo.midstop_sequence(run.g_tcp, run.fam, cfg)
+            if seq:
+                try:
+                    for i, wp in enumerate(seq):
+                        await _descend_profiled(
+                            ctx, robot_id, comp.apply(wp), run.fam.quat,
+                            cfg=cfg, seg=f"midstop{i}", t0=t_descent0,
+                            samples=profile,
+                        )
+                    await asyncio.sleep(cfg.commit_settle_s)
+                    snap = await ctx.call(
+                        Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(),
+                        TcpState, robot_id=robot_id,
+                    )
+                    resid, grasp_cmd = servo.reanchor(
+                        run.g_tcp, comp.apply(seq[-1]), snap.position,
+                        cfg.commit_residual_max_m,
+                    )
+                    midstop_resid_mm = [round(v * 1000, 1) for v in resid]
+                    logger.info(
+                        "commit midstop: 실측 잔차 %s mm → 최종 %s",
+                        midstop_resid_mm, _fmt(grasp_cmd),
+                    )
+                    await _trace_emit(trace, {
+                        "phase": "commit",
+                        "action": "midstop_reanchor",
+                        "tick": state.ticks,
+                        "measured": [round(v, 4) for v in snap.position],
+                        "resid_mm": midstop_resid_mm,
+                        "cmd": [round(v, 4) for v in grasp_cmd],
+                    })
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e_m:
+                    grasp_cmd = comp.apply(run.g_tcp)
+                    logger.warning(
+                        "commit midstop 실패 (%s) — 단발 하강 폴백: %s",
+                        e_m, _fmt(grasp_cmd),
+                    )
+                    await _trace_emit(trace, {
+                        "phase": "commit",
+                        "action": "midstop_skipped",
+                        "tick": state.ticks,
+                        "reason": str(e_m),
+                        "cmd": [round(v, 4) for v in grasp_cmd],
+                    })
+            await _descend_profiled(
                 ctx, robot_id, grasp_cmd, run.fam.quat,
-                speed_scale=cfg.gentle_speed_scale,
+                cfg=cfg, seg="final", t0=t_descent0, samples=profile,
             )
             comp.commanded(grasp_cmd)
+            if profile:
+                suspect = servo.descent_suspect(
+                    profile, ctx.spec(robot_id).gripper_index,
+                    cfg.descent_load_suspect_raw,
+                )
+                floor_suspect = floor_suspect or suspect
+                await _trace_emit(trace, {
+                    "phase": "commit",
+                    "action": "descent_profile",
+                    "tick": state.ticks,
+                    "floor_contact_suspect": suspect,
+                    "samples": profile,
+                })
             await _touch_up(ctx, robot_id, run, grasp_cmd, comp, cfg,
                             trace, state.ticks)
             await _log_reached_tcp(
@@ -783,6 +1060,8 @@ async def servo_pick(
             "result": "success",
             "close_attempts": run.close_attempts + 1,
             "final_grasp_tcp": [round(v, 4) for v in run.g_tcp],
+            "midstop_resid_mm": midstop_resid_mm,
+            "floor_contact_suspect": floor_suspect,
             "error_history_mm": [
                 round(e, 1) for e in state.error_history_mm
             ],
@@ -793,6 +1072,8 @@ async def servo_pick(
             else "failed",
             "error": f"{type(e).__name__}: {e}",
             "close_attempts": run.close_attempts,
+            "midstop_resid_mm": midstop_resid_mm,
+            "floor_contact_suspect": floor_suspect,
             "error_history_mm": [
                 round(er, 1) for er in state.error_history_mm
             ],
@@ -890,13 +1171,18 @@ def _join_msgs(parts: list[str], sep: str = " / ") -> str:
     return sep.join(parts)
 
 
-def _notify_grasp(cb: Callable[[Vec3], None] | None, p: Vec3) -> None:
+def _notify_grasp(
+    cb: Callable[[Vec3, servo.GraspFamily], None] | None,
+    p: Vec3,
+    fam: servo.GraspFamily,
+) -> None:
     """파지점 갱신 통지 — 모듈 레벨 간접호출인 이유: 시나리오 프리뷰의 정적
     인덱서가 파라미터 직접 호출(`on_grasp(...)`)을 못 풀어 step 트리에 `<동적>`
     노이즈 행을 만든다 (2026-07-17 preview 계약 테스트로 포착). 마커 통지는
-    step 이 아니므로 트리 미표시가 올바른 의미론."""
+    step 이 아니므로 트리 미표시가 올바른 의미론. fam = 현재 파지 가족 (방향
+    시각화 소스 — refit/재플랜 반영)."""
     if cb is not None:
-        cb(p)
+        cb(p, fam)
 
 
 async def _trace_emit(trace: ServoTrace, record: dict) -> None:
@@ -988,6 +1274,75 @@ async def _touch_up(
         comp.commanded(grasp_cmd)
 
 
+async def _descend_profiled(
+    ctx: TaskContext,
+    robot_id: str,
+    position: Vec3,
+    quat: Quat,
+    *,
+    cfg: servo.ServoConfig,
+    seg: str,
+    t0: float,
+    samples: list[dict],
+) -> None:
+    """하강 이동 + 진행 중 FK z/관절 load 프로파일 (진단 전용 — 제어 무관).
+
+    이동을 task 로 띄우고 완료까지 descent_sample_hz 로 폴링 — release 가
+    하강의 **어느 시점**에 났는지 / 바닥 접촉 load 지문이 trace 에 남는다.
+    이동이 즉시 끝나면(=mock) 샘플 0 (첫 폴링 전에 1 tick 양보) — 스크립트
+    테스트의 응답 소비를 오염하지 않는 결정성 계약."""
+    move = asyncio.ensure_future(_move_l(
+        ctx, robot_id, position, quat, speed_scale=cfg.gentle_speed_scale,
+    ))
+    await asyncio.sleep(0)  # mock 즉시완료 이동은 아래 루프 진입 전에 done
+    try:
+        while cfg.descent_sample_hz > 0 and not move.done():
+            await _descent_sample(ctx, robot_id, seg=seg, t0=t0, samples=samples)
+            if move.done():
+                break
+            await asyncio.sleep(1.0 / cfg.descent_sample_hz)
+        await move
+    except BaseException:
+        # 취소/샘플 예외가 이동 task 를 고아로 남기지 않는다 (이후 STOP 은
+        # on_abort 몫 — 여기선 회수만).
+        if not move.done():
+            move.cancel()
+            try:
+                await move
+            except BaseException:
+                pass
+        raise
+
+
+async def _descent_sample(
+    ctx: TaskContext,
+    robot_id: str,
+    *,
+    seg: str,
+    t0: float,
+    samples: list[dict],
+) -> None:
+    """프로파일 샘플 1건 — FK z + 관절 load. wire 실패는 프로파일 구멍일 뿐
+    이동에 영향 없음 (RemoteError/Timeout 만 — 그 외는 버그라 그대로 전파)."""
+    try:
+        snap = await ctx.call(
+            Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
+            robot_id=robot_id,
+        )
+        state = await ctx.call(
+            Motor.Service.READ_STATE, ReadStateRequest(), JointState,
+            robot_id=robot_id,
+        )
+    except (RemoteError, TimeoutError):
+        return
+    samples.append({
+        "t_ms": round((time.monotonic() - t0) * 1000),
+        "seg": seg,
+        "z": round(float(snap.position[2]), 4),
+        "loads": list(state.loads_raw) if state.loads_raw else None,
+    })
+
+
 async def _retreat_for_retry(
     ctx: TaskContext,
     robot_id: str,
@@ -1061,41 +1416,74 @@ async def _servo_move(
 
 @step(title="검출")
 async def detect(
-    ctx: TaskContext, robot_id: str, prompt: str
-) -> list[OrientedDetection]:
-    """search 그룹 자세를 **전부** 돌며 검출 → 후보 **누적** (첫 자세에서 안 멈춤).
+    ctx: TaskContext,
+    robot_id: str,
+    prompts: list[str],
+    world: WorldScan | None = None,
+) -> dict[str, list[OrientedDetection]]:
+    """search 그룹 자세를 **전부** 돌며 **모든 prompt 동시** 검출 → prompt 별 누적.
 
     단일 시점 검출은 가림/시야/각도로 놓치거나 오검출한다 — 여러 관측 자세를 다
-    돌아 모으면 강건. **선택은 안 함** — select_target_by_score 가 누적 전체에서.
+    돌아 모으면 강건. **선택은 안 함** — 판정(신뢰 컷/도달성)은 plan 단계가.
     스윕 관측은 멀리서라 FK 오차가 크다 (실측: 카메라 31-33cm 에서 ~40mm) —
     coarse 위치 전용, 파지 정밀도는 servo 루프가 close 관측으로 잡는다.
+
+    **스윕 통합 (2026-07-19)**: 옛 구조는 pick/place 가 같은 자세를 두 번 돌았다
+    (스윕 비용의 대부분 = 관측 자세 MoveJ). pose 당 wire 호출 1번에 prompts 를
+    다 실어 pick 검출 + place 검출 + world 스캔이 한 스윕에 끝난다 — 후보는
+    응답의 per-candidate prompt 귀속으로 나눈다 (detector contract).
+
+    world: build_world 옵션의 편승 스캔 — 각 pose 정지 관측 직후 capture+build
+    (best-effort, WorldScan docstring).
     """
     t0 = time.monotonic()
     members = await _search_waypoints(ctx, robot_id)
-    candidates: list[OrientedDetection] = []
+    found: dict[str, list[OrientedDetection]] = {p: [] for p in prompts}
     for wp in members:
         await _move_j_joints(ctx, robot_id, wp.joint_values)
         await asyncio.sleep(_SEARCH_SETTLE_S)  # MoveJ 후 카메라 정착 (검출 품질)
         res = await ctx.call(
             Detector.Service.DETECT_ORIENTED,
-            DetectRequest(robot_id=robot_id, prompt=prompt, top_k=_TOP_K),
+            DetectRequest(robot_id=robot_id, prompts=list(prompts), top_k=_TOP_K),
             DetectOrientedResponse,
         )
-        if res.candidates:
-            candidates.extend(res.candidates)
+        _bucket_by_prompt(found, res.candidates)
+        if world is not None:
+            await world.capture()  # 빌드는 백그라운드 (WorldScan docstring)
+    if world is not None:
+        world.finalize()  # 마지막 캡처 포함 빌드 보장 (대기 안 함)
     logger.info(
-        "detect(%s): search '%s' %d 자세 → 후보 누적 %d (%.1fs)",
-        prompt, _SEARCH_GROUP, len(members), len(candidates),
-        time.monotonic() - t0,
+        "detect(%s): search '%s' %d 자세 → 후보 누적 %s (%.1fs)",
+        ", ".join(prompts), _SEARCH_GROUP, len(members),
+        {p: len(cs) for p, cs in found.items()}, time.monotonic() - t0,
     )
-    for i, c in enumerate(candidates):
-        logger.info(
-            "  후보%d: score=%.2f height(단일뷰)=%.1fcm base_z(물체바닥)=%.3fm "
-            "top=%.3fm pos=(%.3f,%.3f)",
-            i, c.score, c.height * 100.0, c.base_z, c.position[2],
-            c.position[0], c.position[1],
-        )
-    return candidates
+    for p, cs in found.items():
+        for i, c in enumerate(cs):
+            logger.info(
+                "  [%s] 후보%d: score=%.2f height(단일뷰)=%.1fcm "
+                "base_z(물체바닥)=%.3fm top=%.3fm pos=(%.3f,%.3f)",
+                p, i, c.score, c.height * 100.0, c.base_z, c.position[2],
+                c.position[0], c.position[1],
+            )
+    return found
+
+
+def _bucket_by_prompt(
+    found: dict[str, list[OrientedDetection]],
+    candidates: list[OrientedDetection],
+) -> None:
+    """스윕 응답 후보를 요청 prompt 버킷에 누적 — 명명 헬퍼인 이유: 프리뷰
+    정적 인덱서가 `dict[key].append` 첨자 호출을 `<동적>` 노이즈 행으로 잡는다
+    (_join_msgs 동형). 요청 밖 귀속 = detector 계약 위반 신호 — 버리되 침묵 금지."""
+    for c in candidates:
+        bucket = found.get(c.prompt)
+        if bucket is None:
+            logger.warning(
+                "detect: 요청 밖 prompt 귀속 후보 무시 (%r ∉ %s)",
+                c.prompt, list(found),
+            )
+            continue
+        bucket.append(c)
 
 
 async def _search_waypoints(

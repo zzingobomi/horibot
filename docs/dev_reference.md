@@ -980,6 +980,29 @@ sub.undeclare(); session.close()
 
 ---
 
+## 파지 방향 시각화 — "이 면을 이 방향으로 집는다" (2026-07-19 사용자 제안)
+
+- **한 줄**: 3D 씬의 grasp 마커를 위치 점에서 **방향 있는 마커**로 — 조 축(jaw
+  axis)·접근 방향·파지 자세를 함께 그려, 그리퍼가 물체의 어느 면을 어느 방향으로
+  물 계획인지 실행 전/중에 보이게.
+- **왜**: 지금 `TaskMarker` 는 `label + position` 뿐이라 계획이 어느 가족
+  (수직/tilt, 조 축 long/short, yaw)을 채택했는지 UI 로 판별 불가 — trace/로그를
+  열어야 안다. yaw 스큐·가족 재유도(refit_family) 류 실사고는 "화면에서 방향이
+  보였으면 즉시 캐치" 클래스.
+- **어떻게**: 데이터는 이미 전부 있음 — 정본은 `servo.GraspFamily`
+  (jaw_axis/approach/quat/label — antipodal.py 는 진단 전용 잔존물, 소스 아님)
+  + `ServoPlan.grasp_tcp0` + servo on_grasp 갱신 경로. ① `TaskMarker` 에
+  optional `quaternion`/`jaw_axis`(+개구 폭) 필드 추가 (additive — contract
+  regen) ② `module._publish_markers` 가 `plan.family` 를 실어 발행 (on_grasp
+  재발행 경로 포함 — servo 중 가족이 바뀌면 방향도 실시간) ③
+  `TaskMarkersOverlay` 가 접근 방향 화살표 + 조 축 양방향 바(폭 = lateral/개구)
+  렌더.
+- **리스크/트레이드오프**: 마커 스트림 payload 확장은 optional 필드라 하위호환.
+  씬 소유권은 기존 scenePart(패널 수명) 규약 그대로 — 신규 표면 없음.
+- **의존성**: 없음 (contract regen 만).
+
+---
+
 ## Palletizing — 다양한 크기 직육면체 쌓기
 
 승격됨 — 별도 design 문서로 분리: [docs/random_palletizing.md](random_palletizing.md)

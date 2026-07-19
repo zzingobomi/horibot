@@ -20,7 +20,14 @@ import type {
   ScanRecord,
   ScanSessionRecord,
 } from "@/api/generated/contract";
-import { useScanStore } from "@/stores/scanStore";
+import {
+  DEFAULT_BUILD_VOXEL_M,
+  useScanStore,
+  VOXEL_TIERS,
+} from "@/stores/scanStore";
+
+// 수동 빌드 voxel 마지막 선택 (m) — pnp 월드 voxel 과 별개 (다른 작업 맥락).
+const BUILD_VOXEL_LS_KEY = "scan.buildVoxelM";
 
 export function ScanPanel() {
   const robotId = useRobotId();
@@ -42,6 +49,14 @@ export function ScanPanel() {
   const [recons, setRecons] = useState<ReconstructionRecord[]>([]);
   const [building, setBuilding] = useState(false);
   const [msg, setMsg] = useState("");
+  const [buildVoxelM, setBuildVoxelMState] = useState(() => {
+    const v = Number(localStorage.getItem(BUILD_VOXEL_LS_KEY));
+    return VOXEL_TIERS.some((t) => t.m === v) ? v : DEFAULT_BUILD_VOXEL_M;
+  });
+  const setBuildVoxelM = (m: number) => {
+    setBuildVoxelMState(m);
+    localStorage.setItem(BUILD_VOXEL_LS_KEY, String(m));
+  };
 
   const refreshScans = useCallback(
     async (sid: number) => {
@@ -118,7 +133,7 @@ export function ScanPanel() {
     setMsg("빌드 시작…");
     try {
       const res = await build.call(
-        { session_row_id: sessionRowId },
+        { session_row_id: sessionRowId, voxel_size: buildVoxelM },
         { timeoutMs: 120_000 },
       );
       const d = res.data as {
@@ -140,9 +155,13 @@ export function ScanPanel() {
     const res = await getMesh.call({ reconstruction_row_id: reconId });
     const d = res.data as GetMeshResponse | null;
     if (d?.ply_bytes && d.ply_bytes.byteLength > 0) {
+      const rec = recons.find((r) => r.id === reconId);
       setMesh(d.ply_bytes, {
         vertexCount: d.vertex_count,
         triangleCount: d.triangle_count,
+        // World 라벨("N시간 전 스캔")/자동갱신 dedup 메타 — 수동 로드도 동일 계약
+        createdAt: rec ? String(rec.created_at) : undefined,
+        reconstructionId: reconId,
       });
       setMsg(`mesh 로드 (${d.vertex_count} verts)`);
     } else {
@@ -212,6 +231,21 @@ export function ScanPanel() {
       {/* 빌드 */}
       <section className="mb-3">
         <div className="mb-1 font-mono uppercase text-muted-foreground">build</div>
+        <div className="mb-1 flex items-center gap-2">
+          <span className="text-muted-foreground">품질 (voxel)</span>
+          <select
+            value={buildVoxelM}
+            onChange={(e) => setBuildVoxelM(Number(e.target.value))}
+            data-testid="build-voxel"
+            className="rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 font-mono"
+          >
+            {VOXEL_TIERS.map((t) => (
+              <option key={t.m} value={t.m}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <Button
           size="sm"
           variant="secondary"

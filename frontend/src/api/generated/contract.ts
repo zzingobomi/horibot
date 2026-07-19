@@ -346,7 +346,8 @@ export interface DetectOrientedResponse {
 
 export interface DetectRequest {
   robot_id: string;
-  prompt: string;
+  prompts?: string[] | null;
+  prompt?: string | null;
   top_k?: number;
 }
 
@@ -746,28 +747,33 @@ export interface ToggleBreakpointRequest {
   name: string;
 }
 
-export interface ListRobotsRequest {
+export interface PickAndPlaceListRobotsRequest {
 }
 
-export interface ListRobotsResponse {
+export interface PickAndPlaceListRobotsResponse {
   robot_ids: string[];
 }
 
-export interface RunRequest {
+export interface PickAndPlaceRunRequest {
   pick_object: string;
   place_object?: string;
+  build_world?: boolean;
+  world_voxel_size?: number | null;
 }
 
-export interface TaskMarker {
+export interface PickAndPlaceTaskMarker {
   label: string;
   position: [number, number, number];
+  approach?: [number, number, number] | null;
+  jaw_axis?: [number, number, number] | null;
+  quaternion?: [number, number, number, number] | null;
 }
 
-export interface TaskMarkers {
+export interface PickAndPlaceTaskMarkers {
   robot_id: string;
   seq: number;
   timestamp_unix: number;
-  markers?: TaskMarker[];
+  markers?: PickAndPlaceTaskMarker[];
 }
 
 export interface AddToGroupRequest {
@@ -918,7 +924,7 @@ export type TopicPayloadMap = {
   "stream/motor/{robot_id}/raw_state": JointState;
   "stream/motor/{robot_id}/state": MotorState;
   "event/motor/{robot_id}/torque_changed": TorqueChanged;
-  "stream/pick_and_place/{robot_id}/markers": TaskMarkers;
+  "stream/pick_and_place/{robot_id}/markers": PickAndPlaceTaskMarkers;
   "stream/pick_and_place/{robot_id}/state": TaskState;
   "stream/pick_and_place/{robot_id}/trace": TaskTrace;
   "stream/scan/{robot_id}/build_progress": BuildProgress;
@@ -998,11 +1004,11 @@ export type ServiceMap = {
   "srv/motor/{robot_id}/capabilities": { req: MotorCapabilitiesRequest; res: MotorCapabilities };
   "srv/motor/{robot_id}/topology": { req: TopologyRequest; res: MotorTopology };
   "srv/motor/{robot_id}/set_torque": { req: SetTorqueRequest; res: SetTorqueResponse };
-  "srv/pick_and_place/list_robots": { req: ListRobotsRequest; res: ListRobotsResponse };
+  "srv/pick_and_place/list_robots": { req: PickAndPlaceListRobotsRequest; res: PickAndPlaceListRobotsResponse };
   "srv/pick_and_place/pause": { req: ControlRequest; res: ControlResponse };
   "srv/pick_and_place/preview": { req: PreviewRequest; res: PreviewResponse };
   "srv/pick_and_place/resume": { req: ControlRequest; res: ControlResponse };
-  "srv/pick_and_place/run": { req: RunRequest; res: RunResponse };
+  "srv/pick_and_place/run": { req: PickAndPlaceRunRequest; res: RunResponse };
   "srv/pick_and_place/run_to": { req: RunToRequest; res: ControlResponse };
   "srv/pick_and_place/step_once": { req: ControlRequest; res: ControlResponse };
   "srv/pick_and_place/stop": { req: ControlRequest; res: ControlResponse };

@@ -263,6 +263,76 @@ round cube" / place "blue box".
 | 관측 오염 (top z 점프/455mm 도약/점군 부족) | 조/가림 depth, mask 오검출 | `servo.gate_observation` (z_jump/jump/min_points/match_radius) + 이동 거부 1회 관용 (`TrackState.move_fails`) |
 | 검출이 공중 부양 (base_z +0.04~+0.18, "허공 목표 IK 거부"/공중 spot) | 실루엣 flying-pixel(카메라 쪽 = 위로 뜸) 트레일이 옛 p98 top 앵커 탈취 → z-gap 군집이 트레일만 몸통으로 (07-17 PLY 실측: 점군 99%가 테이블인데 base_z=+0.175) | `detector geometry._body_z_band` (질량 군집 — 07-17 수정, 회귀 test) + `steps` base_z 대역 후순위 (2차 방어) |
 | 적치 성공 후 `[retreat] MoveL failed` | MoveL 사전검증 통과했는데 실행 seed 연쇄가 끝점(=pre) IK 못 풂 — pre 는 관절해가 알려진 자세 (좁은 basin 복권) | `steps.retreat` pre_joints MoveJ 폴백 (07-17) — 정석(insert 궤적 역재생)은 motion 단 지원 필요 |
+| commit blind 하강 중 조 끝 바닥 스침 (touch-up 이 회복은 함) | stale comp 과보상 — 스틱션/유격이 tick 국면에서 학습된 ±5~13mm 잔차(42런 실측, 부호 반전 포함)를 착지 직전 release. sag 캘(active)로 못 잡는 불연속 성분 | `steps` commit 2단 하강 (07-17 밤): midstop 하강방향 재안착(dither) → FK 실측 잔차 재앵커 (`servo.midstop_sequence`/`reanchor`, 노브 `commit_*`). 실패 시 단발 하강 폴백 (trace `midstop_skipped`). 하강 중 20Hz FK z+load = trace `descent_profile` (+`floor_contact_suspect` summary) — 스침 여부/시점을 데이터가 답함. **실물 미검증 — 첫 런에서 descent_profile 로 midstop/dither 노브 특성화** |
+
+### 4.3.1 run 옵션 — build_world (2026-07-18)
+
+`RunRequest.build_world` (기본 false): search 스윕에 편승해 scan 세션
+(new_session → pose 당 capture → 전체 재빌드)을 돌려 3D World 배경을 갱신.
+**best-effort** — 어떤 실패도 pick 을 죽이지 않는다 (`steps.WorldScan`, 첫 실패
+후 비활성 + 경고 로그). ~~place 스윕은 같은 자세 재방문이라 중복 캡처 없음~~
+(2026-07-19 §4.3.3 스윕 통합으로 place 별도 스윕 자체가 사라짐 — 스윕은 run 당 1회).
+프론트 = PickAndPlacePanel 체크박스 (마지막 선택 localStorage), 표시는 별도
+토글 (docs/frontend.md §8 World).
+
+**`RunRequest.world_voxel_size` (2026-07-18, 기본 None=scan 2mm)**: 월드 빌드
+TSDF voxel(m). UI 4단 셀렉터 (1/2/4/8mm, `scanStore.VOXEL_TIERS` SSOT — ScanPanel
+수동 빌드와 공유). scan 모듈이 voxel→sdf_trunc 파생. 정합은 colored ICP
+(docs/perception.md 개정 배너). search 자세 밀도가 월드 품질 지배 →
+`scripts/plan_search_poses.py`.
+
+**빌드 백그라운드화 (2026-07-19 — 스윕 크리티컬 패스 최적화)**: 15:50 실물 런
+분해 = 스윕 59.5s 중 world capture+build ~40s (전체 재빌드가 스캔 누적으로
+3.8→8.4s 증가). 수정: 크리티컬 패스에는 **capture(정지 필요, 1.2~1.6s)만**
+남기고 빌드는 asyncio 백그라운드 (in-flight 1 + dirty 병합 재킥 — 폭주 상한,
+회귀 테스트 잠금) + 스윕 끝 finalize 킥 (마지막 캡처 포함 최종 빌드 보장,
+대기 안 함). 품질 무영향 — 같은 스캔·같은 빌드, 최종 메시는 항상 전 스캔
+포함. 로그: `world_capture pose=N` (크리티컬 패스 실측) / `world_build (bg)`
+(백그라운드 빌드 ms). 같은 날 detector 디버그 덤프(PNG+16bit depth+PLY 동기
+쓰기)도 fire-and-forget 스레드로 이동 — 검출 응답에서 파일 I/O 제거 (내용
+무손실, 실패는 콜백 로깅).
+
+### 4.3.2 place 중심 융합 (2026-07-18 실물 — 모서리 적치 버그)
+
+실물에서 물체가 상자 **가운데가 아니라 모서리**에 놓임. debug 덤프 진단: 정적
+상자를 여러 search pose 에서 본 검출 중심이 **부분-림 관측으로 2~3cm 흔들린다**
+(실측: 같은 상자 X 0.276→0.298 / Y 0.085→0.117, footprint 도 4.6~8.5cm 들쭉).
+`plan_place` 가 그중 **단일 점수 1등**을 그대로 써서, 7cm 상자에선 그 오차가 곧
+모서리. **왜 pick 은 되고 place 는 안 되나** = pick 은 closed-loop servo(가까이서
+재검출→보정)로 coarse 오차를 잡지만, place 는 **open-loop** 라 그대로 물려받음.
+
+**수정 = `steps._fuse_place_center`** (open-loop 유지, closed-loop 미도입): 상자는
+정적이라 **집기 전 스윕의 가림 없는 관측들**을 융합하면 occlusion 없이 안정된
+중심을 얻는다 (물체 든 채 재검출 = 상자 가림 → 회피). plausible base_z 검출을 XY
+클러스터링 → 최대 score 군집의 score-가중 평균 중심을 대표 검출에 덮어 반환
+(garbage base_z 제외, 단일뷰면 None→기존 경로). 융합 중심을 먼저 시도 후 도달
+불가 시 단일-spot 폴백 (동작 후퇴 없음). 실덤프 검증: 5뷰 융합 (0.294→0.286,
+단일 best 가 클러스터 far 모서리였음) + 산포 √N 감소로 run 간 안정화.
+
+**TODO (미도입, 문서만)**: closed-loop place 는 정석이나 **물체 든 채 상자 가림**
+문제가 있어 look-then-move(가리기 전 standoff 재검출)가 필요 — occlusion 때문에
+융합 대비 ROI 낮음. 정밀 요구 생기면 재검토. detector 가 컨테이너 중심을 림-점
+평균이 아니라 OBB 기하중심으로 주는 개선도 후보 (부분관측 강건).
+
+### 4.3.3 스윕 통합 — 검출 1회에 pick+place+world (2026-07-19)
+
+옛 구조 = pick 스윕(자세 N개 순회) 후 plan_place 가 **같은 자세를 다시 순회**
+(place 검출) — 스윕 비용의 대부분이 관측 자세 MoveJ 라 run 당 자세 N개 × 이동
+1회가 통째로 낭비였다. 통합:
+
+- **시나리오 골격 변경**: `detect`(시나리오 직속 step 승격 — preview 트리 depth0)
+  가 pose 당 wire 1호출 `DetectRequest(prompts=[pick, place])` 로 두 클래스를
+  함께 검출 + world capture 편승 → prompt 별 dict 반환. `plan_pick`/`plan_place`
+  는 검출을 직접 안 부르고 **후보 주입** (모션 0 순수 판정으로 정리).
+- **detector 멀티 프롬프트 일반화** (wire 는 "무엇을 찾을지"만): contract
+  `DetectRequest.prompts`(prompt 는 하위호환) + top_k 는 **프롬프트별** + 응답
+  flat list 의 per-candidate `prompt` 귀속. 추론 전략은 detector 내부 —
+  기본 = prompt 별 단독 N-loop (**score 는 옛 단일 prompt 와 동일** — 실측
+  튜닝된 `_PICK_SCORE_MIN` 무영향), opt-in = GDINO 1-forward 합동
+  (`detector_joint_inference`, docs/perception.md 멀티 프롬프트 부 참조).
+- 판정/컷/융합(§4.3.2)/servo 는 전부 무변경 — 검출 수집 경로만 바뀜.
+  trace/debug 덤프는 후보별 `prompt` 필드가 추가돼 스윕 원본에서 pick/place
+  귀속을 구분할 수 있다.
 
 ### 4.4 노브 SSOT
 

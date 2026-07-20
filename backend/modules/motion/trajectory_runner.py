@@ -41,6 +41,8 @@ ReleaseProfileFn = Callable[[], bool]
 RestoreProfileFn = Callable[[], bool]
 # (position, orientation | None, seed) — None = position-only IK
 SolveIkFn = Callable[[Position3, Quaternion | None, list[float]], list[float] | None]
+# joint_angles → (tcp position, tcp orientation) — 진단용 잔차(fk(sol) vs 목표) 계산
+FkFn = Callable[[list[float]], tuple[Position3, Quaternion]]
 
 
 class CartesianPath(ABC):
@@ -143,6 +145,7 @@ class TrajectoryRunner:
         publish_state: PublishStateFn,
         solve_ik: SolveIkFn,
         get_joint_angles: Callable[[], list[float] | None],
+        fk: FkFn,
     ) -> None:
         if not (
             len(joint_max_velocity)
@@ -166,6 +169,7 @@ class TrajectoryRunner:
         self._publish_state = publish_state
         self._solve_ik = solve_ik
         self._get_joint_angles = get_joint_angles
+        self._fk = fk
         self._thread: threading.Thread | None = None
         self._stop_ev = threading.Event()
 
@@ -289,6 +293,10 @@ class TrajectoryRunner:
         diag_prev_t = t_start
         start_pos = path.position_at(0.0)
         end_pos = path.position_at(path.total_length)
+        # §7/§10.B 관측성: 매 틱 채택 IK 해의 위치잔차 max — MoveL 꺾임(=직선
+        # 위 목표를 IK 가 못 맞춤)이 실물에서 얼마나 남는지 이동 종료 후 1회 로그.
+        # conditional refine 도입 후 sub-mm 여야 정상 (자세 빡센 끝부분 감시).
+        ik_resid_max = 0.0
 
         def _diag_sample() -> None:
             nonlocal diag_prev_cmd, diag_prev_t
@@ -305,7 +313,7 @@ class TrajectoryRunner:
             )
 
         def _ik_step(s: float) -> bool:
-            nonlocal q_cmd
+            nonlocal q_cmd, ik_resid_max
             wp_list = path.position_at(s)
             wp: Position3 = (wp_list[0], wp_list[1], wp_list[2])
             frac = s / path.total_length if path.total_length > 0 else 1.0
@@ -313,6 +321,10 @@ class TrajectoryRunner:
             if raw is None:
                 logger.warning("%s IK 실패 | s=%.1fcm", label, s * 100)
                 return False
+            fk_pos, _ = self._fk(raw)  # 채택 해 실도달 위치 → 직선 목표 잔차
+            resid = math.dist(fk_pos, wp)
+            if resid > ik_resid_max:
+                ik_resid_max = resid
             q_cmd = raw
             self._publish_cmd(q_cmd)
             return True
@@ -377,7 +389,8 @@ class TrajectoryRunner:
             if not self._restore_profile():
                 logger.warning("%s: profile 복원 실패", label)
             self._log_cart_diag(
-                label, start_pos, end_pos, est_duration, _ori_angle, diag
+                label, start_pos, end_pos, est_duration, _ori_angle, diag,
+                ik_resid_max,
             )
 
     def _log_cart_diag(
@@ -388,6 +401,7 @@ class TrajectoryRunner:
         est_duration: float,
         ori_angle: float,
         diag: list[tuple[float, float, float, float, float]],
+        ik_resid_max: float,
     ) -> None:
         """cartesian 이동 1건 진단 요약 (이동 종료 후 1회 — 루프 타이밍 비교란).
 
@@ -405,7 +419,8 @@ class TrajectoryRunner:
         logger.info(
             "%s 진단: start(%.3f,%.3f,%.3f)->end(%.3f,%.3f,%.3f)m "
             "ori=%.1f° ticks=%d dur=%.2fs(est %.2fs) | dt ms mean=%.1f max=%.1f "
-            "min=%.1f (목표 %.0f) | 관절 per-tick step max=%.4frad",
+            "min=%.1f (목표 %.0f) | 관절 per-tick step max=%.4frad "
+            "| IK 위치잔차 max=%.2fmm",
             label,
             start_pos[0], start_pos[1], start_pos[2],
             end_pos[0], end_pos[1], end_pos[2],
@@ -413,6 +428,7 @@ class TrajectoryRunner:
             n, dur, est_duration,
             sum(dts) / n, max(dts), min(dts), TRAJ_DT * 1000.0,
             max(steps),
+            ik_resid_max * 1000.0,
         )
         if logger.isEnabledFor(logging.DEBUG):
             for (el, s_cm, vel, dt_ms, step) in diag:

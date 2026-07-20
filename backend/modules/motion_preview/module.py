@@ -180,6 +180,7 @@ def plan_trajectory(
         publish_state=_on_state,
         solve_ik=_solve_ik,
         get_joint_angles=lambda: start_joints,
+        fk=kin.fk,
     )
 
     if mode == PreviewMode.MOVE_J_POSE:

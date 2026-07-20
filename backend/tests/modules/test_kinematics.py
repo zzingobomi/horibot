@@ -6,12 +6,17 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from modules.motion.adapters.pybullet import PybulletKinematics
+from modules.motion.adapters.pybullet import (
+    _IK_REFINE_THRESHOLD_M,
+    IK_POS_ERROR_LIMIT,
+    PybulletKinematics,
+)
 
 _URDF = (
     Path(__file__).resolve().parents[3]  # tests/modules → backend → repo root
@@ -76,3 +81,70 @@ def test_ik_reachable_from_bad_seed_solves(kin: PybulletKinematics):
     pos2, _ = kin.fk(sol)
     err = float(np.linalg.norm(np.array(target_pos) - np.array(pos2)))
     assert err < 1e-2, f"IK 해의 FK 오차 {err}"
+
+
+def _pos_err(kin: PybulletKinematics, joints: list[float], target) -> float:
+    kin._set_chain(joints)
+    actual, _ = kin._ee_state()
+    return float(np.linalg.norm(np.array(actual) - np.array(target)))
+
+
+def test_conditional_refine_recovers_pose_hard_residual(kin: PybulletKinematics):
+    """docs/motion.md §10.B/§10.D 회귀 — 주 경로 conditional refine.
+
+    자세가 빡센 목표에서 단발(raw) 수치 IK 는 위치를 내주고 자세를 맞추는 해로
+    수렴 → 위치잔차가 크게(일부는 게이트 10mm 초과) 뜬다. 결과-seed 재해(refine)가
+    회수한다. nominal 파지 자세에서 손목(J4/J5)을 tilt 사다리로 돌린 reachable
+    목표(FK 생성) 스윕에서 집계로 검증 — 개별 config 은 solver 편차가 커 brittle.
+
+    refine 을 떼면(_ik_from_seed==raw) refined==raw 라 세 단언(게이트 초과 회수 /
+    최대 잔차 감소 / 평균 잔차 감소)이 동시에 깨진다.
+    """
+    nominal = [0.2, 0.9, -1.3, 0.6, 0.8, 0.3]
+    raw_errs, refined_errs = [], []
+    recovered_over_gate = 0  # 단발은 게이트 초과(기각)인데 refine 이 살린 수
+    for tilt_deg in range(0, 70, 10):
+        for roll_deg in (-40, 0, 40):
+            cfg = list(nominal)
+            cfg[3] += math.radians(tilt_deg)
+            cfg[4] += math.radians(roll_deg)
+            pos, quat = kin.fk(cfg)  # reachable by construction
+
+            raw = kin._ik_raw(pos, quat, nominal)  # 단발 1회 (검증/refine 없음)
+            raw_err = _pos_err(kin, raw, pos)
+            refined = kin._ik_from_seed(pos, quat, nominal)  # 주 경로(refine 포함)
+            if refined is None:
+                continue  # 게이트 초과 = 이 후보 refine 후에도 도달 실패 (드묾)
+            refined_err = _pos_err(kin, refined, pos)
+            raw_errs.append(raw_err)
+            refined_errs.append(refined_err)
+            if raw_err > IK_POS_ERROR_LIMIT and refined_err <= IK_POS_ERROR_LIMIT:
+                recovered_over_gate += 1
+
+    assert raw_errs, "스윕 후보가 하나도 안 풀림 (nominal/URDF 확인)"
+    # ① §6 핵심: 단발이면 게이트에 걸려 기각(false negative)됐을 후보를 refine 이
+    #    살린다 — "refine 이 IK 실패를 줄인다"의 실증.
+    assert recovered_over_gate >= 1, (
+        f"refine 이 게이트 초과 후보를 하나도 회수 못함 "
+        f"(단발 max {max(raw_errs)*1000:.1f}mm, refine max {max(refined_errs)*1000:.1f}mm)"
+    )
+    # ② 최대/평균 잔차가 refine 으로 줄어야 (회귀 가드 — refine 제거 시 동률 → 실패)
+    assert max(refined_errs) < max(raw_errs), "refine 이 최대 잔차를 못 줄임"
+    mean_raw = sum(raw_errs) / len(raw_errs)
+    mean_refined = sum(refined_errs) / len(refined_errs)
+    assert mean_refined < mean_raw * 0.7, (
+        f"refine 평균 개선 부족: {mean_raw*1000:.1f}mm → {mean_refined*1000:.1f}mm"
+    )
+
+
+def test_refine_easy_solution_stays_within_limit(kin: PybulletKinematics):
+    """쉬운 해(seed 근처)는 단발로 이미 임계 이내 → refine 스킵해도 정상 통과.
+
+    비용 0 경로가 여전히 올바른 해를 반환하는지 (refine 분기가 쉬운 해를
+    망가뜨리지 않는지) 확인.
+    """
+    seed = [0.1, 0.3, -0.4, 0.1, 0.2, 0.0]
+    pos, quat = kin.fk(seed)  # seed 자체가 해 → 단발 즉시 수렴
+    sol = kin._ik_from_seed(pos, quat, seed)
+    assert sol is not None
+    assert _pos_err(kin, sol, pos) <= IK_POS_ERROR_LIMIT

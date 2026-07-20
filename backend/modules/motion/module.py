@@ -253,6 +253,7 @@ class MotionModule:
             publish_state=self._publish_traj_state,
             solve_ik=self._solve_ik,
             get_joint_angles=lambda: self._latest_arm_rad,
+            fk=self._fk_diag,
         )
         self._stop = False
         self._tcp_task = asyncio.create_task(self._tcp_state_loop())
@@ -700,6 +701,23 @@ class MotionModule:
                 if _linear_blocked(groups[gi], sols):
                     gate_rejects["path"] += 1
                     continue
+                # §7 관측성: 채택 해의 IK 위치잔차 — 파지 헛잡음이 잔차와
+                # 상관되는지 실물 trace 에서 갈리는 첫 수 (docs/motion.md §10.D).
+                # conditional refine 도입 후 이 값이 sub-mm 로 떨어져야 정상.
+                resid_mm = 1000.0 * max(
+                    (
+                        float(
+                            np.linalg.norm(
+                                np.asarray(kin.fk(s)[0]) - np.asarray(pose.position)
+                            )
+                        )
+                        for s, pose in zip(sols, groups[gi])
+                    ),
+                    default=0.0,
+                )
+                logger.info(
+                    "resolve_reachable: 채택 그룹 %d IK 위치잔차 max=%.2fmm", gi, resid_mm
+                )
                 return gi, sols, ""
             return -1, [], (
                 f"가용 그룹 없음 — 위치 통과 {len(alive)}/{len(groups)}, "
@@ -879,6 +897,11 @@ class MotionModule:
         # cartesian path 추종 — quat=None 이면 position-only. runner 는 start() 이후 생성.
         assert self._kin is not None
         return self._kin.ik(pos, quat, seed)
+
+    def _fk_diag(self, joints: list[float]):
+        # runner 진단용 fk (채택 IK 해 vs 직선 목표 잔차) — ik 와 같은 layer(_kin).
+        assert self._kin is not None
+        return self._kin.fk(joints)
 
     # ── TCP state loop (20Hz) ─────────────────────────────────
 

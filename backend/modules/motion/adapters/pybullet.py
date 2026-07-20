@@ -26,6 +26,16 @@ logger = logging.getLogger(__name__)
 IK_MAX_ITER = 100
 IK_TOLERANCE = 1e-4
 IK_POS_ERROR_LIMIT = 0.01
+# 주 경로 conditional refine (docs/motion.md §10.D). 단발 수치 IK 는 자세가 빡센
+# 지점에서 위치를 내주고 자세를 맞추는 해로 수렴 → 위치잔차가 cm급까지 뜬다
+# (§10.B 실측: 자세회전 120° 에서 단발 51.9mm, 결과-seed 재해 시 0.6mm 로 붕괴).
+# 잔차가 이 임계를 넘을 때만 결과를 seed 로 재해해 회수한다. 쉬운 해(≤임계)는
+# 재해 0회 = 비용 없음. 게이트(IK_POS_ERROR_LIMIT) 검사 앞에서 도므로 게이트에
+# 걸릴 잔차(~15mm)도 회수해 통과시킨다 (refine 이 IK 실패를 줄이는 메커니즘 §6).
+_IK_REFINE_THRESHOLD_M = 0.003
+# 재해 상한 — §4 실측 "결과-seed 1회 재호출로 5mm/0.05° 수렴", walk 의
+# _WALK_REFINE_ITERS(5) 와 동급. 임계 도달 시 조기 종료라 대개 1~2회.
+_IK_REFINE_ITERS = 5
 # 바닥충돌 안전여유 — 관통(거리<0)만이 아니라 바닥에서 이 거리 이내로 그리퍼
 # 링크(몸통 포함)가 접근하면 기각. 그리퍼 몸통이 바닥을 "스치는"(관통 아닌 접촉)
 # 파지를 막는다 (2026-07-15: 몸통이 바닥 닿았는데 관통-only 체크가 통과시킨 사고).
@@ -268,6 +278,19 @@ class PybulletKinematics:
         error = float(
             np.linalg.norm(np.array(actual_pos) - np.array(target_position))
         )
+        # 조건부 refine — 잔차가 임계 초과일 때만 결과-seed 재해 (상단 상수 주석).
+        # 게이트 검사 앞이라 15mm 단발도 ~sub-mm 로 회수해 통과. quat 포함 재해라
+        # 자세도 함께 재수렴 (자세 잔차 검증은 기존대로 walk/호출자 책임).
+        if error > _IK_REFINE_THRESHOLD_M:
+            for _ in range(_IK_REFINE_ITERS):
+                angles = self._ik_raw(target_position, target_quaternion, angles)
+                self._set_chain(angles)
+                actual_pos, _ = self._ee_state()
+                error = float(
+                    np.linalg.norm(np.array(actual_pos) - np.array(target_position))
+                )
+                if error <= _IK_REFINE_THRESHOLD_M:
+                    break
         if error > IK_POS_ERROR_LIMIT:
             return None
         if self._self_collision_unlocked():

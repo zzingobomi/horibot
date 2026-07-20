@@ -549,41 +549,27 @@ async def _replan_family(
     if run.last is None:
         return False
     t0 = time.monotonic()
-    # plan_pick 과 동일한 2단 — 1단 기존 축(빠름), 전멸 시 확장 yaw.
-    full_groups, full_metas = servo_ladder_groups(
-        run.last, cfg, run.floor_z, yaw_free=True
+    # plan_pick 과 동일한 단일 resolve (§11 — 절대 yaw 격자, 2단 폐지).
+    groups, metas = servo_ladder_groups(run.last, cfg, run.floor_z)
+    res = await ctx.call(
+        Motion.Service.RESOLVE_REACHABLE,
+        ResolveReachableRequest(
+            groups=groups,
+            floor_z=run.floor_z,
+            linear=True,
+            path_from=list(tcp.joints) if tcp is not None else None,
+        ),
+        ResolveReachableResponse,
+        robot_id=robot_id,
     )
-    base_groups, base_metas = servo_ladder_groups(run.last, cfg, run.floor_z)
-    base_n = len(base_groups)
-    stages: list[tuple[list, list]] = [(base_groups, base_metas)]
-    if len(full_groups) > base_n:
-        stages.append((full_groups[base_n:], full_metas[base_n:]))
-    adopted: tuple[ResolveReachableResponse, list, int] | None = None
-    last_msg = ""
-    for groups, metas in stages:
-        res = await ctx.call(
-            Motion.Service.RESOLVE_REACHABLE,
-            ResolveReachableRequest(
-                groups=groups,
-                floor_z=run.floor_z,
-                linear=True,
-                path_from=list(tcp.joints) if tcp is not None else None,
-            ),
-            ResolveReachableResponse,
-            robot_id=robot_id,
-        )
-        if res.index >= 0:
-            adopted = (res, metas, len(groups))
-            break
-        last_msg = res.message
-    if adopted is None:
+    if res.index < 0:
         logger.warning(
-            "servo 재플랜: 가족 %d개(확장 포함) 전멸 (%.1fs) — 물체가 도달 "
+            "servo 재플랜: 가족 %d개 전멸 (%.1fs) — 물체가 도달 "
             "범위 밖으로 밀려난 것으로 판단: %s",
-            len(full_groups), time.monotonic() - t0, last_msg,
+            len(groups), time.monotonic() - t0, res.message,
         )
         return False
-    res, metas, n_groups = adopted
+    n_groups = len(groups)
     fam, g_point0, g_tcp0, lateral = metas[res.index]
     logger.info(
         "servo 재플랜: 가족 %d/%d 채택 (%s) — 밀린 물체 위치 기준 rung0 재진입 "

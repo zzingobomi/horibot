@@ -13,7 +13,6 @@ import numpy as np
 import pytest
 
 from modules.motion.adapters.pybullet import (
-    _IK_REFINE_THRESHOLD_M,
     IK_POS_ERROR_LIMIT,
     PybulletKinematics,
 )
@@ -110,18 +109,34 @@ def test_conditional_refine_recovers_pose_hard_residual(kin: PybulletKinematics)
             cfg[4] += math.radians(roll_deg)
             pos, quat = kin.fk(cfg)  # reachable by construction
 
-            raw = kin._ik_raw(pos, quat, nominal)  # 단발 1회 (검증/refine 없음)
+            raw = kin._ik_raw(pos, quat, nominal)  # 단발 1회 (게이트/refine 없음)
             raw_err = _pos_err(kin, raw, pos)
-            refined = kin._ik_from_seed(pos, quat, nominal)  # 주 경로(refine 포함)
-            if refined is None:
-                continue  # 게이트 초과 = 이 후보 refine 후에도 도달 실패 (드묾)
-            refined_err = _pos_err(kin, refined, pos)
+            refined = kin._ik_from_seed(pos, quat, nominal)  # 주 경로(refine+게이트)
+            refined_err = (
+                _pos_err(kin, refined, pos) if refined is not None else math.inf
+            )
             raw_errs.append(raw_err)
             refined_errs.append(refined_err)
+            # ★ 불변식(§6, 2026-07-20 전멸 사고 회귀): 단발이 게이트를 통과하던
+            #   (≤10mm) 후보를 refine 이 None 으로 뒤집거나 악화시키면 안 된다.
+            #   마지막 반복(발산 포함)을 반환하면 7mm 던 후보가 12mm 로 뒤집혀
+            #   게이트 초과 None → 여기서 잡힌다. best 추적이 이를 막는다.
+            #   (단발>10mm 후보의 None 은 게이트 정상 동작 — ik() 에선 walk 로 감.)
+            if raw_err <= IK_POS_ERROR_LIMIT:
+                assert refined is not None, (
+                    f"단발 통과({raw_err*1000:.1f}mm)를 refine 이 None 으로 뒤집음 "
+                    f"(tilt={tilt_deg}° roll={roll_deg}°, best 미추적 회귀?)"
+                )
+                assert refined_err <= raw_err + 1e-4, (
+                    f"refine 이 후보 악화(tilt={tilt_deg}° roll={roll_deg}°): "
+                    f"단발 {raw_err*1000:.1f}mm → refine {refined_err*1000:.1f}mm"
+                )
             if raw_err > IK_POS_ERROR_LIMIT and refined_err <= IK_POS_ERROR_LIMIT:
                 recovered_over_gate += 1
 
-    assert raw_errs, "스윕 후보가 하나도 안 풀림 (nominal/URDF 확인)"
+    # 이하 집계는 게이트 통과분만 (inf 제외)
+    refined_errs = [e for e in refined_errs if e != math.inf]
+    assert raw_errs and refined_errs, "스윕 후보가 하나도 안 풀림 (nominal/URDF 확인)"
     # ① §6 핵심: 단발이면 게이트에 걸려 기각(false negative)됐을 후보를 refine 이
     #    살린다 — "refine 이 IK 실패를 줄인다"의 실증.
     assert recovered_over_gate >= 1, (

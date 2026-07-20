@@ -599,18 +599,20 @@ class MotionModule:
 
         def _solve(
             group: list[TcpPose], budget: int | None
-        ) -> list[list[float]] | None:
+        ) -> tuple[list[list[float]] | None, int]:
             # ② 전 pose 자세 IK — seed 연쇄 (앞 해 → 다음 seed, 가까운 pose 는
-            # 1발 수렴). 실패 그룹만 restart 예산 풀비용.
+            # 1발 수렴). 실패 시 (None, 실패 pose index) — 사다리 어디서
+            # 죽었는지가 실물 디버깅 1차 신호 (§11: standoff 가 파지보다 먼저
+            # 죽는 구조 — 2026-07-20 전멸 감사에서 51/52 가 pose#0).
             seed = list(current)
             sols: list[list[float]] = []
-            for pose in group:
+            for k, pose in enumerate(group):
                 sol = kin.ik(pose.position, pose.quaternion, seed, budget)
                 if sol is None:
-                    return None
+                    return None, k
                 sols.append(sol)
                 seed = list(sol)
-            return sols
+            return sols, -1
 
         def _floor_blocked(sols: list[list[float]]) -> bool:
             # ③ 바닥 평면 충돌 — 해 자세에서 로봇 링크 침투 기각. 해(구성)
@@ -675,31 +677,43 @@ class MotionModule:
                     return True
             return False
 
-        def _scan() -> tuple[int, list[list[float]], str]:
-            alive = [gi for gi in range(len(groups)) if _screen(groups[gi])]
+        def _scan() -> tuple[int, list[list[float]], str, list[str]]:
+            # 그룹별 기각 사유 (§11 관측성) — 전멸 시 호출자가 가족 메타와 zip.
+            fails = ["미탐"] * len(groups)
+            alive: list[int] = []
+            for gi in range(len(groups)):
+                if _screen(groups[gi]):
+                    alive.append(gi)
+                else:
+                    fails[gi] = "위치(workspace 밖)"
             if not alive:
-                return -1, [], f"전 후보({len(groups)}) 위치가 workspace 밖"
+                return -1, [], f"전 후보({len(groups)}) 위치가 workspace 밖", fails
             gate_rejects = {"floor": 0, "obstacle": 0, "joint_path": 0, "path": 0}
             ik_fails = 0
             # group-major — 앞(선호) 그룹의 가/불가를 확정한 뒤에만 다음 그룹.
-            # 실패 그룹 비용 = walk 1회 + 40 restarts (~0.15s) 로 상수라 전멸도
-            # 선형 (52가족 ~8s — 다음 검출 뷰 폴백과 같은 자릿수).
+            # 해석적 IK robot 은 실패 그룹 비용 ~수 ms (branch 열거 확정 판정),
+            # 수치 폴백 robot 은 walk+40 restarts (~0.15s) 상수.
             for gi in alive:
-                sols = _solve(groups[gi], _GROUP_IK_BUDGET)
+                sols, fail_pose = _solve(groups[gi], _GROUP_IK_BUDGET)
                 if sols is None:
                     ik_fails += 1
+                    fails[gi] = f"IK pose#{fail_pose}"
                     continue
                 if _floor_blocked(sols):
                     gate_rejects["floor"] += 1
+                    fails[gi] = "바닥 충돌"
                     continue
                 if _obstacle_blocked(sols):
                     gate_rejects["obstacle"] += 1
+                    fails[gi] = "장애물 충돌"
                     continue
                 if _joint_path_blocked(sols):
                     gate_rejects["joint_path"] += 1
+                    fails[gi] = "이동 경로"
                     continue
                 if _linear_blocked(groups[gi], sols):
                     gate_rejects["path"] += 1
+                    fails[gi] = "직선 경로"
                     continue
                 # §7 관측성: 채택 해의 IK 위치잔차 — 파지 헛잡음이 잔차와
                 # 상관되는지 실물 trace 에서 갈리는 첫 수 (docs/motion.md §10.D).
@@ -718,7 +732,8 @@ class MotionModule:
                 logger.info(
                     "resolve_reachable: 채택 그룹 %d IK 위치잔차 max=%.2fmm", gi, resid_mm
                 )
-                return gi, sols, ""
+                fails[gi] = ""
+                return gi, sols, "", fails
             return -1, [], (
                 f"가용 그룹 없음 — 위치 통과 {len(alive)}/{len(groups)}, "
                 f"자세 IK 실패 {ik_fails}, "
@@ -726,9 +741,9 @@ class MotionModule:
                 f"장애물(그리퍼↔물체) 기각 {gate_rejects['obstacle']}, "
                 f"이동 경로 기각 {gate_rejects['joint_path']}, "
                 f"직선 경로 기각 {gate_rejects['path']}"
-            )
+            ), fails
 
-        def _scan_with_obstacles() -> tuple[int, list[list[float]], str]:
+        def _scan_with_obstacles() -> tuple[int, list[list[float]], str, list[str]]:
             # 장애물 점군 lifecycle — 판정 동안만 scene 에 존재 (잔존 = 이후
             # 판정 오염). 미지정이면 set 호출 자체를 안 함 (fake kin 호환).
             if not has_obstacles:
@@ -740,13 +755,15 @@ class MotionModule:
                 kin.set_obstacle_points(None)
 
         t0 = time.perf_counter()
-        idx, sols, msg = await asyncio.to_thread(_scan_with_obstacles)
+        idx, sols, msg, fails = await asyncio.to_thread(_scan_with_obstacles)
         logger.info(
             "resolve_reachable: groups=%d floor_z=%s linear=%s → index=%d (%.2fs)%s",
             len(groups), req.floor_z, req.linear, idx,
             time.perf_counter() - t0, f" [{msg}]" if msg else "",
         )
-        return ResolveReachableResponse(index=idx, solutions=sols, message=msg)
+        return ResolveReachableResponse(
+            index=idx, solutions=sols, message=msg, group_failures=fails
+        )
 
     @service(Motion.Service.TCP_SNAPSHOT)
     def tcp_snapshot(self, req: TcpSnapshotRequest) -> TcpState:

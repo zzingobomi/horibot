@@ -509,9 +509,8 @@ async def test_servo_move_both_rejected_replans_then_aborts_if_exhausted():
         ],
         _TCP_SNAP: [_tcp(_SO0), _tcp(_SO0)],
         _SELECT: [
-            _resolve_ok(),  # plan_pick (1단 채택)
-            # 재플랜 2단 (기존 축 → 확장 yaw) 모두 전멸
-            ResolveReachableResponse(index=-1, message="전멸"),
+            _resolve_ok(),  # plan_pick 채택
+            # 재플랜 (단일 resolve — §11 절대 yaw 격자) 전멸
             ResolveReachableResponse(index=-1, message="전멸"),
         ],
         _MOVE_L: [
@@ -526,7 +525,7 @@ async def test_servo_move_both_rejected_replans_then_aborts_if_exhausted():
     }))
     with pytest.raises(ServoFailed, match="이동 실패"):
         await _module_for_scenario().scenario(ctx, pick_object="white cube")
-    assert len(ctx.calls(_SELECT)) == 3  # 죽기 전 재플랜(기존+확장)을 시도했다
+    assert len(ctx.calls(_SELECT)) == 2  # 죽기 전 재플랜을 시도했다
     assert ctx.calls(_GRIP)[-1]["req"].position_raw == _SPEC.gripper_open_raw
     assert ctx.calls(_READ_STATE) == []  # 파지 시도 없음
 
@@ -971,17 +970,17 @@ async def test_scenario_place_unreachable_fails_before_pick():
 
 async def test_plan_pick_family_exhausted_fails_explicitly():
     """servo 접근 가족 전멸(-1) = 데이터 → step 이 치명 판정 (침묵 통과 금지),
-    모션은 스윕뿐."""
+    모션은 스윕뿐. §11: 단일 resolve (절대 yaw 격자 전체가 한 번에) — 옛 2단
+    기존/확장 폐지."""
     ctx = _ctx({
         **_search_responses(),
         _DETECT: [DetectOrientedResponse(found=True, candidates=[_OBS])],
-        # 2단: 기존 축 전멸 → 확장 yaw 재시도도 전멸 (근사 정사각 물체)
-        _SELECT: [ResolveReachableResponse(index=-1, message="전멸")] * 2,
+        _SELECT: [ResolveReachableResponse(index=-1, message="전멸")],
         _MOVE_J: [MoveJResponse()],
     })
     with pytest.raises(NoReachableGrasp, match="후보 1개 전부 전멸"):
         await _module_for_scenario().scenario(ctx, pick_object="white cube")
-    assert len(ctx.calls(_SELECT)) == 2  # 확장까지 시도한 뒤에야 실패
+    assert len(ctx.calls(_SELECT)) == 1  # 단일 resolve 로 전멸 확정
     assert ctx.calls(_GRIP) == [] and ctx.calls(_MOVE_L) == []
 
 
@@ -1297,15 +1296,15 @@ async def test_plan_pick_low_score_excluded_from_fallback():
     """진짜 후보가 전멸해도 저신뢰 후보로 **폴백하지 않는다** — 도달성 우선
     순회의 바닥은 신뢰 후보까지. 전멸이면 엉뚱한 물체 대신 명시 실패."""
     ctx = _ctx({
-        # 2단: 진짜 후보의 기존 축 + 확장 yaw 모두 전멸
-        _SELECT: [ResolveReachableResponse(index=-1, message="전멸")] * 2,
+        # 진짜 후보의 단일 resolve (§11 절대 yaw 격자) 전멸
+        _SELECT: [ResolveReachableResponse(index=-1, message="전멸")],
     })
     with pytest.raises(NoReachableGrasp, match="후보 1개 전부 전멸"):
         await steps.plan_pick(ctx, _BOT, "white cube", _home_record(), [
             _det(score=0.76),
             _det(score=0.31, position=(0.1, 0.22, 0.012)),
         ])
-    assert len(ctx.calls(_SELECT)) == 2  # 저신뢰 후보는 시도 대상 아님 (2단×1후보)
+    assert len(ctx.calls(_SELECT)) == 1  # 저신뢰 후보는 시도 대상 아님
 
 
 async def test_plan_place_falls_back_to_free_yaw_family():

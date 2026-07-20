@@ -47,19 +47,19 @@ from .geometry import (
     Vec3,
 )
 
-# 조 축 선택 — OBB 긴 변(grasp_yaw)에 수직(짧은 변을 무는 것)이 1순위, 긴 변
-# 방향이 2순위 (짧은 쪽이 조 개구에 들어갈 확률이 높다 — 관측 footprint 기준,
-# 모양 가정 아님). 폭 자체는 매 tick 점군에서 재측정 (width_along).
-_JAW_YAW_OFFSETS_DEG = (90.0, 0.0)
-# 근사 정사각/원형 물체의 yaw 확장 — 종횡비 ≤ 문턱이면 조 축을 OBB 에 묶을
-# 물리적 이유가 없다 (어느 방향이든 antipodal 성립). 90° 간격 2+flip 빗은
-# 위상이 OBB yaw(near-square 는 뷰마다 랜덤)에 묶여, 위치별 도달 yaw 밴드
-# (실측 30~40° 폭 — 2026-07-17 place 5° 스윕)를 통째로 미스하는 복권이었다
-# (같은 큐브 두 뷰가 yaw 84° 차로 전멸/채택 갈림 — 07-17 오후 실사고).
-# 확장 yaw 는 기존 축 **뒤에** — 순서 = 선호 (resolve 는 첫 통과 채택이라
-# 채택 비용 불변, 전멸 비용만 가족 수에 비례).
-_YAW_FREE_ASPECT_MAX = 1.25
-_YAW_FREE_EXTRA_OFFSETS_DEG = (30.0, 120.0, 60.0, 150.0)
+# 조 축 yaw 후보 (§11 대수술, 2026-07-20) — **절대 격자 + 면정렬 우선 정렬**.
+#
+# 폐지된 옛 설계 (OBB 앵커 + aspect 문턱 + 2단 확장)의 사고 사슬:
+#   ① yaw 를 노이즈 낀 OBB grasp_yaw 에 묶음 (near-square 는 뷰마다 랜덤 —
+#      07-17 같은 큐브 두 뷰가 yaw 84° 차로 전멸/채택 갈림)
+#   ② 탈출구(yaw_free 확장)를 또 노이즈 낀 스칼라(aspect 1.25 문턱)로 gate —
+#      07-20 둥근 큐브가 관측 노이즈로 aspect 1.397 → 확장 침묵 미실행 → 전멸
+#      (해 있는 확장 3가족을 시도조차 안 함 — ik_yaw_free_audit 실측)
+# → 이산화 복권의 클래스 자체를 제거: yaw 는 절대 0..180° 격자 전체가 항상
+#   후보 (물리 필터는 "그 yaw 방향 관측 폭 ≤ 개구" — plan 의 width 게이트),
+#   순서만 물체 면 정렬(grasp_yaw mod 90) 근접순. 해석적 IK(수 ms/가족)라
+#   후보 수 증가는 전멸 CT 에만 선형 (~수 s), 채택 경로는 선호순 조기 종료.
+_YAW_GRID_DEG = 15.0  # 도달 yaw 밴드 실측 30~40° 폭 → 밴드당 2~3 샘플
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +166,7 @@ class GraspFamily:
     approach: Vec3  # 단위 벡터 (base) — 진입 방향
     jaw_axis: Vec3  # 단위 벡터 (base) — 조 이동 축
     tilt_deg: int
+    flip: float = 1.0  # 단일 가동 조 lateral 방향 (±1) — refit 변형 매칭 키
 
 
 @dataclass(slots=True)
@@ -187,85 +188,101 @@ class TickDecision:
     lateral_m: float = 0.0
 
 
-def grasp_families(
-    obs: OrientedDetection, *, yaw_free: bool = False
-) -> list[GraspFamily]:
+def _face_align_dist_deg(yaw_deg: float, grasp_yaw_rad: float) -> float:
+    """yaw(도) 가 물체 면 정렬각(grasp_yaw mod 90°)에서 얼마나 먼가 (0~45)."""
+    gy = math.degrees(grasp_yaw_rad)
+    d = (yaw_deg - gy) % 90.0
+    return min(d, 90.0 - d)
+
+
+def grasp_families(obs: OrientedDetection) -> list[GraspFamily]:
     """coarse 관측 → 파지 자세 후보 가족 (선호순) — 도달 판정은 motion resolve 몫.
 
-    조 축 = OBB yaw 기준 2방향(짧은 변 우선) × flip(단일 가동 조 lateral 방향)
-    × tilt 사다리(수직부터 — geometry._TILTS_DEG 재사용). 회전 구성은 open-loop
-    plan_grasp 와 동일 규약 (tool x=접근, y=조 축, z=x×y).
+    조 축 yaw = **절대 격자(_YAW_GRID_DEG) + 면 정렬각 2개**(grasp_yaw, +90°) —
+    OBB 앵커/aspect 문턱/2단 확장 폐지 (상단 _YAW_GRID_DEG 사고 사슬 주석).
+    "이 yaw 로 물 수 있나"의 물리(그 방향 관측 폭 ≤ 개구)는 호출자(plan)의
+    width 게이트 몫 — 여기는 자세 후보만.
 
-    yaw_free=True + 근사 정사각 footprint 면 확장 yaw(30° 격자)를 기존 축 **뒤에**
-    덧붙인다 (2단 resolve 용 — 호출부가 기존/확장 구간을 슬라이스: 1단 = 기존
-    52 로 빠른 채택, 전멸 시에만 확장분 스캔. 직사각 물체는 True 여도 확장 없음
-    — 조는 옆면에 수직이어야 하는 물리).
+    순서 = 선호: tilt 사다리(수직부터, geometry._TILTS_DEG) → 면 정렬 근접
+    yaw → flip. 회전 구성은 open-loop plan_grasp 와 동일 규약
+    (tool x=접근, y=조 축, z=x×y).
     """
     down = np.array([0.0, 0.0, -1.0])
-    # yaw 블록: 기존 축(52 — 이전과 완전 동일 순서)이 **통째로 앞**, 확장 yaw 는
-    # 통째로 뒤 — 호출부의 2단 슬라이스([:base_n] / [base_n:]) 성립 조건.
-    yaw_blocks: list[tuple[float, ...]] = [_JAW_YAW_OFFSETS_DEG]
-    aspect = (
-        obs.footprint[0] / obs.footprint[1] if obs.footprint[1] > 0 else 99.0
-    )
-    if yaw_free and aspect <= _YAW_FREE_ASPECT_MAX:
-        # 근사 정사각/원형 — yaw 자유 (상수 주석).
-        yaw_blocks.append(_YAW_FREE_EXTRA_OFFSETS_DEG)
+    # yaw 후보: 면 정렬각 2개 + 절대 격자, 면 정렬 근접순. 근접 중복(<반 격자)
+    # 은 격자 쪽을 제거 — 면 정렬각이 그 밴드의 대표.
+    exact = [math.degrees(obs.grasp_yaw) % 180.0,
+             (math.degrees(obs.grasp_yaw) + 90.0) % 180.0]
+    yaws = list(exact)
+    for g in np.arange(0.0, 180.0, _YAW_GRID_DEG):
+        if all(min(abs(g - e) % 180.0, 180.0 - abs(g - e) % 180.0)
+               >= _YAW_GRID_DEG / 2.0 for e in exact):
+            yaws.append(float(g))
+    # 1차 = 면 정렬 근접 (물체 옆면에 조가 수직), 2차 = 짧은 변 물기 우선
+    # (= grasp_yaw+90 근접 — 짧은 쪽이 개구에 들어갈 확률이 높다, 옛
+    # jaw∥short 1순위 계약 보존).
+    short_yaw = (math.degrees(obs.grasp_yaw) + 90.0) % 180.0
+
+    def _dist180(a: float, b: float) -> float:
+        d = abs(a - b) % 180.0
+        return min(d, 180.0 - d)
+
+    yaws.sort(key=lambda y: (
+        _face_align_dist_deg(y, obs.grasp_yaw), _dist180(y, short_yaw)
+    ))
+
     out: list[GraspFamily] = []
-    for yaw_offsets in yaw_blocks:
-        for tilt_deg in _TILTS_DEG:
-            for yaw_off_deg in yaw_offsets:
-                jaw_yaw = obs.grasp_yaw + math.radians(yaw_off_deg)
-                for flip in (1.0, -1.0):
-                    y = np.array(
-                        [math.cos(jaw_yaw), math.sin(jaw_yaw), 0.0]
-                    ) * flip
-                    approach = Rotation.from_rotvec(
-                        y * math.radians(tilt_deg)
-                    ).apply(down)
-                    rot_m = np.column_stack(
-                        [approach, y, np.cross(approach, y)]
+    for tilt_deg in _TILTS_DEG:
+        for yaw_deg in yaws:
+            jaw_yaw = math.radians(yaw_deg)
+            for flip in (1.0, -1.0):
+                y = np.array(
+                    [math.cos(jaw_yaw), math.sin(jaw_yaw), 0.0]
+                ) * flip
+                approach = Rotation.from_rotvec(
+                    y * math.radians(tilt_deg)
+                ).apply(down)
+                rot_m = np.column_stack(
+                    [approach, y, np.cross(approach, y)]
+                )
+                qx, qy, qz, qw = (
+                    float(v) for v in Rotation.from_matrix(rot_m).as_quat()
+                )
+                out.append(
+                    GraspFamily(
+                        label=(
+                            f"jaw@{yaw_deg:.0f}° tilt={tilt_deg:+d} "
+                            f"flip={'+' if flip > 0 else '-'}"
+                        ),
+                        quat=(qx, qy, qz, qw),
+                        approach=(
+                            float(approach[0]), float(approach[1]),
+                            float(approach[2]),
+                        ),
+                        jaw_axis=(float(y[0]), float(y[1]), float(y[2])),
+                        tilt_deg=tilt_deg,
+                        flip=flip,
                     )
-                    qx, qy, qz, qw = (
-                        float(v) for v in Rotation.from_matrix(rot_m).as_quat()
-                    )
-                    if yaw_off_deg == 90.0:
-                        jaw_label = "jaw∥short"
-                    elif yaw_off_deg == 0.0:
-                        jaw_label = "jaw∥long"
-                    else:
-                        jaw_label = f"jaw@{yaw_off_deg:+.0f}°"
-                    out.append(
-                        GraspFamily(
-                            label=(
-                                f"{jaw_label} tilt={tilt_deg:+d} "
-                                f"flip={'+' if flip > 0 else '-'}"
-                            ),
-                            quat=(qx, qy, qz, qw),
-                            approach=(
-                                float(approach[0]), float(approach[1]),
-                                float(approach[2]),
-                            ),
-                            jaw_axis=(float(y[0]), float(y[1]), float(y[2])),
-                            tilt_deg=tilt_deg,
-                        )
-                    )
+                )
     return out
 
 
 def refit_family(
     fam: GraspFamily, obs: OrientedDetection, min_delta_deg: float = 10.0
 ) -> GraspFamily | None:
-    """재획득 관측의 yaw 로 **같은 변형**(조 축 선택 × tilt × flip)의 가족 재유도.
+    """재획득 관측의 yaw 로 **같은 변형**(tilt × flip)의 면 정렬 가족 재유도.
 
     가족은 plan coarse 의 yaw 로 고정되는데(자세 고정 = common-mode 상쇄 계약),
     물체가 밀리거나 튕기며 **회전**하면 옛 각도로 닫게 된다 (2026-07-17 실물:
     1차 close 튕김으로 86°→-27° 회전 → 2차가 24° 스큐로 닫아 재튕김). 물체가
     움직인 걸 아는 국면(재시도 재획득)에서만 호출 — yaw 차(mod 90)가 문턱
     미만이면 None (기존 유지, 마구 돌리지 않는다).
+
+    §11 이후: 같은 (tilt, flip) 의 **면 정렬 최우선** yaw 가족 = 새 관측 기준
+    그 변형의 1순위 (grasp_families 정렬 계약).
     """
     cand = next(
-        (f for f in grasp_families(obs, yaw_free=True) if f.label == fam.label),
+        (f for f in grasp_families(obs)
+         if f.tilt_deg == fam.tilt_deg and f.flip == fam.flip),
         None,
     )
     if cand is None:

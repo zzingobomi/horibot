@@ -41,21 +41,46 @@ _CFG = servo.ServoConfig()
 
 
 def test_grasp_families_preference_order():
-    # 기본(yaw_free=False) = 1단 resolve 의 빠른 채택 경로 (07-17 저녁 2단화:
-    # 확장은 전멸 시에만). 첫 후보 = 수직 + 짧은 변. 총 개수는 tilt 사다리
-    # 튜닝마다 변해 잠그지 않는다 — 계약은 선호 순서.
-    fams = servo.grasp_families(_det())
-    assert fams[0].tilt_deg == 0 and "∥short" in fams[0].label
-    assert "flip=+" in fams[0].label
+    # §11 절대 yaw 격자 — 계약은 선호 순서: 첫 후보 = 수직(tilt 0) + 면 정렬
+    # + 짧은 변 물기(grasp_yaw+90) + flip+. 총 개수는 격자 튜닝마다 변해
+    # 잠그지 않는다.
+    fams = servo.grasp_families(_det(grasp_yaw=0.0))
+    assert fams[0].tilt_deg == 0 and fams[0].flip > 0
+    assert fams[0].jaw_axis == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
     # 선호순: 작은 tilt 이 앞 (도달만 되면 수직에 가까운 쪽 채택)
     tilts = [abs(f.tilt_deg) for f in fams]
     assert tilts == sorted(tilts)
 
 
+def test_grasp_families_absolute_yaw_grid_always_covers():
+    """§11 회귀 — 2026-07-20 전멸 사고 클래스 잠금.
+
+    옛 설계: yaw 를 노이즈 낀 OBB 에 묶고(2방향) 탈출구(확장)를 노이즈 낀
+    aspect 문턱(1.25)으로 gate → 둥근 큐브가 관측 노이즈로 aspect 1.397 이
+    되자 확장이 침묵 미실행 → 해 있는 3가족을 시도조차 안 하고 전멸.
+    새 계약: **어떤 footprint 든** yaw 후보가 절대 격자 전체를 덮는다 (물리
+    필터는 plan 의 width 게이트 몫 — 여기는 aspect 를 아예 안 본다)."""
+    # 사고 당시 관측 그대로 (aspect 1.397)
+    noisy_round = _det(footprint=(0.0209, 0.0149), grasp_yaw=math.radians(74))
+    fams = servo.grasp_families(noisy_round)
+    yaws = sorted({
+        round(math.degrees(math.atan2(f.jaw_axis[1], f.jaw_axis[0]))) % 180
+        for f in fams
+    })
+    # 격자 간격(15°) 이하의 최대 공백 — yaw 밴드(실측 30~40°)를 통째로 미스할
+    # 공백이 없다 (사고의 일반형 차단)
+    gaps = [b - a for a, b in zip(yaws, yaws[1:])]
+    gaps.append(180 - yaws[-1] + yaws[0])
+    assert max(gaps) <= 16, f"yaw 커버 공백 {max(gaps)}° (yaws={yaws})"
+    # 면 정렬각 2개(74°, 164°)는 정확히 포함 + 최우선 (검출 방향 존중)
+    assert round(math.degrees(math.atan2(
+        fams[0].jaw_axis[1], fams[0].jaw_axis[0]))) % 180 == 164
+
+
 def test_grasp_family_frame_convention():
     """tool frame 규약: x=접근축, y=조 축(수평), z=x×y — tilt=0 은 수직 하강."""
     fams = servo.grasp_families(_det(grasp_yaw=0.0))
-    f0 = fams[0]  # tilt=0, jaw∥short(=yaw+90°), flip=+
+    f0 = fams[0]  # tilt=0, 짧은 변 물기(=yaw 90°), flip=+
     assert f0.approach == pytest.approx((0.0, 0.0, -1.0))
     assert f0.jaw_axis == pytest.approx((math.cos(math.pi / 2),
                                          math.sin(math.pi / 2), 0.0), abs=1e-9)
@@ -67,8 +92,8 @@ def test_grasp_family_frame_convention():
 
 def test_grasp_family_tilt_rotates_approach_about_jaw_axis():
     fams = servo.grasp_families(_det(grasp_yaw=0.0))
-    f45 = next(f for f in fams if f.tilt_deg == 45 and "∥short" in f.label
-               and "flip=+" in f.label)
+    f45 = next(f for f in fams if f.tilt_deg == 45 and f.flip > 0
+               and abs(f.jaw_axis[1]) > 0.999)  # yaw 90° (짧은 변 물기)
     # 조 축(y=+y base) 둘레 45° — 접근이 수직에서 45° 기울되 조 축은 수평 유지
     assert f45.jaw_axis == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)
     assert f45.approach[2] == pytest.approx(-math.cos(math.radians(45)))
@@ -195,10 +220,11 @@ def test_refit_family_follows_object_rotation():
     """재획득 시 물체가 회전했으면 같은 변형의 가족을 새 yaw 로 재유도 —
     옛 각도 스큐 close 재튕김 실사고 (2026-07-17 test4: 86°→-27°)."""
     fam0 = servo.grasp_families(_det(grasp_yaw=math.radians(86.0)))[0]
-    # 24° 회전 (mod 90) → 재유도
+    # 24° 회전 (mod 90) → 재유도 — 같은 변형(tilt×flip), yaw 만 새 관측 기준
     rotated = _det(grasp_yaw=math.radians(-27.5))
     refit = servo.refit_family(fam0, rotated)
-    assert refit is not None and refit.label == fam0.label
+    assert refit is not None
+    assert refit.tilt_deg == fam0.tilt_deg and refit.flip == fam0.flip
     a = math.degrees(math.atan2(refit.jaw_axis[1], refit.jaw_axis[0]))
     a0 = math.degrees(math.atan2(fam0.jaw_axis[1], fam0.jaw_axis[0]))
     assert abs((a - a0 + 90.0) % 180.0 - 90.0) > 10.0
@@ -223,27 +249,24 @@ def test_gate_rejects_thin_point_cloud():
     assert g.obs is None and "점군 부족" in g.reason
 
 
-def test_grasp_families_yaw_expands_for_near_square_objects():
-    """근사 정사각 물체 = yaw 자유 확장 (2026-07-17 저녁): near-square 는 OBB
-    yaw 가 노이즈(뷰마다 랜덤)라 후보를 관측 축에 묶을 근거가 없는데 90° 빗
-    4방향뿐이라 위치별 도달 yaw 밴드(실측 30~40° 폭)를 통째로 미스 — 같은
-    큐브 두 뷰가 yaw 84° 차로 전멸/채택 갈린 실사고. 확장 yaw 는 기존 52 블록
-    **뒤에** (2단 resolve 슬라이스 계약 — 1단 채택 비용 불변, 전멸 시에만
-    확장분 스캔). 직사각 물체는 조가 옆면에 수직이어야 하므로 확장 없음."""
-    square = _det(footprint=(0.024, 0.022))  # aspect 1.09 → yaw 자유
-    base = servo.grasp_families(square)
-    full = servo.grasp_families(square, yaw_free=True)
-    assert len(full) > len(base)  # 확장이 실제로 붙는다
-    # 슬라이스 계약: 앞부분 = 기본 목록과 완전 동일 (2단 resolve 가 이 prefix 를
-    # 1단으로 자른다 — 블록 순서가 뒤섞이면 1단 채택 비용 불변 약속이 깨짐)
-    assert [f.label for f in full[: len(base)]] == [f.label for f in base]
-    assert all("@" in f.label for f in full[len(base):])  # 확장분은 전부 @yaw
+def test_oblong_wide_yaw_rejected_by_width_gate_not_aspect():
+    """직사각 물체의 "긴 변 물기" 차단은 aspect 문턱이 아니라 **관측 폭 물리**
+    (§11 — plan.servo_ladder_groups 의 width 게이트). 긴 변 방향(개구 초과)
+    가족은 그룹에서 빠지고, 짧은 변 물기는 남는다."""
+    from modules.tasks.pick_and_place.steps.plan import servo_ladder_groups
 
-    oblong = _det(footprint=(0.10, 0.06))  # aspect 1.67 → OBB 축에 묶임 (물리)
-    fams_ob = servo.grasp_families(oblong, yaw_free=True)
-    # 직사각은 yaw_free 여도 확장 0 — 기본 목록과 동일
-    assert [f.label for f in fams_ob] == [f.label for f in servo.grasp_families(oblong)]
-    assert not any("@" in f.label for f in fams_ob)
+    # 100×30mm 막대 점군 (x 축이 긴 변) — grasp_yaw=0 (OBB 긴 변 = x)
+    pts = [(0.2 + x, 0.05 + y, 0.01)
+           for x in np.linspace(-0.05, 0.05, 30)
+           for y in np.linspace(-0.015, 0.015, 10)]
+    oblong = _det(footprint=(0.10, 0.03), grasp_yaw=0.0, points=pts)
+    groups, metas = servo_ladder_groups(oblong, _CFG)
+    assert groups, "짧은 변 물기 가족이 남아야 함"
+    for fam, _, _, _ in metas:
+        w = servo.width_along(pts, fam.jaw_axis, 0.999)
+        assert w <= 0.06, f"개구 초과 폭 {w*1000:.0f}mm 가족이 그룹에 남음 ({fam.label})"
+    # 짧은 변 물기(조 축 ≈ y) 는 존재
+    assert any(abs(f.jaw_axis[1]) > 0.9 for f, _, _, _ in metas)
 
 
 def test_gate_accepts_cleaned_sparse_but_healthy_cloud():

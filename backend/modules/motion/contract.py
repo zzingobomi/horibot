@@ -195,6 +195,11 @@ class ResolveReachableResponse(BaseModel):
     # 실행부가 재계산 없이 이 관절값으로 이동 (판정 해 == 실행 해 보장, §5.5).
     solutions: list[list[float]] = []
     message: str = ""
+    # 그룹별 기각 사유 (요청 groups 와 같은 길이; 채택 그룹 = "", 채택 이후
+    # 미탐 그룹 = "미탐"). 전멸 시 호출자가 가족 메타와 zip → 사유 히스토그램
+    # = 실물 디버깅 1차 데이터 (§11 관측성 — "전멸했는데 왜인지 모름" 재발
+    # 방지). 해석적 IK robot 은 기각이 확정 판정 (수치 폴백은 "못 찾음" 가능).
+    group_failures: list[str] = []
 
 
 class TcpSnapshotRequest(BaseModel):

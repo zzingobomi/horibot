@@ -29,6 +29,10 @@ pi-hori1 = [
     "ruckig>=0.9",
     "scipy>=1.11",
     "yourdfpy>=0.0.56",
+    # 해석적 IK (docs/motion.md §11) — optional: import 실패 시 수치 폴백
+    # (adapters/analytic.py). Pi(aarch64) wheel 부재 시 소스빌드가 필요할 수
+    # 있음 — 설치 실패해도 부팅은 됨 (부팅 로그 "IK=수치" 로 모드 확인).
+    "eaik>=1.2.2",
 ]
 
 # hori2 — so101 D405 카메라
@@ -51,6 +55,7 @@ pi-hori3 = [
 
 # PC
 pc = [
+    "eaik>=1.2.2",  # 해석적 IK — pi-hori1 주석 참조
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
     "websockets>=13.0",

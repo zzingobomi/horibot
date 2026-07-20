@@ -20,6 +20,7 @@ import numpy as np
 import pybullet as p
 
 from ..kinematics import Position3, Quaternion, RotMatrix3x3
+from .analytic import AnalyticIk
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,10 @@ class PybulletKinematics:
         self._movable_ranges: list[float] = []
         # chain joint 의 movable result vector 내 위치
         self._chain_in_movable: list[int] = []
+        # 해석적 branch 열거기 (docs/motion.md §11) — initialize 에서 시도,
+        # None = 수치 폴백 (EAIK 부재/비-Pieper 구조). 침묵 금지 — 모드는
+        # AnalyticIk 가 부팅 로그 1줄로 밝힌다.
+        self._analytic: AnalyticIk | None = None
         # 바닥 평면 body (floor_collision 게이트) — 첫 사용 시 lazy 생성
         self._plane = -1
         # 장애물 점군 body 들 (obstacle_collision 게이트) — set_obstacle_points 관리
@@ -156,11 +161,45 @@ class PybulletKinematics:
             self._chain_upper = [limit_by_idx[j][1] for j in chain]
             self._chain_in_movable = [self._movable_indices.index(j) for j in chain]
 
+            self._analytic = self._build_analytic()
+
             self._initialized = True
             logger.info(
-                "PybulletKinematics: dof=%d (chain) / %d movable, tcp=%s",
+                "PybulletKinematics: dof=%d (chain) / %d movable, tcp=%s, "
+                "IK=%s",
                 len(chain), len(movable), TCP_LINK_NAME,
+                f"해석적({self._analytic.family})+polish"
+                if self._analytic else "수치(walk+restart)",
             )
+
+    def _build_analytic(self) -> AnalyticIk | None:
+        """로드된 바디의 zero-pose 축/원점에서 해석기 구성 (파일 재파싱 없음).
+
+        patched(캘) URDF 그대로 사용 — 캘 오차(~1.4° 스큐)는 snap 이 흡수하고
+        정밀도는 polish(_ik_from_seed refine, 같은 캘 모델)가 회수한다.
+        호출 시점: initialize 내부 (_lock 보유, zero pose 로 두고 추출).
+        """
+        self._set_chain([0.0] * len(self._chain_indices))
+        axes: list[tuple[float, float, float]] = []
+        origins: list[tuple[float, float, float]] = []
+        for j in self._chain_indices:
+            info = p.getJointInfo(self._robot, j, physicsClientId=self._client)
+            st = p.getLinkState(
+                self._robot, j, computeForwardKinematics=True,
+                physicsClientId=self._client,
+            )
+            rot = np.array(p.getMatrixFromQuaternion(st[5])).reshape(3, 3)
+            a = rot @ np.asarray(info[13], dtype=float)
+            a = a / np.linalg.norm(a)
+            axes.append((float(a[0]), float(a[1]), float(a[2])))
+            origins.append(
+                (float(st[4][0]), float(st[4][1]), float(st[4][2]))
+            )
+        tcp_pos, tcp_quat = self._ee_state()
+        r0 = np.array(p.getMatrixFromQuaternion(tcp_quat)).reshape(3, 3)
+        return AnalyticIk.try_build(
+            axes, origins, tcp_pos, r0, self._chain_lower, self._chain_upper
+        )
 
     # ── Protocol ──
 
@@ -193,6 +232,12 @@ class PybulletKinematics:
                 if current_joint_angles is not None
                 else [0.0] * len(self._chain_indices)
             )
+            # 0) 해석적 경로 (§11) — 전 branch 열거 + polish. 완전(모든 basin)
+            #    + 결정적 + "도달불가" 를 수 ms 에 증명. walk/restart 불필요.
+            if target_quaternion is not None and self._analytic is not None:
+                return self._ik_analytic(
+                    target_position, target_quaternion, seed
+                )
             # 1) seeded 1회 — 현재 자세 근처 해 (motion 연속성, 대부분 여기서 끝).
             sol = self._ik_from_seed(target_position, target_quaternion, seed)
             if sol is not None:
@@ -219,7 +264,10 @@ class PybulletKinematics:
                     float(rng.uniform(lo, hi))
                     for lo, hi in zip(self._chain_lower, self._chain_upper)
                 ]
-                cand = self._ik_from_seed(target_position, target_quaternion, rand)
+                # probe 는 refine 없이 basin 만 탐색 (실패 그룹 200×5 낭비 차단).
+                cand = self._ik_from_seed(
+                    target_position, target_quaternion, rand, refine=False
+                )
                 if cand is not None:
                     dist = sum((a - b) ** 2 for a, b in zip(cand, seed))
                     if dist < best_dist:
@@ -229,7 +277,50 @@ class PybulletKinematics:
                     "IK 실패 (seed + restart %d 모두) target=%s",
                     IK_RESTARTS, target_position,
                 )
-            return best
+                return None
+            # 승자만 refine — probe 에서 내준 위치(≤10mm)를 결과-seed 재해로 회수.
+            refined = self._ik_from_seed(
+                target_position, target_quaternion, best, refine=True
+            )
+            return refined if refined is not None else best
+
+    def _ik_analytic(
+        self,
+        target_position: Position3,
+        target_quaternion: Quaternion,
+        seed: list[float],
+    ) -> list[float] | None:
+        """해석적 branch 열거 → seed 최근접 순 polish → 첫 통과 채택.
+
+        - branch = snap 모델의 seed (±리밋 clamp) — 실 모델 정밀도는
+          _ik_from_seed 의 conditional refine(=polish) 이 회수.
+        - seed 거리순 = motion 연속성 (같은 목표라도 팔 위치에 따라 가까운
+          basin 우선 — 구성 플립 최소화).
+        - 자세 잔차 게이트: polish 는 위치만 검증하므로 (알려진 결함) 해석
+          경로에서는 자세 오답 branch 채택을 여기서 차단.
+        - 전 branch 실패 = 도달불가 확정 (수치처럼 "못 찾은 것일 수도" 가 없음).
+        """
+        branches = self._analytic.branches(  # type: ignore[union-attr]
+            target_position, target_quaternion
+        )
+        branches.sort(
+            key=lambda b: sum((a - s) ** 2 for a, s in zip(b, seed))
+        )
+        for b in branches:
+            sol = self._ik_from_seed(target_position, target_quaternion, b)
+            if sol is None:
+                continue
+            self._set_chain(sol)
+            _, got = self._ee_state()
+            dot = abs(sum(a * c for a, c in zip(got, target_quaternion)))
+            if 2.0 * math.acos(min(1.0, dot)) > _WALK_ORI_TOL_RAD:
+                continue
+            return sol
+        logger.debug(
+            "IK 도달불가 확정 (해석 branch %d개 전부 기각) target=%s",
+            len(branches), target_position,
+        )
+        return None
 
     def _ik_raw(
         self,
@@ -266,10 +357,14 @@ class PybulletKinematics:
         target_position: Position3,
         target_quaternion: Quaternion | None,
         seed_chain: list[float],
+        refine: bool = True,
     ) -> list[float] | None:
         """chain-공간 seed 하나로 1회 IK + 수렴/충돌 검증 (호출자가 _lock 보유).
 
         수렴 검증은 reachability vs self-collision 원인 분리 (debug 로그).
+        refine=False 는 random-restart probe 용 — 거긴 "아무 basin 이나 찾기"가
+        목적이라 정밀 refine 이 낭비(실패 그룹에서 200×5 = 실물 전멸 27s 사고).
+        승자만 호출자가 1회 refine 한다.
         """
         angles = self._ik_raw(target_position, target_quaternion, seed_chain)
 
@@ -281,16 +376,29 @@ class PybulletKinematics:
         # 조건부 refine — 잔차가 임계 초과일 때만 결과-seed 재해 (상단 상수 주석).
         # 게이트 검사 앞이라 15mm 단발도 ~sub-mm 로 회수해 통과. quat 포함 재해라
         # 자세도 함께 재수렴 (자세 잔차 검증은 기존대로 walk/호출자 책임).
-        if error > _IK_REFINE_THRESHOLD_M:
+        #
+        # ★ best 추적 필수 — 수치 IK 재해는 pose-hard/특이점 근처에서 발산할 수
+        #   있다(7mm→12mm). 마지막 반복을 그대로 쓰면 단발보다 나빠져 게이트를
+        #   넘겨 None → 단발이면 통과했을 후보가 refine 후 실패로 뒤집힌다(§6 불변식
+        #   "refine 은 실패를 늘리지 않는다" 위반, 2026-07-20 실물 52가족 전멸 사고).
+        #   best_error ≤ 단발_error 를 보장해 refine 이 절대 나빠지지 않게 한다.
+        if refine and error > _IK_REFINE_THRESHOLD_M:
+            best_angles, best_error = angles, error
+            seed_k = angles
             for _ in range(_IK_REFINE_ITERS):
-                angles = self._ik_raw(target_position, target_quaternion, angles)
-                self._set_chain(angles)
+                seed_k = self._ik_raw(target_position, target_quaternion, seed_k)
+                self._set_chain(seed_k)
                 actual_pos, _ = self._ee_state()
                 error = float(
                     np.linalg.norm(np.array(actual_pos) - np.array(target_position))
                 )
+                if error < best_error:
+                    best_angles, best_error = seed_k, error
                 if error <= _IK_REFINE_THRESHOLD_M:
                     break
+            # 발산 반복이 아닌 best 를 채택 + self-collision 검사가 볼 상태 복원.
+            angles, error = best_angles, best_error
+            self._set_chain(angles)
         if error > IK_POS_ERROR_LIMIT:
             return None
         if self._self_collision_unlocked():

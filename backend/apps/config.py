@@ -74,8 +74,7 @@ class RobotConfig(BaseModel):
     # type-level (<type>/motors.yaml)
     motors: list[MotorSpec] = Field(default_factory=list)
     # type-level (<type>/motion.yaml) — joint name 별 Ruckig 한계 + cartesian
-    motion_joint_limits: dict[str, JointMotionLimit] = Field(
-        default_factory=dict)
+    motion_joint_limits: dict[str, JointMotionLimit] = Field(default_factory=dict)
     cartesian_limits: CartesianLimit = Field(default_factory=CartesianLimit)
     # type-level (<type>/physical.yaml) — robot physical model (모델링 선택만).
     # 중력 sag lumped-mass 모델을 적용할 관절 (motor id). Motion sag decorator +
@@ -147,8 +146,7 @@ def _load_physical(robot_type: str, robot_dir: Path) -> list[int]:
 
 
 def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
-    raw = yaml.safe_load(
-        (robot_dir / "robots.yaml").read_text(encoding="utf-8"))
+    raw = yaml.safe_load((robot_dir / "robots.yaml").read_text(encoding="utf-8"))
     robots: dict[str, RobotConfig] = {}
     for rid, body in (raw.get("robots") or {}).items():
         rtype = body["type"]
@@ -158,8 +156,7 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
         if inst_path.exists():
             inst_raw = yaml.safe_load(inst_path.read_text(encoding="utf-8"))
             port, baud = _resolve_port(inst_raw)
-            camera_device_index = (inst_raw.get(
-                "camera") or {}).get("device_index")
+            camera_device_index = (inst_raw.get("camera") or {}).get("device_index")
         motion_joints, cartesian = _load_motion(rtype, robot_dir)
         bp = body.get("base_pose") or {}
         robots[rid] = RobotConfig(
@@ -198,6 +195,7 @@ class DeploymentConfig(BaseModel):
     driver_mode: DriverMode = DriverMode.REAL
     zenoh: dict = Field(default_factory=dict)
     modules: list[ModuleEntry] = Field(default_factory=list)
+    robots: list[str] = Field(default_factory=list)
     rdb_uri: str | None = None
     object_uri: str | None = None
     bridge_port: int = 8000

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from .config import _ROBOT_DIR, DeploymentConfig, DriverMode, RobotConfig
@@ -28,6 +29,25 @@ def resolve_robot_deps(
         return {}
     if name == "motion":
         return _motion_deps(robot)
+    if name == "rnd_motion":
+        from modules.motor.contract import MotorKind
+        from modules.rnd_motion.module import RndRobotSpec
+
+        arm = [m for m in robot.motors if m.kind != MotorKind.GRIPPER]
+        lims = [robot.motion_joint_limits[m.name] for m in arm]  # motion.yaml 필수
+        return {
+            "spec": RndRobotSpec(
+                urdf_path=_ROBOT_DIR / robot.type / "urdf" / f"{robot.type}.urdf",
+                joint_names=[m.name for m in arm],
+                home_joints=_SIM_HOME_RAD.get(robot.type, [0.0] * len(arm)),
+                joint_max_velocity=[x.max_velocity for x in lims],
+                joint_max_acceleration=[x.max_acceleration for x in lims],
+                joint_max_jerk=[x.max_jerk for x in lims],
+                cartesian_max_velocity=robot.cartesian_limits.max_trans_vel,
+                cartesian_max_acceleration=robot.cartesian_limits.max_trans_acc,
+                cartesian_max_jerk=robot.cartesian_limits.max_trans_jerk,
+            )
+        }
     raise NotImplementedError(
         f"robot-scoped resolve 미지원 module: {name!r} (robot={robot.id})"
     )
@@ -169,9 +189,7 @@ def resolve_host_deps(
         # small round cube" 로 score 0.57 을 받아 통계 컷(0.45)을 정면 돌파 →
         # 로봇 베이스를 집으러 감. 로봇 위치는 아는 세계 — score 재튜닝(땜빵)
         # 대신 기하로 제외).
-        bases = [
-            (r.base_pose.x, r.base_pose.y) for r in robots.values() if r.enabled
-        ]
+        bases = [(r.base_pose.x, r.base_pose.y) for r in robots.values() if r.enabled]
         return {"robots": task_specs, "robot_base_xy": bases}
     if name == "handover":
         # pick_and_place 와 같은 gripper spec 투영 (위 분기 복제 — 공유 helper
@@ -318,6 +336,19 @@ _MOCK_READY_POSE_RAW: dict[str, list[int]] = {
     # J1~J6 raw — 사용자 실측 자세 (Robot State: 2.5/32.8/-51.6/62.3/0.0/91.0°).
     # J5=2048(=0.0°=home), J6=3083(≈91°=D405 top-down).
     "so101_6dof": [2077, 2421, 1461, 2757, 2048, 3083],
+}
+
+
+_SIM_HOME_RAD: dict[str, list[float]] = {
+    "ur5e": [0.0, -math.pi / 2, math.pi / 2, -math.pi / 2, -math.pi / 2, 0.0],
+    "so101_6dof": [
+        0.0,
+        0.2617993877991494,
+        -0.7853981633974483,
+        1.4835298641951802,
+        -0.08726646259971647,
+        1.5707963267948966,
+    ],
 }
 
 

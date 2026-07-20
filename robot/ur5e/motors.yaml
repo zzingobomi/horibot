@@ -1,0 +1,55 @@
+# UR5e (프리뷰 R&D 타겟 — 실물 없음, mock/preview 전용).
+# joint name = URDF(robot/ur5e/urdf/ur5e.urdf) revolute joint 이름 그대로.
+# 실 vendor 모터가 없으므로 raw(home/limit)·profile 값은 형식상 placeholder —
+# motion_preview 는 name + motion.yaml 한계만 쓰고, motor 모듈은 rnd 배포에서
+# 로드하지 않는다 (프리뷰만). gripper 없음 (플랜지 = tool0 = tcp).
+
+motors:
+  - id: 1
+    name: "shoulder_pan_joint"
+    model: "UR5e"
+    mode: "position"
+    home: 2048
+    limit: { min: 0, max: 4095 }   # placeholder — 실 한계는 URDF(±360°)
+    reverse: false
+    profile: { velocity_dps: 0.0, acceleration_dpss: 0.0 }
+  - id: 2
+    name: "shoulder_lift_joint"
+    model: "UR5e"
+    mode: "position"
+    home: 2048
+    limit: { min: 0, max: 4095 }
+    reverse: false
+    profile: { velocity_dps: 0.0, acceleration_dpss: 0.0 }
+  - id: 3
+    name: "elbow_joint"
+    model: "UR5e"
+    mode: "position"
+    home: 2048
+    limit: { min: 0, max: 4095 }
+    reverse: false
+    profile: { velocity_dps: 0.0, acceleration_dpss: 0.0 }
+  - id: 4
+    name: "wrist_1_joint"
+    model: "UR5e"
+    mode: "position"
+    home: 2048
+    limit: { min: 0, max: 4095 }
+    reverse: false
+    profile: { velocity_dps: 0.0, acceleration_dpss: 0.0 }
+  - id: 5
+    name: "wrist_2_joint"
+    model: "UR5e"
+    mode: "position"
+    home: 2048
+    limit: { min: 0, max: 4095 }
+    reverse: false
+    profile: { velocity_dps: 0.0, acceleration_dpss: 0.0 }
+  - id: 6
+    name: "wrist_3_joint"
+    model: "UR5e"
+    mode: "position"
+    home: 2048
+    limit: { min: 0, max: 4095 }
+    reverse: false
+    profile: { velocity_dps: 0.0, acceleration_dpss: 0.0 }

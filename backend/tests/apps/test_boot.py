@@ -42,7 +42,10 @@ _SO101 = "so101_6dof_0"
 
 def test_load_robots_parses_entries():
     robots = load_robots()
-    assert set(robots) == {_SO101, "omx_f_0"}
+    assert set(robots) == {_SO101, "omx_f_0", "ur5e_0"}
+    assert robots["ur5e_0"].type == "ur5e"
+    assert robots["ur5e_0"].enabled is False
+    assert len(robots["ur5e_0"].motors) == 6
     assert robots[_SO101].id == _SO101  # key → id 채워짐
     assert robots[_SO101].type == "so101_6dof"
     assert robots[_SO101].camera_backend == "realsense"

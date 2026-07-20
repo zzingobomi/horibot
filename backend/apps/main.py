@@ -75,6 +75,16 @@ def load_configs(
 ) -> tuple[DeploymentConfig, dict[str, RobotConfig]]:
     deploy = load_deployment(config_dir / "deployments" / f"{host}.yaml")
     robots = load_robots()
+    if deploy.robots:
+        allow = set(deploy.robots)
+        missing = allow - robots.keys()
+        if missing:
+            raise KeyError(
+                f"deployment {host!r} robots allowlist 에 robots.yaml 에 없는 "
+                f"robot: {sorted(missing)}"
+            )
+        for rid, robot in robots.items():
+            robot.enabled = rid in allow
     return deploy, robots
 
 

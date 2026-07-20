@@ -11,8 +11,8 @@
  * robot 상태(joint/TCP frame)는 Robots 가 robot 마다 자기 stream 구독
  * (per-robot — N=2 협동 자리).
  */
-import { useCallback, useMemo } from "react";
-import { Canvas } from "@react-three/fiber";
+import { useCallback, useEffect, useMemo } from "react";
+import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, Grid, Environment } from "@react-three/drei";
 import * as THREE from "three";
 import { Robots } from "./objects/Robots";
@@ -32,14 +32,50 @@ interface RobotSceneProps {
   focusId?: string | null;
   cameraPosition?: [number, number, number];
   cameraTarget?: [number, number, number];
+  // auto-fit — 로드된 focus 로봇 크기(바운딩) 기반. Container 가 계산해 내려줌.
+  onBounds?: (radius: number, center: [number, number, number]) => void;
+  fitTarget?: [number, number, number];
+  fitDistance?: number;
+  gridSize?: number;
+}
+
+/** 로봇 크기에 카메라 맞춤 — bounds 바뀔 때만 (사용자 orbit 은 보존). */
+function CameraFit({
+  target,
+  distance,
+}: {
+  target?: [number, number, number];
+  distance?: number;
+}) {
+  const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls) as {
+    target: THREE.Vector3;
+    update: () => void;
+  } | null;
+  useEffect(() => {
+    if (!target || !distance || !controls) return;
+    const dir = new THREE.Vector3(1, 0.9, 1).normalize();
+    camera.position.set(
+      target[0] + dir.x * distance,
+      target[1] + dir.y * distance,
+      target[2] + dir.z * distance,
+    );
+    controls.target.set(target[0], target[1], target[2]);
+    controls.update();
+  }, [target, distance, camera, controls]);
+  return null;
 }
 
 function SceneContent({
   options = DEFAULT_SCENE_OPTIONS,
   onLinksLoaded,
+  onBounds,
   robots,
   focusId,
   cameraTarget,
+  fitTarget,
+  fitDistance,
+  gridSize,
 }: RobotSceneProps) {
   return (
     <>
@@ -60,14 +96,14 @@ function SceneContent({
 
       {options.showGrid && (
         <Grid
-          args={[0.6, 0.6]}
+          args={[gridSize ?? 0.6, gridSize ?? 0.6]}
           cellSize={0.05}
           cellThickness={0.5}
           cellColor="#1a3a5a"
           sectionSize={0.1}
           sectionThickness={1}
           sectionColor="#2a5a8a"
-          fadeDistance={1.5}
+          fadeDistance={fitDistance ? fitDistance * 1.8 : 1.5}
           fadeStrength={1}
           followCamera={false}
           position={[0, 0, 0]}
@@ -86,6 +122,7 @@ function SceneContent({
         robots={robots}
         focusId={focusId ?? null}
         onLinksLoaded={onLinksLoaded}
+        onBounds={onBounds}
         showRobot={options.showRobot}
         showTcpFrame={options.showTCPFrame}
       />
@@ -103,9 +140,10 @@ function SceneContent({
         enableDamping
         dampingFactor={0.08}
         minDistance={0.1}
-        maxDistance={3}
+        maxDistance={fitDistance ? fitDistance * 2.5 : 3}
         target={cameraTarget ?? [0, 0.1, 0]}
       />
+      <CameraFit target={fitTarget} distance={fitDistance} />
     </>
   );
 }

@@ -31,6 +31,8 @@ interface URDFRobotProps {
   /** material color overlay (hex). ghost preview 등. null=원본. */
   tint?: string | null;
   onLinksLoaded?: (linkNames: string[]) => void;
+  /** 로드 후 로봇 바운딩스피어(월드) 보고 — 카메라/그리드 auto-fit 용. */
+  onBounds?: (radius: number, center: [number, number, number]) => void;
   linkVisibility?: Record<string, boolean>;
   visible?: boolean;
 }
@@ -84,6 +86,7 @@ export function RobotModel({
   opacity = 1.0,
   tint = null,
   onLinksLoaded,
+  onBounds,
   linkVisibility,
   visible = true,
 }: URDFRobotProps) {
@@ -129,20 +132,27 @@ export function RobotModel({
       loader.defaultMeshLoader(path, manager, (obj, err) => {
         urdfDone(obj, err);
         if (err || !obj) return;
-        const mesh = obj as THREE.Mesh;
-        if (!mesh.isMesh) return;
-        const mat = mesh.material as THREE.Material | THREE.Material[];
-        if (Array.isArray(mat)) {
-          mesh.material = mat.map((m) => {
-            const c = m.clone();
+        // .stl = 단일 Mesh / .dae(COLLADA) = Group(자식 Mesh들). traverse 로 둘 다
+        // 커버 — mesh 도착 시점에 material 을 인스턴스별 clone + paint 해야 tint/
+        // opacity 가 확실히 먹는다 (.dae 를 top-level Mesh 로만 보면 Group 이라
+        // 건너뛰어, 로드 타이밍상 applyMaterialProps 도 놓쳐 고스트가 불투명 원본으로
+        // 나오던 버그 — ur5e .dae). clone 은 cross-robot material bleed 도 차단.
+        obj.traverse((o) => {
+          const mesh = o as THREE.Mesh;
+          if (!mesh.isMesh) return;
+          const mat = mesh.material as THREE.Material | THREE.Material[];
+          if (Array.isArray(mat)) {
+            mesh.material = mat.map((m) => {
+              const c = m.clone();
+              paint(c);
+              return c;
+            });
+          } else if (mat) {
+            const c = (mat as THREE.Material).clone();
             paint(c);
-            return c;
-          });
-        } else if (mat) {
-          const c = (mat as THREE.Material).clone();
-          paint(c);
-          mesh.material = c;
-        }
+            mesh.material = c;
+          }
+        });
       });
     };
 
@@ -198,6 +208,49 @@ export function RobotModel({
       if (link) link.visible = vis;
     });
   }, [linkVisibility, robotReady]);
+
+  // 로봇 실제 크기(월드 바운딩스피어) 측정 → 카메라/그리드 auto-fit.
+  // 메시(.dae/.stl)가 하나씩 async 로 들어오므로, 프레임마다 재서 바운딩이 더 이상
+  // 안 커질 때(=모든 메시 로드 완료)까지 기다렸다 1회 보고. 첫 non-empty 에 쏘면
+  // 베이스 링크만 잡혀 크기가 작게 나옴(카메라 코앞 버그). onBounds 는 안정된 값만.
+  useEffect(() => {
+    if (!robotReady || !onBounds) return;
+    let raf = 0;
+    let tries = 0;
+    let lastR = -1;
+    let stable = 0;
+    const report = (radius: number, c: THREE.Vector3) => {
+      onBounds(radius, [c.x, c.y, c.z]);
+    };
+    const tick = () => {
+      const robot = robotRef.current;
+      if (robot) {
+        robot.updateWorldMatrix(true, true);
+        const box = new THREE.Box3().setFromObject(robot);
+        if (!box.isEmpty()) {
+          const s = box.getBoundingSphere(new THREE.Sphere());
+          if (Number.isFinite(s.radius) && s.radius > 0) {
+            if (Math.abs(s.radius - lastR) < 1e-3) {
+              // 8프레임 연속 안 커지면 메시 로드 끝 → 확정 보고
+              if (++stable >= 8) return report(s.radius, s.center);
+            } else {
+              stable = 0;
+              lastR = s.radius;
+            }
+          }
+        }
+      }
+      if (tries++ < 300) raf = requestAnimationFrame(tick);
+      else if (lastR > 0 && robotRef.current) {
+        // 안전망: 5초 내 안정 안 돼도 마지막 측정으로 fit
+        const box = new THREE.Box3().setFromObject(robotRef.current);
+        const s = box.getBoundingSphere(new THREE.Sphere());
+        if (s.radius > 0) report(s.radius, s.center);
+      }
+    };
+    tick();
+    return () => cancelAnimationFrame(raf);
+  }, [robotReady, onBounds]);
 
   // World transform: base_pose 적용 (z-up world) + URDF z-up→y-up 보정.
   // outer group: [-π/2 rot around X] — z-up → y-up.

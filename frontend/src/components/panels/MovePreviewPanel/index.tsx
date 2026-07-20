@@ -9,11 +9,14 @@
  *
  * 시작 자세 = live Motion.TCP_STATE.joints (backend preview 모듈은 모터 상태를
  * 구독 안 하므로 프론트가 실어 보냄). robot-agnostic 서비스 — req 에 robot_id.
+ * 라이브 상태가 없으면(실물/mock 모터 없는 preview-only 배포 = 회사 rnd) →
+ * 'home' waypoint(없으면 첫 waypoint)의 관절값을 시작 자세로 사용.
  */
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { Button } from "@/components/ui/button";
 import { useRobotId } from "@/hooks/useRobotId";
+import { useRobots } from "@/hooks/useRobots";
 import { useService, useStream } from "@/framework";
 import { ServiceKey, Topic, PreviewMode } from "@/api/generated/contract";
 import type { PreviewModeValue, TcpState } from "@/api/generated/contract";
@@ -57,10 +60,23 @@ interface PoseInput {
   yaw: number;
 }
 
+// robot type 별 데모 기본 target — "MoveL/MoveJ 차이가 잘 보이는" 자세를 미리 박아
+// 둔다 (실물/mock 상관없이 패널 열자마자 바로 프리뷰 눌러 데모 가능). ur5e =
+// ready 자세(TCP 앞0.49/높이0.49, 자세 180/0/90)에서 앞·아래로 41cm 사선 병진 →
+// MoveL 직선 vs MoveJ 곡선 대비가 확연 + 허공에 잘 보이는 지점 (pybullet IK 도달
+// 검증, orientation 은 ready 와 동일해 순수 병진). 없는 type 은 live TCP 기준 seed.
+const DEMO_TARGET: Record<string, PoseInput> = {
+  ur5e: { x: 0.45, y: -0.2, z: 0.25, roll: 180, pitch: 0, yaw: 90 },
+};
+
 export function MovePreviewPanel() {
   const robotId = useRobotId();
+  const { robots } = useRobots();
+  const robotType = robots.find((r) => r.id === robotId)?.type;
   const planSvc = useService(ServiceKey.MOTIONPREVIEW_PLAN, robotId);
   const tcp = useStream(Topic.MOTION_TCP_STATE, { robotId });
+  // 라이브 상태 없을 때 시작자세 폴백용 (preview-only 배포).
+  const listSvc = useService(ServiceKey.WAYPOINT_LIST, robotId);
   const setTarget = useMovePreviewStore((s) => s.setTarget);
   const setPlan = useMovePreviewStore((s) => s.setPlan);
   const setSpeed = useMovePreviewStore((s) => s.setSpeed);
@@ -86,17 +102,24 @@ export function MovePreviewPanel() {
   const [useOrientation, setUseOrientation] = useState(true);
   const tokenRef = useRef(0);
 
-  // 최초 tcp 도착 시 "현재 자세 + z 3cm" 로 seed — 현재 orientation 유지라 기본
-  // target 이 MoveL 로 도달 가능 (바로 프리뷰 눌러도 동작하는 출발점).
+  // 기본 target seed (1회). robot type 에 데모 target 이 있으면 그걸로 (열자마자
+  // 데모 가능한 자세) — 없으면 최초 tcp 도착 시 "현재 자세 + z 3cm" (도달 가능한
+  // 출발점).
   useEffect(() => {
     if (seeded) return;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    const demo = robotType ? DEMO_TARGET[robotType] : undefined;
+    if (demo) {
+      setPose(demo);
+      setSeeded(true);
+      return;
+    }
     const v = tcp.value;
     if (!v) return;
-    /* eslint-disable react-hooks/set-state-in-effect */
     setPose(poseFromTcp(v, 0.03));
     setSeeded(true);
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [tcp.value, seeded]);
+  }, [robotType, tcp.value, seeded]);
 
   // 입력 → 마커 실시간 동기 (backend 호출 없이 씬 마커만 이동). useOrientation 이
   // 마커 모양(축 triad vs 점)도 결정.
@@ -123,9 +146,18 @@ export function MovePreviewPanel() {
   };
 
   const runPreview = async (mode: PreviewModeValue) => {
-    const joints = tcp.value?.joints;
+    // 시작 자세: 라이브 상태 우선, 없으면 waypoint('home' → 첫 항목) 폴백.
+    let joints = tcp.value?.joints ?? null;
     if (!joints) {
-      setStatus("joint state 대기 중… (motion 미연결?)");
+      const res = await listSvc.call({ robot_id: robotId });
+      const wps = res.success && res.data ? res.data.waypoints : [];
+      const home = wps.find((w) => w.name === "home") ?? wps[0];
+      joints = home?.joint_values ?? null;
+    }
+    if (!joints) {
+      setStatus(
+        "시작 자세 없음 — 라이브 로봇 연결 또는 'home' waypoint 필요",
+      );
       return;
     }
     setBusy(true);

@@ -1,0 +1,21 @@
+# 회사 프리뷰 R&D 배포 — 산업로봇(UR5e), 실물 없음, 시뮬 전용.
+# 실행:
+#   uv run --no-sync python -m apps.main --host rnd
+
+robots: [ur5e_0]
+
+rdb_uri: "sqlite:///horibot.db"
+
+dev_console: true
+
+zenoh:
+  mode: peer
+  scouting:
+    multicast:
+      enabled: false
+
+modules:
+  - name: rnd_motion
+    robots: [ur5e_0]
+  - name: waypoint
+  - name: bridge

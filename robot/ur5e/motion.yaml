@@ -1,0 +1,31 @@
+# UR5e 모션 한계 — 프리뷰(rnd_motion)의 Ruckig 프로파일 입력.
+# 목적: 시뮬 프리뷰가 최대한 "실 UR5e 의 움직임"을 보이게 → 임의 viz 값이 아니라
+# 실제 사양/URScript 기본값을 쓴다. 단위: SI (rad/s, rad/s², rad/s³, m/s, ...).
+# joint name = URDF revolute 이름.
+#
+# 출처:
+#  - 데이터시트(UR5e Technical Specification, 2024-12): 관절 6축 전부 **최대 ±180°/s**
+#    (= 3.14159 rad/s), working range ±360°. **Max TCP speed 4 m/s.** 가속도/jerk 는
+#    데이터시트에 없음(UR 미공개).
+#  - URScript 기본값(실 로봇이 일반 이동에 실제 쓰는 값): movej(a=1.4 rad/s², v=1.05
+#    rad/s), movel(a=1.2 m/s², v=0.25 m/s).
+#
+# 채택: **아래 값 = URScript 기본값**(= 실 UR 의 전형적 이동, "실물 움직임" 기준).
+# 데이터시트 MAX(180°/s, 4 m/s)는 상한이라 각 항목 주석에 병기 — 최대 능력을 보고
+# 싶으면 그 값으로 올리면 됨(도달 못하는 짧은 이동은 accel 이 지배).
+# jerk 는 UR 미공개 → 실 컨트롤러의 accel-ramp 스무딩(~0.1s)을 근사한 값.
+
+joint_limits:
+  # v=1.05(URScript movej 기본, 상한 3.14159=180°/s) / a=1.4 / jerk≈accel/0.1s.
+  shoulder_pan_joint:  { max_velocity: 1.05, max_acceleration: 1.4, max_jerk: 15.0 }
+  shoulder_lift_joint: { max_velocity: 1.05, max_acceleration: 1.4, max_jerk: 15.0 }
+  elbow_joint:         { max_velocity: 1.05, max_acceleration: 1.4, max_jerk: 15.0 }
+  wrist_1_joint:       { max_velocity: 1.05, max_acceleration: 1.4, max_jerk: 15.0 }
+  wrist_2_joint:       { max_velocity: 1.05, max_acceleration: 1.4, max_jerk: 15.0 }
+  wrist_3_joint:       { max_velocity: 1.05, max_acceleration: 1.4, max_jerk: 15.0 }
+
+cartesian_limits:
+  # URScript movel 기본: v=0.25 m/s(상한 4 m/s) / a=1.2 m/s². jerk≈accel/0.1s.
+  max_trans_vel: 0.25
+  max_trans_acc: 1.2
+  max_trans_jerk: 12.0

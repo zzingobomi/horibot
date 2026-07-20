@@ -22,6 +22,7 @@ export interface RobotsProps {
   /** focus robot id — null = 모두 동등. */
   focusId?: string | null;
   onLinksLoaded?: (linkNames: string[]) => void;
+  onBounds?: (radius: number, center: [number, number, number]) => void;
   dimOpacity?: number;
   showRobot?: boolean;
   /** TCP 좌표축 표시 (Scene options.showTCPFrame). focus robot 만 (dim robot 은 잡음). */
@@ -37,6 +38,7 @@ interface RobotItemProps {
   visible: boolean;
   showTcpFrame: boolean;
   onLinksLoaded?: (linkNames: string[]) => void;
+  onBounds?: (radius: number, center: [number, number, number]) => void;
 }
 
 /** robot 1대 — 자기 robot_id 의 TCP_STATE 구독 + URDF/TCP frame 렌더. */
@@ -46,6 +48,7 @@ function RobotItem({
   visible,
   showTcpFrame,
   onLinksLoaded,
+  onBounds,
 }: RobotItemProps) {
   const tcp = useStream(Topic.MOTION_TCP_STATE, { robotId: robot.id });
   // parallel arrays — backend Motion 이 joint_names + joints 를 same order 로 발행.
@@ -81,6 +84,7 @@ function RobotItem({
         jointAngles={jointAngles}
         visible={visible}
         onLinksLoaded={onLinksLoaded}
+        onBounds={onBounds}
       />
       {showTcpFrame && tcpMatrix && (
         <AxisFrame matrix={tcpMatrix} size={0.04} label="TCP" labelColor={VizColor.TCP} />
@@ -93,6 +97,7 @@ export function Robots({
   robots,
   focusId = null,
   onLinksLoaded,
+  onBounds,
   dimOpacity = 0.25,
   showRobot = true,
   showTcpFrame = true,
@@ -112,6 +117,7 @@ export function Robots({
             visible={showRobot}
             showTcpFrame={showTcpFrame && isFocus}
             onLinksLoaded={isCallbackTarget ? onLinksLoaded : undefined}
+            onBounds={isCallbackTarget ? onBounds : undefined}
           />
         );
       })}

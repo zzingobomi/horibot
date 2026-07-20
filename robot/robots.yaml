@@ -21,3 +21,13 @@ robots:
     camera_backend: realsense
     kinematics_backend: pybullet
     base_pose: { x: 0.0, y: 0.0, z: 0.0, yaw_deg: 0.0 }
+
+  # UR5e — 프리뷰 R&D 타겟
+  ur5e_0:
+    type: ur5e
+    enabled: false
+    capabilities: [move]
+    motor_backend: mock
+    camera_backend: null
+    kinematics_backend: pybullet
+    base_pose: { x: 0.0, y: 0.0, z: 0.0, yaw_deg: 0.0 }

@@ -1,0 +1,21 @@
+# so101 을 rnd_motion(clean sim + refine)으로 프리뷰하는 **테스트 배포**.
+# 실행:
+#   uv run --no-sync python -m apps.main --host rnd_so101
+
+robots: [so101_6dof_0]
+
+rdb_uri: "sqlite:///horibot.db"
+
+dev_console: true
+
+zenoh:
+  mode: peer
+  scouting:
+    multicast:
+      enabled: false
+
+modules:
+  - name: rnd_motion
+    robots: [so101_6dof_0]
+  - name: waypoint
+  - name: bridge

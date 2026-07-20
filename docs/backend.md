@@ -20,7 +20,13 @@
 > [backend.md](backend.md) (framework §1–§14 + Module catalog §16 + Task-first §17).
 > 본 문서 = "지금 어디까지 됐고 다음 뭐 할지" 만 — 설계 결정은 여기 안 둠.
 
-## 현재 상태 (2026-07-19)
+## 현재 상태 (2026-07-21)
+
+**PnP 시나리오 재설계 논의 진행 중 — 진입점 = [pnp_scenario_rework.md](pnp_scenario_rework.md)**
+(2026-07-21 세션: EAIK 수술 후 첫 실물 분석 — 파지 실패 원인(IK 잔차 7.35mm
+한계 자세 채택, 유력) / EAIK·URDF 알리바이 검증 / 월드 스캔 품질 붕괴 근본
+(검은 가방 시야 점유, 사실상 확정) / world 스캔 task 분리 + coarse-to-fine
+시나리오 재구조 합의 + 미결 논점 목록. 다음 세션은 그 문서 §5 부터).
 
 **closed-loop PnP 실물 첫 완주 성공 (2026-07-17 새벽, 2연속 포함) — 재현성 통계
 수집 단계.** framework + 전 Module 가동 + Task 아키텍처 확정. 실물 테스트

@@ -127,15 +127,19 @@ export function BoxOutline({
   );
 }
 
-/** 연결된 폴리라인 — 경로/연결선 시각화. */
+/** 연결된 폴리라인 — 경로/연결선 시각화.
+ *  overlay=true → 항상 최전면 (depthTest off + 높은 renderOrder). 로봇/메시에
+ *  가려지면 안 되는 진단 경로용 (TaskMarkersOverlay 관례와 동일). */
 export function PolyLine({
   points,
   color = VizColor.SENSOR,
   lineWidth = 1.5,
+  overlay = false,
 }: {
   points: readonly (readonly [number, number, number])[];
   color?: string;
   lineWidth?: number;
+  overlay?: boolean;
 }) {
   if (points.length < 2) return null;
   return (
@@ -143,6 +147,10 @@ export function PolyLine({
       points={points as [number, number, number][]}
       color={color}
       lineWidth={lineWidth}
+      renderOrder={overlay ? 999 : 0}
+      transparent={overlay || undefined}
+      depthTest={overlay ? false : undefined}
+      depthWrite={overlay ? false : undefined}
     />
   );
 }

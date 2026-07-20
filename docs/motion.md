@@ -475,3 +475,111 @@ joint_offset / link_offset / sag / hand_eye / intrinsic) 라 mismatch 가 visibl
 - [calibration_apply_flow.md](calibration_apply_flow.md) — 캘 4종이 어디서 적용되는지 (link_offset 의 URDF in-memory patch 가 backend 한정인 사실 자리)
 - [multi_robot_architecture.md](multi_robot_architecture.md) §3.1 — Kinematics layer decorator chain
 - [move_page_pointcloud_issues.md](move_page_pointcloud_issues.md) #5 — *별개* 이슈 (URDF joint limits clip 으로 인한 URDF FK 자체 오류). 본 이슈는 limit 가 아니라 link_offset+sag 차이라 root cause 다름.
+
+
+---
+---
+
+<!-- ═══════════ MoveL 꺾임 / IK 잔차 / refine 조사 (2026-07-20) ═══════════ -->
+
+# MoveL 직선 꺾임 & IK 위치잔차 — 조사 기록 (2026-07-20, **미구현 · 조사만**)
+
+> **다음에 이 이슈를 제대로 팔 때 같은 논의를 처음부터 반복하지 않기 위한 박제.**
+> 이 세션에서 코드는 **안 고침** (pybullet.py 는 formatter 리플로우만). 구현 대상은
+> 아래 §5 제안 뿐. 프론트 SpeedDots(속도 점) 오버레이는 별개로 구현 완료.
+
+## 1. 증상
+
+MoveL 프리뷰(motion_preview)에서 **경로 끝부분에서 TCP 트레이스가 직선에서 꺾인다.**
+트레이스는 각 프레임 관절각의 FK 라, 꺾임 = **IK 가 직선 위 목표점을 정확히 못 맞췄다**는
+신호. (프리뷰는 motion 과 같은 IK·runner 라 실물에서도 동일하게 벌어짐 — 착시 아님.)
+
+## 2. 근본 원인 — 수치 IK 트레이드오프 + 침묵 tolerance + 주 경로 refine 없음
+
+- **수치(반복) IK 특성**: PyBullet `calculateInverseKinematics` 는 위치+자세를 함께
+  최소화 → 자세가 빡센 지점에서 **위치를 내주고 자세를 맞추는** 해로 수렴.
+  자세 slerp 가 경로 진행률에 동기라, 끝(frac→1)에서 목표 자세가 100% 완성되며
+  그 자세가 손목 한계에 가까우면 위치오차가 커짐 → 꺾임.
+- **침묵 tolerance**: `_ik_from_seed` 는 위치오차(`error`)를 **계산은 하지만**,
+  `IK_POS_ERROR_LIMIT`(현 **10mm**) 안이면 **로그 없이 그대로 채택**. 즉 직선 위 임의 점이
+  최대 1cm 벗어나도 feasible 로 통과 → 정확히 프로젝트가 경계하는 "침묵 fallback/tolerance".
+- **주 경로에 refine 없음**: `ik()` 흐름 = ① seeded 단일 IK(refine X) 성공하면
+  **즉시 반환**(`if sol is not None: return sol`) → ② 실패 시에만 `_ik_walk`(refine O)
+  → ③ random restart. 문제는 **seeded 가 6~10mm 로 "성공" 판정되면 walk 을 안 거치고
+  그 꺾인 해를 그대로 씀.** walk 이 3mm 로 다듬을 수 있는데도 short-circuit.
+
+## 3. 왜 analytic IK 는 이런 게 없나 (개념 정리 — 재설명 방지)
+
+- 해석적(closed-form) IK 는 최소화가 아니라 **기구학 방정식을 대수적으로 정확히 푸는**
+  것. 결과 = "정확한 관절각" 또는 "해 없음(도달불가)". **tolerance·잔차·refine·꺾임
+  개념 자체가 없음.**
+- 단 **Pieper 조건** 필요: 연속 3축이 한 점에서 교차(구형 손목)하거나 3축 평행.
+  산업용 6축(UR/ABB/KUKA)이 구형 손목으로 설계되는 이유 = 해석적 IK 를 쓰려고.
+- **so101 은 5→6DOF 개조**라 이 구조를 만족 안 할 가능성 큼 → **애초에 닫힌 해가 없어
+  수치 IK 가 강제됨** (게을러서가 아님). 확인하려면 URDF 마지막 3관절 축/원점이 한 점에서
+  교차하는지 검사 (미수행 — 다음에 IKFast 검토 시). 특이점 velocity 폭발은 두 방식 공통.
+
+## 4. 이미 측정된 사실 (repo 내 근거 — 재측정 불필요)
+
+pybullet.py `_WALK_REFINE_ITERS` 주석 (2026-07-16 실측):
+> 단일 IK 호출이 자세 맞추며 위치를 **~15mm 트레이드오프** → **결과를 seed 로 1회
+> 재호출만으로 5mm/0.05° 수렴.** 상한 5 는 보수 여유.
+
+즉 **refine(결과-seed 재해) 로 ~15mm → ~5mm 회수 가능**이 이미 검증됨. walk 은 이걸
+쓰고, 주 경로는 안 씀 — 이 격차가 본 이슈의 핵심.
+
+## 5. 제안 (구현 대상 — 아직 안 함)
+
+- **조건부 refine 을 주 경로에 추가**: seeded 성공 직후 잔차가 임계값(예: **>3mm**)이면
+  결과를 seed 로 재해(1~few 회). 쉬운 해(<3mm)는 **스킵 → 비용 0**. `_ik_from_seed`
+  가 이미 `error` 계산하므로 분기만 추가(FK 추가비용 없음). **작업 종류(파지 등)로
+  하드코딩하지 말 것** — 트리거는 "잔차", 파지는 자연히 걸림.
+- **게이트(`IK_POS_ERROR_LIMIT`)는 10mm 유지.** 조이는 건 별개 · 나중 · 선택.
+- **refine 없이 게이트만 조이지 말 것** (5mm 등) — 실측됨: **도달불가 폭증** (단일
+  해가 5mm 를 못 넘어서). refine 이 5mm 바닥을 만들어준 *뒤에만* 조일 수 있고, 그때도
+  바닥(~5mm) 밑으론 두지 말 것 (예: 6mm).
+
+## 6. 실패율/속도 분석 (걱정 대응)
+
+- **refine 은 IK 실패를 늘리지 않고 줄임**: 지금 실패의 한 축 = 단일 해가 10~15mm 라
+  게이트에 걸려 None. refine 이 ~5mm 로 회수 → **통과**. 게이트 유지 시 "통과하던 건
+  다 통과 + 실패 일부 회복" = 순이득. 실패가 느는 유일 경우 = 게이트를 refine 바닥
+  밑으로 조일 때.
+- **속도 미지수 = `resolve_reachable`(파지 후보 스크리닝)**: 이 경로는 **자세 빡센
+  후보가 다수** → 그것들이 곧 refine 트리거. "쉬운 건 스킵" 혜택이 여기선 작을 수 있어
+  후보 수백 × refine 비용이 붙을 수 있음(IK 예산 상수 `_SCREEN_/_GROUP_/_PATH_IK_BUDGET`
+  로 관리되는 자리). **"안 느리다" 단언 금지 — 구현 시 before/after 타이밍 실측 필수.**
+- MoveL 실행 경로(50Hz, 매 틱 IK 1회, 연속 seed)는 조건부 refine 거의 공짜.
+
+## 7. PnP 간헐 파지실패와의 연결 — **가설 (미확정)**
+
+증상: 픽앤플레이스 중 **한 번 헛잡고, 재시도 시 집힘.** 이게 본 이슈일 수 있음:
+- IK 는 (target, seed) 에 결정적 (rng fresh — 2026-07-09 수정). 그런데 재시도 때 **팔이
+  움직여 seed 가 달라짐** → 같은 목표라도 다른 해. 1차 8mm 어긋난 해로 헛잡음 → 2차 다른
+  seed 로 2mm 해 → 집힘. **지금 구조(6~10mm 조용히 통과)와 정확히 일치.**
+
+**단 경쟁 원인이 동급/더 큼 — 지금은 못 가림:**
+- **기구학 절대정확도 ~1-2cm (자세의존)** — 예전 파지실패 *진짜 근본*으로 결론난 것
+  (project_grasp_depth_rootcause). IK 잔차(5-10mm)보다 크고 **refine 으로 안 줄어듦**.
+- 인지(검출) 노이즈, 물리 변수(물체 밀림/미끄러짐).
+
+**확인 방법 (추측 말고 데이터)**: 지금 로그엔 채택 해의 잔차가 없음. servo_pick 실패
+분석 trace 에 **시도별 IK 잔차 + 실제 도달 위치오차**를 실으면 → "헛잡음이 잔차 큰 것과
+상관되나?" 가 로그에서 갈림. 상관 O = 본 이슈 확정(refine 이 답) / 잔차 작은데 실패 =
+IK 아님(절대정확도·인지). **이 로그 추가가 제대로 파기 전 첫 수.**
+
+## 8. 하지 말 것 / 재론 금지
+
+- **refine 없이 게이트만 조이기** (§5) — 도달불가 폭증, 실증됨.
+- 파지 실패를 **"D405 저텍스처 depth / σ"** 로 재진단 — 이미 오진으로 기각 확정
+  (project_grasp_depth_rootcause). 본 이슈는 그것과 무관.
+- refine 을 파지 전용 분기로 하드코딩 — 잔차 트리거로 일반화.
+
+## 9. 관련 코드 위치
+
+- IK 흐름 / seeded short-circuit / walk refine: [pybullet.py](../backend/modules/motion/adapters/pybullet.py) `ik` / `_ik_from_seed` / `_ik_walk`
+- 상수: `IK_POS_ERROR_LIMIT`(10mm) / `IK_TOLERANCE`(1e-4) / `_WALK_REFINE_ITERS`(5)
+- MoveL 실행 루프 + 진단 로그(잔차 없음): [trajectory_runner.py](../backend/modules/motion/trajectory_runner.py) `_cartesian_loop` / `_log_cart_diag`
+- 경로 사전검증: [module.py](../backend/modules/motion/module.py) `_linear_path_blocker`
+- 프리뷰(같은 IK/runner 재사용): [motion_preview/module.py](../backend/modules/motion_preview/module.py) `plan_trajectory`
+- 속도 점 오버레이(구현됨): [MovePreviewPanel/scenePart.tsx](../frontend/src/components/panels/MovePreviewPanel/scenePart.tsx) `SpeedDots`

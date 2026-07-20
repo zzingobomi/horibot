@@ -8,6 +8,10 @@
  *     안 움직임. 프레임 = 50Hz 시간등분 → 재생하면 실 속도·가감속. 배속은 시간축만.
  *   - TCP 트레이스: 프레임별 TCP 위치 폴리라인. MoveL=직선 / MoveJ(pose)=곡선.
  *     재생 프레임까지 progressive 하게 자람. feasible=False 면 끊긴 지점에 경고 마커.
+ *   - 속도 점(SpeedDots): 트레이스 위에 시간 등간격(매 N프레임) 샘플점. 프레임이
+ *     50Hz 등간격이라 점 사이 거리 = 그 시간 이동거리 = 속도 → 벌어진 곳=빠름(순항),
+ *     좁은 곳=느림(가감속). 물리 종이테이프(ticker-tape) 원리로 가감속을 눈에 보이게.
+ *     거리 등간격으로 솎으면 속도 정보가 사라지므로 반드시 시간(프레임) 등간격.
  *
  * scenePart 규약: useRobotId (RobotProvider 공급), 데이터는 movePreviewStore,
  * 패널 닫으면 함께 사라짐 (인스턴스 lifecycle).
@@ -26,6 +30,40 @@ import { useMovePreviewStore } from "@/stores/movePreviewStore";
 const GHOST_OPACITY = 0.35;
 // 프레임은 TrajectoryRunner 의 50Hz(TRAJ_DT) 시간등분 → 1배속 = 실 로봇 속도.
 const FRAME_HZ = 50;
+// 속도 점 = 매 STRIDE 프레임(= STRIDE·20ms)마다 하나. 시간 등간격이라 점 간격이
+// 곧 속도(가속=벌어짐/감속=좁아짐). 5 = 100ms → 순항 ~10mm·가속초입 ~2-3mm 로
+// 대비가 눈에 확 들어오는 지점. 은은하게: 작고 반투명, 선은 경로로 그대로 유지.
+const SPEED_DOT_STRIDE = 1;
+const SPEED_DOT_RADIUS = 0.0003;
+const SPEED_DOT_OPACITY = 0.7;
+
+/** 트레이스를 시간 등간격으로 솎아 찍는 속도 점 — 간격으로 가감속을 보여준다. */
+function SpeedDots({
+  points,
+}: {
+  points: readonly (readonly [number, number, number])[];
+}) {
+  const dots: (readonly [number, number, number])[] = [];
+  for (let i = 0; i < points.length; i += SPEED_DOT_STRIDE)
+    dots.push(points[i]);
+  return (
+    <>
+      {dots.map((p, i) => (
+        // 항상 최전면 — 로봇/고스트 메시에 가려지면 가감속 리듬이 안 보인다.
+        <mesh key={i} position={[p[0], p[1], p[2]]} renderOrder={999}>
+          <sphereGeometry args={[SPEED_DOT_RADIUS, 12, 12]} />
+          <meshBasicMaterial
+            color={VizColor.PREVIEW}
+            transparent
+            opacity={SPEED_DOT_OPACITY}
+            depthTest={false}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
+    </>
+  );
+}
 
 function rpyToQuat(
   rpyDeg: [number, number, number],
@@ -75,7 +113,8 @@ export function MovePreviewScenePart() {
   const robot = robots.find((r) => r.id === robotId);
   if (!robot) return null;
 
-  const ghostFrame = plan?.frames[Math.min(frameIdx, (plan?.frames.length ?? 1) - 1)];
+  const ghostFrame =
+    plan?.frames[Math.min(frameIdx, (plan?.frames.length ?? 1) - 1)];
   const tracePts = plan ? plan.tcpTrace.slice(0, frameIdx + 1) : [];
   const failPt =
     plan && !plan.feasible && plan.tcpTrace.length > 0
@@ -108,7 +147,15 @@ export function MovePreviewScenePart() {
             />
           ))}
         {tracePts.length >= 2 && (
-          <PolyLine points={tracePts} color={VizColor.PREVIEW} lineWidth={2} />
+          <>
+            <PolyLine
+              points={tracePts}
+              color={VizColor.PREVIEW}
+              lineWidth={2}
+              overlay
+            />
+            <SpeedDots points={tracePts} />
+          </>
         )}
         {failPt && (
           <Marker

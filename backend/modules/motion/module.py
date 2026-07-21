@@ -95,6 +95,40 @@ _PATH_IK_BUDGET = 10  # ⑤ 경로 샘플 IK — 보수적 소예산 (미수렴 
 # 촘촘해도 싸다. 5° 면 SO-101 링크 끝 이동 ~수 mm 단위 해상도).
 _JOINT_PATH_STEP_RAD = math.radians(5.0)
 
+# ── resolve_reachable 채택 잔차 선호 (2026-07-21) ──────────────
+# 게이트 통과 = "닿는다"는 이진 판정이지만, 10mm 하드리밋(IK_POS_ERROR_LIMIT,
+# adapters/pybullet.py) 바로 아래의 "겨우 닿는"(해석 seed→polish 가 실 캘 모델에
+# 못 붙인) 해가 채택되면 그 잔차가 servo commit blind 구간에 재주입돼 헛집음을
+# 만든다 (§2.1 실물: 채택 7.35mm=헛집음 vs 0.16mm=성공, 46배 차). → 잔차가 이 값
+# 이하면 "깨끗이 닿음"으로 보고 선호 순서 첫 그룹 즉시 채택(early-exit=속도 유지),
+# 초과~하드리밋 사이("겨우 닿음")면 통과 그룹 전부 본 뒤 잔차 최소 채택.
+# ⚠ 이건 채택 선호지 기각이 아니다 — 겨우 닿는 것만 있어도 최선을 잡는다
+# (침묵 실패 금지). 하드리밋(기각)은 kin 에 그대로.
+# 값 근거: 성공 0.16mm vs 헛집음 7.35mm 사이를 넉넉히 가르는 2mm. 2mm 이하는
+# 어차피 grasp-safe 라 뭘 골라도 무해(early-exit 로 속도), 2~10mm 만 스캔해
+# 최선을 고른다. ⚠ 실물 첫 런 데이터로 재튜닝 대상(추측 아님 — docs 작업원칙).
+_RESOLVE_RESIDUAL_GOOD_MM = 2.0
+
+
+def _pick_by_residual(
+    passing: list[tuple[int, float, list[list[float]]]],
+) -> tuple[int, float, list[list[float]]] | None:
+    """게이트 통과 그룹들(선호 순서, (group_index, 위치잔차mm, IK해)) 중 채택.
+
+    정책 SSOT (§2.1 재발 방지): 선호 순서상 잔차 GOOD(_RESOLVE_RESIDUAL_GOOD_MM)
+    이하 첫 그룹, 없으면 잔차 최소 그룹. 빈 입력 = None. 반환 = (index, 잔차, 해).
+
+    _scan 은 GOOD 그룹을 만나면 그 즉시 _solve 루프를 break(= IK early-exit 로
+    속도 유지)하고 지금까지 모은 passing 으로 이 함수를 부른다 — passing 끝에
+    붙은 GOOD 그룹이 first-good 분기로 채택되고, 그 앞의 '겨우 닿는' 그룹들은
+    건너뛴다. GOOD 이 하나도 없으면 min 분기(잔차 최소)."""
+    if not passing:
+        return None
+    for cand in passing:
+        if cand[1] <= _RESOLVE_RESIDUAL_GOOD_MM:
+            return cand
+    return min(passing, key=lambda t: t[1])
+
 
 def _linear_path_blocker(
     kin: Kinematics,
@@ -690,6 +724,9 @@ class MotionModule:
                 return -1, [], f"전 후보({len(groups)}) 위치가 workspace 밖", fails
             gate_rejects = {"floor": 0, "obstacle": 0, "joint_path": 0, "path": 0}
             ik_fails = 0
+            # 게이트 통과 그룹 누적 (index, 잔차mm, 해) — 잔차 선호 채택
+            # (_pick_by_residual). GOOD 그룹을 만나면 즉시 break (IK early-exit).
+            passing: list[tuple[int, float, list[list[float]]]] = []
             # group-major — 앞(선호) 그룹의 가/불가를 확정한 뒤에만 다음 그룹.
             # 해석적 IK robot 은 실패 그룹 비용 ~수 ms (branch 열거 확정 판정),
             # 수치 폴백 robot 은 walk+40 restarts (~0.15s) 상수.
@@ -715,9 +752,9 @@ class MotionModule:
                     gate_rejects["path"] += 1
                     fails[gi] = "직선 경로"
                     continue
-                # §7 관측성: 채택 해의 IK 위치잔차 — 파지 헛잡음이 잔차와
+                # §7 관측성: 통과 해의 IK 위치잔차 — 파지 헛잡음이 잔차와
                 # 상관되는지 실물 trace 에서 갈리는 첫 수 (docs/motion.md §10.D).
-                # conditional refine 도입 후 이 값이 sub-mm 로 떨어져야 정상.
+                # 해석 seed → polish 후 잔차 (§2.1: 리밋/특이점 근처에서 커짐).
                 resid_mm = 1000.0 * max(
                     (
                         float(
@@ -729,8 +766,19 @@ class MotionModule:
                     ),
                     default=0.0,
                 )
+                passing.append((gi, resid_mm, sols))
+                if resid_mm <= _RESOLVE_RESIDUAL_GOOD_MM:
+                    break  # 깨끗이 닿음 — 더 풀 필요 없음 (IK early-exit=속도)
+            picked = _pick_by_residual(passing)
+            if picked is not None:
+                gi, resid_mm, sols = picked
                 logger.info(
-                    "resolve_reachable: 채택 그룹 %d IK 위치잔차 max=%.2fmm", gi, resid_mm
+                    "resolve_reachable: 채택 그룹 %d 잔차 max=%.2fmm (%s, 통과 %d개)",
+                    gi, resid_mm,
+                    "GOOD"
+                    if resid_mm <= _RESOLVE_RESIDUAL_GOOD_MM
+                    else f"GOOD≤{_RESOLVE_RESIDUAL_GOOD_MM:.1f}mm 없음→잔차최소",
+                    len(passing),
                 )
                 fails[gi] = ""
                 return gi, sols, "", fails

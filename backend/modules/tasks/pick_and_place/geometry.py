@@ -155,54 +155,40 @@ _PLACE_FREE_YAW_OFFSETS_DEG = (
 _PLACE_TILTS_DEG = (0, 30, -30, 45, -45, 60, -60)
 
 
-def plan_place(
-    spot: OrientedDetection, *, held: OrientedDetection, lateral: float
-) -> list[PlaceCandidate]:
-    """적치 후보 (정렬 가족) — spot 상면 중심 위에 held 물체가 오는 TCP 자리.
+def plan_place(spot: OrientedDetection) -> list[PlaceCandidate]:
+    """적치 후보 (정렬 가족) — 상자(spot) 상면 **정중앙** 위 TCP 자리.
 
-    파지와 **딱 두 가지만 다르다** (2026-07-14 재설계 → 같은 날 실물 2회 정정):
-    (1) 조로 옆면을 무는 antipodal 없음 — 상자 가운데로 간다 (lateral 오프셋만
-        재사용: 물체가 TCP 에 이 오프셋으로 매달려 있어 물체 중심을 상자 중심에
-        맞추려면 적용 필요). (2) yaw 는 antipodal 쌍 방향이 아니라 **상자 방위
-        (spot.grasp_yaw)** 기준 — 삐뚤어진 상자면 그 방향으로.
-
-    **tilt 는 파지와 같은 0~±60° 도달 띠** (_PLACE_TILTS_DEG — 정정 1: 소각 ±30
-    상한이 SO-101 top-down 사각지대 §3.2 에 꽂혀 전멸 / 사다리는 perf 로 성기게).
-    **yaw 는 정렬 4방향** (정정 2: 2방향은 자세 그물이 너무 성겨 위치가 닿아도
-    자세 전멸 — 상수 주석). 순서가 곧 선호: 수직(0°)·정렬(0°/180°) 먼저. 이
-    가족이 전멸하면 소비자가 plan_place_free 로 폴백 (도달 판정은 motion resolve).
-
-    release z = spot 상면 + held/2 + 여유 (TCP 가 파지 시 held 중간 높이를 물었음).
-    """
-    return _place_candidates(
-        spot, held=held, lateral=lateral,
-        yaw_offsets_deg=_PLACE_ALIGNED_YAW_OFFSETS_DEG,
-    )
+    yaw 는 **상자 방위(spot.grasp_yaw)** 정렬 4방향 (삐뚤어진 상자면 그 방향으로 —
+    2방향은 자세 그물이 성겨 위치 닿아도 자세 전멸, 상수 주석). tilt 는 0~±60°
+    도달 띠(_PLACE_TILTS_DEG — 소각 ±30 상한이 SO-101 top-down 사각지대 §3.2 에
+    꽂혀 전멸, 사다리는 perf 로 성기게). 순서가 곧 선호: 수직(0°)·정렬(0°/180°)
+    먼저. 전멸 시 소비자가 plan_place_free 폴백 (도달 판정은 motion resolve)."""
+    return _place_candidates(spot, yaw_offsets_deg=_PLACE_ALIGNED_YAW_OFFSETS_DEG)
 
 
-def plan_place_free(
-    spot: OrientedDetection, *, held: OrientedDetection, lateral: float
-) -> list[PlaceCandidate]:
+def plan_place_free(spot: OrientedDetection) -> list[PlaceCandidate]:
     """적치 후보 (자유 yaw 가족) — 정렬 가족 전멸 시 폴백 (30° 격자 나머지 8방향).
 
     정렬은 선호일 뿐 — 닿는 자유 yaw 가 안 닿는 정렬 yaw 를 이긴다 (놓기 실패로
     task 전체가 죽는 것보다 삐딱하게라도 상자 위에 놓는 게 낫다)."""
-    return _place_candidates(
-        spot, held=held, lateral=lateral,
-        yaw_offsets_deg=_PLACE_FREE_YAW_OFFSETS_DEG,
-    )
+    return _place_candidates(spot, yaw_offsets_deg=_PLACE_FREE_YAW_OFFSETS_DEG)
 
 
 def _place_candidates(
     spot: OrientedDetection,
     *,
-    held: OrientedDetection,
-    lateral: float,
     yaw_offsets_deg: tuple[float, ...],
 ) -> list[PlaceCandidate]:
+    # 2026-07-21 단순화 (사용자 지시): 물건 폭(옆 치우침)·높이(손 밑 튀어나옴)는
+    # 무시하고 **상자 정중앙(sx,sy) 위 고정 여유 높이**에 놓고 연다.
+    # ⚠ TODO(추후 고려 — 빡빡한 상자/큰 물건이면 다시 반영):
+    #   ① 물건이 조에 반폭만큼 옆으로 매달림 → 상자 중심에 놓으려면 lateral 보정
+    #   ② 물건이 손 밑으로 height/2 만큼 튀어나옴 → 드롭 높이/접근 거리 반영
+    #   (걷어내기 전 식 = git history: place_z += held.height/2 + clear,
+    #    approach_dist += held.height/2, off = rot.apply([0, lateral, 0])).
     sx, sy, spot_top_z = spot.position
-    place_z = spot_top_z + held.height * 0.5 + _PLACE_DROP_CLEAR_M
-    approach_dist = _APPROACH_CLEAR_M + held.height * 0.5
+    place_z = spot_top_z + _PLACE_DROP_CLEAR_M  # 상자 상면 바로 위 (조금 위)
+    approach_dist = _APPROACH_CLEAR_M
 
     out: list[PlaceCandidate] = []
     for tilt_deg in _PLACE_TILTS_DEG:  # 수직(0°) 먼저 (선호), 성긴 사다리 (perf)
@@ -213,20 +199,18 @@ def _place_candidates(
                 * _TOPDOWN
                 * Rotation.from_euler("y", math.radians(tilt_deg))
             )
-            off = rot.apply([0.0, lateral, 0.0])
             qx, qy, qz, qw = (float(v) for v in rot.as_quat())
-            px, py = sx + float(off[0]), sy + float(off[1])
             # pre = place 에서 접근축 후방 (tilt=0 이면 곧 월드 +z 바로 위)
             ax, ay, az = (float(v) for v in rot.apply([1.0, 0.0, 0.0]))
             out.append(
                 PlaceCandidate(
                     label=f"tilt={tilt_deg:+d} yaw={math.degrees(yaw):.0f}",
                     pre=(
-                        px - ax * approach_dist,
-                        py - ay * approach_dist,
+                        sx - ax * approach_dist,
+                        sy - ay * approach_dist,
                         place_z - az * approach_dist,
                     ),
-                    place=(px, py, place_z),
+                    place=(sx, sy, place_z),  # 상자 정중앙
                     quat=(qx, qy, qz, qw),
                 )
             )

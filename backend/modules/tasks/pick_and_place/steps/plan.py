@@ -118,6 +118,8 @@ def servo_ladder_groups(
     coarse: OrientedDetection,
     cfg: servo.ServoConfig,
     floor_z: float | None = None,
+    *,
+    yaw_grid: bool = True,
 ) -> tuple[list[list[TcpPose]], list[tuple[servo.GraspFamily, Vec3, Vec3, float]]]:
     """coarse 관측 → resolve 후보 그룹 ([standoff 사다리…, 파지] × 가족) + 메타.
 
@@ -126,7 +128,7 @@ def servo_ladder_groups(
     servo.grasp_families). **width 물리 게이트**: 그 yaw 방향 관측 폭이 조
     개구를 넘는 가족은 물 수 없다 — 여기서 제외 (직사각 물체의 긴 변 물기가
     자연 기각되는 자리, 옛 aspect 문턱의 물리 기반 대체)."""
-    families = servo.grasp_families(coarse)
+    families = servo.grasp_families(coarse, yaw_grid=yaw_grid)
     groups: list[list[TcpPose]] = []
     metas: list[tuple[servo.GraspFamily, Vec3, Vec3, float]] = []
     g_point0 = servo.grasp_point(coarse, coarse, cfg, floor_z)
@@ -186,6 +188,7 @@ async def plan_pick(
     cands: list[OrientedDetection],
     *,
     exclude_xy: list[tuple[float, float]] | None = None,
+    trust_yaw: bool = False,
 ) -> ServoPlan:
     """스윕 누적 후보(cands — detect step 산출) → servo 접근 계획 (모션 0) →
     ServoPlan. 검출은 detect step 몫 (2026-07-19 스윕 통합 — 계획은 순수 판정).
@@ -291,9 +294,12 @@ async def plan_pick(
             if _xy_dist(c.position, coarse.position) <= _VIEW_MATCH_RADIUS_M
         ]
         floor_z = min(cluster_base) - _FLOOR_GATE_MARGIN_M
-        # 단일 resolve (§11 — 옛 2단 기존/확장 폐지): 가족 = 절대 yaw 격자
-        # 전체 (선호순 — 면 정렬·수직 우선), 해석적 IK 라 전멸도 수 s 확정.
-        groups, metas = servo_ladder_groups(coarse, cfg, floor_z)
+        # 단일 resolve (§11): 가족 = tilt 사다리 × yaw × flip (선호순). yaw =
+        # trust_yaw(가까이 정확 관측) 면 면정렬 2개만, 아니면(coarse 폴백) 절대
+        # 격자 전체. 해석적 IK 라 전멸도 수 s 확정. 좁힘으로 전멸 CT 6배↓.
+        groups, metas = servo_ladder_groups(
+            coarse, cfg, floor_z, yaw_grid=not trust_yaw
+        )
         t0 = time.monotonic()
         # 장애물 = **이웃 점군만** — 파지 대상 자신의 점군은 넣지 않는다
         # (2026-07-17 오후 실사고): engage(조를 물체 쪽으로 밀어넣어 물기)
@@ -411,19 +417,18 @@ async def plan_place(
     robot_id: str,
     prompt: str,
     *,
-    held: OrientedDetection,
-    lateral: float,
     home: WaypointRecord,
     spots: list[OrientedDetection],
 ) -> tuple[PlaceCandidate, list[float]]:
-    """스윕 누적 spot(spots — detect step 산출, 2026-07-19 스윕 통합) 게이트
-    판정 (모션 0) → (적치 후보, pre 관절해).
+    """관측 spot(spots — detect/approach 산출) 게이트 판정 (모션 0) → (적치 후보,
+    pre 관절해).
 
     **도달성 우선 선택 (2026-07-14)**: 점수 1등에 무조건 커밋하지 않는다 — spot
     을 점수순으로 돌며 팔이 실제로 닿는 첫 spot 채택. spot 마다 yaw 두 가족 순차
     (① 상자 방위 정렬 ② 전멸 시 자유 — 삐딱하게라도 놓는 게 task 실패보다 낫다).
-    held/lateral 은 coarse 관측·계획 lateral (servo 확정값과 수 mm 차 가능 —
-    상자 적치는 관대)."""
+    **놓기 자리 = 상자 정중앙 위** (2026-07-21 단순화 — 물건 폭/높이 무시,
+    geometry._place_candidates TODO). 집기 계획과 독립 (held/lateral 의존 제거)
+    이라 집기 전에 미리 계획 가능."""
     if not spots:
         raise TaskError(
             f"'{prompt}' 적치 대상 검출 0건 — 물체 배치/조명 확인 후 다시 "
@@ -456,8 +461,8 @@ async def plan_place(
         ranked = [fused, *ranked]
     for spot in ranked:
         for family, pplan in (
-            ("정렬", geometry.plan_place(spot, held=held, lateral=lateral)),
-            ("자유", geometry.plan_place_free(spot, held=held, lateral=lateral)),
+            ("정렬", geometry.plan_place(spot)),
+            ("자유", geometry.plan_place_free(spot)),
         ):
             got = await resolve_place(
                 ctx, robot_id, pplan,

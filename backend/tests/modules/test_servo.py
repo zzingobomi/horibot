@@ -77,6 +77,27 @@ def test_grasp_families_absolute_yaw_grid_always_covers():
         fams[0].jaw_axis[1], fams[0].jaw_axis[0]))) % 180 == 164
 
 
+def test_grasp_families_yaw_grid_off_keeps_only_face_aligned():
+    """2026-07-21 속도 — 가까이 정확 관측(approach) 시 관측 yaw 를 믿어 격자를
+    끈다(yaw_grid=False): yaw 후보 = 면 정렬 2개(grasp_yaw, +90°)뿐 → 가족 수
+    대폭↓(312→~52), 전멸 CT 6배↓. 격자는 coarse yaw 불신용 헤지라 정확 관측엔
+    불필요. tilt·flip 은 도달성 헤지(관측 무관)라 그대로."""
+    obs = _det(grasp_yaw=math.radians(30))
+    wide = servo.grasp_families(obs)  # 기본 True (격자)
+    narrow = servo.grasp_families(obs, yaw_grid=False)
+    assert len(narrow) < len(wide)  # 좁혀졌다
+    narrow_yaws = sorted({
+        round(math.degrees(math.atan2(f.jaw_axis[1], f.jaw_axis[0]))) % 180
+        for f in narrow
+    })
+    assert narrow_yaws == [30, 120]  # 면 정렬 2개뿐 (격자 없음)
+    # tilt 사다리 × yaw 2 × flip 2 (tilt·flip 은 관측 무관 도달성 헤지)
+    n_tilts = len({f.tilt_deg for f in narrow})
+    assert len(narrow) == n_tilts * 2 * 2
+    # 좁혀도 선호 첫 후보는 동일 (수직·면정렬·flip+)
+    assert narrow[0].tilt_deg == wide[0].tilt_deg == 0 and narrow[0].flip > 0
+
+
 def test_grasp_family_frame_convention():
     """tool frame 규약: x=접근축, y=조 축(수평), z=x×y — tilt=0 은 수직 하강."""
     fams = servo.grasp_families(_det(grasp_yaw=0.0))

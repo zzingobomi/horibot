@@ -206,7 +206,6 @@ class PickAndPlaceModule:
         place_object: str = "",
     ) -> None:
         so101 = self.TASK_ROBOTS[0]
-        markers: list[TaskMarker] = []
 
         # 0) home 경유 자세 — 없으면 모션 0 시점에 명시적 실패 (티칭 안내).
         home = await steps.home_waypoint(ctx, so101)
@@ -220,30 +219,45 @@ class PickAndPlaceModule:
             prompts.append(place_object)
         found = await steps.detect(ctx, so101, prompts)
 
-        # 2) 계획 — 집기(servo 접근 가족)·놓기 도달성을 모두 먼저 검증 (물리
-        # 파지 0). 놓을 곳이 도달 불가면 아무것도 집기 전에 실패한다 (물체 쥔 채
-        # 멈추는 corrupt 방지). 놓기의 held 기하 = coarse 관측 (steps 주석).
-        plan = await steps.plan_pick(
-            ctx, so101, pick_object, home, found.get(pick_object, []),
-            exclude_xy=self._robot_base_xy,
-        )
-        markers.append(_grasp_marker(plan.grasp_point0, plan.family))
-
-        drop, drop_pre = None, None
+        # 2) 접근·관측 + 계획 (2026-07-21 재구조) — **관측(팔 이동)은 상자 먼저 →
+        # 물건 마지막**: 물건을 마지막에 봐야 관측이 최신이고, 물건 본 뒤엔 계획
+        # (plan_* = 모션 0, 팔 안 움직임)만 하다 **바로 집으러** 간다 (상자로 왕복
+        # 없음). 놓기 계획은 집기와 독립(상자 정중앙 위, 물건 폭/높이 무시 —
+        # geometry TODO)이라 먼저 세운다. 집기·놓기 도달성을 **둘 다 집기 전에**
+        # 검증 — 놓을 곳 도달 불가면 아무것도 안 집는다 (쥔 채 멈춤 corrupt 방지).
+        drop, drop_pre, place_marker = None, None, None
         if place_object:
-            drop, drop_pre = await steps.plan_place(
-                ctx, so101, place_object,
-                held=plan.coarse, lateral=plan.lateral0, home=home,
-                spots=found.get(place_object, []),
+            # 상자 빈손 관측 (§3.3 — 든 물건이 상자 가리는 것 회피, 집기 전 관측)
+            # → 놓기 계획 (coarse 스윕 노이즈 대신 정확 관측).
+            place_cands, _, _ = await steps.approach_observe(
+                ctx, so101, found.get(place_object, []), place_object, home
             )
-            markers.append(TaskMarker(
+            drop, drop_pre = await steps.plan_place(
+                ctx, so101, place_object, home=home, spots=place_cands,
+            )
+            place_marker = TaskMarker(
                 label="place", position=drop.place,
                 # 적치 진입 방향 = pre→place (수직 삽입 축), 자세 = 계획 quat.
                 # 조 축은 place 마커엔 생략 (release 는 조 방향이 관심사 아님).
                 approach=_unit_dir(drop.pre, drop.place),
                 quaternion=drop.quat,
-            ))
+            )
 
+        # 물건은 **마지막에** 관측 → 파지 계획 (그 뒤엔 이동 없이 바로 집으러).
+        # 가까이 정확 관측 성공(pick_close) 시 관측 yaw 를 믿어 파지 yaw 격자를
+        # 끈다 (trust_yaw → 가족 312→~52, 전멸 CT 6배↓). 폴백이면 격자 유지.
+        pick_cands, _, pick_close = await steps.approach_observe(
+            ctx, so101, found.get(pick_object, []), pick_object, home
+        )
+        plan = await steps.plan_pick(
+            ctx, so101, pick_object, home, pick_cands,
+            exclude_xy=self._robot_base_xy, trust_yaw=pick_close,
+        )
+
+        # 마커: 파지[0] + 적치[1] (on_grasp 가 [0] 만 실시간 갱신, [1:] 유지).
+        markers = [_grasp_marker(plan.grasp_point0, plan.family)]
+        if place_marker is not None:
+            markers.append(place_marker)
         # 계획 확정 시점에 마커 표시 (파지·적치 지점을 실행 전 미리 보여줌).
         self._publish_markers(so101, markers)
 

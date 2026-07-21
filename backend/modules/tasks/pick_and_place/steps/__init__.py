@@ -42,7 +42,8 @@ from __future__ import annotations
 # (steps.primitives._SERVO_CFG 등 — 소비 코드가 모듈 참조로 읽는 자리).
 from modules.detector.contract import OrientedDetection as OrientedDetection
 
-from . import pick, place, plan, primitives, search
+from . import approach, pick, place, plan, primitives, search
+from .approach import approach_observe
 from .pick import servo_pick
 from .place import execute_place, insert, pre_place, release, retreat
 from .plan import (
@@ -69,6 +70,8 @@ __all__ = [
     "_SEARCH_GROUP",
     "_fuse_place_center",
     "_gripper_holding",
+    "approach",
+    "approach_observe",
     "close_gripper",
     "detect",
     "execute_place",
@@ -90,5 +93,4 @@ __all__ = [
     "servo_ladder_groups",
     "servo_pick",
     "verify_grasp",
-    "world",
 ]

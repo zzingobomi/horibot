@@ -195,28 +195,33 @@ def _face_align_dist_deg(yaw_deg: float, grasp_yaw_rad: float) -> float:
     return min(d, 90.0 - d)
 
 
-def grasp_families(obs: OrientedDetection) -> list[GraspFamily]:
-    """coarse 관측 → 파지 자세 후보 가족 (선호순) — 도달 판정은 motion resolve 몫.
+def grasp_families(
+    obs: OrientedDetection, *, yaw_grid: bool = True
+) -> list[GraspFamily]:
+    """관측 → 파지 자세 후보 가족 (선호순) — 도달 판정은 motion resolve 몫.
 
-    조 축 yaw = **절대 격자(_YAW_GRID_DEG) + 면 정렬각 2개**(grasp_yaw, +90°) —
-    OBB 앵커/aspect 문턱/2단 확장 폐지 (상단 _YAW_GRID_DEG 사고 사슬 주석).
-    "이 yaw 로 물 수 있나"의 물리(그 방향 관측 폭 ≤ 개구)는 호출자(plan)의
-    width 게이트 몫 — 여기는 자세 후보만.
+    조 축 yaw = 면 정렬각 2개(grasp_yaw, +90°) [+ **yaw_grid=True 면** 절대 격자
+    (_YAW_GRID_DEG)]. 격자는 **coarse 관측이 yaw 를 못 믿을 때**의 헤지다
+    (§11 사고 사슬 — near-square OBB yaw 노이즈). **가까이서 정확 관측(approach)**
+    한 경우엔 관측 yaw 를 믿어 격자를 끈다(yaw_grid=False) → 가족 312→~52, 전멸
+    CT 6배↓ (2026-07-21). 관측 실패로 coarse 폴백이면 격자 유지(True).
+    "이 yaw 로 물 수 있나"의 물리(관측 폭 ≤ 개구)는 호출자 width 게이트 몫.
 
     순서 = 선호: tilt 사다리(수직부터, geometry._TILTS_DEG) → 면 정렬 근접
     yaw → flip. 회전 구성은 open-loop plan_grasp 와 동일 규약
     (tool x=접근, y=조 축, z=x×y).
     """
     down = np.array([0.0, 0.0, -1.0])
-    # yaw 후보: 면 정렬각 2개 + 절대 격자, 면 정렬 근접순. 근접 중복(<반 격자)
-    # 은 격자 쪽을 제거 — 면 정렬각이 그 밴드의 대표.
+    # yaw 후보: 면 정렬각 2개 (+ 격자, yaw_grid 시). 근접 중복(<반 격자)은 격자
+    # 쪽 제거 — 면 정렬각이 그 밴드의 대표.
     exact = [math.degrees(obs.grasp_yaw) % 180.0,
              (math.degrees(obs.grasp_yaw) + 90.0) % 180.0]
     yaws = list(exact)
-    for g in np.arange(0.0, 180.0, _YAW_GRID_DEG):
-        if all(min(abs(g - e) % 180.0, 180.0 - abs(g - e) % 180.0)
-               >= _YAW_GRID_DEG / 2.0 for e in exact):
-            yaws.append(float(g))
+    if yaw_grid:
+        for g in np.arange(0.0, 180.0, _YAW_GRID_DEG):
+            if all(min(abs(g - e) % 180.0, 180.0 - abs(g - e) % 180.0)
+                   >= _YAW_GRID_DEG / 2.0 for e in exact):
+                yaws.append(float(g))
     # 1차 = 면 정렬 근접 (물체 옆면에 조가 수직), 2차 = 짧은 변 물기 우선
     # (= grasp_yaw+90 근접 — 짧은 쪽이 개구에 들어갈 확률이 높다, 옛
     # jaw∥short 1순위 계약 보존).

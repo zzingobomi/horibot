@@ -188,8 +188,8 @@ def test_pick_and_place_scenario_tree():
     # detect 가 시나리오 직속 step 으로 승격 — pick/place/world 한 스윕)
     top = [e.name for e in entries if e.depth == 0]
     assert top == [
-        "home_waypoint", "detect", "plan_pick", "plan_place", "servo_pick",
-        "execute_place",
+        "home_waypoint", "detect", "approach_observe", "plan_place",
+        "approach_observe", "plan_pick", "servo_pick", "execute_place",
     ]
     by_top = {e.name: e for e in entries if e.depth == 0}
     # place 경로는 `if place_object:` 안 — 조건부 표시, pick 은 무조건

@@ -23,13 +23,14 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { bridge, decodeMsgpackRecord, topicFor } from "@/api/bridge";
-import { useMirror, useStream } from "@/framework";
+import { useMirror, useService, useStream } from "@/framework";
 import {
   ServiceKey,
   TaskStatus,
   Topic,
   type CalibrationBundle,
 } from "@/api/generated/contract";
+import { useScanStore } from "@/stores/scanStore";
 import { RobotFrame } from "../shared/RobotFrame";
 import { cameraInBase } from "./cameraPose";
 import type { SceneObjectProps } from "../sceneTypes";
@@ -50,8 +51,32 @@ export function ScanGrowth({ robots, focusId }: SceneObjectProps) {
     robotId,
   });
   const bundle = bundleM.value as CalibrationBundle | null;
+  const setStream = useService(ServiceKey.SCENE3D_SET_STREAM, robotId);
 
   const running = ws.value?.status === TaskStatus.RUNNING;
+
+  // scene3d cloud 는 SET_STREAM enable 을 해야만 발행된다 (기본 off — 8Hz 디코드
+  // 비용). 2026-07-21 홈-검증 실사고: 이 배선이 없어 스캔 내내 cloud frame 0개 =
+  // 성장 점군이 아예 안 떴다. 스캔 시작에 켜고, 끝나면 **우리가 켠 것만** 끈다 —
+  // LivePointCloudPanel 이 켜 둔 상태(scanStore.liveEnabled = 패널 소유 기록)면
+  // 그대로 둔다 (last-writer-wins 충돌 회피). voxel 은 scanStore SSOT 동봉.
+  useEffect(() => {
+    if (!running || !robotId) return;
+    const store = useScanStore.getState();
+    void setStream.call({
+      robot_id: robotId,
+      enabled: true,
+      voxel_size: store.voxelSize,
+    });
+    return () => {
+      if (!useScanStore.getState().liveEnabled[robotId]) {
+        void setStream.call({ robot_id: robotId, enabled: false });
+      }
+    };
+    // useService 반환 객체는 render 마다 새 ref — running/robotId 만이 실제 의존
+    // (World.tsx 동일 관례).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running, robotId]);
 
   // 최신 tcp/bundle 을 콜백에서 읽기 위한 ref (cloud 콜백 클로저가 stale 안 되게).
   const tcpRef = useRef(tcp.value);

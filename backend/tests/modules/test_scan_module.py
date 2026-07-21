@@ -439,3 +439,31 @@ async def test_build_applies_fresh_calibration_to_fk(tmp_path: Path, monkeypatch
     )
     assert res.accepted, res.message
     assert captured_kwargs[2]["sdf_trunc"] == 0.05
+
+
+# ── pair_gate — 쌍 정합 채택 판정 (build.py 순수 함수) ────────────────────────
+# 2026-07-21 스캔 붕괴 회귀망: 인접 pair 가 "경고만 찍고 채택"돼 PoseGraph 를
+# 오염 (이중벽 mesh, docs/pnp_scenario_rework.md §8). 실측 로그 값 그대로 잠근다.
+
+
+def test_pair_gate_rejects_2026_07_21_incident_pairs():
+    """★ 붕괴 런(07-20/21) 인접 pair 실측값 — 전부 기각(→FK 배치)돼야 한다."""
+    from modules.scan import build as recon
+
+    assert recon.pair_gate(0.07, 0.0121) == (False, "저fitness")
+    assert recon.pair_gate(0.32, 0.0384) == (False, "약중첩+대보정")
+    assert recon.pair_gate(0.33, 0.0219) == (False, "약중첩+대보정")
+    assert recon.pair_gate(0.36, 0.0390) == (False, "약중첩+대보정")  # 07-20 21:58
+    assert recon.pair_gate(0.45, 0.0474) == (False, "발산")  # corr > 40mm 상한
+
+
+def test_pair_gate_keeps_healthy_and_benign_pairs():
+    """뒤집기 대조군: 07-19 건강 런 인접 실측 + '약하지만 보정 작은' 무해 쌍은
+    통과 — 게이트가 건강한 스캔을 죽이면 그게 새 회귀다."""
+    from modules.scan import build as recon
+
+    for fit, corr in [(0.73, 0.0113), (0.63, 0.0098), (0.65, 0.0074), (0.50, 0.0077)]:
+        trusted, reason = recon.pair_gate(fit, corr)
+        assert trusted, f"건강 pair 기각됨: fitness={fit} corr={corr} ({reason})"
+    # 저 fitness 지만 FK 근처 미세 보정 (07-21 pair 4→3: 0.38/6.8mm) — 무해 통과
+    assert recon.pair_gate(0.38, 0.0068)[0] is True

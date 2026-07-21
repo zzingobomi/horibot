@@ -81,6 +81,10 @@ from .persistence.repository import ScanRepository
 
 logger = logging.getLogger(__name__)
 
+# 캡처 관측성 덤프 (detector _DETECT_DUMP_ROOT 동형) — 정합 입력을 육안 검증할
+# 경로. 2026-07-21 붕괴 분석의 교훈: blob 은 있어도 "보이는" 증거가 없었다.
+_SCAN_DUMP_ROOT = Path("debug") / "scan"
+
 
 @dataclass(frozen=True)
 class ScanRobotSpec:
@@ -224,8 +228,24 @@ class ScanModule:
                 arm_motor_ids=[s.id for s in spec.arm_specs],
             )
         )
+        self._dump_capture_debug(session.session_id, scan_id, snap.color_jpeg)
         count = len(self._repo.list_scans(req.session_row_id))
         return CaptureResponse(accepted=True, scan=saved, scan_count=count)
+
+    @staticmethod
+    def _dump_capture_debug(session_id: str, scan_id: int, color_jpeg: bytes) -> None:
+        """캡처 color 를 debug/scan/<session_id>/ 에 남긴다 (detector 덤프 동형).
+
+        근거 (2026-07-21): 스캔 정합 붕괴 분석에서 "정합에 뭐가 들어갔나"를 볼
+        경로가 blob 디코드뿐이었다 — detect 덤프가 우연히 있어 원인(중첩부 앵커
+        부재)을 특정했지, scan 단독 런이면 불가능했다. 이미 인코딩된 JPEG 를 그대로
+        써 비용 ~0 (pose 당 ~200KB). best-effort — 덤프 실패가 캡처를 막지 않는다."""
+        try:
+            d = _SCAN_DUMP_ROOT / session_id
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{scan_id:03d}_color.jpg").write_bytes(color_jpeg)
+        except Exception as e:
+            logger.warning("scan capture 디버그 덤프 실패 (%s) — 캡처는 정상", e)
 
     @service(Scan.Service.LIST_SCANS)
     def list_scans(self, req: ListScansRequest) -> ListScansResponse:

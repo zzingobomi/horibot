@@ -87,6 +87,22 @@ def test_service_wiring_agnostic_keys():
     assert not hasattr(mod, "robot_id")
 
 
+async def _snapshot_feeding(
+    mod: Scene3DModule, robot_id: str, depth_value: int, num_frames: int = 1
+):
+    """fresh-after-request 의미에 맞는 snapshot 헬퍼 — 요청을 먼저 띄우고
+    (t0 기록) 그 뒤에 프레임을 흘린다 (실제 흐름: 캡처 요청 → 카메라 프레임 도착)."""
+    import asyncio
+
+    task = asyncio.create_task(
+        mod.snapshot(SnapshotRequest(robot_id=robot_id, num_frames=num_frames))
+    )
+    await asyncio.sleep(0)  # snapshot 이 t0 기록 후 대기 진입
+    for _ in range(num_frames):
+        _feed(mod, robot_id, depth_value=depth_value)
+    return await task
+
+
 async def test_single_instance_serves_so101_and_omx_isolated():
     """★ 리트머스 — 한 host-level 인스턴스가 rgbd robot 2대 snapshot 격리.
 
@@ -95,11 +111,8 @@ async def test_single_instance_serves_so101_and_omx_isolated():
     mod, _ = _module()
     await mod.start()  # intrinsic pull (factory fx 600/700) + live loop
     try:
-        _feed(mod, _SO101, depth_value=300)
-        _feed(mod, _OMX, depth_value=500)
-
-        snap_so = mod.snapshot(SnapshotRequest(robot_id=_SO101, num_frames=1))
-        snap_omx = mod.snapshot(SnapshotRequest(robot_id=_OMX, num_frames=1))
+        snap_so = await _snapshot_feeding(mod, _SO101, depth_value=300)
+        snap_omx = await _snapshot_feeding(mod, _OMX, depth_value=500)
 
         # intrinsic — 각 robot 의 factory fx
         assert snap_so.intrinsic.fx == 600.0
@@ -127,7 +140,7 @@ async def test_set_stream_per_robot_and_unknown_rejected():
         with pytest.raises(KeyError):
             mod.set_stream(SetStreamRequest(robot_id="ghost", enabled=True))
         with pytest.raises(KeyError):
-            mod.snapshot(SnapshotRequest(robot_id="ghost"))
+            await mod.snapshot(SnapshotRequest(robot_id="ghost"))
     finally:
         await mod.stop()
 
@@ -152,3 +165,49 @@ async def test_live_loop_publishes_only_enabled_robot():
         await mod.stop()
     assert clouds, "CLOUD stream 발행 안 됨"
     assert all(c.robot_id == _SO101 for c in clouds)  # omx 발행 X
+
+
+# ── snapshot fresh-after-request (2026-07-21 world_scan pose1 실사고 회귀망) ──
+
+
+async def test_snapshot_uses_only_frames_after_request():
+    """★ 이동 중(과거) 프레임이 consensus 에 섞이면 그 depth 가 현재 자세 FK 로
+    배치돼 기하가 통째로 뜬다 (실사고: pose1 책상 +5.6cm 부유 → 정합 전멸).
+    snapshot 은 요청 이후 도착한 프레임만 써야 한다."""
+    import asyncio
+
+    mod, _ = _module()
+    await mod.start()
+    try:
+        # 이동 중 프레임 (stale — 999) 이 버퍼에 이미 있음
+        for _ in range(5):
+            _feed(mod, _SO101, depth_value=999)
+        task = asyncio.create_task(
+            mod.snapshot(SnapshotRequest(robot_id=_SO101, num_frames=2))
+        )
+        await asyncio.sleep(0)  # t0 기록 후 대기 진입
+        _feed(mod, _SO101, depth_value=300)  # 정착 후 프레임
+        _feed(mod, _SO101, depth_value=300)
+        snap = await task
+        d = np.frombuffer(
+            zstd.ZstdDecompressor().decompress(snap.depth_zstd), dtype=np.uint16
+        )
+        assert int(np.median(d)) == 300, "stale(999) 프레임이 consensus 에 섞임"
+        assert snap.num_frames == 2
+    finally:
+        await mod.stop()
+
+
+async def test_snapshot_times_out_without_fresh_frames(monkeypatch):
+    """fresh 프레임이 안 오면 침묵 과거 프레임 사용 대신 raise (사유 표면화)."""
+    from modules.scene3d import module as scene3d_module
+
+    monkeypatch.setattr(scene3d_module, "_SNAPSHOT_FRESH_TIMEOUT_S", 0.15)
+    mod, _ = _module()
+    await mod.start()
+    try:
+        _feed(mod, _SO101, depth_value=300)  # stale 만 존재
+        with pytest.raises(RuntimeError, match="fresh depth"):
+            await mod.snapshot(SnapshotRequest(robot_id=_SO101, num_frames=1))
+    finally:
+        await mod.stop()

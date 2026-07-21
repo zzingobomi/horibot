@@ -54,6 +54,10 @@ from .contract import (
 logger = logging.getLogger(__name__)
 
 _LIVE_HZ = 8.0
+# snapshot fresh 대기 상한 — 요청 이후 도착 프레임 num_frames 장이 이 안에 안
+# 모이면 raise (카메라 스트림 지연/중단 표면화, 침묵 과거 프레임 사용 금지).
+# scan capture 가 timeout 8s 로 부르므로 그 아래.
+_SNAPSHOT_FRESH_TIMEOUT_S = 6.0
 _DEFAULT_VOXEL = 0.005  # 5mm (라이브)
 _DEPTH_BUFFER = 16  # consensus 용 최근 depth ring
 _JPEG_QUALITY = 90
@@ -64,7 +68,9 @@ class _RobotBuffers:
     """robot 1개의 RGBD runtime state — lock 은 module 전역 (짧은 임계영역)."""
 
     def __init__(self) -> None:
-        self.depths: deque[np.ndarray] = deque(maxlen=_DEPTH_BUFFER)
+        # (도착 monotonic, depth) — snapshot 의 "요청 이후 도착" 판정용 시각 동봉.
+        # 도착 시각 기준(캡처 시각 아님)은 보수적: 도착이 t0 이후면 캡처도 이후.
+        self.depths: deque[tuple[float, np.ndarray]] = deque(maxlen=_DEPTH_BUFFER)
         self.depth_scale = 0.0
         self.depth_wh: tuple[int, int] | None = None
         self.latest_color: np.ndarray | None = None
@@ -171,7 +177,7 @@ class Scene3DModule:
             return
         depth = arr.reshape(frame.height, frame.width)
         with self._lock:
-            buf.depths.append(depth)
+            buf.depths.append((time.perf_counter(), depth))
             buf.depth_scale = frame.depth_scale
             buf.depth_wh = (frame.width, frame.height)
 
@@ -198,20 +204,51 @@ class Scene3DModule:
         return SetStreamResponse(ok=True, enabled=buf.enabled, voxel_size=buf.voxel)
 
     @service(Scene3d.Service.SNAPSHOT)
-    def snapshot(self, req: SnapshotRequest) -> SnapshotResponse:
-        """최근 N depth 의 consensus median + latest color → jpeg/zstd + intrinsic."""
+    async def snapshot(self, req: SnapshotRequest) -> SnapshotResponse:
+        """**요청 이후 도착한** N depth 의 consensus median + latest color.
+
+        옛 의미("최근 N 장" = 과거 버퍼)는 이동 직후 캡처에서 이동 중 프레임을
+        consensus 에 섞었다 — 2026-07-21 world_scan pose1 실사고: 긴 MoveJ 직후
+        settle 1.0s < 버퍼 시간폭이라 stale depth 가 pose1 FK 로 배치돼 책상이
+        +5.6cm 부유 (정합 전멸의 진범, docs/pnp_scenario_rework.md §8). 07-19 까진
+        같은 자세에서 detect(2~4s)가 우연히 버퍼를 씻어줘 잠복. 요청 이후 프레임만
+        쓰면 settle 노브와 무관하게 "현재 자세의 프레임"이 구조적으로 보장된다.
+        fresh 가 시간 내 안 모이면 raise — 침묵 과거 프레임 사용 금지."""
         buf = self._buf.get(req.robot_id)
         if buf is None:
             raise KeyError(f"robot {req.robot_id!r} 이 이 host 의 rgbd fleet 에 없음")
-        with self._lock:
-            depths = list(buf.depths)[-max(1, req.num_frames):]
-            color = None if buf.latest_color is None else buf.latest_color.copy()
-            depth_scale = buf.depth_scale
-            depth_wh = buf.depth_wh
-        if not depths or color is None or depth_wh is None:
-            raise RuntimeError("scene3d snapshot: depth/color frame 아직 없음")
         if buf.base_intrinsic is None:
             raise RuntimeError("scene3d snapshot: intrinsic 미확보 (calibration/camera 확인)")
+        need = max(1, req.num_frames)
+        t0 = time.perf_counter()
+        deadline = t0 + _SNAPSHOT_FRESH_TIMEOUT_S
+        while True:
+            with self._lock:
+                fresh = [d for ts, d in buf.depths if ts > t0]
+                if len(fresh) >= need:
+                    depths = [d.copy() for d in fresh[-need:]]
+                    color = (
+                        None if buf.latest_color is None else buf.latest_color.copy()
+                    )
+                    depth_scale = buf.depth_scale
+                    depth_wh = buf.depth_wh
+                    break
+                n_fresh = len(fresh)
+            if time.perf_counter() >= deadline:
+                raise RuntimeError(
+                    f"scene3d snapshot: fresh depth {n_fresh}/{need}장 "
+                    f"({_SNAPSHOT_FRESH_TIMEOUT_S:.0f}s 내 도착 부족) — 카메라 "
+                    "스트림 지연/중단 확인"
+                )
+            await asyncio.sleep(0.05)
+        wait_s = time.perf_counter() - t0
+        if wait_s > 1.0:  # 관측성 — 프레임 도착률이 낮으면 캡처가 느려진 이유
+            logger.info(
+                "scene3d snapshot: fresh %d장 대기 %.2fs (robot=%s)",
+                need, wait_s, req.robot_id,
+            )
+        if color is None or depth_wh is None:
+            raise RuntimeError("scene3d snapshot: color frame 아직 없음")
 
         depth = consensus_depth(depths)
         intr = pc.scale_intrinsic(
@@ -255,7 +292,7 @@ class Scene3DModule:
             if buf.base_intrinsic is None:
                 return
         with self._lock:
-            depth = None if not buf.depths else buf.depths[-1].copy()
+            depth = None if not buf.depths else buf.depths[-1][1].copy()
             color = None if buf.latest_color is None else buf.latest_color.copy()
             depth_scale = buf.depth_scale
             depth_wh = buf.depth_wh

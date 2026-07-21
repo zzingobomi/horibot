@@ -54,6 +54,17 @@ _ICP_FITNESS_FLOOR = 0.3
 # 보고 그 edge 는 FK 초기값으로 대체 (loop 은 아예 제외). 실측 분리: 정상 ≤28mm /
 # 발산 ≥51mm → 40mm.
 _MAX_CORR_M = 0.04
+# 저신뢰 인접 채택 게이트 (2026-07-21 실물 회귀 — docs/pnp_scenario_rework.md §8).
+# 07-21 붕괴 런: 인접 fitness 0.07(corr 12mm)·0.32(38mm)·0.33(22mm) 가 전부
+# "경고만 찍고 채택"돼 PoseGraph 를 오염 → 이중벽 mesh (07-20 21:58 도 0.36/39mm
+# 동일 클래스). 07-19 건강 런 실측: 인접 fitness ≥0.50, corr ≤11.3mm. 그 사이에
+# 문턱 2개:
+#   ① fitness < _ICP_FITNESS_FLOOR: 지지 중첩 자체가 없음 — 보정량 무관 FK.
+#   ② fitness < _FITNESS_TRUST 이고 corr > _CORR_SUSPECT_M: 약한 중첩이 FK
+#      신뢰대역(σ_t ~7.5mm) 밖으로 크게 옮김 = 오정합 의심 — FK.
+# (0.38/6.8mm 처럼 "약하지만 보정 작은" 쌍은 통과 — FK 근처 미세 보정은 무해.)
+_FITNESS_TRUST = 0.45
+_CORR_SUSPECT_M = 0.015
 # multiscale colored ICP 사다리 (coarse→fine): (다운샘플 voxel m, max_iter).
 # max_correspondence = 그 스케일 voxel — 최상단 20mm 가 FK 초기오차(σ_t
 # ~7.5mm + 유격)를 덮고, fine 으로 내려가며 조인다 (Open3D 관례 스케줄).
@@ -142,6 +153,23 @@ def build_pyramid(
     return levels
 
 
+def pair_gate(
+    fitness: float, corr_m: float, max_corr_m: float = _MAX_CORR_M
+) -> tuple[bool, str]:
+    """쌍 정합 채택 판정 (순수 함수 — 회귀 테스트 대상).
+
+    반환 = (trusted, 기각 사유). trusted=False 면 호출자(register_pair)가 T 를
+    FK 초기값으로 되돌린다. 사유는 method 접미로 로그에 남는다 (2026-07-21
+    붕괴 로그가 "왜 기각인지" 없이 채택만 찍혀 진단이 늦었던 것의 관측성 보강)."""
+    if corr_m > max_corr_m:
+        return False, "발산"
+    if fitness < _ICP_FITNESS_FLOOR:
+        return False, "저fitness"
+    if fitness < _FITNESS_TRUST and corr_m > _CORR_SUSPECT_M:
+        return False, "약중첩+대보정"
+    return True, ""
+
+
 def register_pair(
     levels_src: dict[float, o3d.geometry.PointCloud],
     levels_tgt: dict[float, o3d.geometry.PointCloud],
@@ -194,14 +222,14 @@ def register_pair(
         )
         t_cur = res.transformation
         fitness = float(res.fitness)
-    # 발산 게이트 — FK 초기값 대비 이동량이 상한 초과면 평면 aliasing lock 으로
-    # 보고 FK 로 되돌린다 (fitness 는 반복 텍스처서 못 믿음 → corr 이 신뢰 신호).
+    # 채택 게이트 (pair_gate) — 발산(corr 상한) + 저fitness + 약중첩·대보정 콤보.
+    # 기각 시 FK 초기값으로 되돌린다 (fitness 는 평면/반복 텍스처서 못 믿음).
     t_cur = np.asarray(t_cur, dtype=float)
     t_ini_arr = np.asarray(t_ini, dtype=float)
     corr_m = float(np.linalg.norm(t_cur[:3, 3] - t_ini_arr[:3, 3]))
-    trusted = corr_m <= max_corr_m
+    trusted, reason = pair_gate(fitness, corr_m, max_corr_m)
     if not trusted:
-        method = f"{method}→fk"
+        method = f"{method}→fk({reason})"
         t_cur = t_ini_arr
     info = o3d.pipelines.registration.get_information_matrix_from_point_clouds(
         levels_src[fine], levels_tgt[fine], icp_max_dist, t_cur
@@ -290,23 +318,20 @@ def build_mesh(
         logger.info(
             "  pair %d→%d%s: %s fitness=%.2f, FK 대비 보정 %.1fmm%s",
             src, tgt, " (loop)" if loop else "", method, fitness, corr_m * 1000.0,
-            "" if trusted else " ⚠ 발산→FK",
+            "" if trusted else " ⚠ 기각→FK",
         )
         return t_icp, info, fitness, trusted
 
     for i in range(n - 1):
         t_ts, info, fit, trusted = _register(i + 1, i, loop=False)
         if not trusted:
-            # 인접 발산 = FK 초기값으로 대체됨 (register_pair). 연결성은 FK edge 로
-            # 유지 — node init 도 FK 라 왜곡 없음. 그 스캔은 FK(~7.5mm)로 배치.
+            # 인접 기각 = FK 초기값으로 대체됨 (register_pair.pair_gate — 사유는
+            # 위 pair 로그의 method 접미). 연결성은 FK edge 로 유지 — node init 도
+            # FK 라 왜곡 없음. 그 스캔은 FK(~7.5mm)로 배치 — 07-21 실측: 오정합
+            # 38mm 채택보다 FK 배치가 낫다 (docs/pnp_scenario_rework.md §8).
             logger.warning(
-                "  인접 pair %d→%d 발산 — FK 초기값으로 배치 (ICP 신뢰 불가)", i + 1, i
-            )
-        elif fit < _ICP_FITNESS_FLOOR:
-            logger.warning(
-                "  인접 pair %d→%d fitness %.2f < %.2f — 채택하나 정합 신뢰 낮음"
-                " (pose 간 중첩 부족 의심)",
-                i + 1, i, fit, _ICP_FITNESS_FLOOR,
+                "  인접 pair %d→%d 정합 기각 — FK 초기값으로 배치 (fitness %.2f)",
+                i + 1, i, fit,
             )
         edges.append((i + 1, i, t_ts, info, False))
         progress("pairwise_registration", (i + 1) / max(1, n - 1), f"인접 {i + 1}")
@@ -321,16 +346,10 @@ def build_mesh(
                 continue
             n_loop_cand += 1
             t_ts, info, fit, trusted = _register(j, i, loop=True)
-            # loop edge 는 정보 추가가 목적 — 발산(FK 대체)이거나 fitness 미달이면
-            # node init 대비 얻는 게 없고 오히려 오염 위험 → 제외.
+            # loop edge 는 정보 추가가 목적 — 게이트 기각(발산/저fitness/약중첩·
+            # 대보정, pair_gate)이면 node init 대비 얻는 게 없고 오염 위험 → 제외.
             if not trusted:
-                logger.info("  loop 후보 %d→%d 발산 — 제외 (FK 이상 정보 없음)", j, i)
-                continue
-            if fit < _ICP_FITNESS_FLOOR:
-                logger.info(
-                    "  loop 후보 %d→%d (dist %.2fm) fitness %.2f < floor — 제외",
-                    j, i, dist, fit,
-                )
+                logger.info("  loop 후보 %d→%d 기각 — 제외 (FK 이상 정보 없음)", j, i)
                 continue
             n_loop_kept += 1
             edges.append((j, i, t_ts, info, True))

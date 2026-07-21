@@ -21,6 +21,12 @@ import pytest
 from pydantic import BaseModel
 
 from framework.transport.protocol import RemoteError
+from modules.calibration.contract import (
+    Calibration,
+    CalibrationBundle,
+    HandEyeResultData,
+    HandEyeResultRecord,
+)
 from modules.detector.contract import (
     DetectOrientedResponse,
     Detector,
@@ -221,8 +227,32 @@ def _fast_servo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(servo_trace, "_TRACE_ROOT", tmp_path / "servo_pick")
 
 
+# hand-eye 번들 — approach_observe 의 카메라 look-pose 생성 입력 (실측 마운트:
+# 카메라가 TCP 후방 (−77,−9,−65)mm, servo.py 박제). R=I 는 기하 단순화 —
+# resolve 는 스크립트라 테스트엔 유효 회전이기만 하면 된다.
+def _bundle() -> CalibrationBundle:
+    return CalibrationBundle(
+        robot_id=_BOT,
+        hand_eye=HandEyeResultRecord(
+            run_id=1, robot_id=_BOT, created_at=_TS,
+            result_data=HandEyeResultData(
+                R_cam2gripper=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                t_cam2gripper=[[-0.077], [-0.009], [-0.065]],
+                method="test",
+            ),
+        ),
+    )
+
+
+_BUNDLE_KEY = str(Calibration.Service.SNAPSHOT_BUNDLE)
+
+
 def _ctx(script: dict) -> FakeContext:
-    return FakeContext(robots=[_BOT], specs={_BOT: _SPEC}, service_script=script)
+    # SNAPSHOT_BUNDLE 은 approach_observe 가 매 호출 당기는 공통 의존 — 기본
+    # 스크립트로 넉넉히 깔아준다 (개별 테스트가 넣으면 그쪽 우선).
+    merged = dict(script)
+    merged.setdefault(_BUNDLE_KEY, [_bundle()] * 8)
+    return FakeContext(robots=[_BOT], specs={_BOT: _SPEC}, service_script=merged)
 
 
 def _module_for_scenario() -> PickAndPlaceModule:
@@ -269,8 +299,9 @@ def _pick_script(**overrides) -> dict:
 # scenario override 시 스윕 _DETECT 뒤에 이 조각을 끼운다 (프레임 1 = _DETECT +1,
 # look resolve = _SELECT +1 앞, home 경유+look = _MOVE_J +2 앞).
 _APPROACH_DETECT = [DetectOrientedResponse(found=True, candidates=[_OBS])]  # 1프레임
-# keys() prefix: 스윕 _DETECT 와 계획 _SELECT 사이 (look resolve → home → look → 관측).
-_APPROACH_KEYS = [_SELECT, _MOVE_J, _MOVE_J, _DETECT]
+# keys() prefix: 스윕 _DETECT 와 계획 _SELECT 사이
+# (hand-eye 번들 → look resolve → home → look → 관측).
+_APPROACH_KEYS = [_BUNDLE_KEY, _SELECT, _MOVE_J, _MOVE_J, _DETECT]
 
 
 # ─── servo 시나리오 (FakeContext — 하드웨어/wire 없음) ────────────────
@@ -719,6 +750,7 @@ async def test_commit_descent_profile_records_samples_and_suspect(
         + [_tcp(_G_TCP)] * 10,  # 샘플/touch-up/도달 — 전부 동일값 (결정성)
         _READ_STATE: [held_arm_load] * 10,  # 샘플 + close/withdraw 판정
     })
+    script.setdefault(_BUNDLE_KEY, [_bundle()] * 8)  # approach hand-eye (직접 생성 ctx)
     ctx = _SlowFinalCtx(robots=[_BOT], specs={_BOT: _SPEC}, service_script=script)
     await _module_for_scenario().scenario(ctx, pick_object="white cube")
 
@@ -1391,3 +1423,104 @@ async def test_verify_grasp_held_passes():
     ctx = _ctx({_READ_STATE: [_joint_state(_HELD_RAW, load=280)]})
     await steps.verify_grasp(ctx, _BOT, phase="close 직후")
     assert len(ctx.calls(_READ_STATE)) == 1
+
+
+# ── approach_observe 시점 품질 (2026-07-21 −60° 측면뷰 실사고 회귀망) ──────────
+
+
+def test_camera_look_poses_frame_object_from_above():
+    """★ look-pose 생성 = **카메라 중심** (2026-07-21 사용자 실증 자세가 규정).
+
+    각 후보를 hand-eye 로 카메라 자세로 되돌려 검증: ① 광축이 물체를 정확히
+    응시 ② 지정 거리 ③ 고각 ≥45° (옆/아래 뷰 배제 — 실사고 ratio 0.31/0.55)
+    ④ 고각×방위 전 격자 (파지 가족 파생이 놓치던 "손목 꺾어 보기" 포함 —
+    가장자리 전멸 회귀 방지)."""
+    from modules.tasks.pick_and_place.steps import approach
+
+    t_ee_cam = np.eye(4)
+    t_ee_cam[:3, 3] = (-0.077, -0.009, -0.065)
+    obj = (0.20, 0.05, 0.03)
+    dist = approach._OBSERVE_CAM_DIST_M[0]
+    poses = approach._camera_look_poses(obj, t_ee_cam, dist)
+    assert len(poses) == len(approach._OBSERVE_ELEV_DEG) * approach._OBSERVE_AZIM_N
+    from scipy.spatial.transform import Rotation as _R
+
+    for i, p in enumerate(poses):
+        t_be = np.eye(4)
+        t_be[:3, :3] = _R.from_quat(p.quaternion).as_matrix()
+        t_be[:3, 3] = p.position
+        t_bc = t_be @ t_ee_cam  # 카메라 자세 복원
+        campos, optical = t_bc[:3, 3], t_bc[:3, 2]
+        ray = np.asarray(obj) - campos
+        d = float(np.linalg.norm(ray))
+        assert abs(d - dist) < 1e-9, f"후보{i} 거리 {d}"
+        assert float(np.dot(optical, ray / d)) > 0.999999, f"후보{i} 광축 이탈"
+        elev = float(np.degrees(np.arcsin(-(ray / d)[2])))
+        assert elev >= min(approach._OBSERVE_ELEV_DEG) - 1e-6, f"후보{i} 저고각 {elev}"
+    # 수직(90°)이 선호 1순위 — 첫 후보의 카메라는 물체 바로 위
+    t_be = np.eye(4)
+    t_be[:3, :3] = _R.from_quat(poses[0].quaternion).as_matrix()
+    t_be[:3, 3] = poses[0].position
+    cam0 = (t_be @ t_ee_cam)[:3, 3]
+    assert abs(cam0[0] - obj[0]) < 1e-9 and abs(cam0[1] - obj[1]) < 1e-9
+
+
+async def test_approach_observe_distance_ladder_retries_farther():
+    """가장자리 물체: 기본 카메라 거리(13cm) 전멸이면 18cm 로 재시도해 **그래도
+    가까이서 본다** (coarse 31cm 폴백은 최후) — "가장자리는 close 포기" 반려
+    (2026-07-21 사용자 지시)."""
+    coarse = _det(points=[(0.2, 0.05, 0.01)] * 300)
+    close = _det(position=(0.201, 0.051, 0.025), points=[(0.2, 0.05, 0.01)] * 300)
+    script = {
+        _SELECT: [
+            ResolveReachableResponse(index=-1, message="전멸"),  # 13cm
+            ResolveReachableResponse(index=0, solutions=[[0.2] * 6]),  # 18cm
+        ],
+        _MOVE_J: [MoveJResponse(), MoveJResponse()],
+        _DETECT: [DetectOrientedResponse(found=True, candidates=[close])],
+    }
+    ctx = _ctx(script)
+    cands, joints, close_ok = await steps.approach_observe(
+        ctx, _BOT, [coarse], "blue box", _home_record()
+    )
+    assert close_ok is True  # 18cm 에서라도 close 관측 성공
+    assert joints == [0.2] * 6
+    assert len(ctx.calls(_SELECT)) == 2  # 거리 사다리 2단 시도
+
+
+def _approach_script(close_det) -> dict:
+    """approach_observe 호출 시퀀스 스크립트 — resolve → home → look → 관측 1프레임."""
+    return {
+        _SELECT: [ResolveReachableResponse(index=0, solutions=[[0.1] * 6])],
+        _MOVE_J: [MoveJResponse(), MoveJResponse()],
+        _DETECT: [DetectOrientedResponse(found=True, candidates=[close_det])],
+    }
+
+
+async def test_approach_observe_distrusts_collapsed_close_points():
+    """★ close 관측 물체 points 가 coarse 대비 급감(시점 불량)이면 그 관측을
+    믿지 않고 coarse 폴백 (close=False → yaw 격자 유지). 실사고 재현: 397/1296
+    = 0.31 을 '성공'으로 채택해 base_z 26mm 오차가 place 계획에 들어갔다."""
+    coarse = _det(points=[(0.2, 0.05, 0.01)] * 300)
+    poor_close = _det(points=[(0.2, 0.05, 0.01)] * 50)  # 50 < 300×0.7
+    ctx = _ctx(_approach_script(poor_close))
+    cands, joints, close = await steps.approach_observe(
+        ctx, _BOT, [coarse], "blue box", _home_record()
+    )
+    assert close is False, "시점 불량 관측이 close 성공으로 채택됨"
+    assert cands == [coarse]  # coarse 유지 (불신한 관측을 계획에 안 씀)
+    assert joints == [0.1] * 6  # look 자세는 반환 (현재 위치 문맥)
+
+
+async def test_approach_observe_trusts_healthy_close_points():
+    """뒤집기 대조군: points 가 coarse 급(≥0.7×)이면 close 관측 채택 (close=True)."""
+    coarse = _det(points=[(0.2, 0.05, 0.01)] * 300)
+    good_close = _det(
+        position=(0.201, 0.051, 0.025), points=[(0.2, 0.05, 0.01)] * 300
+    )
+    ctx = _ctx(_approach_script(good_close))
+    cands, _joints, close = await steps.approach_observe(
+        ctx, _BOT, [coarse], "blue box", _home_record()
+    )
+    assert close is True
+    assert cands[0].position == (0.201, 0.051, 0.025)  # 정확본으로 교체

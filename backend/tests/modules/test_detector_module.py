@@ -384,3 +384,34 @@ async def test_detect_roi_cuts_out_of_cell_candidates():
     assert res.found, res.message
     assert len(res.candidates) == 1  # 셀 밖(z≈1.0) 후보 컷
     assert abs(res.candidates[0].position[2] - 0.8) < 1e-3
+
+
+async def test_detect_roi_cuts_towering_candidate_by_base_z(monkeypatch):
+    """★ 공유기 클래스 회귀 (2026-07-21 23:41 실물): 옆 테이블에서 솟은 물체는
+    **꼭대기(position z)만 셀에 걸치고 바닥(base_z)은 셀 밖** — position 단독
+    판정이 통과시켜 "white small round cube" 0.59 로 servo 관측을 뺏었다.
+    base_z 가 셀 바닥 아래면 컷. mock 은 평면 패치(base_z≈top)라 metrics 를
+    변조해 '솟은' 기하를 주입 — 꼭대기는 셀 안 그대로, 바닥만 30cm 아래."""
+    from modules.detector import module as det_mod
+
+    orig = det_mod.geometry.object_metrics_from_points
+
+    def towering(pts):
+        m = orig(pts)
+        if m is None:
+            return m
+        position, bottom, height = m
+        return position, bottom - 0.3, height + 0.3  # 바닥만 셀 밖으로
+
+    monkeypatch.setattr(det_mod.geometry, "object_metrics_from_points", towering)
+    mod = DetectorModule(
+        runtime=_frame_runtime(),
+        backend=MockDetectorBackend(),
+        workcell={_ROBOT: (-1.0, 1.0, -1.0, 1.0, 0.75, 0.85)},
+    )
+    res = await mod.detect(DetectRequest(robot_id=_ROBOT, prompt="cube"))
+    # 옛 판정(position 만)이면 z=0.8 후보가 남았다 (위 test 와 동일 셀) —
+    # base_z(0.5 < 0.75) 조건이 그 후보를 컷해 0건이어야 한다.
+    assert res.candidates == [], [
+        (c.position[2], c.base_z) for c in res.candidates
+    ]

@@ -910,8 +910,8 @@ async def test_scenario_place_unreachable_fails_before_pick():
 
 async def test_plan_pick_family_exhausted_fails_explicitly():
     """servo 접근 가족 전멸(-1) = 데이터 → step 이 치명 판정 (침묵 통과 금지),
-    모션은 스윕뿐. §11: 단일 resolve (절대 yaw 격자 전체가 한 번에) — 옛 2단
-    기존/확장 폐지."""
+    모션은 스윕뿐. 진입 사다리 4라운드(기본+_ENTRY_LADDERS)까지 전부 전멸해야
+    실패 확정 (2026-07-21 적응 진입 — 68가족 매장 감사)."""
     ctx = _ctx({
         **_search_responses(),
         _DETECT: [
@@ -920,13 +920,15 @@ async def test_plan_pick_family_exhausted_fails_explicitly():
         ],
         _SELECT: [
             _resolve_ok(),  # 접근 look-pose
-            ResolveReachableResponse(index=-1, message="전멸"),  # 계획 단일 resolve
+            # 계획 resolve — 진입 사다리 라운드 전멸 (기본 + 5/3/2cm)
+            *[ResolveReachableResponse(index=-1, message="전멸")] * 4,
         ],
         _MOVE_J: [MoveJResponse()] * 3,  # 스윕 + 접근(home+look)
     })
     with pytest.raises(NoReachableGrasp, match="후보 1개 전부 전멸"):
         await _module_for_scenario().scenario(ctx, pick_object="white cube")
-    assert len(ctx.calls(_SELECT)) == 2  # 접근 look + 계획 단일 resolve 로 전멸 확정
+    # 접근 look 1 + 계획 진입 사다리 4라운드 전멸 확정
+    assert len(ctx.calls(_SELECT)) == 5
     assert ctx.calls(_GRIP) == [] and ctx.calls(_MOVE_L) == []
 
 
@@ -1243,15 +1245,15 @@ async def test_plan_pick_low_score_excluded_from_fallback():
     """진짜 후보가 전멸해도 저신뢰 후보로 **폴백하지 않는다** — 도달성 우선
     순회의 바닥은 신뢰 후보까지. 전멸이면 엉뚱한 물체 대신 명시 실패."""
     ctx = _ctx({
-        # 진짜 후보의 단일 resolve (§11 절대 yaw 격자) 전멸
-        _SELECT: [ResolveReachableResponse(index=-1, message="전멸")],
+        # 진짜 후보의 진입 사다리 4라운드 전멸
+        _SELECT: [ResolveReachableResponse(index=-1, message="전멸")] * 4,
     })
     with pytest.raises(NoReachableGrasp, match="후보 1개 전부 전멸"):
         await steps.plan_pick(ctx, _BOT, "white cube", _home_record(), [
             _det(score=0.76),
             _det(score=0.31, position=(0.1, 0.22, 0.012)),
         ])
-    assert len(ctx.calls(_SELECT)) == 1  # 저신뢰 후보는 시도 대상 아님
+    assert len(ctx.calls(_SELECT)) == 4  # 저신뢰 후보는 시도 대상 아님 (사다리만 4단)
 
 
 async def test_plan_place_falls_back_to_free_yaw_family():
@@ -1524,3 +1526,57 @@ async def test_approach_observe_trusts_healthy_close_points():
     )
     assert close is True
     assert cands[0].position == (0.201, 0.051, 0.025)  # 정확본으로 교체
+
+
+# ── 적응 진입 사다리 (2026-07-21 "68가족 매장" 감사 회귀망) ───────────────────
+
+
+def test_servo_ladder_groups_standoffs_override():
+    """standoffs override — 그룹 pose 수 = 진입 rung 수 + 파지 1. 1-rung 진입
+    사다리(낮은 진입 폴백)가 기본과 같은 구성 규약으로 나온다."""
+    g2, _ = steps.servo_ladder_groups(_OBS, _CFG, standoffs=(0.05,))
+    assert all(len(g) == 2 for g in g2)  # [5cm, 파지]
+    g3, _ = steps.servo_ladder_groups(_OBS, _CFG)  # 기본 = cfg.standoffs 2단
+    assert all(len(g) == 3 for g in g3)
+
+
+async def test_plan_pick_entry_ladder_falls_back_lower():
+    """★ 기본 사다리 전멸 → 5cm 진입 라운드에서 채택. 실사고(01:28): 진입
+    rung(8cm)이 같은 자세를 못 만들어 파지 가능 68가족이 "도달 불가"로 매장 —
+    낮은 진입 폴백이 그 가족들을 살린다. 채택 사다리는 plan.standoffs 로
+    servo 에 전달 (판정 사다리 == 실행 사다리)."""
+    ctx = _ctx({
+        _SELECT: [
+            ResolveReachableResponse(index=-1, message="전멸"),  # 기본 (2-rung)
+            _resolve_ok(index=0),  # 5cm 진입 라운드 채택
+        ],
+    })
+    plan = await steps.plan_pick(
+        ctx, _BOT, "white cube", _home_record(), [_det(score=0.9)]
+    )
+    assert plan.standoffs == (0.05,)
+    calls = ctx.calls(_SELECT)
+    assert len(calls) == 2
+    # 1라운드 = 기본 2-rung(+파지 3 pose), 2라운드 = 1-rung(+파지 2 pose)
+    assert len(calls[0]["req"].groups[0]) == 3
+    assert len(calls[1]["req"].groups[0]) == 2
+
+
+def test_effective_cfg_applies_plan_standoffs():
+    """plan 이 채택한 진입 사다리 → 실행 cfg 반영 + eps 는 뒤에서부터 (마지막
+    rung 최엄격 유지). None/동일 사다리는 cfg 원본 그대로 (기존 경로 무변)."""
+    from modules.tasks.pick_and_place.steps import pick as pick_steps
+
+    base_plan = steps.ServoPlan(
+        coarse=_OBS, family=_FAM, rung0_joints=[0.1] * 6,
+        grasp_point0=_G_POINT, grasp_tcp0=_G_TCP, lateral0=_LAT,
+    )
+    assert pick_steps._effective_cfg(_CFG, base_plan) is _CFG  # None = 무변
+    from dataclasses import replace as _rep
+
+    short = _rep(base_plan, standoffs=(0.05,))
+    eff = pick_steps._effective_cfg(_CFG, short)
+    assert eff.standoffs == (0.05,)
+    assert eff.eps_descend_m == (_CFG.eps_descend_m[-1],)  # 최엄격 eps
+    same = _rep(base_plan, standoffs=tuple(_CFG.standoffs))
+    assert pick_steps._effective_cfg(_CFG, same) is _CFG

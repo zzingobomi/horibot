@@ -104,6 +104,14 @@ class ServoConfig:
     # 연속 기각된다 (2026-07-17 13:53 실물: tick1 score 0.43·top z 16mm 낮은
     # 관측이 앵커 → 정상 0.83 관측 2연속 기각 → 소실 중단).
     min_score: float = 0.45
+    # 저score 기하 구제 하한 — score ∈ [floor, min_score) 는 **top z 가 기대
+    # (expected[2] = coarse/직전 채택 관측의 top z) 대비 z_jump_max 이내**일 때만
+    # 채택. 근거 (2026-07-21 23:41 실물): 프레임에 든 흰 공유기(distractor)가
+    # GDINO score 를 빨아들여 완벽히 보이는 큐브가 0.31~0.56 로 출렁 → 0.45
+    # 단독 게이트가 "관측 소실"로 오판·중단. score 는 distractor 유무에
+    # 흔들리지만 z 기하는 안 속는다 — 07-17 열화 앵커(0.43·z 16mm 이탈)는 z
+    # 불일치로 여전히 기각 (회귀 테스트 잠금). ⚠ 실물 튜닝점.
+    min_score_floor: float = 0.30
     fuse_last_k: int = 4  # 기하(z/폭) 융합에 쓰는 최근 채택 관측 수
     # 파지 z = 윗면(top band centroid z) − grip_below_top_m — **윗면 앵커**.
     # base_z 앵커 폐기 (2026-07-16 실물: 단일 top-view 의 base_z 는 실제 바닥이
@@ -479,13 +487,18 @@ def gate_observation(
         )
     # 품질 게이트(score/점군)를 도약 게이트보다 먼저 — 열화 관측은 앵커도
     # 재앵커 후보도 될 수 없다 (2026-07-17 13:53: score 0.43 부분 뷰가 앵커가
-    # 되어 정상 관측을 연속 기각).
+    # 되어 정상 관측을 연속 기각). 단 [floor, min) 대역은 기하 구제: top z 가
+    # 기대(expected[2]) 와 일치하면 채택 — distractor 가 score 를 눌러도 진짜
+    # 물체를 놓치지 않는다 (cfg.min_score_floor 주석 — 07-21 공유기 실사고).
     if best.score < cfg.min_score:
-        return GateResult(
-            None,
-            f"저신뢰 관측 score {best.score:.2f} < {cfg.min_score:.2f} "
-            "(부분 뷰/오검출 의심)",
-        )
+        dz = abs(best.position[2] - expected_xy[2])
+        if best.score < cfg.min_score_floor or dz > cfg.z_jump_max_m:
+            return GateResult(
+                None,
+                f"저신뢰 관측 score {best.score:.2f} < {cfg.min_score:.2f} "
+                f"(부분 뷰/오검출 의심 — 기하 구제 불가: "
+                f"floor {cfg.min_score_floor:.2f} / Δz {dz * 1000:.0f}mm)",
+            )
     n = len(best.points or [])
     if n < cfg.min_points:
         return GateResult(

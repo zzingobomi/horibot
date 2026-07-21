@@ -15,6 +15,7 @@ import logging
 import math
 import time
 from collections.abc import Callable
+from dataclasses import replace
 
 import numpy as np
 
@@ -65,6 +66,29 @@ from .primitives import (
 logger = logging.getLogger(__name__)
 
 
+def _effective_cfg(
+    cfg: servo.ServoConfig, plan: ServoPlan
+) -> servo.ServoConfig:
+    """plan 이 채택한 진입 사다리를 실행 cfg 에 반영 — 판정 사다리 == 실행 사다리.
+
+    기본 사다리 전멸 시 plan 이 낮은 진입(_ENTRY_LADDERS)으로 폴백한다 (2026-07-21
+    68가족 매장 감사). eps 는 사다리 길이에 맞춰 뒤에서부터 (마지막 rung 이 항상
+    최엄격 — 짧은 사다리 = 최종 관측 rung 만 남는 것과 동형)."""
+    if plan.standoffs is None or tuple(plan.standoffs) == tuple(cfg.standoffs):
+        return cfg
+    n = len(plan.standoffs)
+    eps = cfg.eps_descend_m[-n:] if n <= len(cfg.eps_descend_m) else (
+        cfg.eps_descend_m + (cfg.eps_descend_m[-1],) * (n - len(cfg.eps_descend_m))
+    )
+    logger.info(
+        "servo_pick: 진입 사다리 %s cm (기본 %s 전멸 폴백) — eps %s",
+        [round(s * 100) for s in plan.standoffs],
+        [round(s * 100) for s in cfg.standoffs],
+        list(eps),
+    )
+    return replace(cfg, standoffs=tuple(plan.standoffs), eps_descend_m=eps)
+
+
 @step(title="servo 집기")
 async def servo_pick(
     ctx: TaskContext,
@@ -89,7 +113,7 @@ async def servo_pick(
       표시되던 UI 구멍, 2026-07-17 사용자 리포트. 가족 동봉 = 파지 방향
       화살표/조 축 바의 실시간 소스, 2026-07-19).
     """
-    cfg = primitives._SERVO_CFG
+    cfg = _effective_cfg(primitives._SERVO_CFG, plan)
     trace = ServoTrace(prompt, robot_id)
     state = servo.ServoState()  # tick/rung 카운터 — decide_tick 의 입력
     run = servo.TrackState(  # 관측 추적 + 파지 기하 (전이 근거 = servo.py 주석)
@@ -773,9 +797,10 @@ async def _retreat_for_retry(
     comp: servo.PlantComp,
     cfg: servo.ServoConfig,
 ) -> None:
-    """파지 재시도 후퇴 — rung1 standoff 로 물러나 재관측 준비. 관측 이력
-    리셋 + 재획득 반경 확대는 run.reset_for_retry (근거 = servo.py 주석)."""
-    cmd = comp.apply(servo.standoff(run.g_tcp, run.fam, cfg.standoffs[1]))
+    """파지 재시도 후퇴 — 마지막 rung standoff 로 물러나 재관측 준비. 관측 이력
+    리셋 + 재획득 반경 확대는 run.reset_for_retry (근거 = servo.py 주석).
+    [-1] = 사다리 길이 무관 (적응 진입 1-rung 사다리에서 [1] 은 범위 밖)."""
+    cmd = comp.apply(servo.standoff(run.g_tcp, run.fam, cfg.standoffs[-1]))
     await _move_l(  # 물체 옆에서 시작하는 후퇴 — 감속 (재밀침 방지)
         ctx, robot_id, cmd, run.fam.quat,
         speed_scale=cfg.gentle_speed_scale,

@@ -22,7 +22,7 @@ import * as THREE from "three";
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import type { WorldMeshResult } from "./worldMeshWorker";
 import { useService, useStream } from "@/framework";
-import { ServiceKey, Topic } from "@/api/generated/contract";
+import { ServiceKey, TaskStatus, Topic } from "@/api/generated/contract";
 import type {
   GetMeshResponse,
   ListReconstructionsResponse,
@@ -40,12 +40,18 @@ function useWorldAutoLoad(robotId: string) {
   const listRecons = useService(ServiceKey.SCAN_LIST_RECONSTRUCTIONS, robotId);
   const getMesh = useService(ServiceKey.SCAN_GET_MESH, robotId);
   const setMesh = useScanStore((s) => s.setMesh);
+  const clearMesh = useScanStore((s) => s.clearMesh);
   const progress = useStream(Topic.SCAN_BUILD_PROGRESS, {
     robotId,
     staleMs: 60_000,
   });
+  const ws = useStream(Topic.WORLDSCAN_STATE, { robotId });
 
-  const loadedIdRef = useRef<number | null>(null);
+  // 표시 중 메시 정체성 = id **+ created_at** — id 만으론 부족하다 (2026-07-21
+  // 실사고: world_scan 프루닝이 이전 recon row 를 지워 sqlite rowid 가 재사용됨
+  // → 밤새 스캔 3번의 recon 이 전부 id=139 → "이미 표시 중" 오인 → 새 메시
+  // 교체 안 됨).
+  const loadedKeyRef = useRef<string | null>(null);
   const busyRef = useRef(false);
   // 리로드 스로틀 (2026-07-19 밤): 스윕 중 빌드 done 이 ~7회 — 갱신 1회마다
   // 7.6MB 수신+디코드+GPU 업로드가 메인 스레드를 수십 ms 씩 물어 히칭 (파싱은
@@ -79,14 +85,15 @@ function useWorldAutoLoad(robotId: string) {
       }
       // 재구성 없음 = 빈 월드가 정상 상태 (안내 라벨은 패널 몫 — "월드 없음")
       if (!latest || latest.id == null) return;
-      if (latest.id === loadedIdRef.current) return; // 이미 표시 중 — 재전송 억제
+      const latestKey = `${latest.id}:${String(latest.created_at)}`;
+      if (latestKey === loadedKeyRef.current) return; // 이미 표시 중 — 재전송 억제
       const m = await getMesh.call(
         { reconstruction_row_id: latest.id },
         { timeoutMs: 30_000 },
       );
       const d = m.data as GetMeshResponse | null;
       if (!d?.ply_bytes || d.ply_bytes.byteLength === 0) return;
-      loadedIdRef.current = latest.id;
+      loadedKeyRef.current = latestKey;
       setMesh(d.ply_bytes, {
         vertexCount: d.vertex_count,
         triangleCount: d.triangle_count,
@@ -105,13 +112,31 @@ function useWorldAutoLoad(robotId: string) {
     void loadLatest();
   }, [loadLatest]);
 
+  // 스캔 시작 → 기존 메시 클리어 (2026-07-21 UX): 옛 배경이 남아 있으면
+  // ScanGrowth 성장 점군이 그 뒤에 묻혀 "자라는" 게 안 보인다. 새 메시는
+  // 스캔 끝 빌드 done 이 다시 채움. 중도 포기 시에도 리로드 경로가 살아있게
+  // loadedKey 를 리셋 (같은 recon 재로드 허용).
+  const scanning = ws.value?.status === TaskStatus.RUNNING;
+  useEffect(() => {
+    if (!scanning) return;
+    loadedKeyRef.current = null;
+    clearMesh();
+    // 종료 전이(정상/중도포기 공통) → 최신 리로드. 정상 종료는 빌드 done 이
+    // 이미 채워 dedup 스킵, 중도 포기는 이 경로가 옛 메시를 복원한다
+    // (빈 월드로 방치 금지 — 포기해도 이전 상태로 돌아가는 탈출구).
+    return () => {
+      void loadLatest();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanning]);
+
   // 빌드 완료 → 최신 재조회 (성장 UX) — 단, _RELOAD_MIN_GAP_MS 스로틀.
-  // done payload 의 recon id 전이가 트리거, 간격 미달이면 trailing 예약
-  // (마지막 빌드가 스로틀에 먹혀 최종 메시를 놓치는 일 없음).
+  // 트리거 키 = stream seq (recon id 아님 — id 는 프루닝 후 rowid 재사용으로
+  // 매 스캔 같은 값일 수 있어 effect 가 재발화하지 않았다, 2026-07-21 실사고).
+  // 간격 미달이면 trailing 예약 (마지막 빌드가 스로틀에 먹혀 최종 메시를
+  // 놓치는 일 없음).
   const doneId =
-    progress.value?.stage === "done"
-      ? (progress.value.reconstruction_row_id ?? null)
-      : null;
+    progress.value?.stage === "done" ? (progress.value.seq ?? -1) : null;
   useEffect(() => {
     if (doneId == null) return;
     const run = () => {

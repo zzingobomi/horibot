@@ -112,6 +112,30 @@ class ServoPlan:
     # 실 바닥 추정 (클러스터 min base_z − margin) — servo 루프의 파지 z 하한
     # guard (납작한 물체에서 grip_below_top 이 테이블을 뚫는 것 방지).
     floor_z: float | None = None
+    # 채택된 진입 standoff 사다리 (None = cfg 기본). 기본 사다리 전멸 시 낮은
+    # 진입으로 폴백한 결과를 servo 가 그대로 실행해야 한다 ("판정 사다리 ==
+    # 실행 사다리" — resolve 의 판정 해 == 실행 해 원칙과 동일).
+    standoffs: tuple[float, ...] | None = None
+
+
+# 진입 사다리 폴백 라운드 (2026-07-21 감사 — docs/pnp_scenario_rework.md §8.5).
+# 01:28 "312가족 전멸" 위치 재판정: 실제로는 68가족이 파지 가능했는데 진입
+# rung(8cm)이 같은 자세를 못 만들어 전부 매장 (SO-101 수직류는 높은 z 에서
+# 자세 불가). 진입 가능 최고 standoff 실측: 5cm 23가족(최적 관측 대역 그대로) /
+# 3cm 12 / 2cm(midstop급, 수직 tilt0 포함) 16. 낮은 진입 = 보정 창 축소
+# 트레이드오프 — approach_observe close 관측(5-12mm)이 시작 정확도로 메운다.
+_ENTRY_LADDERS: tuple[tuple[float, ...], ...] = ((0.05,), (0.03,), (0.02,))
+
+
+def _fmt_ladder(entry: tuple[float, ...]) -> str:
+    """진입 사다리 로그 표기 (cm) — 명명 헬퍼인 이유: 프리뷰 정적 인덱서가
+    step 본문의 인라인 join 을 `<동적>` 노이즈 행으로 잡는다 (_join_msgs 동형)."""
+    return "/".join(f"{s * 100:.0f}" for s in entry)
+
+
+def _join_round_msgs(msgs: list[str]) -> str:
+    """라운드별 전멸 사유 병합 — 명명 헬퍼 (프리뷰 노이즈 회피, _fmt_ladder 동형)."""
+    return "; ".join(msgs)
 
 
 def servo_ladder_groups(
@@ -120,6 +144,7 @@ def servo_ladder_groups(
     floor_z: float | None = None,
     *,
     yaw_grid: bool = True,
+    standoffs: tuple[float, ...] | None = None,
 ) -> tuple[list[list[TcpPose]], list[tuple[servo.GraspFamily, Vec3, Vec3, float]]]:
     """coarse 관측 → resolve 후보 그룹 ([standoff 사다리…, 파지] × 가족) + 메타.
 
@@ -127,7 +152,9 @@ def servo_ladder_groups(
     풀리는지)가 공유하는 그룹 구성 SSOT. 가족 = 절대 yaw 격자 (§11 —
     servo.grasp_families). **width 물리 게이트**: 그 yaw 방향 관측 폭이 조
     개구를 넘는 가족은 물 수 없다 — 여기서 제외 (직사각 물체의 긴 변 물기가
-    자연 기각되는 자리, 옛 aspect 문턱의 물리 기반 대체)."""
+    자연 기각되는 자리, 옛 aspect 문턱의 물리 기반 대체).
+    standoffs: 진입 사다리 override (None = cfg 기본) — _ENTRY_LADDERS 폴백."""
+    entry = cfg.standoffs if standoffs is None else standoffs
     families = servo.grasp_families(coarse, yaw_grid=yaw_grid)
     groups: list[list[TcpPose]] = []
     metas: list[tuple[servo.GraspFamily, Vec3, Vec3, float]] = []
@@ -146,7 +173,7 @@ def servo_ladder_groups(
             TcpPose(
                 position=servo.standoff(g_tcp0, fam, s), quaternion=fam.quat
             )
-            for s in cfg.standoffs
+            for s in entry
         ]
         poses.append(TcpPose(position=g_tcp0, quaternion=fam.quat))
         groups.append(poses)
@@ -294,52 +321,71 @@ async def plan_pick(
             if _xy_dist(c.position, coarse.position) <= _VIEW_MATCH_RADIUS_M
         ]
         floor_z = min(cluster_base) - _FLOOR_GATE_MARGIN_M
-        # 단일 resolve (§11): 가족 = tilt 사다리 × yaw × flip (선호순). yaw =
-        # trust_yaw(가까이 정확 관측) 면 면정렬 2개만, 아니면(coarse 폴백) 절대
-        # 격자 전체. 해석적 IK 라 전멸도 수 s 확정. 좁힘으로 전멸 CT 6배↓.
-        groups, metas = servo_ladder_groups(
-            coarse, cfg, floor_z, yaw_grid=not trust_yaw
-        )
+        # resolve 라운드 (§11 + 2026-07-21 적응 진입 사다리): 가족 = tilt 사다리
+        # × yaw × flip (선호순). yaw = trust_yaw(가까이 정확 관측) 면 면정렬
+        # 2개만, 아니면(coarse 폴백) 절대 격자 전체. 라운드 = 기본 사다리 →
+        # _ENTRY_LADDERS (낮은 진입) — 진입 rung 이 자세를 못 만들어 파지 가능
+        # 가족이 매장되는 것 방지 (68가족 매장 감사, _ENTRY_LADDERS 주석).
+        # 해석적 IK 라 라운드당 전멸도 수 s 확정.
+        res = None
+        groups: list = []
+        metas: list = []
+        entry: tuple[float, ...] = cfg.standoffs
+        round_msgs: list[str] = []
         t0 = time.monotonic()
-        # 장애물 = **이웃 점군만** — 파지 대상 자신의 점군은 넣지 않는다
-        # (2026-07-17 오후 실사고): engage(조를 물체 쪽으로 밀어넣어 물기)
-        # 설계상 grasp 자세의 조↔대상 겹침은 **의도된 것**인데, 자기
-        # 점군을 장애물로 검사하면 그 겹침이 기각된다 (실측 침투 -3.6~
-        # -9.6mm = engage 겹침 — 기각/통과를 가른 건 "카메라가 어느 면을
-        # 봤나"). 대상 보호 = antipodal 구성 + servo + 파지 판정
-        # (MoveIt ACM 의 조작 대상 충돌 허용 등가).
-        res = await ctx.call(
-            Motion.Service.RESOLVE_REACHABLE,
-            ResolveReachableRequest(
-                groups=groups,
-                floor_z=floor_z,
-                linear=True,
-                obstacle_points=list(neighbors),
-                gripper_open=True,
-                path_from=list(home.joint_values),
-            ),
-            ResolveReachableResponse,
-            robot_id=robot_id,
-        )
+        for entry in (cfg.standoffs, *_ENTRY_LADDERS):
+            groups, metas = servo_ladder_groups(
+                coarse, cfg, floor_z, yaw_grid=not trust_yaw, standoffs=entry
+            )
+            # 장애물 = **이웃 점군만** — 파지 대상 자신의 점군은 넣지 않는다
+            # (2026-07-17 오후 실사고): engage(조를 물체 쪽으로 밀어넣어 물기)
+            # 설계상 grasp 자세의 조↔대상 겹침은 **의도된 것**인데, 자기
+            # 점군을 장애물로 검사하면 그 겹침이 기각된다 (실측 침투 -3.6~
+            # -9.6mm = engage 겹침 — 기각/통과를 가른 건 "카메라가 어느 면을
+            # 봤나"). 대상 보호 = antipodal 구성 + servo + 파지 판정
+            # (MoveIt ACM 의 조작 대상 충돌 허용 등가).
+            res = await ctx.call(
+                Motion.Service.RESOLVE_REACHABLE,
+                ResolveReachableRequest(
+                    groups=groups,
+                    floor_z=floor_z,
+                    linear=True,
+                    obstacle_points=list(neighbors),
+                    gripper_open=True,
+                    path_from=list(home.joint_values),
+                ),
+                ResolveReachableResponse,
+                robot_id=robot_id,
+            )
+            if res.index >= 0:
+                break
+            round_msgs.append(
+                f"진입 {_fmt_ladder(entry)}cm: "
+                f"{len(groups)}가족 전멸 — {res.message}"
+            )
+            logger.info(
+                "plan_pick(%s): 진입 사다리 %s 전멸 — 낮은 진입 재시도 | "
+                "사유 상위: %s",
+                prompt, entry, _fail_histogram(metas, res.group_failures),
+            )
         resolve_s = time.monotonic() - t0
-        if res.index < 0:
+        if res is None or res.index < 0:
             msg = (
                 f"후보{rank}(score {coarse.score:.2f} "
                 f"pos={_fmt(coarse.position)} base_z={coarse.base_z:+.3f}): "
-                f"{len(groups)}가족 전멸 ({resolve_s:.1f}s) — {res.message}"
+                f"진입 사다리 {1 + len(_ENTRY_LADDERS)}단 전멸 ({resolve_s:.1f}s)"
+                f" — {_join_round_msgs(round_msgs)}"
             )
             failures.append(msg)
-            logger.info(
-                "plan_pick(%s): %s — 다음 후보 시도 | 사유 상위: %s",
-                prompt, msg, _fail_histogram(metas, res.group_failures),
-            )
+            logger.info("plan_pick(%s): %s — 다음 후보 시도", prompt, msg)
             continue
         fam, g_point0, g_tcp0, lateral = metas[res.index]
         logger.info(
             "plan_pick(%s): 후보%d/%d 채택 (score %.2f) — 가족 %d/%d %s, "
-            "grasp0=%s lateral=%.1fmm (resolve %.1fs)",
+            "grasp0=%s lateral=%.1fmm 진입=%scm (resolve %.1fs)",
             prompt, rank, len(ordered), coarse.score, res.index,
-            len(groups), fam.label, _fmt(g_tcp0), lateral * 1000.0, resolve_s,
+            len(groups), fam.label, _fmt(g_tcp0), lateral * 1000.0,
+            _fmt_ladder(entry), resolve_s,
         )
         return ServoPlan(
             coarse=coarse,
@@ -349,6 +395,7 @@ async def plan_pick(
             grasp_tcp0=g_tcp0,
             lateral0=lateral,
             floor_z=floor_z,
+            standoffs=tuple(entry),
         )
     raise NoReachableGrasp(
         f"servo 접근 — 검출 후보 {len(ordered)}개 전부 전멸:\n  "

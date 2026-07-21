@@ -302,11 +302,30 @@ def test_gate_accepts_cleaned_sparse_but_healthy_cloud():
 def test_gate_rejects_low_score_observation():
     """열화 관측(부분 뷰) score 하한 — 2026-07-17 13:53 실물: score 0.43·top z
     16mm 낮은 관측이 **첫 앵커**가 되어 정상 관측(0.83)을 z 도약으로 연속
-    기각 → 소실 중단. 열화 관측은 앵커가 될 수 없어야 한다."""
+    기각 → 소실 중단. 열화 관측은 앵커가 될 수 없어야 한다.
+    기하 구제(07-21 신설)로도 못 살아난다 — 실사고 그대로 기대 top z(0.024)
+    대비 16mm 이탈이라 z 일치 조건 미충족 (구제는 기하가 맞는 관측만)."""
     degraded = _det(position=(0.2, 0.05, 0.008), points=_pts(), score=0.43)
-    g = servo.gate_observation([degraded], (0.2, 0.05, 0.0), None, _CFG)
+    g = servo.gate_observation([degraded], (0.2, 0.05, 0.024), None, _CFG)
     assert g.obs is None and "저신뢰" in g.reason
     assert g.rejected is None  # 저품질은 재앵커 후보도 아님
+
+
+def test_gate_rescues_distractor_suppressed_low_score():
+    """★ 기하 구제 (2026-07-21 23:41 실물): 프레임의 흰 공유기(distractor)가
+    GDINO score 를 빨아들여 **완벽히 보이는 큐브가 0.31** 로 눌림 → 옛 0.45
+    단독 게이트가 "관측 소실" 오판·중단. top z 가 기대와 일치(Δ3mm)하는
+    저score 관측은 채택돼야 한다 — score 는 distractor 에 흔들려도 z 는 안 속음."""
+    suppressed = _det(position=(0.285, -0.170, 0.027), points=_pts(), score=0.31)
+    g = servo.gate_observation([suppressed], (0.280, -0.175, 0.024), None, _CFG)
+    assert g.obs is suppressed, g.reason
+
+
+def test_gate_low_score_floor_still_rejects():
+    """구제 하한: floor(0.30) 미만은 z 가 맞아도 기각 — 바닥 없는 완화 금지."""
+    junk = _det(position=(0.2, 0.05, 0.024), points=_pts(), score=0.25)
+    g = servo.gate_observation([junk], (0.2, 0.05, 0.024), None, _CFG)
+    assert g.obs is None and "저신뢰" in g.reason
 
 
 def test_gate_jump_rejection_carries_candidate_for_reanchor():

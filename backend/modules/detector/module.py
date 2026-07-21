@@ -311,10 +311,14 @@ class DetectorModule:
                     mask=raw.mask,
                 )
             )
-        # 작업 셀 ROI 컷 — 셀 밖 후보 제거 (base-frame position 기준). 공유기·
-        # 로봇 몸통 등 작업 영역 밖 오검출을 색/score 재튜닝(땜빵) 없이 기하로
-        # 소멸 (docs/pnp_scenario_rework.md §3.3). 관측성: 컷한 후보 로그 (침묵
-        # 금지 — 진짜 물체가 잘리면 집에서 ROI 넓히라는 신호). ROI 미설정이면 no-op.
+        # 작업 셀 ROI 컷 — 셀 밖 후보 제거. 판정 = position(윗면 centroid) 과
+        # **base_z(물체 바닥)** 둘 다 셀 안 — 셀 물체는 셀 바닥 위에 "얹혀" 있다.
+        # position 만 보면 옆 테이블에서 솟은 물체(공유기: base_z −0.25, 꼭대기
+        # −0.03)의 꼭대기가 셀 하한(z_min −0.05)에 걸쳐 통과 (2026-07-21 23:41
+        # 실물: 그 공유기가 "white small round cube" 0.59 로 servo 관측을 뺏어
+        # 소실 중단). 공유기·로봇 몸통 등 오검출을 색/score 재튜닝(땜빵) 없이
+        # 기하로 소멸 (docs/pnp_scenario_rework.md §3.3). 관측성: 컷한 후보 로그
+        # (침묵 금지 — 진짜 물체가 잘리면 집에서 ROI 넓히라는 신호). 미설정 no-op.
         roi = self._workcell.get(robot_id)
         if roi is not None:
             x0, x1, y0, y1, z0, z1 = roi
@@ -323,6 +327,7 @@ class DetectorModule:
                 if x0 <= c.position[0] <= x1
                 and y0 <= c.position[1] <= y1
                 and z0 <= c.position[2] <= z1
+                and c.base_z >= z0
             ]
             if len(kept) < len(cands):
                 dropped = [c for c in cands if c not in kept]
@@ -331,7 +336,8 @@ class DetectorModule:
                     "(셀 x[%.2f,%.2f] y[%.2f,%.2f] z[%.2f,%.2f])",
                     robot_id, len(dropped),
                     [f"{c.prompt}@({c.position[0]:.2f},{c.position[1]:.2f},"
-                     f"{c.position[2]:.2f})s={c.score:.2f}" for c in dropped],
+                     f"{c.position[2]:.2f})base_z={c.base_z:.2f} "
+                     f"s={c.score:.2f}" for c in dropped],
                     x0, x1, y0, y1, z0, z1,
                 )
             cands = kept

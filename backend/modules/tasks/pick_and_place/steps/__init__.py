@@ -14,7 +14,6 @@
     primitives.py  이동/그리퍼/home/파지 판정(verify_grasp) + 포맷 유틸 —
                    pick·place 공용 바닥층. servo 노브 SSOT(_SERVO_CFG)도 여기.
     search.py      detect — search waypoint 스윕 + 멀티 prompt 동시 검출 (coarse)
-    world.py       WorldScan — 스윕 편승 월드 스캔 (빌드 백그라운드, best-effort)
     plan.py        plan_pick / plan_place / resolve_place — 모션 0 판정
                    (신뢰 컷/도달성 우선 순회/상자 중심 융합) + ServoPlan
     pick.py        servo_pick — closed-loop 실행 (tick 루프/commit/재플랜/재시도)
@@ -43,7 +42,7 @@ from __future__ import annotations
 # (steps.primitives._SERVO_CFG 등 — 소비 코드가 모듈 참조로 읽는 자리).
 from modules.detector.contract import OrientedDetection as OrientedDetection
 
-from . import pick, place, plan, primitives, search, world
+from . import pick, place, plan, primitives, search
 from .pick import servo_pick
 from .place import execute_place, insert, pre_place, release, retreat
 from .plan import (
@@ -63,12 +62,10 @@ from .primitives import (
     verify_grasp,
 )
 from .search import _SEARCH_GROUP, detect
-from .world import WorldScan
 
 __all__ = [
     "OrientedDetection",
     "ServoPlan",
-    "WorldScan",
     "_SEARCH_GROUP",
     "_fuse_place_center",
     "_gripper_holding",

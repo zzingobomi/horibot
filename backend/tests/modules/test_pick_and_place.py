@@ -58,19 +58,6 @@ from modules.tasks.pick_and_place.contract import (
     RunRequest,
     TaskMarkers,
 )
-from modules.scan.contract import (
-    BuildResponse as ScanBuildResponse,
-)
-from modules.scan.contract import (
-    CaptureResponse as ScanCaptureResponse,
-)
-from modules.scan.contract import (
-    NewSessionResponse as ScanNewSessionResponse,
-)
-from modules.scan.contract import (
-    Scan,
-    ScanSessionRecord,
-)
 from modules.tasks.pick_and_place.module import PickAndPlaceModule
 from modules.waypoint.contract import (
     ListGroupMembersResponse,
@@ -101,9 +88,6 @@ _TCP_SNAP = str(Motion.Service.TCP_SNAPSHOT)
 _LIST_WP = str(Waypoint.Service.LIST)
 _LIST_GROUPS = str(Waypoint.Service.LIST_GROUPS)
 _LIST_MEMBERS = str(Waypoint.Service.LIST_GROUP_MEMBERS)
-_SCAN_NEW = str(Scan.Service.NEW_SESSION)
-_SCAN_CAP = str(Scan.Service.CAPTURE)
-_SCAN_BUILD = str(Scan.Service.BUILD)
 _TS = datetime.fromtimestamp(0, UTC)
 
 _HOME_JOINTS = [0.0, 0.5, -1.0, 0.0, 0.5, 1.5]  # 티칭된 home (임의 유효값)
@@ -598,124 +582,6 @@ async def test_withdraw_rejected_falls_back_to_rung0_joints_while_holding():
     fallback = ctx.calls(_MOVE_J)[3]["req"].target
     assert fallback.kind == "joint" and fallback.joints == [0.1] * 6
     assert len(ctx.calls(_READ_STATE)) == 2  # withdraw-후 슬립 판정까지 계속
-
-
-async def test_run_with_build_world_piggybacks_scan_session():
-    """build_world=True — pick search 스윕에 편승해 scan 세션이 돈다: 세션 1회
-    → pose 당 (관측 직후) capture → **빌드는 백그라운드** (2026-07-19 최적화 —
-    실측 스윕 59.5s 중 빌드 ~28s 가 크리티컬 패스를 떠남). World 레이어의
-    backend 절반. 기본(off)은 기존 성공 시나리오의 exact keys 잠금이 scan
-    호출 0 을 이미 보장."""
-    ctx = _ctx(_pick_script(**{
-        _SCAN_NEW: [ScanNewSessionResponse(session=ScanSessionRecord(
-            id=7, robot_id=_BOT, session_id="s", created_at=_TS,
-        ))],
-        _SCAN_CAP: [ScanCaptureResponse(accepted=True, scan_count=1)],
-        # 킥(캡처 직후) + finalize 재킥(마지막 캡처 포함 보장) = 빌드 2회
-        _SCAN_BUILD: [ScanBuildResponse(accepted=True)] * 2,
-    }))
-    await _module_for_scenario().scenario(
-        ctx, pick_object="white cube", build_world=True
-    )
-    await _drain_bg_builds(ctx, n=2)
-    assert len(ctx.calls(_SCAN_NEW)) == 1
-    caps = ctx.calls(_SCAN_CAP)
-    assert len(caps) == 1  # search 1 pose = capture 1
-    assert caps[0]["req"].session_row_id == 7  # 진행 자원 = row id 파생
-    # 캡처 킥 1 + finalize 재킥 1 (in-flight 중 finalize → dirty → 완주 후 1회)
-    assert len(ctx.calls(_SCAN_BUILD)) == 2
-    # 순서: capture 는 그 pose 관측(DETECT 시작) 뒤 (같은 정지 창 — capture 가
-    # 관측보다 먼저 팔을 잡아두지 않음), 빌드는 capture 뒤. 빌드 wire 호출의
-    # 정확한 착지 지점은 백그라운드 task 스케줄링 디테일 — 잠그지 않는다
-    # (비차단성은 "스윕이 빌드 응답을 기다리지 않음" = capture/detect 카운트와
-    # dirty 병합 테스트가 잠근다).
-    keys = ctx.keys()
-    assert keys.index(_SCAN_CAP) > keys.index(_DETECT)
-    assert keys.index(_SCAN_BUILD) > keys.index(_SCAN_CAP)
-
-
-async def _drain_bg_builds(ctx: FakeContext, n: int, tries: int = 500) -> None:
-    """백그라운드 빌드 task 가 wire 호출을 n 회 남길 때까지 이벤트 루프 양보."""
-    for _ in range(tries):
-        if len(ctx.calls(_SCAN_BUILD)) >= n:
-            return
-        await asyncio.sleep(0)
-    raise AssertionError(
-        f"백그라운드 빌드 {n}회 미도달 (현재 {len(ctx.calls(_SCAN_BUILD))})"
-    )
-
-
-async def test_build_world_inflight_capture_coalesces_to_one_rebuild():
-    """빌드 in-flight 중 도착한 캡처들은 **dirty 1회로 병합** — 완료 후 재킥
-    1번만 (전체 재빌드라 최신 스캔 전부 포함). 캡처마다 빌드를 쌓으면 백그라운드
-    큐가 스윕보다 뒤처져 폭주한다 (상한 = in-flight 1 + 재킥 1)."""
-
-    class _SlowBuildCtx(FakeContext):
-        async def call(self, key, req, res_cls, *, robot_id=None, timeout=None):
-            res = await super().call(
-                key, req, res_cls, robot_id=robot_id, timeout=timeout
-            )
-            if str(key) == _SCAN_BUILD:
-                await asyncio.sleep(0.05)  # 스윕 나머지(모의 즉시완료)보다 느리게
-            return res
-
-    script = _pick_script(**{
-        **_search_responses(n_members=3),
-        _DETECT: [DetectOrientedResponse(found=True, candidates=[_OBS])] * 5,
-        _MOVE_J: [MoveJResponse()] * 6,
-        _SCAN_NEW: [ScanNewSessionResponse(session=ScanSessionRecord(
-            id=7, robot_id=_BOT, session_id="s", created_at=_TS,
-        ))],
-        _SCAN_CAP: [ScanCaptureResponse(accepted=True, scan_count=1)] * 3,
-        _SCAN_BUILD: [ScanBuildResponse(accepted=True)] * 3,
-    })
-    ctx = _SlowBuildCtx(robots=[_BOT], specs={_BOT: _SPEC}, service_script=script)
-    await _module_for_scenario().scenario(
-        ctx, pick_object="white cube", build_world=True
-    )
-    await asyncio.sleep(0.15)  # 잔여 빌드 완주 대기
-    assert len(ctx.calls(_SCAN_CAP)) == 3
-    # 캡처 3 + finalize 여도 빌드는 2회: pose1 킥 + (pose2/3+finalize 병합) 재킥
-    assert len(ctx.calls(_SCAN_BUILD)) == 2
-
-
-async def test_build_world_voxel_passes_through_to_scan_build():
-    """RunRequest.world_voxel_size → scan BUILD voxel_size 관통 (UI 4단 셀렉터의
-    backend 절반). 셀렉터가 고른 값이 recon row 까지 그대로 가야 "이 메시가 왜
-    이 모양" 분석이 성립한다 — 중간에서 잃으면 침묵 기본값."""
-    ctx = _ctx(_pick_script(**{
-        _SCAN_NEW: [ScanNewSessionResponse(session=ScanSessionRecord(
-            id=7, robot_id=_BOT, session_id="s", created_at=_TS,
-        ))],
-        _SCAN_CAP: [ScanCaptureResponse(accepted=True, scan_count=1)],
-        _SCAN_BUILD: [ScanBuildResponse(accepted=True)] * 2,
-    }))
-    await _module_for_scenario().scenario(
-        ctx, pick_object="white cube", build_world=True, world_voxel_size=0.004
-    )
-    await _drain_bg_builds(ctx, n=1)
-    builds = ctx.calls(_SCAN_BUILD)
-    assert builds[0]["req"].voxel_size == 0.004
-
-
-async def test_build_world_failure_does_not_kill_pick():
-    """월드 스캔 = best-effort 계약 — capture 가 죽어도 pick 은 완주하고, 이후
-    scan 호출은 비활성 (재시도로 pick 을 더 늦추지 않음). 이게 뒤집히면 배경
-    강화 기능이 본업(파지)을 죽인다."""
-    ctx = _ctx(_pick_script(**{
-        _SCAN_NEW: [ScanNewSessionResponse(session=ScanSessionRecord(
-            id=7, robot_id=_BOT, session_id="s", created_at=_TS,
-        ))],
-        _SCAN_CAP: [RemoteError("ScanFailed", "camera 프레임 없음")],
-    }))
-    await _module_for_scenario().scenario(
-        ctx, pick_object="white cube", build_world=True
-    )  # raise 없음 = pick 완주
-    for _ in range(20):  # 백그라운드 잔여가 있어도 build 미발생을 확정
-        await asyncio.sleep(0)
-    assert ctx.calls(_SCAN_BUILD) == []  # capture 실패 후 build 시도 없음
-    grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
-    assert grips[-1] == _SPEC.gripper_close_raw  # close 까지 완주
 
 
 async def test_commit_midstop_release_drops_stale_comp_from_final_command():

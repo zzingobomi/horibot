@@ -171,7 +171,7 @@ async def _wait_motion_ready(runtime) -> bool:
 async def test_move_l_reaches_target_position(stack):
     # MoveL (position-only v1): home 자세로 MoveJ 후 직선 이동 검증 — 실제 task 흐름
     # (시작 → home → 작업)과 동일. await 완료 대기 + TCP 가 target 근처 도달 확인.
-    # home = robot_poses.yaml 값 (검증됨: 6축 limit 안, IK OK). orientation 미검증(v1).
+    # home = 검증된 대표 자세 (6축 limit 안, IK OK). orientation 미검증(v1).
     runtime, _driver, _robot = stack
     assert await _wait_motion_ready(runtime)
 

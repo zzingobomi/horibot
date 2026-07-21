@@ -13,7 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useRobotId } from "@/hooks/useRobotId";
 import { useService, useStream } from "@/framework";
-import { ServiceKey, Topic } from "@/api/generated/contract";
+import { ServiceKey, TaskStatus, Topic } from "@/api/generated/contract";
 import type {
   GetMeshResponse,
   ReconstructionRecord,
@@ -26,11 +26,32 @@ import {
   VOXEL_TIERS,
 } from "@/stores/scanStore";
 
-// 수동 빌드 voxel 마지막 선택 (m) — pnp 월드 voxel 과 별개 (다른 작업 맥락).
+// 빌드 voxel 마지막 선택 (m) — 자동/수동 스캔 공용 품질 노브.
 const BUILD_VOXEL_LS_KEY = "scan.buildVoxelM";
+
+/** 재구성 생성 시각 → "N분/시간/일 전" (stale 월드 침묵 금지 라벨). */
+function agoLabel(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const min = Math.floor(ms / 60_000);
+  if (min < 1) return "방금";
+  if (min < 60) return `${min}분 전`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}시간 전`;
+  return `${Math.floor(hr / 24)}일 전`;
+}
 
 export function ScanPanel() {
   const robotId = useRobotId();
+
+  // ── 자동 스캔 (world_scan task — 로봇이 스스로 관측 자세를 돌며 스캔) ──
+  const autoRun = useService(ServiceKey.WORLDSCAN_RUN, robotId);
+  const autoStop = useService(ServiceKey.WORLDSCAN_STOP, robotId);
+  const wsState = useStream(Topic.WORLDSCAN_STATE, { robotId });
+  // ── world 표시 (배경 메시) — pick 패널에서 이전 (world 소유 = 스캔) ──
+  const worldVisible = useScanStore((s) => s.worldVisible);
+  const setWorldVisible = useScanStore((s) => s.setWorldVisible);
+  const meshMeta = useScanStore((s) => s.meshMeta);
 
   const newSession = useService(ServiceKey.SCAN_NEW_SESSION, robotId);
   const listSessions = useService(ServiceKey.SCAN_LIST_SESSIONS, robotId);
@@ -82,6 +103,25 @@ export function ScanPanel() {
     void listSessions.call({ robot_id: robotId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [robotId]);
+
+  // 자동 스캔 상태 (world_scan STATE 스트림). RUNNING 이면 시작 잠금 (robot-busy —
+  // 한 로봇은 한 번에 한 task. cross-task(pick 동시) 잠금은 후속 arbitration).
+  const wsStatus = wsState.value?.status ?? TaskStatus.IDLE;
+  const scanning = wsStatus === TaskStatus.RUNNING;
+
+  const onAutoScan = async () => {
+    setMsg("자동 스캔 시작…");
+    const res = await autoRun.call({ voxel_size: buildVoxelM });
+    const d = res.data as { accepted?: boolean; message?: string } | null;
+    setMsg(
+      d?.accepted ? "자동 스캔 진행 중 — 상태는 아래" : `거부: ${d?.message ?? res.message}`,
+    );
+  };
+  const onAutoStop = async () => {
+    const res = await autoStop.call({});
+    const d = res.data as { ok?: boolean; message?: string } | null;
+    setMsg(d?.ok ? "중지 요청 (모션 정지)" : `중지 실패: ${d?.message ?? res.message}`);
+  };
 
   const onNewSession = async () => {
     const res = await newSession.call({ robot_id: robotId, label: null });
@@ -176,6 +216,90 @@ export function ScanPanel() {
 
   return (
     <div className="h-full overflow-y-auto p-3 text-[12px]" data-testid="scan-panel">
+      {/* 자동 스캔 (주인공) — 로봇이 스스로 관측 자세를 돌며 캡처 → 끝에 mesh 빌드 */}
+      <section className="mb-3">
+        <div className="mb-1 font-mono uppercase text-muted-foreground">자동 스캔</div>
+        <div className="mb-1 flex items-center gap-2">
+          <span className="text-muted-foreground">품질 (voxel)</span>
+          <select
+            value={buildVoxelM}
+            onChange={(e) => setBuildVoxelM(Number(e.target.value))}
+            data-testid="auto-voxel"
+            className="rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 font-mono"
+          >
+            {VOXEL_TIERS.map((t) => (
+              <option key={t.m} value={t.m}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            onClick={onAutoScan}
+            disabled={scanning || !robotId}
+            data-testid="auto-scan"
+          >
+            {scanning ? "스캔 중…" : "자동 스캔 시작"}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onAutoStop}
+            disabled={!scanning}
+            data-testid="auto-stop"
+          >
+            중지
+          </Button>
+        </div>
+        {/* 진행 상태 (world_scan STATE) — 실패는 사유 표시 (침묵 금지) */}
+        <div
+          className="mt-1 flex items-center gap-2 text-muted-foreground"
+          data-testid="auto-status"
+        >
+          <span className="font-mono">{wsStatus}</span>
+          {wsState.value?.current_title && (
+            <span className="truncate">· {wsState.value.current_title}</span>
+          )}
+        </div>
+        {wsState.value?.error && (
+          <div
+            className="mt-1 rounded border border-red-800/60 bg-red-950/30 p-2 font-mono text-red-300"
+            data-testid="auto-error"
+          >
+            {wsState.value.error}
+          </div>
+        )}
+      </section>
+
+      {/* world 표시 (배경 메시) — pick 패널에서 이전 (world 소유 = 스캔) */}
+      <section className="mb-3">
+        <div className="mb-1 font-mono uppercase text-muted-foreground">
+          world (배경 메시)
+        </div>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={worldVisible}
+            onChange={(e) => setWorldVisible(e.target.checked)}
+            data-testid="world-visible"
+          />
+          <span>월드 표시</span>
+        </label>
+        <div className="mt-1 text-muted-foreground" data-testid="world-label">
+          {meshMeta?.createdAt
+            ? `현재 월드: ${agoLabel(meshMeta.createdAt)} 스캔 · ` +
+              `${meshMeta.vertexCount.toLocaleString()} verts`
+            : "월드 없음 — 위 '자동 스캔'으로 생성"}
+        </div>
+      </section>
+
+      {/* 수동 스캔 (고급 — 손으로 팔 옮겨 캡처. 자동이 못 담는 각도 톱업용) */}
+      <details className="mb-3" data-testid="manual-scan">
+        <summary className="mb-2 cursor-pointer font-mono uppercase text-muted-foreground">
+          수동 스캔 (고급)
+        </summary>
       {/* 세션 */}
       <section className="mb-3">
         <div className="mb-1 font-mono uppercase text-muted-foreground">session</div>
@@ -301,6 +425,7 @@ export function ScanPanel() {
           )}
         </div>
       </section>
+      </details>
 
       <div className="text-muted-foreground" data-testid="scan-msg">
         {msg}

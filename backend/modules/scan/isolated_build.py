@@ -82,7 +82,10 @@ def shutdown() -> None:
 
 
 def _run_build_in_worker(
-    scans: list[BuildScanInput], kwargs: dict, q: Any
+    scans: list[BuildScanInput],
+    kwargs: dict,
+    q: Any,
+    roi: tuple[float, float, float, float, float, float] | None = None,
 ) -> BuildResult:
     """워커 프로세스 본체 — build_mesh 실행 + progress/진단 로그를 큐로.
 
@@ -113,7 +116,7 @@ def _run_build_in_worker(
             except Exception:
                 pass  # 릴레이 실패가 빌드를 죽이지 않는다
 
-        return recon.build_mesh(scans, progress=progress, **kwargs)
+        return recon.build_mesh(scans, progress=progress, roi=roi, **kwargs)
     finally:
         build_logger.removeHandler(handler)
         try:
@@ -126,13 +129,16 @@ async def run_isolated(
     scans: list[BuildScanInput],
     kwargs: dict,
     on_progress: Callable[[str, float, str], None],
+    roi: tuple[float, float, float, float, float, float] | None = None,
 ) -> BuildResult:
     """격리 빌드 1회 — 완료까지 progress/로그 릴레이. 예외는 그대로 전파
     (BrokenProcessPool 은 풀 재생성 후 전파 — 다음 빌드가 새 풀로 재시도)."""
     executor, manager = _ensure_pool()
     q = manager.Queue()
     loop = asyncio.get_running_loop()
-    fut = loop.run_in_executor(executor, _run_build_in_worker, scans, kwargs, q)
+    fut = loop.run_in_executor(
+        executor, _run_build_in_worker, scans, kwargs, q, roi
+    )
     relay = asyncio.create_task(_relay(q, on_progress))
     try:
         return await fut

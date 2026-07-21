@@ -239,6 +239,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "LlmModule",
         "PickAndPlaceModule",  # task family (modules/tasks/pick_and_place), host-level
         "HandoverModule",  # task family (modules/tasks/handover, 2026-07-17 — 실물 미검증)
+        "WorldScanModule",  # task family (modules/tasks/world_scan, 2026-07-21 — 배경 스캔)
         "HostMonitorModule",  # @publishes(METRICS) — host-level
     }
     assert "BridgeModule" not in ids
@@ -257,6 +258,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "LlmModule",
         "PickAndPlaceModule",  # task family — robot-agnostic (host당 1)
         "HandoverModule",  # task family — robot-agnostic (host당 1, 2026-07-17)
+        "WorldScanModule",  # task family — robot-agnostic (host당 1, 2026-07-21)
         "MotionPreviewModule",  # plan-only 미리보기 — robot-agnostic (host당 1)
         "HostMonitorModule",  # 각 host 발행 — robot 무관 (host-level)
     }

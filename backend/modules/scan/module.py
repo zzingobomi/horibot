@@ -98,6 +98,9 @@ class ScanRobotSpec:
     kinematics_factory: Callable[[Path], Kinematics]
     urdf_path: Path
     arm_specs: list[MotorSpec]  # motors.yaml 순 (gripper 제외)
+    # 작업 셀 ROI (base frame, x0,x1,y0,y1,z0,z1 m) — build 시 mesh 를 이 상자로
+    # 크롭 (셀 밖 잡것 제외). None = 크롭 없음 (하위 호환). instance.yaml SSOT.
+    workcell: tuple[float, float, float, float, float, float] | None = None
 
 
 @publishes((Scan.Stream.BUILD_PROGRESS, BuildProgress))
@@ -353,20 +356,21 @@ class ScanModule:
         def _progress(stage: str, percent: float, message: str) -> None:
             self._publish_progress(robot_id, req.session_row_id, stage, percent, message)
 
+        roi = spec.workcell  # 작업 셀 크롭 (None = 크롭 없음). build_mesh 명시 인자.
         try:
             if self._isolate_build:
                 # 별도 프로세스 + 낮은 우선순위 — bridge/검출과 CPU 경쟁 차단
                 # (isolated_build docstring). progress/pair 진단 로그는 큐로
                 # 릴레이돼 관측성 무손실.
                 result = await isolated_build.run_isolated(
-                    inputs, kwargs, _progress
+                    inputs, kwargs, _progress, roi=roi
                 )
             else:
                 # in-process 경로 (테스트/격리 불가 환경) — event loop 를 안
                 # 막게 thread 로 offload. progress 콜백은 그 thread 에서
                 # runtime.publish (sync, thread-safe) 호출.
                 result = await asyncio.to_thread(
-                    recon.build_mesh, inputs, progress=_progress, **kwargs
+                    recon.build_mesh, inputs, progress=_progress, roi=roi, **kwargs
                 )
         except Exception as e:
             logger.exception("build_mesh 실패 robot=%s", robot_id)

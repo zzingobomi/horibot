@@ -18,6 +18,7 @@ import * as THREE from "three";
 import { Robots } from "./objects/Robots";
 import { Cameras } from "./objects/Cameras";
 import { World } from "./objects/World";
+import { ScanGrowth } from "./objects/ScanGrowth";
 import { AxisFrame } from "./shared/AxisFrame";
 import { TaskMarkersOverlay } from "./overlays/TaskMarkersOverlay";
 import { ScenePartHost } from "./overlays/ScenePartHost";
@@ -130,6 +131,9 @@ function SceneContent({
       <Cameras robots={robots} focusId={focusId ?? null} />
       {/* World 배경 레이어 — 최신 재구성 자동 로드 (worldVisible gate) */}
       <World robots={robots} focusId={focusId ?? null} />
+      {/* 스캔 성장 UX — world_scan 진행 중 포즈별 포인트클라우드 누적 (끝나면
+          비우고 World mesh 가 이어받음). 홈-검증 대상 (ScanGrowth docstring). */}
+      <ScanGrowth robots={robots} focusId={focusId ?? null} />
 
       {/* ── Feature overlays — 기능이 보여주는 것 ── */}
       <TaskMarkersOverlay robots={robots} focusId={focusId ?? null} />

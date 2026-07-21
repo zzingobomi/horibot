@@ -368,3 +368,19 @@ async def test_fuse_oriented_empty_and_pointless():
     )
     res = await mod.fuse_oriented(FuseOrientedRequest(candidates=[no_pts]))
     assert res.candidates == [] and "점군" in res.message
+
+
+async def test_detect_roi_cuts_out_of_cell_candidates():
+    """작업 셀 ROI 밖 후보 컷 (§3.3) — mock 후보 best(z=0.8)/second(z≈1.0) 중
+    셀 z[0.75,0.85] 이 second 만 잘라 1개 남긴다. 오검출(공유기·로봇몸통) 소멸의
+    결정적 재현 — 색/score 재튜닝 없이 기하로 컷. ROI 미설정이면 no-op(기존 테스트)."""
+    rt = _frame_runtime()
+    mod = DetectorModule(
+        runtime=rt,
+        backend=MockDetectorBackend(),
+        workcell={_ROBOT: (-1.0, 1.0, -1.0, 1.0, 0.75, 0.85)},
+    )
+    res = await mod.detect(DetectRequest(robot_id=_ROBOT, prompt="cube"))
+    assert res.found, res.message
+    assert len(res.candidates) == 1  # 셀 밖(z≈1.0) 후보 컷
+    assert abs(res.candidates[0].position[2] - 0.8) < 1e-3

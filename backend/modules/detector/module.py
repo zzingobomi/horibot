@@ -175,9 +175,14 @@ class DetectorModule:
         self,
         runtime: ModuleRuntime,
         backend: DetectorBackend,
+        workcell: dict[str, tuple[float, float, float, float, float, float]]
+        | None = None,
     ) -> None:
         self.runtime = runtime
         self._backend = backend
+        # robot 별 작업 셀 ROI (base frame x0,x1,y0,y1,z0,z1) — 셀 밖 후보 컷
+        # (공유기·로봇몸통 등 작업 영역 밖 오검출 소멸). instance.yaml SSOT.
+        self._workcell = workcell or {}
         self._preload_task: asyncio.Task[None] | None = None
         self._detections_seq = 0
         # 디버그 덤프 — backend 세션마다 폴더 1개, 매 호출(detect/fuse)을 순번으로 쌓음.
@@ -306,6 +311,30 @@ class DetectorModule:
                     mask=raw.mask,
                 )
             )
+        # 작업 셀 ROI 컷 — 셀 밖 후보 제거 (base-frame position 기준). 공유기·
+        # 로봇 몸통 등 작업 영역 밖 오검출을 색/score 재튜닝(땜빵) 없이 기하로
+        # 소멸 (docs/pnp_scenario_rework.md §3.3). 관측성: 컷한 후보 로그 (침묵
+        # 금지 — 진짜 물체가 잘리면 집에서 ROI 넓히라는 신호). ROI 미설정이면 no-op.
+        roi = self._workcell.get(robot_id)
+        if roi is not None:
+            x0, x1, y0, y1, z0, z1 = roi
+            kept = [
+                c for c in cands
+                if x0 <= c.position[0] <= x1
+                and y0 <= c.position[1] <= y1
+                and z0 <= c.position[2] <= z1
+            ]
+            if len(kept) < len(cands):
+                dropped = [c for c in cands if c not in kept]
+                logger.info(
+                    "detector ROI 컷(robot=%s): 셀 밖 후보 %d개 제거 %s "
+                    "(셀 x[%.2f,%.2f] y[%.2f,%.2f] z[%.2f,%.2f])",
+                    robot_id, len(dropped),
+                    [f"{c.prompt}@({c.position[0]:.2f},{c.position[1]:.2f},"
+                     f"{c.position[2]:.2f})s={c.score:.2f}" for c in dropped],
+                    x0, x1, y0, y1, z0, z1,
+                )
+            cands = kept
         # 전역 score desc — 단일 prompt 는 driver 가 이미 desc (no-op), 멀티는
         # prompt-major 로 이어붙어 섞임 (응답/오버레이/덤프 순서 일관용).
         cands.sort(key=lambda c: c.score, reverse=True)

@@ -14,29 +14,6 @@ import { Button } from "@/components/ui/button";
 import { useService } from "@/framework";
 import { useTaskRobots } from "@/hooks/useTaskRobots";
 import { ServiceKey } from "@/api/generated/contract";
-import {
-  DEFAULT_BUILD_VOXEL_M,
-  useScanStore,
-  VOXEL_TIERS,
-} from "@/stores/scanStore";
-
-// build_world 마지막 선택 기억 — 매 실행마다 다시 켤 필요 없게 (기본 off =
-// "빨리 픽앤플레이스만" 이 기본, 2026-07-18 UX 결정).
-const BUILD_WORLD_LS_KEY = "pnp.buildWorld";
-// 월드 빌드 voxel 마지막 선택 (m) — build_world 와 독립 기억.
-const WORLD_VOXEL_LS_KEY = "pnp.worldVoxelM";
-
-/** 재구성 생성 시각 → "N분/시간/일 전" (stale 월드 침묵 금지 라벨). */
-function agoLabel(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  if (!Number.isFinite(ms) || ms < 0) return "";
-  const min = Math.floor(ms / 60_000);
-  if (min < 1) return "방금";
-  if (min < 60) return `${min}분 전`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}시간 전`;
-  return `${Math.floor(hr / 24)}일 전`;
-}
 
 export function PickAndPlacePanel() {
   // 로드 전 undefined → [실행] disabled (아래 !robotId 게이트).
@@ -52,27 +29,6 @@ export function PickAndPlacePanel() {
   const [placeObject, setPlaceObject] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
-
-  // World 토글 2종 (독립): 갱신 = run 옵션(pose 당 +1~2s 비용, 기본 off) /
-  // 표시 = 씬 게이트(비용 0, 기본 on — scanStore workcell 전역).
-  const [buildWorld, setBuildWorldState] = useState(
-    () => localStorage.getItem(BUILD_WORLD_LS_KEY) === "1",
-  );
-  const setBuildWorld = (on: boolean) => {
-    setBuildWorldState(on);
-    localStorage.setItem(BUILD_WORLD_LS_KEY, on ? "1" : "0");
-  };
-  const [worldVoxelM, setWorldVoxelMState] = useState(() => {
-    const v = Number(localStorage.getItem(WORLD_VOXEL_LS_KEY));
-    return VOXEL_TIERS.some((t) => t.m === v) ? v : DEFAULT_BUILD_VOXEL_M;
-  });
-  const setWorldVoxelM = (m: number) => {
-    setWorldVoxelMState(m);
-    localStorage.setItem(WORLD_VOXEL_LS_KEY, String(m));
-  };
-  const worldVisible = useScanStore((s) => s.worldVisible);
-  const setWorldVisible = useScanStore((s) => s.setWorldVisible);
-  const meshMeta = useScanStore((s) => s.meshMeta);
 
   const onParse = async () => {
     const cmd = text.trim();
@@ -101,9 +57,6 @@ export function PickAndPlacePanel() {
     const res = await runSvc.call({
       pick_object: pick,
       place_object: placeObject.trim(),
-      build_world: buildWorld,
-      // 갱신 off 여도 명시 전송 (계약 필드) — backend 는 build_world=false 면 무시.
-      world_voxel_size: worldVoxelM,
     });
     const d = res.data as { accepted?: boolean; message?: string } | null;
     setMsg(
@@ -173,35 +126,6 @@ export function PickAndPlacePanel() {
             className="mt-0.5 w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono"
           />
         </label>
-        <label className="mt-2 flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={buildWorld}
-            onChange={(e) => setBuildWorld(e.target.checked)}
-            data-testid="pnp-build-world"
-          />
-          <span>
-            search 중 월드 갱신 (스캔)
-            <span className="text-muted-foreground"> — pose 당 +1~2s</span>
-          </span>
-        </label>
-        {buildWorld && (
-          <label className="mt-1 ml-6 flex items-center gap-2">
-            <span className="text-muted-foreground">품질 (voxel)</span>
-            <select
-              value={worldVoxelM}
-              onChange={(e) => setWorldVoxelM(Number(e.target.value))}
-              data-testid="pnp-world-voxel"
-              className="rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 font-mono"
-            >
-              {VOXEL_TIERS.map((t) => (
-                <option key={t.m} value={t.m}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
         <div className="mt-2 flex gap-2">
           <Button
             size="sm"
@@ -214,30 +138,6 @@ export function PickAndPlacePanel() {
           <Button size="sm" variant="ghost" onClick={onStop} data-testid="pnp-stop">
             중지
           </Button>
-        </div>
-      </section>
-
-      <section>
-        <div className="mb-1 font-mono uppercase text-muted-foreground">
-          world (배경 메시)
-        </div>
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={worldVisible}
-            onChange={(e) => setWorldVisible(e.target.checked)}
-            data-testid="pnp-world-visible"
-          />
-          <span>월드 표시</span>
-        </label>
-        <div className="mt-1 text-muted-foreground" data-testid="pnp-world-label">
-          {meshMeta?.createdAt
-            ? `현재 월드: ${agoLabel(meshMeta.createdAt)} 스캔 · ` +
-              `${meshMeta.vertexCount.toLocaleString()} verts` +
-              (meshMeta.voxelSizeM
-                ? ` · ${(meshMeta.voxelSizeM * 1000).toFixed(0)}mm`
-                : "")
-            : "월드 없음 — Scan 모드 또는 위 '월드 갱신' 옵션으로 생성"}
         </div>
       </section>
 

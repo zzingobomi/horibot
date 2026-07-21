@@ -101,8 +101,6 @@ class PickAndPlaceModule:
             task_name="pick_and_place",
             pick_object=req.pick_object,
             place_object=req.place_object,
-            build_world=req.build_world,
-            world_voxel_size=req.world_voxel_size,
         )
         return RunResponse(accepted=r.accepted, message=r.message)
 
@@ -206,8 +204,6 @@ class PickAndPlaceModule:
         ctx: TaskContext,
         pick_object: str,
         place_object: str = "",
-        build_world: bool = False,
-        world_voxel_size: float | None = None,
     ) -> None:
         so101 = self.TASK_ROBOTS[0]
         markers: list[TaskMarker] = []
@@ -215,20 +211,14 @@ class PickAndPlaceModule:
         # 0) home 경유 자세 — 없으면 모션 0 시점에 명시적 실패 (티칭 안내).
         home = await steps.home_waypoint(ctx, so101)
 
-        # 0.5) World 스캔 (옵션) — search 스윕에 편승해 scan 세션을 돌려
-        # 3D 배경(World 레이어)을 갱신. best-effort (실패해도 pick 계속).
-        world = None
-        if build_world:
-            world = steps.WorldScan(ctx, so101, voxel_size=world_voxel_size)
-            await world.start()
-
-        # 1) 검출 — **한 스윕**에 pick 검출 + place 검출 + world 스캔 전부
-        # (2026-07-19 통합 — 옛 구조는 place 가 같은 자세를 다시 돌았다.
-        # pose 당 wire 1호출, 후보는 per-candidate prompt 귀속으로 분리).
+        # 1) 검출 — **한 스윕**에 pick 검출 + place 검출 (2026-07-19 통합 —
+        # 옛 구조는 place 가 같은 자세를 다시 돌았다. pose 당 wire 1호출, 후보는
+        # per-candidate prompt 귀속으로 분리). World 배경 스캔은 전용 task 로
+        # 분리됨 (2026-07-21 — contract.RunRequest 주석).
         prompts = [pick_object]
         if place_object and place_object != pick_object:
             prompts.append(place_object)
-        found = await steps.detect(ctx, so101, prompts, world=world)
+        found = await steps.detect(ctx, so101, prompts)
 
         # 2) 계획 — 집기(servo 접근 가족)·놓기 도달성을 모두 먼저 검증 (물리
         # 파지 0). 놓을 곳이 도달 불가면 아무것도 집기 전에 실패한다 (물체 쥔 채

@@ -29,7 +29,6 @@ from modules.waypoint.contract import (
 )
 
 from .primitives import _TOP_K, _move_j_joints
-from .world import WorldScan
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,6 @@ async def detect(
     ctx: TaskContext,
     robot_id: str,
     prompts: list[str],
-    world: WorldScan | None = None,
 ) -> dict[str, list[OrientedDetection]]:
     """search 그룹 자세를 **전부** 돌며 **모든 prompt 동시** 검출 → prompt 별 누적.
 
@@ -55,11 +53,9 @@ async def detect(
 
     **스윕 통합 (2026-07-19)**: 옛 구조는 pick/place 가 같은 자세를 두 번 돌았다
     (스윕 비용의 대부분 = 관측 자세 MoveJ). pose 당 wire 호출 1번에 prompts 를
-    다 실어 pick 검출 + place 검출 + world 스캔이 한 스윕에 끝난다 — 후보는
-    응답의 per-candidate prompt 귀속으로 나눈다 (detector contract).
-
-    world: build_world 옵션의 편승 스캔 — 각 pose 정지 관측 직후 capture
-    (빌드는 백그라운드 — WorldScan docstring, best-effort).
+    다 실어 pick 검출 + place 검출이 한 스윕에 끝난다 — 후보는 응답의
+    per-candidate prompt 귀속으로 나눈다 (detector contract). World 배경 스캔은
+    전용 task(world_scan)로 분리됨 (2026-07-21 — 편승 capture 제거).
     """
     t0 = time.monotonic()
     members = await _search_waypoints(ctx, robot_id)
@@ -73,19 +69,6 @@ async def detect(
             DetectOrientedResponse,
         )
         _bucket_by_prompt(found, res.candidates)
-        if world is not None:
-            # capture 는 검출 **뒤** 직렬 (병렬화 원복 — 2026-07-19 22:13 실물:
-            # capture∥detect 첫 런에서 pose1 스캔이 정합 전멸 (인접 1→0
-            # fitness 0.09, loop 전부 0.00/보정 1.4m → 부챗살 메시). 유력
-            # 기전 = 직렬일 땐 capture 가 "settle + 검출 2~3s" 뒤라 잔진동이
-            # 죽은 뒤였는데, 병렬은 도착 0.3s 후 즉시 캡처 — 진입 대이동
-            # 직후인 pose1 손목 진동이 depth 를 오염 (검출은 cm 관용이라
-            # 무사). 재병렬화 조건 = 모터 스트림 속도 기반 **정지 판정
-            # 게이트**를 capture 앞에 구현 (추측 지연 상수 금지). 빌드는
-            # 백그라운드 유지 (WorldScan docstring).
-            await world.capture()
-    if world is not None:
-        world.finalize()  # 마지막 캡처 포함 빌드 보장 (대기 안 함)
     logger.info(
         "detect(%s): search '%s' %d 자세 → 후보 누적 %s (%.1fs)",
         ", ".join(prompts), _SEARCH_GROUP, len(members),

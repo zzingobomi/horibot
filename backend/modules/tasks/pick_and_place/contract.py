@@ -29,14 +29,11 @@ class PickAndPlace:
 class RunRequest(StrictModel):
     pick_object: str
     place_object: str = ""
-    # search 스윕에 편승해 scan 세션(capture→build)을 돌려 3D World 배경을
-    # 갱신할지 — 기본 off ("빨리 픽앤플레이스만" 이 기본, 2026-07-18 UX 결정).
-    # best-effort: 월드 갱신 실패는 pick 을 죽이지 않는다 (steps.WorldScan).
-    build_world: bool = False
-    # 월드 갱신 TSDF voxel (m). None = scan 기본(2mm). UI 는 1/2/4/8mm 4단 —
-    # 막연한 low/high 가 아니라 실제 조절값을 노출 (recon row 에 저장돼
-    # "이 메시가 왜 이 모양" 분석 데이터가 된다). sdf_trunc 는 scan 모듈이 파생.
-    world_voxel_size: float | None = None
+    # World 배경 스캔은 2026-07-21 전용 task(world_scan)로 분리 — pick 편승
+    # (build_world/world_voxel_size) 폐기. 근거: world 메시는 pick 내 소비자 0
+    # (표시용 workcell 자원이 스윕에 우연히 편승했을 뿐), 편승 capture 가
+    # 크리티컬 패스에서 7~9s 낭비, best-effort 침묵 실패라 품질 붕괴에 손쓸
+    # 방법이 없었음. 이제 스캔 패널의 "자동 스캔"이 소유 (docs/pnp_scenario_rework.md §3.1).
 
 
 class ListRobotsRequest(StrictModel):

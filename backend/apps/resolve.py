@@ -63,7 +63,17 @@ def resolve_host_deps(
     host: str = "",
 ) -> dict[str, Any]:
     if name == "detector":
-        return {"backend": _detector_backend(deploy)}
+        # robot 별 작업 셀 ROI (instance.yaml) — 셀 밖 후보 컷 (오검출 소멸).
+        workcell = {
+            r.id: (
+                r.workcell.x_min, r.workcell.x_max,
+                r.workcell.y_min, r.workcell.y_max,
+                r.workcell.z_min, r.workcell.z_max,
+            )
+            for r in robots.values()
+            if r.enabled and r.workcell is not None
+        }
+        return {"backend": _detector_backend(deploy), "workcell": workcell}
     if name == "llm":
         return {"backend": _llm_backend(deploy)}
     if name == "calibration":
@@ -105,6 +115,16 @@ def resolve_host_deps(
                 kinematics_factory=PybulletKinematics,
                 urdf_path=_ROBOT_DIR / r.type / "urdf" / f"{r.type}.urdf",
                 arm_specs=[m for m in r.motors if m.kind != MotorKind.GRIPPER],
+                # 작업 셀 ROI (instance.yaml) — build 가 mesh 를 이 상자로 크롭.
+                workcell=(
+                    (
+                        r.workcell.x_min, r.workcell.x_max,
+                        r.workcell.y_min, r.workcell.y_max,
+                        r.workcell.z_min, r.workcell.z_max,
+                    )
+                    if r.workcell is not None
+                    else None
+                ),
             )
             for r in robots.values()
             if r.enabled and "rgbd" in r.capabilities
@@ -234,6 +254,29 @@ def resolve_host_deps(
                     base,
                 )
         return {"robots": ho_specs, "omx_base_pose": base, "checker": checker}
+    if name == "world_scan":
+        # 자율 스윕 전 가동 조 open(§3.4)에 gripper spec 필요 — pick/handover 와
+        # 같은 self-contained 투영 (공유 helper 추출은 pick 실물 검증 후, 위 주석).
+        # base/checker 불필요 (단일 robot 관측 스윕, cross-robot 없음).
+        from modules.motor.contract import MotorKind
+        from modules.tasks.core.spec import TaskRobotSpec
+
+        ws_specs: dict[str, TaskRobotSpec] = {}
+        for r in robots.values():
+            if not r.enabled:
+                continue
+            grip = next((m for m in r.motors if m.kind == MotorKind.GRIPPER), None)
+            if grip is None:
+                continue
+            open_raw, close_raw = grip.limit_max, grip.limit_min
+            held = close_raw + round((open_raw - close_raw) * 0.05)
+            ws_specs[r.id] = TaskRobotSpec(
+                gripper_open_raw=open_raw,
+                gripper_close_raw=close_raw,
+                gripper_index=r.motors.index(grip),
+                gripper_held_threshold_raw=held,
+            )
+        return {"robots": ws_specs}
     if name == "bridge":
         from modules.bridge.contract import BasePoseInfo, RobotInfo
 

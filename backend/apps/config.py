@@ -41,6 +41,22 @@ class BasePose(BaseModel):
     yaw_deg: float = 0.0
 
 
+class WorkcellRoi(BaseModel):
+    """작업 셀 관심 영역 (base frame 3D 상자, m) — instances/<id>/instance.yaml.
+
+    3곳의 공통 SSOT: ① world_scan 포즈 겨냥(어디를 덮나) ② scan TSDF 통합 크롭
+    (셀 밖 잡것 제외) ③ detector 셀 밖 후보 컷 (공유기·로봇몸통 오검출 소멸).
+    도달 범위(FK)로 도출한 추정치 (2026-07-21) — 집에서 실 테이블 보고 보정.
+    **Z 는 바닥 평면이 아니라 볼륨** (핸드오버 공중 물체를 셀 밖으로 자르지 않게)."""
+
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+    z_min: float
+    z_max: float
+
+
 class JointMotionLimit(BaseModel):
     """Ruckig 한계 (rad/s, rad/s², rad/s³) — <type>/motion.yaml."""
 
@@ -71,6 +87,9 @@ class RobotConfig(BaseModel):
     motor_baudrate: int | None = None
     # instance-level — UVC 카메라 cv2.VideoCapture 인덱스 (opencv backend 만 사용)
     camera_device_index: int | None = None
+    # instance-level — 작업 셀 ROI (instances/<id>/instance.yaml). 없으면 None
+    # (셀 크롭/컷 미적용 — 하위 호환). world_scan/scan/detector 공용 SSOT.
+    workcell: WorkcellRoi | None = None
     # type-level (<type>/motors.yaml)
     motors: list[MotorSpec] = Field(default_factory=list)
     # type-level (<type>/motion.yaml) — joint name 별 Ruckig 한계 + cartesian
@@ -152,11 +171,14 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
         rtype = body["type"]
         port, baud = None, None
         camera_device_index = None
+        workcell = None
         inst_path = robot_dir / "instances" / rid / "instance.yaml"
         if inst_path.exists():
             inst_raw = yaml.safe_load(inst_path.read_text(encoding="utf-8"))
             port, baud = _resolve_port(inst_raw)
             camera_device_index = (inst_raw.get("camera") or {}).get("device_index")
+            wc_raw = inst_raw.get("workcell")
+            workcell = WorkcellRoi(**wc_raw) if wc_raw else None
         motion_joints, cartesian = _load_motion(rtype, robot_dir)
         bp = body.get("base_pose") or {}
         robots[rid] = RobotConfig(
@@ -170,6 +192,7 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
             motor_port=port,
             motor_baudrate=baud,
             camera_device_index=camera_device_index,
+            workcell=workcell,
             motors=_load_motors(rtype, robot_dir),
             motion_joint_limits=motion_joints,
             cartesian_limits=cartesian,

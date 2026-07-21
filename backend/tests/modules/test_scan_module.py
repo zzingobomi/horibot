@@ -390,9 +390,9 @@ async def test_build_applies_fresh_calibration_to_fk(tmp_path: Path, monkeypatch
     captured: list[list[recon.BuildScanInput]] = []
     captured_kwargs: list[dict] = []
 
-    def fake_build_mesh(inputs, *, progress, **kwargs):  # noqa: ANN001, ANN002, ANN003
+    def fake_build_mesh(inputs, *, progress, roi=None, **kwargs):  # noqa: ANN001, ANN002, ANN003
         captured.append(list(inputs))
-        captured_kwargs.append(dict(kwargs))
+        captured_kwargs.append(dict(kwargs))  # roi = 구조 파라미터, 튜닝 kwargs 아님
         return recon.BuildResult(
             mesh_bytes=b"ply", vertex_count=1, triangle_count=1,
             n_scans=len(inputs), n_edges=0,

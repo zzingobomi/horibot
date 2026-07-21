@@ -8,8 +8,8 @@
  *
  * 데이터 소유 (씬 객체 = 자기 데이터 자기가 구독):
  * - 자동 로드: 마운트 시 최신 reconstruction 조회 → GET_MESH → scanStore.
- * - 성장 UX: BUILD_PROGRESS done 수신 → 최신 재조회 (RunRequest.build_world
- *   편승 스캔이 search pose 마다 빌드 → 월드가 자라는 게 실시간으로 보임).
+ * - 성장 UX: BUILD_PROGRESS done 수신 → 최신 재조회 (전용 world_scan task 가
+ *   pose 마다 빌드 → 월드가 자라는 게 실시간으로 보임. producer 무관하게 동작).
  * - ScanPanel 수동 로드(옛 recon 열람)는 그대로 존중 — 자동 로드는 마운트/빌드
  *   완료 시에만 개입 (latest-wins).
  * - 표시 게이트 = scanStore.worldVisible (workcell 전역 — 갱신 여부와 독립).

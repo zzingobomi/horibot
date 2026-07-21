@@ -757,8 +757,6 @@ export interface PickAndPlaceListRobotsResponse {
 export interface PickAndPlaceRunRequest {
   pick_object: string;
   place_object?: string;
-  build_world?: boolean;
-  world_voxel_size?: number | null;
 }
 
 export interface PickAndPlaceTaskMarker {
@@ -774,6 +772,17 @@ export interface PickAndPlaceTaskMarkers {
   seq: number;
   timestamp_unix: number;
   markers?: PickAndPlaceTaskMarker[];
+}
+
+export interface WorldScanListRobotsRequest {
+}
+
+export interface WorldScanListRobotsResponse {
+  robot_ids: string[];
+}
+
+export interface WorldScanRunRequest {
+  voxel_size?: number | null;
 }
 
 export interface AddToGroupRequest {
@@ -909,6 +918,8 @@ export const Topic = {
   PICKANDPLACE_TRACE: "stream/pick_and_place/{robot_id}/trace",
   SCAN_BUILD_PROGRESS: "stream/scan/{robot_id}/build_progress",
   SCENE3D_CLOUD: "stream/scene3d/{robot_id}/cloud",
+  WORLDSCAN_STATE: "stream/world_scan/{robot_id}/state",
+  WORLDSCAN_TRACE: "stream/world_scan/{robot_id}/trace",
 } as const;
 export type TopicKey = (typeof Topic)[keyof typeof Topic];
 
@@ -929,6 +940,8 @@ export type TopicPayloadMap = {
   "stream/pick_and_place/{robot_id}/trace": TaskTrace;
   "stream/scan/{robot_id}/build_progress": BuildProgress;
   "stream/scene3d/{robot_id}/cloud": Scene3dCloud;
+  "stream/world_scan/{robot_id}/state": TaskState;
+  "stream/world_scan/{robot_id}/trace": TaskTrace;
 };
 
 export const ServiceKey = {
@@ -981,6 +994,11 @@ export const ServiceKey = {
   WAYPOINT_RENAME: "srv/waypoint/rename",
   WAYPOINT_REORDER_GROUP: "srv/waypoint/reorder_group",
   WAYPOINT_TEACH: "srv/waypoint/teach",
+  WORLDSCAN_LIST_ROBOTS: "srv/world_scan/list_robots",
+  WORLDSCAN_PAUSE: "srv/world_scan/pause",
+  WORLDSCAN_RESUME: "srv/world_scan/resume",
+  WORLDSCAN_RUN: "srv/world_scan/run",
+  WORLDSCAN_STOP: "srv/world_scan/stop",
 } as const;
 export type ServiceKeyValue = (typeof ServiceKey)[keyof typeof ServiceKey];
 
@@ -1034,6 +1052,11 @@ export type ServiceMap = {
   "srv/waypoint/rename": { req: RenameWaypointRequest; res: RenameWaypointResponse };
   "srv/waypoint/reorder_group": { req: ReorderGroupRequest; res: ReorderGroupResponse };
   "srv/waypoint/teach": { req: TeachRequest; res: TeachResponse };
+  "srv/world_scan/list_robots": { req: WorldScanListRobotsRequest; res: WorldScanListRobotsResponse };
+  "srv/world_scan/pause": { req: ControlRequest; res: ControlResponse };
+  "srv/world_scan/resume": { req: ControlRequest; res: ControlResponse };
+  "srv/world_scan/run": { req: WorldScanRunRequest; res: RunResponse };
+  "srv/world_scan/stop": { req: ControlRequest; res: ControlResponse };
 };
 
 export const DRAFT_CONTRACTS: ReadonlySet<string> = new Set([

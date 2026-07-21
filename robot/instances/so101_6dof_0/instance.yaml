@@ -13,3 +13,16 @@ motor:
     windows: "COM_NOT_USED"   # placeholder, Pi 에서만 운영 중 (host_pi_motor)
     linux: /dev/ttyACM0
   baudrate: 1000000   # 1Mbps, STS3215/3250 출하 default
+
+# 작업 셀 ROI (base frame, m) — world_scan 포즈 겨냥 + scan mesh 크롭 + detector
+# 셀 밖 컷 공통 SSOT (apps/config.py WorkcellRoi). 도달 범위 FK 로 도출한 추정치
+# (2026-07-21: TCP 도달 p2~p98 X[0.01,0.32] Y[-0.29,0.26] Z[-0.04,0.24], mesh
+# 실측 X≤0.35 와 정합). z_max 는 도달보다 높게 열어둠 — 핸드오버 공중 물체.
+# ⚠️ 집에서 실 테이블 가장자리·핸드오버 높이 보고 숫자 보정.
+workcell:
+  x_min: 0.0
+  x_max: 0.35
+  y_min: -0.30
+  y_max: 0.30
+  z_min: -0.05
+  z_max: 0.35

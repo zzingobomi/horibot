@@ -59,7 +59,7 @@ interface ScanState {
   /**
    * World(재구성 메시 배경) 표시 여부 — **workcell 전역** (월드는 robot 이 아니라
    * 작업 셀 소유 — per-robot Record 규칙의 정당한 예외). 표시는 비용 0 (정적
-   * 메시) 이라 기본 ON. 갱신(RunRequest.build_world)과는 독립 토글.
+   * 메시) 이라 기본 ON. 갱신(전용 world_scan task)과는 독립 토글.
    */
   worldVisible: boolean;
   setWorldVisible: (on: boolean) => void;

@@ -29,6 +29,7 @@ from modules.motor.contract import Motor
 from modules.scan.contract import Scan
 from modules.scene3d.contract import Scene3d
 from modules.tasks.pick_and_place.contract import PickAndPlace
+from modules.tasks.world_scan.contract import WorldScan
 from modules.waypoint.contract import Waypoint
 
 _MODULES_ROOT = Path(__file__).resolve().parents[1] / "modules"
@@ -114,6 +115,14 @@ FRONTEND_EXPOSED: set[str] = {
         PickAndPlace.Stream.STATE,
         PickAndPlace.Stream.TRACE,
         PickAndPlace.Stream.MARKERS,
+        # World 스캔 (task 모듈 — 3D 배경 메시 전용 스캔, 스캔 패널의 "자동 스캔")
+        WorldScan.Service.RUN,
+        WorldScan.Service.STOP,
+        WorldScan.Service.PAUSE,
+        WorldScan.Service.RESUME,
+        WorldScan.Service.LIST_ROBOTS,  # 참여 robot 명부 — 프론트 {robot_id} 채움
+        WorldScan.Stream.STATE,
+        WorldScan.Stream.TRACE,
     )
 }
 

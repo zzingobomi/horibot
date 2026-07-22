@@ -20,10 +20,17 @@ from .primitives import (
     _set_gripper,
     close_gripper,
     go_home,
+    transit,
     verify_grasp,
 )
 
 logger = logging.getLogger(__name__)
+
+# 운반 transit 의 TCP z 여유 마진 — tcp_min_z = 바닥 + 물체 높이 + 이 값.
+# 매달린 물체(조 아래로 늘어진 높이 ≤ 물체 높이)가 바닥/테이블을 긁지 않게
+# 하는 보수 근사 (v1: 물체 자체를 충돌체로 모델하지 않음 — 정직 표기,
+# docs/motion.md §12). ⚠ 실물 첫 런 데이터로 재튜닝 대상.
+_CARRY_CLEARANCE_M = 0.02
 
 
 @step(title="놓기 실행")
@@ -33,12 +40,28 @@ async def execute_place(
     c: PlaceCandidate,
     pre_joints: list[float],
     home: WaypointRecord,
+    *,
+    carry_floor_z: float | None = None,
+    held_height_m: float | None = None,
 ) -> None:
-    """계획된 적치 후보로 실제 적치 — 접근 → 삽입 → 내려놓기 → 후퇴 → home.
+    """계획된 적치 후보로 실제 적치 — 운반 transit → 삽입 → 내려놓기 → 후퇴
+    → home.
 
-    home 에서 시작 (servo_pick 이 home 으로 끝남). 종료도 home — 다음 run 의
-    시작 자세가 일정하고 카메라 시야에서 팔이 빠진다."""
-    await pre_place(ctx, robot_id, pre_joints)
+    시작 = servo_pick 의 withdraw 자세 (쥔 채 — end_home=False 계약). 운반
+    transit 이 그 자세에서 적치 접근(pre)을 직접 계획한다 — 옛 "후퇴→home→pre"
+    의 쥔 채 최장 스윙 왕복이 사라지는 자리 (home 허브 강등, §12). 폴백 =
+    home 경유 (resolve_place 게이트 path_from=home 이 사전 증명). 종료는
+    home — 다음 run 의 시작 자세가 일정하고 카메라 시야에서 팔이 빠진다."""
+    tcp_min_z = (
+        carry_floor_z + held_height_m + _CARRY_CLEARANCE_M
+        if carry_floor_z is not None and held_height_m is not None
+        else None
+    )
+    await transit(
+        ctx, robot_id, pre_joints, home,
+        floor_z=carry_floor_z,
+        tcp_min_z=tcp_min_z,
+    )
     await insert(ctx, robot_id, c)
     # 파지 판정: 내려놓기 직전에도 물고 있나 (이송 중 놓쳤으면 여기서 실패 —
     # 빈 손으로 release 하는 허위 성공 방지).

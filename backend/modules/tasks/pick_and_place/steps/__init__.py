@@ -60,6 +60,7 @@ from .primitives import (
     go_home,
     home_waypoint,
     open_gripper,
+    transit,
     verify_grasp,
 )
 from .search import _SEARCH_GROUP, detect
@@ -92,5 +93,6 @@ __all__ = [
     "search",
     "servo_ladder_groups",
     "servo_pick",
+    "transit",
     "verify_grasp",
 ]

@@ -37,6 +37,7 @@ from modules.motion.contract import (
     Motion,
     MoveJResponse,
     MoveLResponse,
+    PlanPathResponse,
     ResolveReachableResponse,
     StopResponse,
     TcpState,
@@ -86,6 +87,7 @@ _SPEC = TaskRobotSpec(
 _DETECT = str(Detector.Service.DETECT_ORIENTED)
 _FUSE = str(Detector.Service.FUSE_ORIENTED)
 _SELECT = str(Motion.Service.RESOLVE_REACHABLE)
+_PLAN_PATH = str(Motion.Service.PLAN_PATH)
 _MOVE_J = str(Motion.Service.MOVE_J)
 _MOVE_L = str(Motion.Service.MOVE_L)
 _GRIP = str(Motor.Service.SET_GRIPPER)
@@ -247,11 +249,19 @@ def _bundle() -> CalibrationBundle:
 _BUNDLE_KEY = str(Calibration.Service.SNAPSHOT_BUNDLE)
 
 
+def _plan_direct() -> PlanPathResponse:
+    """transit 계획 성공 (직선, 경유점 0) — production 행복 경로 기본값."""
+    return PlanPathResponse(found=True, direct=True)
+
+
 def _ctx(script: dict) -> FakeContext:
     # SNAPSHOT_BUNDLE 은 approach_observe 가 매 호출 당기는 공통 의존 — 기본
     # 스크립트로 넉넉히 깔아준다 (개별 테스트가 넣으면 그쪽 우선).
+    # PLAN_PATH(transit 계획, 2026-07-22 home 허브 강등)도 동일 — 기본 = 직선
+    # 성공 (폴백 경로 검증 테스트는 명시 override).
     merged = dict(script)
     merged.setdefault(_BUNDLE_KEY, [_bundle()] * 8)
+    merged.setdefault(_PLAN_PATH, [_plan_direct()] * 8)
     return FakeContext(robots=[_BOT], specs={_BOT: _SPEC}, service_script=merged)
 
 
@@ -285,8 +295,9 @@ def _pick_script(**overrides) -> dict:
             _tcp(_SO0), _tcp(_SO1), _tcp(_MIDSTOP), _tcp(_G_TCP), _tcp(_G_TCP),
         ],
         _FUSE: [FuseOrientedResponse(candidates=[_OBS])],  # servo tick2 (관측 2건부터)
-        # 스윕 + 접근(home 경유 + look) + servo(home + rung0) + 종료 home = 6.
-        _MOVE_J: [MoveJResponse()] * 6,
+        # 스윕 + 접근 look(transit 직선) + rung0(transit 직선) + 종료 home = 4.
+        # (2026-07-22 home 허브 강등 — home 경유 MoveJ 는 transit 폴백에만)
+        _MOVE_J: [MoveJResponse()] * 4,
         _MOVE_L: [MoveLResponse()] * 6,  # 하강 + midstop×3 + final + withdraw
         _GRIP: [SetGripperResponse()] * 2,  # open + close
         _READ_STATE: [_joint_state(_HELD_RAW)] * 2,  # close/withdraw 판정
@@ -297,11 +308,11 @@ def _pick_script(**overrides) -> dict:
 
 # ── 접근·관측(2026-07-21)이 스윕과 계획 사이에 넣는 wire ──────────────
 # scenario override 시 스윕 _DETECT 뒤에 이 조각을 끼운다 (프레임 1 = _DETECT +1,
-# look resolve = _SELECT +1 앞, home 경유+look = _MOVE_J +2 앞).
+# look resolve = _SELECT +1 앞, transit(계획)+look = _MOVE_J +1 앞).
 _APPROACH_DETECT = [DetectOrientedResponse(found=True, candidates=[_OBS])]  # 1프레임
 # keys() prefix: 스윕 _DETECT 와 계획 _SELECT 사이
-# (hand-eye 번들 → look resolve → home → look → 관측).
-_APPROACH_KEYS = [_BUNDLE_KEY, _SELECT, _MOVE_J, _MOVE_J, _DETECT]
+# (hand-eye 번들 → look resolve → transit 계획 → look → 관측).
+_APPROACH_KEYS = [_BUNDLE_KEY, _SELECT, _PLAN_PATH, _MOVE_J, _DETECT]
 
 
 # ─── servo 시나리오 (FakeContext — 하드웨어/wire 없음) ────────────────
@@ -316,9 +327,9 @@ async def test_scenario_servo_pick_only_sequence():
     assert ctx.keys() == [
         _LIST_WP,  # home 조회 (모션 0)
         _LIST_GROUPS, _LIST_MEMBERS, _MOVE_J, _DETECT,  # 스윕 (coarse 찾기)
-        *_APPROACH_KEYS,  # 접근·관측: look resolve → home 경유 → look → 관측 1프레임
+        *_APPROACH_KEYS,  # 접근·관측: look resolve → transit 계획 → look → 관측
         _SELECT,  # servo 접근 계획 (가족+사다리, 모션 0)
-        _MOVE_J, _MOVE_J, _GRIP,  # servo 진입: home 경유 → rung0 → open
+        _PLAN_PATH, _MOVE_J, _GRIP,  # servo 진입: transit 계획 → rung0 → open
         _DETECT, _TCP_SNAP,  # tick1 (관측 1건 — 융합 생략)
         _MOVE_L,  # rung1 하강
         _DETECT, _TCP_SNAP, _FUSE,  # tick2 (관측 2건 융합)
@@ -328,10 +339,10 @@ async def test_scenario_servo_pick_only_sequence():
         _MOVE_L, _READ_STATE,  # withdraw + 판정 ②
         _MOVE_J,  # 종료 home
     ]
-    # MOVE_J 순서: [0]스윕 [1]접근 home [2]접근 look [3]servo home [4]rung0 [5]종료.
-    # rung0 진입 = resolve 가 반환한 첫 standoff IK 해 그대로 (재계산 금지)
+    # MOVE_J 순서: [0]스윕 [1]접근 look [2]rung0 [3]종료 home (transit 직선 —
+    # home 경유 MoveJ 소멸, 2026-07-22). rung0 = resolve 첫 standoff IK 해 그대로.
+    assert ctx.calls(_MOVE_J)[2]["req"].target.joints == [0.1] * 6
     assert ctx.calls(_MOVE_J)[3]["req"].target.joints == _HOME_JOINTS
-    assert ctx.calls(_MOVE_J)[4]["req"].target.joints == [0.1] * 6
     # servo 이동 목표 = production servo 함수 산출값 (common-mode 상대 명령 배선)
     ml = [c["req"].target for c in ctx.calls(_MOVE_L)]
     assert ml[0].position == pytest.approx(_SO1, abs=1e-9)  # 하강
@@ -576,13 +587,13 @@ async def test_servo_move_rejected_falls_back_to_movej():
             MoveLResponse(),  # final
             MoveLResponse(),  # withdraw
         ],
-        # 스윕 + 접근(home+look) + servo home + rung0 + 폴백 + 종료 home
-        _MOVE_J: [MoveJResponse()] * 7,
+        # 스윕 + 접근 look + rung0 + 폴백 + 종료 home
+        _MOVE_J: [MoveJResponse()] * 5,
     }))
     await _module_for_scenario().scenario(ctx, pick_object="white cube")
-    # 폴백 MoveJ = pose 타깃 (거부된 correct 목표 그대로). 접근이 앞에 MOVE_J 2개
-    # (home+look) 넣어 인덱스 +2 → 폴백은 [5].
-    fallback = ctx.calls(_MOVE_J)[5]["req"].target
+    # 폴백 MoveJ = pose 타깃 (거부된 correct 목표 그대로).
+    # MOVE_J: [0]스윕 [1]접근 look [2]rung0 [3]폴백 [4]종료 (transit 직선).
+    fallback = ctx.calls(_MOVE_J)[3]["req"].target
     assert fallback.kind == "pose"
 
 
@@ -611,9 +622,8 @@ async def test_servo_move_both_rejected_replans_then_aborts_if_exhausted():
             RemoteError("MotionRejected", "경로 IK 실패"),  # tick2 이동 거부②
         ],
         _MOVE_J: [
-            # 스윕 + 접근(home+look) + servo home + rung0
+            # 스윕 + 접근 look + rung0 (transit 직선)
             MoveJResponse(), MoveJResponse(), MoveJResponse(),
-            MoveJResponse(), MoveJResponse(),
             RemoteError("MotionRejected", "IK 실패"),  # 폴백 거부①
             RemoteError("MotionRejected", "IK 실패"),  # 폴백 거부②
         ],
@@ -650,9 +660,8 @@ async def test_servo_move_rejected_twice_replans_family_and_continues():
         ],
         _FUSE: [FuseOrientedResponse(candidates=[_OBS])] * 2,  # tick3/4
         _MOVE_J: [
-            # 스윕 + 접근(home+look) + servo home + rung0
+            # 스윕 + 접근 look + rung0 (transit 직선)
             MoveJResponse(), MoveJResponse(), MoveJResponse(),
-            MoveJResponse(), MoveJResponse(),
             RemoteError("MotionRejected", "IK 실패"),  # 폴백 거부①
             RemoteError("MotionRejected", "IK 실패"),  # 폴백 거부②
             MoveJResponse(),  # 재플랜 rung0 재진입
@@ -671,9 +680,9 @@ async def test_servo_move_rejected_twice_replans_family_and_continues():
     }))
     await _module_for_scenario().scenario(ctx, pick_object="white cube")
     assert len(ctx.calls(_SELECT)) == 3  # 접근 look + 계획 + 재플랜
-    # 재플랜 재진입 = resolve 가 반환한 rung0 관절해 그대로 (재계산 금지). 접근이
-    # 앞에 MOVE_J 2개(home+look) 넣어 +2 → 재진입은 [7].
-    reentry = ctx.calls(_MOVE_J)[7]["req"].target
+    # 재플랜 재진입 = resolve 가 반환한 rung0 관절해 그대로 (재계산 금지).
+    # MOVE_J: [0]스윕 [1]look [2]rung0 [3]폴백① [4]폴백② [5]재진입 [6]종료.
+    reentry = ctx.calls(_MOVE_J)[5]["req"].target
     assert reentry.kind == "joint" and reentry.joints == [0.1] * 6
     # 파지까지 완주 (close + withdraw 판정 2회)
     assert len(ctx.calls(_READ_STATE)) == 2
@@ -691,14 +700,123 @@ async def test_withdraw_rejected_falls_back_to_rung0_joints_while_holding():
             MoveLResponse(),  # final
             RemoteError("MotionRejected", "경로 IK 실패"),  # withdraw 거부
         ],
-        # 스윕 + 접근(home+look) + servo home + rung0 + **폴백** + 종료 home
-        _MOVE_J: [MoveJResponse()] * 7,
+        # 스윕 + 접근 look + rung0 + **폴백** + 종료 home (transit 직선)
+        _MOVE_J: [MoveJResponse()] * 5,
     }))
     await _module_for_scenario().scenario(ctx, pick_object="white cube")
-    # 접근이 앞에 MOVE_J 2개(home+look) 넣어 +2 → 폴백은 [5].
-    fallback = ctx.calls(_MOVE_J)[5]["req"].target
+    # MOVE_J: [0]스윕 [1]look [2]rung0 [3]폴백 [4]종료.
+    fallback = ctx.calls(_MOVE_J)[3]["req"].target
     assert fallback.kind == "joint" and fallback.joints == [0.1] * 6
     assert len(ctx.calls(_READ_STATE)) == 2  # withdraw-후 슬립 판정까지 계속
+
+
+# ── transit (계획 이동 — home 허브 강등, 2026-07-22) ─────────────────────
+
+
+async def test_transit_plan_failure_falls_back_to_home_route():
+    """★ 계획 실패(found=False) = home 경유 폴백 — 옛 실행 계약 그대로라 동작
+    후퇴가 없다 (플래너는 최적화지 의존성이 아님). 뒤집으면 회귀: 폴백이 없으면
+    플래너 전멸이 태스크 사망, 폴백이 침묵이면 로그 없는 성능 저하."""
+    ctx = _ctx(_pick_script(**{
+        _PLAN_PATH: [PlanPathResponse(found=False, message="경로 없음")] * 2,
+        # 폴백 = home 경유 ×2 (접근 + servo 진입): 스윕1 + (home+look) +
+        # (home+rung0) + 종료 = 6
+        _MOVE_J: [MoveJResponse()] * 6,
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    mj = [c["req"].target.joints for c in ctx.calls(_MOVE_J)]
+    # [1]=home(접근 폴백) [2]=look, [3]=home(진입 폴백) [4]=rung0
+    assert mj[1] == _HOME_JOINTS and mj[3] == _HOME_JOINTS
+    assert mj[2] == [0.1] * 6 and mj[4] == [0.1] * 6
+
+
+async def test_transit_wire_error_falls_back_to_home_route():
+    """PLAN_PATH wire 예외(RemoteError/구버전 motion)도 폴백 — 계획 서비스
+    장애가 태스크를 못 죽인다."""
+    ctx = _ctx(_pick_script(**{
+        _PLAN_PATH: [RemoteError("ServiceUnavailable", "plan_path 없음")] * 2,
+        _MOVE_J: [MoveJResponse()] * 6,
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    mj = [c["req"].target.joints for c in ctx.calls(_MOVE_J)]
+    assert mj[1] == _HOME_JOINTS and mj[3] == _HOME_JOINTS
+
+
+async def test_transit_executes_planned_waypoints_in_order():
+    """계획이 중간 경유점을 반환하면 그 순서 그대로 MoveJ — 판정 경로 == 실행
+    경로 (경유점을 건너뛰면 계획이 검증 안 한 직선을 실행하는 회귀)."""
+    via = [0.05] * 6
+    ctx = _ctx(_pick_script(**{
+        _PLAN_PATH: [
+            PlanPathResponse(found=True, waypoints=[via]),  # 접근 look transit
+            _plan_direct(),  # servo 진입
+        ],
+        _MOVE_J: [MoveJResponse()] * 5,  # 스윕 + (via+look) + rung0 + 종료
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    mj = [c["req"].target.joints for c in ctx.calls(_MOVE_J)]
+    assert mj[1] == via and mj[2] == [0.1] * 6  # 경유 → look 순서
+
+
+async def test_pick_entry_transit_carries_plan_collision_model():
+    """servo 진입 transit 요청 = plan_pick 게이트와 같은 충돌 모델 (바닥 +
+    이웃 점군 + 조 벌림) — 모델이 빠지면 게이트는 통과했는데 실행 경로가
+    검사 없이 나가는 침묵 구멍."""
+    ctx = _ctx(_pick_script())
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+    plans = ctx.calls(_PLAN_PATH)
+    assert len(plans) == 2  # 접근 look + servo 진입
+    entry = plans[1]["req"]
+    assert entry.goal_joints == [0.1] * 6  # rung0 (resolve 해 그대로)
+    assert entry.floor_z == pytest.approx(0.0 - 0.005)  # plan.floor_z
+    assert entry.gripper_open is True
+    assert entry.obstacle_points is None  # 단일 후보 — 이웃 없음
+    # 접근 look transit 도 바닥 게이트 동봉 (검출 최저 base_z − 여유)
+    look = plans[0]["req"]
+    assert look.floor_z == pytest.approx(0.0 - 0.005)
+    assert look.gripper_open is False
+
+
+async def test_place_carry_transit_sets_held_clearance():
+    """★ 운반 transit (쥔 채 servo 종료 → 적치 접근) — home 왕복 소멸 +
+    tcp_min_z = 바닥 + 물체 높이 + 여유 (매달린 물체 바닥 여유의 보수 근사).
+    뒤집으면 회귀: end_home 이 남으면 쥔 채 최장 스윙 왕복 부활, tcp_min_z
+    가 빠지면 낮은 운반 경로가 물체를 테이블에 긁는다."""
+    place_spot = _det(
+        position=(0.25, -0.05, 0.04), height=0.04, grasp_yaw=0.3,
+        prompt="red box",
+    )
+    ctx = _ctx(_pick_script(**{
+        **_search_responses(),
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS, place_spot]),
+            DetectOrientedResponse(found=True, candidates=[place_spot]),
+            *_APPROACH_DETECT,
+            DetectOrientedResponse(found=True, candidates=[_OBS]),
+            DetectOrientedResponse(found=True, candidates=[_OBS]),
+        ],
+        _SELECT: [_resolve_ok()] * 4,
+        _MOVE_J: [MoveJResponse()] * 6,
+        _MOVE_L: [MoveLResponse()] * 8,
+        _GRIP: [SetGripperResponse()] * 4,
+        _READ_STATE: [_joint_state(_HELD_RAW)] * 3,
+    }))
+    await _module_for_scenario().scenario(
+        ctx, pick_object="white cube", place_object="red box"
+    )
+    plans = ctx.calls(_PLAN_PATH)
+    # place look + pick look + servo 진입 + 운반 = 4
+    assert len(plans) == 4
+    carry = plans[3]["req"]
+    assert carry.goal_joints == [0.1] * 6  # pre 관절해 (resolve 그대로)
+    assert carry.floor_z == pytest.approx(-0.005)  # pick 바닥 (plan.floor_z)
+    # tcp_min_z = floor(-0.005) + 물체 높이(0.025) + 여유(0.02)
+    assert carry.tcp_min_z == pytest.approx(-0.005 + 0.025 + 0.02)
+    assert carry.gripper_open is False  # 쥔 채 (조 닫힘)
+    # 쥔 채 home 왕복 소멸 — 운반 구간(withdraw 판정 후 ~ pre 도착)에 home
+    # MoveJ 가 없다. MOVE_J home 은 스윕 앞/종료뿐.
+    mj = [c["req"].target.joints for c in ctx.calls(_MOVE_J)]
+    assert mj.count(_HOME_JOINTS) == 1  # 종료 1회만
 
 
 async def test_commit_midstop_release_drops_stale_comp_from_final_command():
@@ -803,6 +921,7 @@ async def test_commit_descent_profile_records_samples_and_suspect(
         _READ_STATE: [held_arm_load] * 10,  # 샘플 + close/withdraw 판정
     })
     script.setdefault(_BUNDLE_KEY, [_bundle()] * 8)  # approach hand-eye (직접 생성 ctx)
+    script.setdefault(_PLAN_PATH, [_plan_direct()] * 8)  # transit 계획 (직접 생성 ctx)
     ctx = _SlowFinalCtx(robots=[_BOT], specs={_BOT: _SPEC}, service_script=script)
     await _module_for_scenario().scenario(ctx, pick_object="white cube")
 
@@ -867,7 +986,9 @@ async def test_scenario_with_place_branch_places_after_servo():
         ],
         # [0]pick look + [1]pick 계획 + [2]place look + [3]place 정렬 가족
         _SELECT: [_resolve_ok(), _resolve_ok(), _resolve_ok(), _resolve_ok()],
-        _MOVE_J: [MoveJResponse()] * 11,  # pick+place 접근 각 2개 추가 (7→11)
+        # 스윕 + place look + pick look + rung0 + 운반 pre + 종료 home = 6
+        # (transit 직선 — servo 종료 home 은 end_home=False 로 소멸, 운반이 대체)
+        _MOVE_J: [MoveJResponse()] * 6,
         _MOVE_L: [MoveLResponse()] * 8,  # servo 6 (midstop 포함) + insert + retreat
         _GRIP: [SetGripperResponse()] * 4,  # open/close/release/마무리 close
         _READ_STATE: [_joint_state(_HELD_RAW)] * 3,  # close/withdraw/적치 직전
@@ -914,7 +1035,8 @@ async def test_place_retreat_movel_failure_falls_back_to_pre_joints():
             DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick2
         ],
         _SELECT: [_resolve_ok()] * 4,  # pick look+계획 + place look+계획
-        _MOVE_J: [MoveJResponse()] * 12,  # pick+place 접근 각 2개 (8→12, retreat 폴백 포함)
+        # 스윕 + look×2 + rung0 + 운반 pre + retreat 폴백 + 종료 home = 7
+        _MOVE_J: [MoveJResponse()] * 7,
         _MOVE_L: [MoveLResponse()] * 7 + [  # servo 6 (midstop 포함) + insert
             RemoteError("MotionFailed", "MoveL failed"),  # retreat 실행 실패
         ],

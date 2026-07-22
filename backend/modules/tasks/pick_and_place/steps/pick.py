@@ -1,8 +1,9 @@
 """servo 집기 실행 (closed-loop 본체) — look-then-move 루프 + commit + 판정.
 
-    home 경유 → rung0 진입 → tick 루프 (정지 관측 → gate → 상대 보정 MoveL →
-    수렴 시 하강) → commit (2단 하강 + 재앵커) → close → 파지 판정 (재시도) →
-    후퇴 → 슬립 판정 → home
+    rung0 진입 (계획 이동 transit — home 왕복 강등, docs/motion.md §12) →
+    tick 루프 (정지 관측 → gate → 상대 보정 MoveL → 수렴 시 하강) → commit
+    (2단 하강 + 재앵커) → close → 파지 판정 (재시도) → 후퇴 → 슬립 판정 →
+    (적치 미동반 시) home
 
 순수 계산·실측 근거·상태 전이 = servo.py (SSOT), trace = servo_trace.py.
 계획(가족/사다리 구성)은 plan.py — 여기는 실행과 실패 대응만.
@@ -60,6 +61,7 @@ from .primitives import (
     close_gripper,
     go_home,
     open_gripper,
+    transit,
     verify_grasp,
 )
 
@@ -97,9 +99,16 @@ async def servo_pick(
     prompt: str,
     home: WaypointRecord,
     on_grasp: Callable[[Vec3, servo.GraspFamily], None] | None = None,
+    *,
+    end_home: bool = True,
 ) -> None:
-    """closed-loop 파지 실행 — home 경유 → rung0 진입 → tick 루프 → commit →
-    close → 판정(재시도) → 후퇴 → 판정 → home.
+    """closed-loop 파지 실행 — rung0 진입(계획 이동) → tick 루프 → commit →
+    close → 판정(재시도) → 후퇴 → 판정 → (end_home 시) home.
+
+    end_home=False = 적치가 이어질 때 — 쥔 채 home 왕복(최장 스윙)을 없애고
+    execute_place 의 운반 transit 이 withdraw 자세에서 바로 적치 접근을 계획
+    (home 허브 강등, docs/motion.md §12). 실패/취소 경로는 영향 없음 —
+    on_abort STOP 은 기존 그대로.
 
     루프 계약 (servo.py docstring = SSOT):
     - 관측은 **정지 상태** 에서만 (이동 완료 → settle → DETECT_ORIENTED).
@@ -132,8 +141,15 @@ async def servo_pick(
     midstop_resid_mm: list[float] | None = None  # 마지막 commit 재앵커 잔차
 
     try:
-        await go_home(ctx, robot_id, home)
-        await _move_j_joints(ctx, robot_id, plan.rung0_joints)
+        # rung0 진입 — 현재(관측) 자세에서 직접 계획 (home 왕복 강등, §12).
+        # 충돌 모델 = plan_pick resolve 게이트와 동일 (바닥 + 이웃 점군 +
+        # 조 벌림). 폴백(home 경유)은 게이트 ④ path_from=home 이 사전 증명.
+        await transit(
+            ctx, robot_id, plan.rung0_joints, home,
+            floor_z=plan.floor_z,
+            obstacle_points=list(plan.neighbors),
+            gripper_open=True,
+        )
         await open_gripper(ctx, robot_id)
 
         while True:  # attempt 루프 (close 후 EMPTY 재시도)
@@ -374,7 +390,8 @@ async def servo_pick(
                 continue
             break  # 파지 + 이송 자격 통과
 
-        await go_home(ctx, robot_id, home)
+        if end_home:  # 적치 미동반 종료 — 알려진 휴식 자세로 (place 는 운반 transit)
+            await go_home(ctx, robot_id, home)
         summary.update({
             "result": "success",
             "close_attempts": run.close_attempts + 1,

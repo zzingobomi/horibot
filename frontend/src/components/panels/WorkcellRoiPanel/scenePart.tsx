@@ -1,16 +1,20 @@
 /**
  * WorkcellRoiScenePart — ROI 박스 3D 표현 + 직접 편집 (draft 렌더).
  *
- * 렌더 3계층 (Unity BoxBoundsHandle / CAD 관례 — pnp_scenario_rework §9.1-3):
- *   - 와이어  : EdgesGeometry 12모서리 (material wireframe 은 삼각 대각선이 생겨
- *               지저분 — 박스 모서리만). dirty(미저장) = TARGET 색으로 경고.
- *   - 반투명 면: 6개 **독립** plane — 한 면 = 한 bound = 한 핸들 = 한 하이라이트
- *               (1:1 매핑이 면별 강조를 공짜로). depthWrite off — 투명 볼륨이
- *               depth 를 쓰면 뒤 포인트클라우드가 가려진다. DoubleSide — 카메라가
- *               박스 안에 들어와도 면이 보인다.
- *   - 핸들    : 면 자체가 핸들 (drag = 그 bound resize, **Shift+drag = 그 축
- *               translate**) + 중앙 3축 화살표 기즈모 (drag = 축 translate,
- *               발견 가능한 주 경로 — 모디파이어 몰라도 보임).
+ * 렌더 구조 (Unity BoxBoundsHandle / CAD 관례 — pnp_scenario_rework §9.1-3):
+ *   - 와이어  : EdgesGeometry 12모서리. dirty(미저장) = TARGET 색으로 경고.
+ *   - 반투명 면: 6개 독립 plane — **시각 전용**(볼륨을 보여줄 뿐 픽킹 안 함,
+ *               raycast 무력화). depthWrite off — 뒤 포인트클라우드가 안 가려짐.
+ *               조작 대상 면은 진하게 강조(핸들 노브 hover/drag 와 연동).
+ *   - 핸들    : **면 중심 노브 6개** = 그 면 resize (Shift+drag = 그 축 translate).
+ *               depthTest off + renderOrder 높게 → 가려진 뒷면 노브도 위에 그려져
+ *               카메라 회전 없이 바로 클릭 가능(전체 면 픽킹의 관통 모호함 제거).
+ *   - 중앙 3축 화살표: 박스 전체 translate (발견 가능한 이동 주 경로).
+ *
+ * 왜 면이 아니라 노브인가: 6면이 전부 반투명이라 한 화면 지점의 ray 가 여러 면을
+ * 관통 — 호버(전파 안 끊음→먼 면 승)와 클릭(전파 끊음→가까운 면 승)이 서로 다른
+ * 면을 잡아 "호버한 면과 다른 면이 움직이는" 버그가 났다. 작은 노브는 공간상
+ * 분리돼 픽킹이 1:1 로 결정적 (2026-07-22 재설계).
  *
  * 드래그 = 포인터 ray ↔ 축 직선 최근접점 (dragMath.axisParamAtRay). 시작 시점의
  * roi/파라미터를 잡아두고 절대 재계산 (증분 누적이 clamp 와 얽혀 밀리는 것 방지).
@@ -50,6 +54,8 @@ const FACE_OPACITY_DRAG = 0.4;
 const AXIS_COLOR: Record<Axis, string> = { x: "#e5484d", y: "#46a758", z: "#3e63dd" };
 const ARROW_SHAFT_M = 0.07;
 const ARROW_RADIUS_M = 0.0035;
+// 면 핸들 노브 — 공간상 분리된 클릭 타깃 (전체 면 픽킹의 관통 모호함 제거)
+const KNOB_RADIUS_M = 0.012;
 
 interface DragState {
   kind: "face" | "axis";
@@ -84,7 +90,9 @@ export function WorkcellRoiScenePart() {
   const robotId = useRobotId();
   const draft = useWorkcellRoiStore((s) => s.drafts[robotId]);
   const saved = useWorkcellRoiStore((s) => s.saved[robotId]);
+  const visible = useWorkcellRoiStore((s) => s.visible[robotId]);
   if (!draft) return null; // ROI 미설정 — 패널의 "ROI 만들기"가 진입점
+  if (visible === false) return null; // 표시 토글 off — 편집 데이터는 store 에 유지
   return (
     <RobotFrame>
       <RoiBox robotId={robotId} roi={draft} dirty={isRoiDirty(draft, saved)} />
@@ -182,11 +190,7 @@ function RoiBox({
   return (
     <group ref={groupRef}>
       {/* 와이어 — 항상 보임 (depthTest off: 점군 뒤에서도 경계 유지). dirty=미저장 경고색 */}
-      <lineSegments
-        geometry={edges}
-        position={center}
-        renderOrder={998}
-      >
+      <lineSegments geometry={edges} position={center} renderOrder={998}>
         <lineBasicMaterial
           color={dirty ? VizColor.TARGET : VizColor.SENSOR}
           transparent
@@ -195,7 +199,7 @@ function RoiBox({
         />
       </lineSegments>
 
-      {/* 반투명 면 6개 = resize 핸들 (Shift+drag = 그 축 translate) */}
+      {/* 반투명 면 6개 = 볼륨 시각 전용 (픽킹 안 함 — 조작은 아래 노브가 담당) */}
       {FACES.map((face) => (
         <FacePlane
           key={face}
@@ -203,6 +207,16 @@ function RoiBox({
           roi={roi}
           highlighted={hovered === face || dragTarget === face}
           dragging={dragTarget === face}
+        />
+      ))}
+
+      {/* 면 중심 노브 6개 = resize 핸들 (Shift+drag = 그 축 translate) */}
+      {FACES.map((face) => (
+        <FaceKnob
+          key={face}
+          face={face}
+          roi={roi}
+          highlighted={hovered === face || dragTarget === face}
           onOver={() => setHovered(face)}
           onOut={() => setHovered((h) => (h === face ? null : h))}
           onDown={(e) =>
@@ -254,22 +268,19 @@ interface HandleEvents {
   onUp: (e: ThreeEvent<PointerEvent>) => void;
 }
 
+/** 반투명 면 — 볼륨 시각 전용. raycast 무력화로 포인터 이벤트를 안 가로챈다
+ * (조작은 FaceKnob 이 담당 — 면 관통 픽킹의 모호함 제거). */
 function FacePlane({
   face,
   roi,
   highlighted,
   dragging,
-  onOver,
-  onOut,
-  onDown,
-  onMove,
-  onUp,
 }: {
   face: FaceId;
   roi: WorkcellRoi;
   highlighted: boolean;
   dragging: boolean;
-} & HandleEvents) {
+}) {
   const size = roiSize(roi);
   const pos = faceCenter(roi, face);
   const axis = FACE_AXIS[face];
@@ -279,15 +290,7 @@ function FacePlane({
   const dims: [number, number] =
     axis === "x" ? [size[2], size[1]] : axis === "y" ? [size[0], size[2]] : [size[0], size[1]];
   return (
-    <mesh
-      position={pos}
-      rotation={rotation}
-      onPointerOver={onOver}
-      onPointerOut={onOut}
-      onPointerDown={onDown}
-      onPointerMove={onMove}
-      onPointerUp={onUp}
-    >
+    <mesh position={pos} rotation={rotation} raycast={NO_RAYCAST}>
       <planeGeometry args={dims} />
       <meshBasicMaterial
         color={VizColor.SENSOR}
@@ -297,6 +300,53 @@ function FacePlane({
         }
         depthWrite={false}
         side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
+
+/** raycast noop — 이 메시는 포인터 픽킹 대상에서 제외 (three Object3D.raycast 시그니처). */
+const NO_RAYCAST: THREE.Object3D["raycast"] = () => {};
+
+/** 면 중심 클릭 노브 — 그 면 resize 핸들. depthTest off + 높은 renderOrder 로
+ * 박스에 가려진 뒷면 노브도 위에 그려져 카메라 회전 없이 바로 잡을 수 있다. */
+function FaceKnob({
+  face,
+  roi,
+  highlighted,
+  onOver,
+  onOut,
+  onDown,
+  onMove,
+  onUp,
+}: {
+  face: FaceId;
+  roi: WorkcellRoi;
+  highlighted: boolean;
+} & HandleEvents) {
+  const pos = faceCenter(roi, face);
+  return (
+    <mesh
+      position={pos}
+      renderOrder={999}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        onOver();
+      }}
+      onPointerOut={(e) => {
+        e.stopPropagation();
+        onOut();
+      }}
+      onPointerDown={onDown}
+      onPointerMove={onMove}
+      onPointerUp={onUp}
+    >
+      <sphereGeometry args={[KNOB_RADIUS_M, 16, 12]} />
+      <meshBasicMaterial
+        color={VizColor.SENSOR}
+        transparent
+        opacity={highlighted ? 1.0 : 0.85}
+        depthTest={false}
       />
     </mesh>
   );
@@ -331,8 +381,14 @@ function AxisArrow({
     center[2] + dir[2] * ARROW_SHAFT_M,
   ];
   const events = {
-    onPointerOver: onOver,
-    onPointerOut: onOut,
+    onPointerOver: (e: ThreeEvent<PointerEvent>) => {
+      e.stopPropagation();
+      onOver();
+    },
+    onPointerOut: (e: ThreeEvent<PointerEvent>) => {
+      e.stopPropagation();
+      onOut();
+    },
     onPointerDown: onDown,
     onPointerMove: onMove,
     onPointerUp: onUp,

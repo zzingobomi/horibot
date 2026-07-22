@@ -22,6 +22,8 @@ from modules.motion.contract import (
     MoveJResponse,
     MoveLRequest,
     MoveLResponse,
+    PlanPathRequest,
+    PlanPathResponse,
     PoseTarget,
     TcpSnapshotRequest,
     TcpState,
@@ -91,6 +93,71 @@ async def home_waypoint(ctx: TaskContext, robot_id: str) -> WaypointRecord:
 async def go_home(ctx: TaskContext, robot_id: str, home: WaypointRecord) -> None:
     logger.info("go_home robot=%s → '%s'", robot_id, home.name)
     await _move_j_joints(ctx, robot_id, home.joint_values)
+
+
+# ── 계획 이동 (transit) — home 허브 강등 (2026-07-22, docs/motion.md §12) ──
+#
+# 긴 이동(관측 전환/servo 진입/운반)의 기본 = PLAN_PATH 로 현재→목표 직접 계획,
+# **실패(부정 결과/wire 예외)는 home 경유 폴백** — 옛 실행 계약 그대로라 동작
+# 후퇴가 없고, resolve 게이트 ④(path_from=home)가 폴백 경로를 여전히 계획
+# 시점에 증명한다 (플래너는 최적화지 의존성이 아니다 — 침묵 없이 로그).
+
+
+@step(title="이동 (계획 경로)")
+async def transit(
+    ctx: TaskContext,
+    robot_id: str,
+    goal_joints: list[float],
+    home: WaypointRecord,
+    *,
+    floor_z: float | None = None,
+    obstacle_points: list[Vec3] | None = None,
+    gripper_open: bool = False,
+    tcp_min_z: float | None = None,
+) -> None:
+    """현재 자세 → goal_joints 계획 이동. 실행 = 계획 waypoint 순차 MoveJ
+    (판정 경로 == 실행 경로 — resolve 의 판정 해 == 실행 해 원칙과 동일)."""
+    res: PlanPathResponse | None = None
+    try:
+        res = await ctx.call(
+            Motion.Service.PLAN_PATH,
+            PlanPathRequest(
+                goal_joints=list(goal_joints),
+                floor_z=floor_z,
+                obstacle_points=(
+                    [(p[0], p[1], p[2]) for p in obstacle_points]
+                    if obstacle_points else None
+                ),
+                gripper_open=gripper_open,
+                tcp_min_z=tcp_min_z,
+            ),
+            PlanPathResponse,
+            robot_id=robot_id,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(
+            "transit robot=%s: PLAN_PATH 호출 실패 (%s) — home 경유 폴백",
+            robot_id, e,
+        )
+    if res is not None and not res.found:
+        logger.warning(
+            "transit robot=%s: 경로 계획 실패 (%s, %.0fms) — home 경유 폴백",
+            robot_id, res.message, res.planning_ms,
+        )
+    if res is None or not res.found:
+        await go_home(ctx, robot_id, home)
+        await _move_j_joints(ctx, robot_id, goal_joints)
+        return
+    logger.info(
+        "transit robot=%s: %s (%.0fms, 검사 %d회) — 경유 %d + 목표",
+        robot_id, "직선" if res.direct else "RRT",
+        res.planning_ms, res.checks, len(res.waypoints),
+    )
+    for wp in res.waypoints:
+        await _move_j_joints(ctx, robot_id, wp)
+    await _move_j_joints(ctx, robot_id, goal_joints)
 
 
 async def _move_j_joints(

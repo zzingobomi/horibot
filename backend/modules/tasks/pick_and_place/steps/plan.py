@@ -106,6 +106,9 @@ class ServoPlan:
     # 진입으로 폴백한 결과를 servo 가 그대로 실행해야 한다 ("판정 사다리 ==
     # 실행 사다리" — resolve 의 판정 해 == 실행 해 원칙과 동일).
     standoffs: tuple[float, ...] | None = None
+    # 채택 시점의 이웃 장애물 점군 (_neighbor_points) — servo 진입 transit 이
+    # 계획 게이트와 같은 장애물 모델로 경로를 계획하도록 동봉 (2026-07-22).
+    neighbors: tuple[Vec3, ...] = ()
 
 
 # 진입 사다리 폴백 라운드 (2026-07-21 감사 — docs/pnp_scenario_rework.md §8.5).
@@ -360,6 +363,7 @@ async def plan_pick(
             lateral0=lateral,
             floor_z=floor_z,
             standoffs=tuple(entry),
+            neighbors=tuple(neighbors),
         )
     raise NoReachableGrasp(
         f"servo 접근 — 검출 후보 {len(ordered)}개 전부 전멸:\n  "

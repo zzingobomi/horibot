@@ -32,6 +32,9 @@ class Motion:
         # 스캔이라 반환 = 가용 그룹 중 순서상 첫 그룹 (옛 budget-major deepening
         # 은 힌트-only — 비선호 가족을 먼저 채택하는 선호 역전이 실물에서 관측됨).
         RESOLVE_REACHABLE = "srv/motion/{robot_id}/resolve_reachable"
+        # 충돌 없는 관절 경로 계획 (모션 0) — RRT-Connect (planner.py). home 허브
+        # 강등 (2026-07-22): 긴 이동의 실행 경로를 "home 경유" 대신 직접 계획.
+        PLAN_PATH = "srv/motion/{robot_id}/plan_path"
 
     class Stream(StrEnum):
         TCP_STATE = "stream/motion/{robot_id}/tcp_state"  # 20Hz fk (output)
@@ -202,6 +205,44 @@ class ResolveReachableResponse(BaseModel):
     group_failures: list[str] = []
 
 
+class PlanPathRequest(BaseModel):
+    """start(생략 시 현재 관절)→goal 의 **충돌 없는 관절 경로** 계획 (모션 0).
+
+    home 허브 강등 (2026-07-22, docs/motion.md §12): 옛 실행 계약은 "긴 이동은
+    home 경유 MoveJ" — resolve 게이트 ④(path_from=home)가 그 경로를 계획 시점에
+    증명했다. 이 서비스는 임의 시작→목표의 안전 경로를 직접 계획해 home 왕복을
+    없앤다. 게이트 ④ 는 **폴백(home 경유)의 사전 증명**으로 유지 — 계획 실패
+    시 호출자가 home 경유로 폴백하는 계약 (tasks steps.transit).
+
+    충돌 모델 = resolve 와 동일 (self + floor_z + obstacle_points/gripper_open).
+    tcp_min_z: 경로 전 샘플에서 FK(tcp).z ≥ 이 값 — 운반(held object) 바닥
+    여유의 보수 근사 (물체 자체는 충돌체로 미모델 — v1 한계, 정직 표기).
+    """
+
+    goal_joints: list[float]  # 목표 관절 (rad, dof)
+    start_joints: list[float] | None = None  # None = 현재 관절 (엔코더)
+    floor_z: float | None = None  # 바닥 평면 (resolve 게이트 ③ 동일)
+    obstacle_points: list[tuple[float, float, float]] | None = None  # 게이트 ③b
+    gripper_open: bool = False
+    tcp_min_z: float | None = None  # 운반 여유 — TCP z 하한 (base frame, m)
+
+
+class PlanPathResponse(BaseModel):
+    """found=False = 부정 데이터 (resolve index=-1 동형) — 호출자가 home 폴백.
+
+    waypoints = **중간 경유점만** (start/goal 제외 — 직선이면 빈 리스트).
+    실행 계약: 호출자는 start 자세에서 waypoints 순차 MoveJ 후 goal MoveJ
+    (엣지 = 계획이 검증한 관절 보간 그대로 — 판정 경로 == 실행 경로).
+    planning_ms/checks = 관측성 (Pi 배치 성능의 1차 계측 데이터)."""
+
+    found: bool
+    waypoints: list[list[float]] = []
+    message: str = ""
+    direct: bool = False  # 직선 자유 — RRT 없이 통과
+    planning_ms: float = 0.0
+    checks: int = 0  # collision_fn 호출 수
+
+
 class TcpSnapshotRequest(BaseModel):
     pass
 
@@ -314,4 +355,6 @@ declare_service_timeouts({
     # 경합의 본질 해결은 프로세스 위생이지만 캡은 싸게 넓혀둔다 (전멸 가족은
     # 모든 그룹이 풀예산 IK 를 태워 최악이 성공 케이스보다 느리다).
     Motion.Service.RESOLVE_REACHABLE: 120.0,
+    # RRT 예산(max_checks) 이 계산을 상한하지만 Pi CPU 미계측 — 여유 캡.
+    Motion.Service.PLAN_PATH: 30.0,
 })

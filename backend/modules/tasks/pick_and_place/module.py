@@ -247,9 +247,18 @@ class PickAndPlaceModule:
 
         # 3) 실행 — 집기 = closed-loop servo (물체 근처에서 관측→보정 루프,
         # steps/servo.py 정본), 놓기 = open-loop (상자 적치는 오차 관대).
-        await steps.servo_pick(ctx, so101, plan, pick_object, home, on_grasp)
+        # 적치 동반 시 end_home=False — 쥔 채 home 왕복 대신 execute_place 의
+        # 운반 transit 이 withdraw 자세에서 바로 적치 접근을 계획 (§12).
+        await steps.servo_pick(
+            ctx, so101, plan, pick_object, home, on_grasp,
+            end_home=drop is None,
+        )
         if drop is not None and drop_pre is not None:
-            await steps.execute_place(ctx, so101, drop, drop_pre, home)
+            await steps.execute_place(
+                ctx, so101, drop, drop_pre, home,
+                carry_floor_z=plan.floor_z,
+                held_height_m=plan.coarse.height,
+            )
 
 
 def _grasp_marker(p: tuple[float, float, float], fam: servo.GraspFamily) -> TaskMarker:

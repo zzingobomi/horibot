@@ -48,8 +48,10 @@ from .contract import (
     TrajState,
     TrajStatus,
 )
+from .contract import PlanPathRequest, PlanPathResponse
 from .kinematics import Kinematics
 from .kinematics_builder import build_calibrated_kinematics
+from .planner import plan_joint_path
 from .trajectory_runner import LinearPath, TrajectoryRunner
 
 logger = logging.getLogger(__name__)
@@ -811,6 +813,80 @@ class MotionModule:
         )
         return ResolveReachableResponse(
             index=idx, solutions=sols, message=msg, group_failures=fails
+        )
+
+    @service(Motion.Service.PLAN_PATH)
+    async def plan_path(self, req: PlanPathRequest) -> PlanPathResponse:
+        """충돌 없는 관절 경로 계획 (모션 0) — planner.plan_joint_path (RRT-Connect)
+        를 기존 충돌 세계 위에서 돌린다 (self + floor + obstacle — resolve 게이트
+        ③/③b/④ 와 같은 모델·같은 kin 이라 충돌 판단 SSOT 가 한 곳).
+
+        found=False = 부정 데이터 (계약: 호출자가 home 경유 폴백 — steps.transit).
+        obstacle 점군 lifecycle = resolve 와 동일 (설정→계획→반드시 해제).
+        blocking (RRT × PyBullet 질의) → to_thread."""
+        current = self._latest_arm_rad
+        start = req.start_joints if req.start_joints is not None else current
+        if start is None:
+            return PlanPathResponse(found=False, message="motor state 아직 없음")
+        if len(start) != self._dof or len(req.goal_joints) != self._dof:
+            raise MotionRejected(
+                f"joints dof 불일치 (start {len(start)} / goal "
+                f"{len(req.goal_joints)} != {self._dof})"
+            )
+        assert self._kin is not None  # start() 이후만 서비스 도달
+        kin = self._kin
+        has_obstacles = bool(req.obstacle_points)
+        start_q = list(start)
+
+        def _collision(q: list[float]) -> bool:
+            if kin.self_collision(q):
+                return True
+            if req.floor_z is not None and kin.floor_collision(q, req.floor_z):
+                return True
+            if has_obstacles and kin.obstacle_collision(
+                q, gripper_open=req.gripper_open
+            ):
+                return True
+            # 운반 여유 — TCP z 하한 (매달린 물체의 바닥 여유 보수 근사)
+            if req.tcp_min_z is not None and kin.fk(q)[0][2] < req.tcp_min_z:
+                return True
+            return False
+
+        def _run():
+            if has_obstacles:
+                kin.set_obstacle_points(req.obstacle_points)
+            try:
+                return plan_joint_path(
+                    start_q, list(req.goal_joints), kin.joint_limits(), _collision
+                )
+            finally:
+                if has_obstacles:
+                    kin.set_obstacle_points(None)
+
+        t0 = time.perf_counter()
+        result = await asyncio.to_thread(_run)
+        ms = (time.perf_counter() - t0) * 1000.0
+        logger.info(
+            "plan_path: %s (%.0fms, 검사 %d회, floor_z=%s obstacles=%s "
+            "tcp_min_z=%s)%s",
+            "직선" if result.direct else (
+                f"RRT 경유 {len(result.path) - 2}개" if result.path is not None
+                else "실패"
+            ),
+            ms, result.checks, req.floor_z, has_obstacles, req.tcp_min_z,
+            f" [{result.reason}]" if result.reason else "",
+        )
+        if result.path is None:
+            return PlanPathResponse(
+                found=False, message=result.reason,
+                planning_ms=ms, checks=result.checks,
+            )
+        return PlanPathResponse(
+            found=True,
+            waypoints=[list(q) for q in result.path[1:-1]],
+            direct=result.direct,
+            planning_ms=ms,
+            checks=result.checks,
         )
 
     @service(Motion.Service.TCP_SNAPSHOT)

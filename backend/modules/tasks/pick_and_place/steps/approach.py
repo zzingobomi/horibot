@@ -58,10 +58,9 @@ from . import primitives
 from .primitives import (
     _TOP_K,
     _VIEW_MATCH_RADIUS_M,
-    _move_j_joints,
     _nearest_within,
     _xy_dist,
-    go_home,
+    transit,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,6 +136,12 @@ def _camera_look_poses(
                 )
             )
     return out
+
+
+def _observe_floor(cands: list[OrientedDetection]) -> float:
+    """관측 transit 의 바닥 게이트 평면 — 검출 최저 base_z − 여유 (plan.py 의
+    cluster floor 산정과 동일 발상 — cm-급 육안 충돌 차단용, mm 정밀 아님)."""
+    return min(c.base_z for c in cands) - 0.005
 
 
 async def _hand_eye(ctx: TaskContext, robot_id: str) -> np.ndarray | None:
@@ -221,8 +226,12 @@ async def approach_observe(
         "(후보 %d/%d)", prompt, dist_m * 100.0, elev, azim, res.index, n_poses,
     )
     look_joints = res.solutions[0]
-    await go_home(ctx, robot_id, home)
-    await _move_j_joints(ctx, robot_id, look_joints)
+    # 계획 이동 — 현재 자세에서 look 자세로 직접 (home 왕복 강등, §12).
+    # 폴백(home 경유)은 위 resolve 의 path_from=home 게이트가 사전 증명.
+    await transit(
+        ctx, robot_id, look_joints, home,
+        floor_z=_observe_floor(coarse_cands),
+    )
     await asyncio.sleep(_OBSERVE_SETTLE_S)
 
     t0 = time.monotonic()

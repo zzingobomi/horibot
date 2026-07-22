@@ -24,6 +24,9 @@ interface WorkcellRoiState {
   drafts: Record<string, WorkcellRoi | undefined>;
   /** hover/drag 중인 면 — scenePart 가 쓰고 패널이 필드 강조로 읽는다 */
   activeFace: Record<string, FaceId | undefined>;
+  /** 3D 박스 표시 여부 — 편집 데이터(draft)는 유지하고 오버레이만 끈다
+   *  (점군/스캔만 깨끗이 보고 싶을 때). per-robot: 미설정=표시(true). */
+  visible: Record<string, boolean | undefined>;
   /** 서버 확정값 반영. draft 가 깨끗하면(=saved 와 동일했으면) draft 도 따라간다
    *  — 다른 클라이언트/세션의 저장이 내 편집을 덮지 않되(dirty 보호), 안 만지던
    *  화면은 최신을 보여준다. */
@@ -31,6 +34,7 @@ interface WorkcellRoiState {
   setDraft: (robotId: string, roi: WorkcellRoi) => void;
   revert: (robotId: string) => void;
   setActiveFace: (robotId: string, face: FaceId | undefined) => void;
+  setVisible: (robotId: string, visible: boolean) => void;
   clear: (robotId: string) => void;
 }
 
@@ -38,6 +42,7 @@ export const useWorkcellRoiStore = create<WorkcellRoiState>((set) => ({
   saved: {},
   drafts: {},
   activeFace: {},
+  visible: {},
   setSaved: (robotId, roi) =>
     set((s) => {
       const prevSaved = s.saved[robotId];
@@ -55,6 +60,8 @@ export const useWorkcellRoiStore = create<WorkcellRoiState>((set) => ({
     set((s) => ({ drafts: { ...s.drafts, [robotId]: s.saved[robotId] } })),
   setActiveFace: (robotId, face) =>
     set((s) => ({ activeFace: { ...s.activeFace, [robotId]: face } })),
+  setVisible: (robotId, visible) =>
+    set((s) => ({ visible: { ...s.visible, [robotId]: visible } })),
   clear: (robotId) =>
     set((s) => ({
       saved: { ...s.saved, [robotId]: undefined },

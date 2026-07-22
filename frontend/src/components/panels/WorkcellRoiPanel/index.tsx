@@ -9,11 +9,12 @@
  *   - 저장: **명시 Save** → SET_WORKCELL → yaml 반영 + detector Mirror 즉시 수렴.
  *     실패 = draft 유지 + 사유 표시 (침묵 fallback 금지).
  *
- * 3D 조작법 (scenePart): 면 drag = 그 면 resize / Shift+면 drag = 그 축 이동 /
- * 중앙 화살표 drag = 축 이동. 로봇 URDF 가 같은 씬에 있으므로 "로봇이 ROI 안에
+ * 3D 조작법 (scenePart): 면 노브 drag = 그 면 resize / Shift+노브 drag = 그 축
+ * 이동 / 중앙 화살표 drag = 박스 전체 이동. 로봇 URDF 가 같은 씬에 있으므로 "로봇이 ROI 안에
  * 들어오면 로봇을 집으러 갈 수 있다" 는 눈으로 확인 (별도 가드 없음 — §9.1-3).
  */
 import { useEffect, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useRobotId } from "@/hooks/useRobotId";
 import { useService, useTopic } from "@/framework";
@@ -44,8 +45,10 @@ export function WorkcellRoiPanel() {
   const draft = useWorkcellRoiStore((s) => s.drafts[robotId]);
   const saved = useWorkcellRoiStore((s) => s.saved[robotId]);
   const activeFace = useWorkcellRoiStore((s) => s.activeFace[robotId]);
+  const visible = useWorkcellRoiStore((s) => s.visible[robotId]) ?? true;
   const setSaved = useWorkcellRoiStore((s) => s.setSaved);
   const setDraft = useWorkcellRoiStore((s) => s.setDraft);
+  const setVisible = useWorkcellRoiStore((s) => s.setVisible);
   const revert = useWorkcellRoiStore((s) => s.revert);
 
   const [status, setStatus] = useState("");
@@ -162,12 +165,29 @@ export function WorkcellRoiPanel() {
       data-testid="workcell-roi-panel"
     >
       <section>
-        <div className="mb-1 font-mono uppercase text-muted-foreground">
-          workcell ROI (base frame, m)
+        <div className="mb-1 flex items-center justify-between font-mono uppercase text-muted-foreground">
+          <span>workcell ROI (base frame, m)</span>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setVisible(robotId, !visible)}
+            aria-pressed={visible}
+            title={
+              visible
+                ? "3D 씬에서 ROI 박스 숨기기 (편집값은 유지)"
+                : "3D 씬에 ROI 박스 다시 표시"
+            }
+            data-testid="roi-visible-toggle"
+            className={`gap-1.5 normal-case ${visible ? "" : "text-muted-foreground"}`}
+          >
+            {visible ? <Eye /> : <EyeOff />}
+            {visible ? "씬에 표시 중" : "씬에서 숨김"}
+          </Button>
         </div>
         <p className="mb-2 text-[10px] text-muted-foreground">
-          씬에서 직접: 면 drag=크기 · Shift+면/중앙 화살표 drag=이동. 로봇이 상자
-          안에 들어오면 로봇을 물체로 오검출할 수 있습니다.
+          씬에서 직접: 면 노브 drag=크기 · Shift+노브 drag=축 이동 · 중앙 화살표
+          drag=박스 전체 이동. 로봇이 상자 안에 들어오면 로봇을 물체로 오검출할 수
+          있습니다.
         </p>
         <div className="grid grid-cols-2 gap-x-3 gap-y-1">
           {BOUND_KEYS.map(field)}

@@ -244,7 +244,6 @@ def build_mesh(
     sdf_trunc: float = DEFAULT_SDF_TRUNC,
     depth_trunc: float = DEFAULT_DEPTH_TRUNC,
     icp_max_dist: float = DEFAULT_ICP_MAX_DIST,
-    roi: tuple[float, float, float, float, float, float] | None = None,
     progress: ProgressCallback = _noop,
 ) -> BuildResult:
     if len(scans) < MIN_SCANS:
@@ -419,21 +418,9 @@ def build_mesh(
             mesh.remove_triangles_by_mask(mask)
             mesh.remove_unreferenced_vertices()
 
-    # ROI 크롭 — 최종 mesh 를 작업 셀 상자 안으로 (base frame AABB). 정합(ICP)은
-    # 전체 클라우드로 이미 끝났으므로(원거리 특징 = 회전 앵커 유지) 여기서만 잘라
-    # 침구/바닥/가방 등 셀 밖을 mesh 에서 제거 (docs/pnp_scenario_rework.md §3.3).
-    # 관측성: 크롭 전/후 정점 수 로그 (집에서 "왜 이만큼 잘렸나" 진단 데이터).
-    if roi is not None:
-        x0, x1, y0, y1, z0, z1 = roi
-        n_before = len(mesh.vertices)
-        aabb = o3d.geometry.AxisAlignedBoundingBox(
-            min_bound=(x0, y0, z0), max_bound=(x1, y1, z1)
-        )
-        mesh = mesh.crop(aabb)
-        logger.info(
-            "ROI 크롭: 정점 %d → %d (셀 x[%.2f,%.2f] y[%.2f,%.2f] z[%.2f,%.2f])",
-            n_before, len(mesh.vertices), x0, x1, y0, y1, z0, z1,
-        )
+    # (2026-07-22) workcell ROI 크롭 폐지 — world 메시 목적 = "세상이 이렇구나"
+    # 전체 조망 (pnp_scenario_rework §9.1-4). 검출 ROI(좁을 수 있음)로 시각
+    # 메시를 자르던 커플링 제거 — 셀 밖 오검출 차단은 detector ROI 컷이 담당.
     _lap("extract")
 
     mesh_bytes = _mesh_to_ply_bytes(mesh)

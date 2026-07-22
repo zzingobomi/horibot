@@ -501,6 +501,58 @@ async def test_servo_empty_close_exhausted_raises():
     assert len(ctx.calls(_READ_STATE)) == 2  # attempt 2회에서 끝 (withdraw 판정 X)
 
 
+async def test_servo_adaptive_ladder_empty_close_retry_survives():
+    """적응 1단 진입 사다리(기본 전멸 → _ENTRY_LADDERS 폴백) + close EMPTY
+    재시도 = 사다리 길이 무관하게 재관측부터 계속 (pnp_scenario_rework §8.6).
+
+    옛 코드는 재시도 rung 을 `ServoState(rung=1)` 로 하드코딩 — 1단 사다리
+    (standoffs=(0.05,)) 에서 다음 tick 의 standoffs[1] 이 IndexError = 의미
+    있는 재시도 대신 엉뚱한 실패로 기록 (재시도 메커니즘 무력화).
+    _retreat_for_retry 의 [1]→[-1] 수정(07-21)과 같은 클래스의 형제 자리."""
+    ctx = _ctx(_pick_script(**{
+        _DETECT: [
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # 스윕
+            *_APPROACH_DETECT,  # 접근·관측(1프레임)
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # tick1 → commit
+            DetectOrientedResponse(found=True, candidates=[_OBS]),  # 재시도 tick
+        ],
+        _SELECT: [
+            _resolve_ok(),  # 접근 look-pose
+            ResolveReachableResponse(index=-1, message="기본 사다리 전멸"),
+            _resolve_ok(),  # 진입 (0.05,) 채택 → ServoPlan.standoffs 1단
+        ],
+        _TCP_SNAP: [
+            _tcp(_SO1),  # tick1 = rung0(5cm) 정위치 → 즉시 commit
+            _tcp(_MIDSTOP), _tcp(_G_TCP), _tcp(_G_TCP),  # commit① settle+touchup+도달
+            _tcp(_SO1),  # 재시도 tick (rung = 사다리 마지막 = 0)
+            _tcp(_MIDSTOP), _tcp(_G_TCP), _tcp(_G_TCP),  # commit② settle+touchup+도달
+        ],
+        # (midstop×3+final) + 후퇴 + (midstop×3+final) + withdraw
+        _MOVE_L: [MoveLResponse()] * 10,
+        _GRIP: [SetGripperResponse()] * 4,  # open,close, open(재시도),close
+        _READ_STATE: [
+            _joint_state(_EMPTY_RAW),  # close① = 빈 파지 → 재시도
+            _joint_state(_HELD_RAW),  # close② = 물림
+            _joint_state(_HELD_RAW),  # withdraw 판정
+        ],
+    }))
+    await _module_for_scenario().scenario(ctx, pick_object="white cube")
+
+    # 계획 = 3 resolve (look + 기본 전멸 + 1단 채택), 채택 그룹 pose = 1+1
+    sel = ctx.calls(_SELECT)[2]["req"]
+    assert all(len(g) == 2 for g in sel.groups)
+    grips = [c["req"].position_raw for c in ctx.calls(_GRIP)]
+    assert grips == [
+        _SPEC.gripper_open_raw, _SPEC.gripper_close_raw,
+        _SPEC.gripper_open_raw, _SPEC.gripper_close_raw,
+    ]
+    ml = [c["req"].target.position for c in ctx.calls(_MOVE_L)]
+    # (midstop0-2, final3, 후퇴4, midstop5-7, final8, withdraw9)
+    assert ml[4] == pytest.approx(_SO1, abs=1e-9)  # 후퇴 = standoffs[-1]
+    assert ml[8] == pytest.approx(_G_TCP, abs=1e-9)  # 재 commit
+    assert ml[9] == pytest.approx(_WITHDRAW, abs=1e-9)
+
+
 async def test_servo_move_rejected_falls_back_to_movej():
     """servo 이동 MoveL 거부 (경로 IK) → MoveJ 폴백으로 계속 — 거부가 침묵
     통과("명령은 항상 실행된다" 가정)하면 회귀."""
@@ -1206,39 +1258,11 @@ async def test_plan_pick_rejects_ungraspable_width():
     assert ctx2.calls(_SELECT) == []
 
 
-async def test_plan_pick_excludes_robot_base_area_candidates():
-    """★ 2026-07-19 22:26 실물 사고 그대로: OMX 흰 원형 모터가 "white small
-    round cube" 로 score 0.57 을 받아 통계 컷(0.45)을 정면 돌파 — 로봇이 OMX
-    베이스를 집으러 감. 로봇 위치는 크로스캘로 아는 세계 → score 재튜닝(다음
-    조명에서 또 뚫리는 땜빵)이 아니라 **베이스 점유 반경 구조 제외**. 실측:
-    오검출↔OMX base 7.8cm / 정상 큐브 최근접 21.2cm (컷 13cm)."""
-    omx_base = (0.045, 0.243)
-    impostor = _det(score=0.57, position=(0.115, 0.208, 0.009), base_z=-0.007)
-    real_cube = _det(score=0.50, position=(0.241, 0.162, 0.018), base_z=-0.004)
-    ctx = _ctx({_SELECT: [_resolve_ok()]})
-    plan = await steps.plan_pick(
-        ctx, _BOT, "white small round cube", _home_record(),
-        [impostor, real_cube], exclude_xy=[(0.0, 0.0), omx_base],
-    )
-    # score 는 오검출(0.57)이 더 높지만 로봇 영역이라 제외 — 진짜 큐브 채택
-    assert plan.coarse.score == pytest.approx(0.50)
-    assert len(ctx.calls(_SELECT)) == 1  # 오검출에 resolve 소모 0
-
-    # 전 후보가 로봇 영역이면 명시 실패 (맹목 파지 금지 — 사유에 안내)
-    ctx2 = _ctx({})
-    with pytest.raises(DetectionNotFound, match="로봇 베이스 점유"):
-        await steps.plan_pick(
-            ctx2, _BOT, "white small round cube", _home_record(),
-            [impostor], exclude_xy=[omx_base],
-        )
-    assert ctx2.calls(_SELECT) == []
-
-    # exclude_xy 미주입(구버전/테스트 호환) = 제외 없음 — 기존 동작 그대로
-    ctx3 = _ctx({_SELECT: [_resolve_ok()]})
-    plan3 = await steps.plan_pick(
-        ctx3, _BOT, "white small round cube", _home_record(), [impostor],
-    )
-    assert plan3.coarse.score == pytest.approx(0.57)
+# (2026-07-22) test_plan_pick_excludes_robot_base_area_candidates 삭제 —
+# exclude_xy(로봇 베이스 13cm 원기둥 컷) 폐지. 그 클래스("로봇을 집으러 감",
+# 07-19 OMX 모터 오검출)는 detector ROI 컷이 상류에서 담당 — ROI 를 로봇이 안
+# 들어오게 두는 규율은 ROI 패널이 가시화 (pnp_scenario_rework §9.1-5, 잠금 =
+# test_detector_module ROI 컷 2종).
 
 
 async def test_plan_pick_low_score_excluded_from_fallback():

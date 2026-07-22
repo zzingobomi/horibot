@@ -20,6 +20,8 @@ import { CalibrationCameraPanel } from "./CalibrationCameraPanel";
 import { ScanPanel } from "./ScanPanel";
 import { LivePointCloudPanel } from "./LivePointCloudPanel";
 import { WaypointPanel } from "./WaypointPanel";
+import { WorkcellRoiPanel } from "./WorkcellRoiPanel";
+import { WorkcellRoiScenePart } from "./WorkcellRoiPanel/scenePart";
 import { PickAndPlacePanel } from "./PickAndPlacePanel";
 import { TaskProgressPanel } from "./TaskProgressPanel";
 import { withRobotOwnership } from "@/components/shared/robotOwnership";
@@ -37,6 +39,7 @@ export const PANEL_COMPONENTS = {
   scan: ScanPanel,
   livePointCloud: LivePointCloudPanel,
   waypoints: WaypointPanel,
+  workcellRoi: WorkcellRoiPanel,
   pickAndPlace: PickAndPlacePanel,
   taskProgress: TaskProgressPanel,
 } as const;
@@ -111,6 +114,12 @@ export const PANEL_CATALOG: Record<
     height: 560,
     scenePart: WaypointScenePart, // ghost 미리보기 — [보기] 토글 시 반투명 자세
   },
+  workcellRoi: {
+    title: "Workcell ROI",
+    width: 300,
+    height: 380,
+    scenePart: WorkcellRoiScenePart, // ROI 박스 + 면/화살표 핸들 (draft 편집)
+  },
   pickAndPlace: { title: "Pick & Place", width: 340, height: 340 },
   taskProgress: { title: "Task Progress", width: 340, height: 420 },
 };
@@ -133,6 +142,7 @@ export const ROBOT_OWNED_PANELS: ReadonlySet<PanelComponentKey> = new Set<PanelC
   "scan",
   "livePointCloud",
   "waypoints",
+  "workcellRoi",
 ]);
 
 /**

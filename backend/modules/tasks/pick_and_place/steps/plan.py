@@ -83,16 +83,6 @@ _PICK_SCORE_MIN = 0.45
 _PICK_WIDTH_BLEED_M = 0.015
 _PICK_MAX_WIDTH_M = _JAW_OPEN_MAX_M + _PICK_WIDTH_BLEED_M
 
-# 로봇 베이스 점유 제외 반경 — 이 안의 pick 후보는 score 무관 **제외** (컷).
-# 로봇 위치는 크로스캘로 아는 세계(robots.yaml base_pose)다 — 2026-07-19 22:26
-# 실물: OMX 흰 원형 모터가 "white small round cube" 로 score 0.57 을 받아
-# 통계 컷(0.45)을 정면 돌파, 로봇이 OMX 베이스를 집으러 감 (07-17 오검출
-# 사고의 강화판 — score 재튜닝은 다음 조명에서 또 뚫리는 땜빵). 실측 분리:
-# 오검출↔OMX base 거리 7.8cm / 정상 큐브 최근접 21.2cm → 13cm 컷.
-# ⚠ 베이스 XY 만 (팔 링크는 미커버 — 팔이 뻗은 자세로 오검출되면 이 게이트
-# 밖. 실물 재발 시 다음 단계 = FK 로 링크 점유 영역 제외).
-_ROBOT_BASE_EXCLUDE_M = 0.13
-
 
 @dataclass(frozen=True, slots=True)
 class ServoPlan:
@@ -214,7 +204,6 @@ async def plan_pick(
     home: WaypointRecord,
     cands: list[OrientedDetection],
     *,
-    exclude_xy: list[tuple[float, float]] | None = None,
     trust_yaw: bool = False,
 ) -> ServoPlan:
     """스윕 누적 후보(cands — detect step 산출) → servo 접근 계획 (모션 0) →
@@ -236,37 +225,12 @@ async def plan_pick(
     if not cands:
         raise DetectionNotFound(prompt, candidates=0, reason="검출 0건")
     cfg = primitives._SERVO_CFG
-    # 구조 컷 ⓪ — 로봇 베이스 점유 영역 (exclude_xy = robots.yaml base_pose,
-    # _ROBOT_BASE_EXCLUDE_M 주석 = 실사고/실측 근거). **타깃 후보에서만** 제외
-    # — 이웃 장애물/바닥 클러스터(_neighbor_points 등)는 원본 cands 그대로
-    # (로봇이 거기 실재하므로 장애물로는 오히려 유효한 관측).
-    in_robot = [
-        c for c in cands
-        if any(
-            _xy_dist(c.position, (bx, by, 0.0)) <= _ROBOT_BASE_EXCLUDE_M
-            for bx, by in (exclude_xy or [])
-        )
-    ]
-    if in_robot:
-        logger.info(
-            "plan_pick(%s): 로봇 베이스 영역 후보 %d개 제외 (%s — 반경 %.0fcm, "
-            "로봇은 집을 물체가 아니다)",
-            prompt, len(in_robot),
-            [f"({c.position[0]:.2f},{c.position[1]:.2f}) s={c.score:.2f}"
-             for c in in_robot],
-            _ROBOT_BASE_EXCLUDE_M * 100,
-        )
-    targets = [c for c in cands if c not in in_robot]
-    if not targets:
-        raise DetectionNotFound(
-            prompt,
-            candidates=len(cands),
-            reason=(
-                f"검출 {len(cands)}건 전부 로봇 베이스 점유 영역 안 (반경 "
-                f"{_ROBOT_BASE_EXCLUDE_M * 100:.0f}cm) — 물체를 로봇에서 떨어진 "
-                "작업 영역에 두고 다시 실행하세요"
-            ),
-        )
+    # (2026-07-22) 로봇 베이스 13cm 원기둥 컷(exclude_xy) 폐지 — 자기-로봇
+    # 오검출("로봇을 집으러 감", 07-19 OMX 모터 사고 클래스)은 detector 의
+    # workcell ROI 컷이 **상류에서** 담당 (approach_observe 가 베이스를 관측
+    # 타깃으로 골라 팔이 왕복하던 낭비까지 함께 소멸 — 여기 컷은 plan 에만
+    # 있어 그걸 못 막았다). "로봇이 ROI 밖" 규율 = ROI 패널이 가시화 (§9).
+    targets = cands
     # 신뢰 컷 2종 — 저신뢰 score / 조 개구 초과 폭. 어느 쪽이든 순회 폴백
     # 대상조차 아님 (상수 주석 — 엉뚱한 물체 파지 실사고 2건). 컷은 침묵하지
     # 않는다.

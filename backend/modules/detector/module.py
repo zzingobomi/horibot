@@ -27,6 +27,7 @@ import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from framework.contract.mirror import Mirror
 from framework.contract.publisher import publishes
 from framework.contract.service import service
 from framework.runtime.api import ModuleRuntime
@@ -43,6 +44,12 @@ from modules.camera.contract import (
     DepthDecodedSnapshotRequest,
 )
 from modules.motion.contract import Motion, TcpSnapshotRequest, TcpState
+from modules.shared_config.contract import (
+    SharedConfig,
+    SnapshotWorkcellRequest,
+    WorkcellBundle,
+    WorkcellChanged,
+)
 
 from . import geometry, projection
 from .contract import (
@@ -171,18 +178,25 @@ class _DetectResult:
     (Detector.Stream.DETECTIONS_ORIENTED, OrientedDetectionsUpdate),
 )
 class DetectorModule:
+    # robot 별 작업 셀 ROI — 셀 밖 후보 컷 (공유기·로봇몸통 등 작업 영역 밖
+    # 오검출 소멸). owner = shared_config (instance.yaml SSOT) — 부팅 주입이
+    # 아니라 Mirror 소비 (2026-07-22: ROI 패널 Save 가 재시작 없이 즉시 반영,
+    # calibration→motion 선례 동형).
+    workcell: Mirror[WorkcellBundle] = Mirror(
+        snapshot_service=SharedConfig.Service.SNAPSHOT_WORKCELL,
+        snapshot_req=lambda self: SnapshotWorkcellRequest(),
+        change_topic=SharedConfig.Event.WORKCELL_CHANGED,
+        value_cls=WorkcellBundle,
+        change_event_cls=WorkcellChanged,
+    )
+
     def __init__(
         self,
         runtime: ModuleRuntime,
         backend: DetectorBackend,
-        workcell: dict[str, tuple[float, float, float, float, float, float]]
-        | None = None,
     ) -> None:
         self.runtime = runtime
         self._backend = backend
-        # robot 별 작업 셀 ROI (base frame x0,x1,y0,y1,z0,z1) — 셀 밖 후보 컷
-        # (공유기·로봇몸통 등 작업 영역 밖 오검출 소멸). instance.yaml SSOT.
-        self._workcell = workcell or {}
         self._preload_task: asyncio.Task[None] | None = None
         self._detections_seq = 0
         # 디버그 덤프 — backend 세션마다 폴더 1개, 매 호출(detect/fuse)을 순번으로 쌓음.
@@ -319,9 +333,18 @@ class DetectorModule:
         # 소실 중단). 공유기·로봇 몸통 등 오검출을 색/score 재튜닝(땜빵) 없이
         # 기하로 소멸 (docs/pnp_scenario_rework.md §3.3). 관측성: 컷한 후보 로그
         # (침묵 금지 — 진짜 물체가 잘리면 집에서 ROI 넓히라는 신호). 미설정 no-op.
-        roi = self._workcell.get(robot_id)
-        if roi is not None:
-            x0, x1, y0, y1, z0, z1 = roi
+        bundle = self.workcell.peek()
+        if bundle is None:
+            # owner(shared_config) 미수렴 — 컷 없이 진행하되 침묵하지 않는다
+            # (부팅 직후 잠깐이거나 owner 다운 — 후자면 이 로그가 유일한 신호).
+            logger.warning(
+                "detector ROI: shared_config Mirror 미수렴 — 이번 검출은 셀 컷 "
+                "없이 진행 (owner 부팅 시 자동 수렴)"
+            )
+        rec = bundle.robots.get(robot_id) if bundle is not None else None
+        if rec is not None:
+            x0, x1, y0, y1 = rec.x_min, rec.x_max, rec.y_min, rec.y_max
+            z0, z1 = rec.z_min, rec.z_max
             kept = [
                 c for c in cands
                 if x0 <= c.position[0] <= x1

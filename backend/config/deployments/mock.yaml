@@ -30,6 +30,10 @@ modules:
   - name: scene3d
   - name: scan
   - name: waypoint
+  # shared_config (2026-07-22 신설) — 공유 config owner (workcell ROI SSOT:
+  # instance.yaml R/W + Mirror snapshot). detector 앞 = 부팅 initial snapshot
+  # 즉시 수렴 (늦어도 liveliness 로 자동 수렴 — 순서는 최적화일 뿐).
+  - name: shared_config
   - name: detector
   - name: llm
   - name: pick_and_place

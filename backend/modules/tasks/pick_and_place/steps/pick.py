@@ -365,7 +365,12 @@ async def servo_pick(
                 )
                 await open_gripper(ctx, robot_id)
                 await _retreat_for_retry(ctx, robot_id, run, comp, cfg)
-                state = servo.ServoState(rung=1)
+                # 재시도 rung = 사다리 마지막 (재관측 자리 = _retreat_for_retry
+                # 의 [-1] 과 짝). rung=1 하드코딩은 적응 1단 사다리(plan
+                # _ENTRY_LADDERS 폴백)에서 standoffs[1] IndexError = 재시도
+                # 무력화 (pnp_scenario_rework §8.6 — 07-21 [-1] sweep 이 놓친
+                # 형제 자리, 회귀 테스트 잠금).
+                state = servo.ServoState(rung=len(cfg.standoffs) - 1)
                 continue
             break  # 파지 + 이송 자격 통과
 

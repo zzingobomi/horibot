@@ -33,8 +33,20 @@ from modules.detector.drivers.protocol import RawDetection
 from modules.detector.contract import DetectRequest, OrientedDetection
 from modules.detector.module import DetectorModule
 from modules.motion.contract import Motion, TcpState
+from modules.shared_config.contract import WorkcellBundle, WorkcellRoi
 
 _ROBOT = "so101_6dof_0"
+
+
+def _set_workcell(
+    mod: DetectorModule, roi: tuple[float, float, float, float, float, float]
+) -> None:
+    """workcell Mirror 값 직접 주입 — 소비 전환(2026-07-22) 후 테스트 경로.
+    Runtime 밖이라 snapshot/event 수렴 없음 (수렴 자체는 test_mirror 잠금)."""
+    x0, x1, y0, y1, z0, z1 = roi
+    mod.workcell._set(WorkcellBundle(robots={_ROBOT: WorkcellRoi(
+        x_min=x0, x_max=x1, y_min=y0, y_max=y1, z_min=z0, z_max=z1,
+    )}))
 
 
 @pytest.fixture(autouse=True)
@@ -375,11 +387,8 @@ async def test_detect_roi_cuts_out_of_cell_candidates():
     셀 z[0.75,0.85] 이 second 만 잘라 1개 남긴다. 오검출(공유기·로봇몸통) 소멸의
     결정적 재현 — 색/score 재튜닝 없이 기하로 컷. ROI 미설정이면 no-op(기존 테스트)."""
     rt = _frame_runtime()
-    mod = DetectorModule(
-        runtime=rt,
-        backend=MockDetectorBackend(),
-        workcell={_ROBOT: (-1.0, 1.0, -1.0, 1.0, 0.75, 0.85)},
-    )
+    mod = DetectorModule(runtime=rt, backend=MockDetectorBackend())
+    _set_workcell(mod, (-1.0, 1.0, -1.0, 1.0, 0.75, 0.85))
     res = await mod.detect(DetectRequest(robot_id=_ROBOT, prompt="cube"))
     assert res.found, res.message
     assert len(res.candidates) == 1  # 셀 밖(z≈1.0) 후보 컷
@@ -404,11 +413,8 @@ async def test_detect_roi_cuts_towering_candidate_by_base_z(monkeypatch):
         return position, bottom - 0.3, height + 0.3  # 바닥만 셀 밖으로
 
     monkeypatch.setattr(det_mod.geometry, "object_metrics_from_points", towering)
-    mod = DetectorModule(
-        runtime=_frame_runtime(),
-        backend=MockDetectorBackend(),
-        workcell={_ROBOT: (-1.0, 1.0, -1.0, 1.0, 0.75, 0.85)},
-    )
+    mod = DetectorModule(runtime=_frame_runtime(), backend=MockDetectorBackend())
+    _set_workcell(mod, (-1.0, 1.0, -1.0, 1.0, 0.75, 0.85))
     res = await mod.detect(DetectRequest(robot_id=_ROBOT, prompt="cube"))
     # 옛 판정(position 만)이면 z=0.8 후보가 남았다 (위 test 와 동일 셀) —
     # base_z(0.5 < 0.75) 조건이 그 후보를 컷해 0건이어야 한다.

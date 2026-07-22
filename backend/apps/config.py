@@ -42,11 +42,12 @@ class BasePose(BaseModel):
 
 
 class WorkcellRoi(BaseModel):
-    """작업 셀 관심 영역 (base frame 3D 상자, m) — instances/<id>/instance.yaml.
+    """작업 셀 관심 영역 (base frame AABB, m) — instances/<id>/instance.yaml.
 
-    3곳의 공통 SSOT: ① world_scan 포즈 겨냥(어디를 덮나) ② scan TSDF 통합 크롭
-    (셀 밖 잡것 제외) ③ detector 셀 밖 후보 컷 (공유기·로봇몸통 오검출 소멸).
-    도달 범위(FK)로 도출한 추정치 (2026-07-21) — 집에서 실 테이블 보고 보정.
+    boot 파싱 전용 모델 — 런타임 owner 는 **shared_config 모듈** (2026-07-22:
+    SNAPSHOT/SET 서비스 + WORKCELL_CHANGED, wire 모델은 modules/shared_config/
+    contract.py). 소비 = detector 셀 밖 후보 컷 (Mirror) + frontend ROI 패널.
+    scan 메시 크롭은 폐지 (world 메시 = 전체 조망 — pnp_scenario_rework §9.1-4).
     **Z 는 바닥 평면이 아니라 볼륨** (핸드오버 공중 물체를 셀 밖으로 자르지 않게)."""
 
     x_min: float

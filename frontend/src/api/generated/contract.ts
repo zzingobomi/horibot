@@ -678,6 +678,38 @@ export interface SetStreamResponse {
   voxel_size: number;
 }
 
+export interface WorkcellRoi {
+  x_min: number;
+  x_max: number;
+  y_min: number;
+  y_max: number;
+  z_min: number;
+  z_max: number;
+}
+
+export interface SetWorkcellRequest {
+  robot_id: string;
+  roi: WorkcellRoi;
+}
+
+export interface SetWorkcellResponse {
+  roi: WorkcellRoi;
+}
+
+export interface SnapshotWorkcellRequest {
+}
+
+export interface WorkcellBundle {
+  robots: Record<string, WorkcellRoi>;
+}
+
+export interface WorkcellChanged {
+  robot_id: string;
+  seq: number;
+  timestamp_unix: number;
+  roi: WorkcellRoi;
+}
+
 export interface ControlRequest {
 }
 
@@ -918,6 +950,7 @@ export const Topic = {
   PICKANDPLACE_TRACE: "stream/pick_and_place/{robot_id}/trace",
   SCAN_BUILD_PROGRESS: "stream/scan/{robot_id}/build_progress",
   SCENE3D_CLOUD: "stream/scene3d/{robot_id}/cloud",
+  SHAREDCONFIG_WORKCELL_CHANGED: "event/shared_config/workcell_changed",
   WORLDSCAN_STATE: "stream/world_scan/{robot_id}/state",
   WORLDSCAN_TRACE: "stream/world_scan/{robot_id}/trace",
 } as const;
@@ -940,6 +973,7 @@ export type TopicPayloadMap = {
   "stream/pick_and_place/{robot_id}/trace": TaskTrace;
   "stream/scan/{robot_id}/build_progress": BuildProgress;
   "stream/scene3d/{robot_id}/cloud": Scene3dCloud;
+  "event/shared_config/workcell_changed": WorkcellChanged;
   "stream/world_scan/{robot_id}/state": TaskState;
   "stream/world_scan/{robot_id}/trace": TaskTrace;
 };
@@ -983,6 +1017,8 @@ export const ServiceKey = {
   SCAN_LIST_SESSIONS: "srv/scan/list_sessions",
   SCAN_NEW_SESSION: "srv/scan/new_session",
   SCENE3D_SET_STREAM: "srv/scene3d/set_stream",
+  SHAREDCONFIG_SET_WORKCELL: "srv/shared_config/set_workcell",
+  SHAREDCONFIG_SNAPSHOT_WORKCELL: "srv/shared_config/snapshot_workcell",
   WAYPOINT_ADD_TO_GROUP: "srv/waypoint/add_to_group",
   WAYPOINT_CREATE_GROUP: "srv/waypoint/create_group",
   WAYPOINT_DELETE: "srv/waypoint/delete",
@@ -1041,6 +1077,8 @@ export type ServiceMap = {
   "srv/scan/list_sessions": { req: ListSessionsRequest; res: ListSessionsResponse };
   "srv/scan/new_session": { req: NewSessionRequest; res: NewSessionResponse };
   "srv/scene3d/set_stream": { req: SetStreamRequest; res: SetStreamResponse };
+  "srv/shared_config/set_workcell": { req: SetWorkcellRequest; res: SetWorkcellResponse };
+  "srv/shared_config/snapshot_workcell": { req: SnapshotWorkcellRequest; res: WorkcellBundle };
   "srv/waypoint/add_to_group": { req: AddToGroupRequest; res: AddToGroupResponse };
   "srv/waypoint/create_group": { req: CreateGroupRequest; res: CreateGroupResponse };
   "srv/waypoint/delete": { req: DeleteWaypointRequest; res: DeleteWaypointResponse };

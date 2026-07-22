@@ -20,6 +20,7 @@ MODULE_REGISTRY: dict[str, str] = {
     "scene3d": "modules.scene3d.module:Scene3DModule",
     "scan": "modules.scan.module:ScanModule",
     "waypoint": "modules.waypoint.module:WaypointModule",
+    "shared_config": "modules.shared_config.module:SharedConfigModule",
     "detector": "modules.detector.module:DetectorModule",
     "llm": "modules.llm.module:LlmModule",
     "pick_and_place": "modules.tasks.pick_and_place.module:PickAndPlaceModule",

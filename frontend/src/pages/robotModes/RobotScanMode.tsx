@@ -16,6 +16,8 @@ const PANELS: PanelSpec[] = [
   { id: "scan", component: "scan" },
   { id: "live-pc", component: "livePointCloud" },
   { id: "camera", component: "camera" },
+  // workcell ROI — 스캔/셀 정의는 같은 "공간 셋업" 활동 (detector 컷 SSOT 편집)
+  { id: "workcell-roi", component: "workcellRoi" },
 ];
 
 export function RobotScanMode() {

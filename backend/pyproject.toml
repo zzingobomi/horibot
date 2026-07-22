@@ -10,6 +10,9 @@ dependencies = [
     "msgspec>=0.18.0",
     "numpy>=1.26.0",
     "pyyaml>=6.0",
+    # instance.yaml 프로그램적 갱신 (shared_config SET_WORKCELL) — 손 주석/순서
+    # 보존이 요건이라 pyyaml 재직렬화(주석 소멸) 불가, round-trip 전용.
+    "ruamel-yaml>=0.18",
     "psutil>=6.0.0",
 ]
 

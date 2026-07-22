@@ -28,6 +28,7 @@ from modules.motion_preview.contract import MotionPreview
 from modules.motor.contract import Motor
 from modules.scan.contract import Scan
 from modules.scene3d.contract import Scene3d
+from modules.shared_config.contract import SharedConfig
 from modules.tasks.pick_and_place.contract import PickAndPlace
 from modules.tasks.world_scan.contract import WorldScan
 from modules.waypoint.contract import Waypoint
@@ -72,6 +73,10 @@ FRONTEND_EXPOSED: set[str] = {
         # Scene3d
         Scene3d.Service.SET_STREAM,
         Scene3d.Stream.CLOUD,
+        # SharedConfig — ROI 패널 (읽기 = snapshot, 쓰기 = set, 갱신 = changed)
+        SharedConfig.Service.SNAPSHOT_WORKCELL,
+        SharedConfig.Service.SET_WORKCELL,
+        SharedConfig.Event.WORKCELL_CHANGED,
         # Scan
         Scan.Service.NEW_SESSION,
         Scan.Service.LIST_SESSIONS,

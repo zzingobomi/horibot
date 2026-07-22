@@ -20,7 +20,33 @@
 > [backend.md](backend.md) (framework §1–§14 + Module catalog §16 + Task-first §17).
 > 본 문서 = "지금 어디까지 됐고 다음 뭐 할지" 만 — 설계 결정은 여기 안 둠.
 
-## 현재 상태 (2026-07-21)
+## 현재 상태 (2026-07-22)
+
+### 2026-07-22 — ROI 재설계: shared_config 모듈 + ROI 패널 + exclude_xy 폐지 (sim 완료, 실물 대기)
+
+설계·결정 정본 = [pnp_scenario_rework.md](pnp_scenario_rework.md) **§9** (라인
+리뷰에서 파생 — exclude_xy 불필요 판정 → ROI 소유/편집 재설계). 구현 전부:
+
+- **`shared_config` 모듈 신설** — "자연 소유 모듈 없는 공유 config" owner
+  (boundary = 본 문서 불변식 "config 소유" + contract.py docstring). workcell
+  ROI 첫 멤버: SNAPSHOT/SET 서비스 + WORKCELL_CHANGED. SET = instance.yaml
+  **round-trip 갱신 (ruamel — 손 주석 보존)** → publish. 영속 실패 = 메모리/
+  publish 없이 전파 (유령 상태 금지).
+- **detector = workcell Mirror 소비** (calibration→motion 동형) — resolve 부팅
+  주입 폐기. Save → 재시작 0 즉시 수렴. 미수렴 = 컷 없이 진행 + warn (침묵 X).
+- **scan 메시 ROI 크롭 폐지** — world 메시 = 전체 조망 (§9.1-4).
+- **exclude_xy(로봇 베이스 13cm 컷) 폐지** — detector ROI 상류 컷이 대체
+  (§9.2: approach_observe 가 베이스를 관측 타깃으로 골라 왕복하던 낭비까지 소멸).
+- **frontend WorkcellRoiPanel** — 3계층 렌더(Edges 와이어/반투명 면 depthWrite
+  off/상태 램프) + 면 핸들 resize + Shift·중앙 화살표 translate + 숫자 입력 +
+  **명시 Save**. dirty = 와이어 경고색. scan mode 기본 배치.
+- **§8.6 rung 하드코딩 fix** — 실패 테스트로 IndexError 재현 후
+  `rung=len(standoffs)-1` (적응 1단 사다리 × close 재시도 회귀 잠금).
+
+게이트: ruff/pyright clean, **full pytest 487 초록 (sim 포함)**, tsc/eslint
+clean, vitest 182 (contract fixture+contract.ts 쌍 재생성 포함). ⚠ 실물 미지수:
+ROI 실측값 (패널로 직접 조정), Mirror 분산 수렴 (mock 검증 — 집 분산 부팅 확인),
+저장 시 Pi instance.yaml 은 PC 것만 갱신 (git 동기 — shared_config 는 PC 배포).
 
 **PnP 시나리오 재설계 논의 진행 중 — 진입점 = [pnp_scenario_rework.md](pnp_scenario_rework.md)**
 (2026-07-21 세션: EAIK 수술 후 첫 실물 분석 — 파지 실패 원인(IK 잔차 7.35mm
@@ -795,6 +821,16 @@ uv run --no-sync python -m apps.main --host mock    # 실 boot (:8000)
 - Motion = pi_motor 배치 (100Hz 명령 network 안 넘게). dof = arm only.
 - **안전 수치 임의 금지**: limit=motors.yaml(실측), 속도=motion.yaml. 새 값 필요하면
   사용자에게 꺼내 보여줄 것, 추측 X.
+- **config 소유 = "자연 소유 모듈이 있나?" (2026-07-22 확정)** — 모듈 자기
+  튜너블은 **그 모듈이 소유** (detector score_threshold=Detector / camera
+  exposure=Camera / motion velocity_scale=Motion — UI 편집이 필요해지면 그
+  모듈이 자기 get/set 서비스+영속 노출). **자연 소유 모듈이 없고 여러 모듈이
+  공유**하는 config 만 `shared_config` 모듈(owner)로 (workcell ROI =
+  detector+scan 공유가 첫 멤버). 항목별 **독립 Mirror** (거대 단일
+  Mirror[Everything] 금지 — 한 항목 변경이 무관 소비자 전부에 change fan-out).
+  "이 설정 어디 넣지?" 판단 = *특정 한 모듈이 소유하는 게 자연스러운가?* →
+  예: 그 모듈 / 아니오+다중소비: shared_config. "설정이니까 shared_config"
+  로 몰아넣기 금지 (중앙 SettingsService 반사 — [[feedback-no-cargo-cult]]).
 - 테스트는 통과용 X — 실제 동작/invariant + spec ref docstring ([[feedback-meaningful-tests]], spec §15).
 
 ## 다음 작업 후보

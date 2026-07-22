@@ -235,6 +235,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "Scene3DModule",
         "ScanModule",
         "WaypointModule",
+        "SharedConfigModule",  # 공유 config owner (workcell ROI, 2026-07-22)
         "DetectorModule",
         "LlmModule",
         "PickAndPlaceModule",  # task family (modules/tasks/pick_and_place), host-level
@@ -255,6 +256,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "Scene3DModule",
         "ScanModule",
         "WaypointModule",
+        "SharedConfigModule",  # 공유 config owner — robot-agnostic (host당 1)
         "LlmModule",
         "PickAndPlaceModule",  # task family — robot-agnostic (host당 1)
         "HandoverModule",  # task family — robot-agnostic (host당 1, 2026-07-17)

@@ -63,17 +63,24 @@ def resolve_host_deps(
     host: str = "",
 ) -> dict[str, Any]:
     if name == "detector":
-        # robot 별 작업 셀 ROI (instance.yaml) — 셀 밖 후보 컷 (오검출 소멸).
+        # workcell ROI 는 주입하지 않는다 — shared_config Mirror 소비 (2026-07-22
+        # 전환, pnp_scenario_rework §9). owner = shared_config 모듈.
+        return {"backend": _detector_backend(deploy)}
+    if name == "shared_config":
+        # 공유 config owner — 초기값 = instance.yaml 파싱본 (이후 read/write 는
+        # 모듈이 소유: SNAPSHOT/SET + WORKCELL_CHANGED).
+        from modules.shared_config.contract import WorkcellRoi
+
         workcell = {
-            r.id: (
-                r.workcell.x_min, r.workcell.x_max,
-                r.workcell.y_min, r.workcell.y_max,
-                r.workcell.z_min, r.workcell.z_max,
+            r.id: WorkcellRoi(
+                x_min=r.workcell.x_min, x_max=r.workcell.x_max,
+                y_min=r.workcell.y_min, y_max=r.workcell.y_max,
+                z_min=r.workcell.z_min, z_max=r.workcell.z_max,
             )
             for r in robots.values()
             if r.enabled and r.workcell is not None
         }
-        return {"backend": _detector_backend(deploy), "workcell": workcell}
+        return {"workcell": workcell, "instances_dir": _ROBOT_DIR / "instances"}
     if name == "llm":
         return {"backend": _llm_backend(deploy)}
     if name == "calibration":
@@ -115,16 +122,6 @@ def resolve_host_deps(
                 kinematics_factory=PybulletKinematics,
                 urdf_path=_ROBOT_DIR / r.type / "urdf" / f"{r.type}.urdf",
                 arm_specs=[m for m in r.motors if m.kind != MotorKind.GRIPPER],
-                # 작업 셀 ROI (instance.yaml) — build 가 mesh 를 이 상자로 크롭.
-                workcell=(
-                    (
-                        r.workcell.x_min, r.workcell.x_max,
-                        r.workcell.y_min, r.workcell.y_max,
-                        r.workcell.z_min, r.workcell.z_max,
-                    )
-                    if r.workcell is not None
-                    else None
-                ),
             )
             for r in robots.values()
             if r.enabled and "rgbd" in r.capabilities
@@ -204,13 +201,9 @@ def resolve_host_deps(
                 gripper_index=r.motors.index(grip),
                 gripper_held_threshold_raw=held,
             )
-        # 로봇 베이스 점유 XY (robots.yaml base_pose, world=so101 base frame) —
-        # pick 후보의 구조적 제외 영역 (2026-07-19 실물: OMX 흰 모터가 "white
-        # small round cube" 로 score 0.57 을 받아 통계 컷(0.45)을 정면 돌파 →
-        # 로봇 베이스를 집으러 감. 로봇 위치는 아는 세계 — score 재튜닝(땜빵)
-        # 대신 기하로 제외).
-        bases = [(r.base_pose.x, r.base_pose.y) for r in robots.values() if r.enabled]
-        return {"robots": task_specs, "robot_base_xy": bases}
+        # (2026-07-22) robot_base_xy(베이스 13cm 컷) 폐지 — 자기-로봇 오검출은
+        # detector workcell ROI 컷이 상류 담당 (pnp_scenario_rework §9.1-5).
+        return {"robots": task_specs}
     if name == "handover":
         # pick_and_place 와 같은 gripper spec 투영 (위 분기 복제 — 공유 helper
         # 추출은 pick_and_place 실물 검증 완료 후: 지금은 그 분기를 안 건드리는

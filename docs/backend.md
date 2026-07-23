@@ -20,7 +20,40 @@
 > [backend.md](backend.md) (framework §1–§14 + Module catalog §16 + Task-first §17).
 > 본 문서 = "지금 어디까지 됐고 다음 뭐 할지" 만 — 설계 결정은 여기 안 둠.
 
-## 현재 상태 (2026-07-22)
+## 현재 상태 (2026-07-23)
+
+### 2026-07-23 — omx handover 재설계 구현 (sim 완료, 실물 대기)
+
+설계 정본 = [omx_handover_prep.md](omx_handover_prep.md) (§9 에 구현 기록).
+구현 순서 1~8 중 sim 으로 증명 가능한 전부 완료:
+
+- **detector DETECT_PLANAR** (mono z=0 검출 — mask 픽셀 undistort → ray∩평면,
+  `projection.plane_points_from_pixels`. depth 스냅샷 자체를 안 부름) +
+  왜곡 round-trip 단위테스트.
+- **motion Z·YYY·X closed-form IK** (`adapters/analytic_zyyyx.py`). ⚠ 실측
+  정정: **EAIK 가 omx 5축도 분해함** (문서 §8-2 가정과 다름) — 기본은 EAIK,
+  closed-form 은 EAIK 부재 환경(Pi 소스빌드 실패) 백업. 두 경로 모두
+  FK-roundtrip 완전성/top-down manifold/도달불가 확정 sim 대조 통과.
+- **handover 전면 재배선** — 눈=omx(계산된 nadir 관측 + DETECT_PLANAR),
+  파지점=먼 끝 30%+노출 판정(짧은 펜 명시 실패, pen.py), look-then-move pick,
+  제시=랑데부 계산(workcell ROI 교집합 — 티칭 waypoint 폐기), so101 수취=재검출
+  +refine 1 tick (FK 짐작 폐기). 수취 순서 불변식 회귀 유지.
+- **offline 도달성 특성화가 설계 2곳을 뒤집음** (흉터 5 를 sim 에서 선제로
+  밟음 — 정본 omx_handover_prep.md §9.1): ① 제시 "펜 조준" 은 omx 5축 리밋
+  전멸 → **접선족+spin 사다리** ② so101 공중 수취는 v1 부채꼴 전멸 → **절대
+  yaw 15° 격자 + sweet 반경(r≈0.23·z0.10·tilt60~75°) 랑데부 정렬**. 근접 여유
+  실측 11.1mm (margin 10mm — 실물 1순위 확인, 긴 펜 권장). 전부
+  test_handover_feasibility (sim) 로 회귀 잠금.
+- **CrossRobotChecker 정밀화** — URDF mimic 추종(미러 손가락 교차 버그 수정) +
+  grip fraction + 판정별 margin override (핸드오프 근접 국면 12mm).
+- **관측성** — `debug/handover/<ts>/{trace.jsonl, summary.json}` (노브 스냅샷
+  각인) + detector planar 디버그 덤프 (depth 없는 raw 재현 세트).
+- omx instance.yaml `workcell:` 블록 신설 (§8-1 도달 특성화 기반 — ⚠ 실물 보정).
+
+게이트: ruff/pyright clean + fast 435 + sim 포함 full 초록. ⚠ 실물 미지수 =
+omx_handover_prep.md §7 (table_z 실측 / Dynamixel held 임계 재특성화
+gripper_characterize / thin+가림 공중 검출 / URDF 조립 일치). pc.yaml handover
+주석 해제는 실물 검증 후.
 
 ### 2026-07-22 — ROI 재설계: shared_config 모듈 + ROI 패널 + exclude_xy 폐지 (sim 완료, 실물 대기)
 

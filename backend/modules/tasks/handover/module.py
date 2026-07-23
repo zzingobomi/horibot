@@ -1,12 +1,16 @@
-"""HandoverModule — omx(giver)가 집어 든 물체를 so101(receiver)이 받아 상자 적치.
+"""HandoverModule — omx(giver)가 **자기 웹캠으로 보고** 집어 든 펜을
+so101(receiver)이 **재검출**해 받아 (선택) 상자 적치.
 
-pick_and_place 표준형 복제 (task.md §3). ⚠ 2026-07-17 신설 — **실물 미검증**
-(mock 시나리오 테스트만 초록. 실물 검증 전 확인 가정 = steps.py docstring).
+pick_and_place 표준형 복제 (task.md §3). ⚠ 2026-07-23 전면 재배선 — **실물
+미검증** (설계 근거/가정/미지수 = docs/omx_handover_prep.md + steps.py
+docstring. v1 의 "so101=눈, omx=blind, 티칭 handover waypoint" 전제 폐기).
 frontend 페이지/노출 없음 — 터미널 실행:
     uv run --no-sync python scripts/run_task.py srv/handover/run \
-        --param "pick_object=white cube" --param "place_object=blue box"
-(mock deployment 에만 활성 — pc.yaml 은 pick_and_place 실물 검증 완료 전까지
-주석 TODO. config/deployments/pc.yaml 참조.)
+        --param "pick_object=pen" --param "place_object=blue box"
+(mock deployment 에만 활성 — pc.yaml 은 실물 검증 완료 전까지 주석 TODO.)
+
+관측성: run 마다 debug/handover/<ts>/{trace.jsonl, summary.json} — omx 실물
+데이터 0 인 첫 런이 그 데이터만으로 원인분석 가능해야 한다 (§6).
 """
 
 from __future__ import annotations
@@ -45,6 +49,8 @@ from .contract import (
     TaskMarker,
     TaskMarkers,
 )
+from .pen import robot_to_world
+from .trace import HandoverTrace
 
 logger = logging.getLogger(__name__)
 
@@ -197,53 +203,91 @@ class HandoverModule:
         base_omx = self._omx_base_pose
         if self._checker is None:
             logger.warning(
-                "cross-robot 충돌 체커 미배선 — 수취/복귀 충돌 게이트 생략 "
+                "cross-robot 충돌 체커 미배선 — 제시/수취/복귀 충돌 게이트 생략 "
                 "(mock 테스트 전용 상태. 실물 실행 전 배선 필수)"
             )
+        trace = HandoverTrace(pick_object)
+        status, error = "success", None
+        try:
+            # 0) 자산/설정 fail-fast (모션 0 시점) — 티칭은 home 뿐 (제시는 계산)
+            home_so = await steps.named_waypoint(
+                ctx, so101, "home", "so101 안전 경유 자세를 'home' 으로 저장하세요"
+            )
+            home_omx = await steps.named_waypoint(
+                ctx, omx, "home", "omx 안전 경유 자세를 'home' 으로 저장하세요"
+            )
+            roi_so, roi_omx = await steps.load_workcells(ctx, so101, omx)
+            t_tcp_cam_omx = await steps.load_hand_eye(ctx, omx)
+            t_tcp_cam_so = await steps.load_hand_eye(ctx, so101)
 
-        # 0) 티칭 자산 fail-fast (모션 0 시점)
-        home_so = await steps.named_waypoint(
-            ctx, so101, "home", "so101 안전 경유 자세를 'home' 으로 저장하세요"
-        )
-        home_omx = await steps.named_waypoint(
-            ctx, omx, "home", "omx 안전 경유 자세를 'home' 으로 저장하세요"
-        )
-        handover_wp = await steps.named_waypoint(
-            ctx, omx, "handover",
-            "omx 가 물체를 so101 쪽으로 내미는 자세를 'handover' 로 저장하세요 "
-            "(물체가 so101 수평 접근 가능 높이에 오도록 — steps.py 가정 ③)",
-        )
-
-        # 1) 시작 자세 + 검출 (so101 카메라 — omx 는 카메라 없음)
-        await steps.go_home(ctx, so101, home_so)
-        await steps.go_home(ctx, omx, home_omx)
-        await steps.set_gripper(ctx, omx, open_=True)
-        cands = await steps.detect(ctx, so101, pick_object)
-        obj = steps.select_pick_candidate(cands, pick_object)
-        self._publish_markers(so101, [
-            TaskMarker(label="grasp", position=obj.position),
-        ])
-
-        # 2) omx 집기 (open-loop) → handover 자세로 내밀기
-        sols, quat, g_omx = await steps.plan_omx_pick(ctx, omx, obj, base_omx)
-        await steps.omx_pick(ctx, omx, sols, quat, g_omx)
-        await steps.go_home(ctx, so101, home_so)  # 검출 스윕 잔여 자세 정리
-        await steps.omx_present(ctx, omx, handover_wp)
-
-        # 3) so101 수취 — 충돌 게이트 포함 계획 → 수취 순서 불변식 실행
-        r_sols, r_quat, obj_world, _omx_joints = await steps.plan_receive(
-            ctx, so101, omx, base_omx, self._checker
-        )
-        self._publish_markers(so101, [
-            TaskMarker(label="handover", position=obj_world),
-        ])
-        await steps.set_gripper(ctx, so101, open_=True)
-        await steps.receive(ctx, so101, omx, r_sols, r_quat, obj_world)
-        await steps.omx_retreat(ctx, omx, so101, home_omx, self._checker)
-
-        # 4) 적치 (선택) — 비우면 든 채 home (사용자 인계. 계약 주석)
-        if place_object:
-            held_h = max(obj.height, 0.02)  # 단일뷰 과소 보정 하한
-            await steps.place_into(ctx, so101, place_object, held_h, home_so)
-        else:
+            # 1) 시작 자세
             await steps.go_home(ctx, so101, home_so)
+            await steps.go_home(ctx, omx, home_omx)
+            await steps.set_gripper(ctx, omx, open_=True)
+
+            # 2) A. omx 가 본다 — 계산된 nadir 관측 + mono z=0 검출
+            obs_joints = await steps.plan_omx_observe(
+                ctx, omx, roi_omx, t_tcp_cam_omx, trace
+            )
+            det = await steps.omx_observe_detect(
+                ctx, omx, pick_object, obs_joints, trace
+            )
+
+            # 3) B. 파지 기하 (먼 끝 frac + 노출 판정 — 짧은 펜은 여기서 명시 실패)
+            grasp = steps.plan_pen_grasp_from(det, base_omx)
+            g_world = robot_to_world(
+                (grasp.grasp_xy[0], grasp.grasp_xy[1], 0.0), base_omx
+            )
+            self._publish_markers(omx, [
+                TaskMarker(label="grasp", position=g_world),
+            ])
+
+            # 4) B+C. top-down 계획 → look-then-move 집기
+            pick = await steps.plan_omx_pick_pen(ctx, omx, grasp, trace)
+            grasp = await steps.omx_pick_pen(
+                ctx, omx, pick, grasp, pick_object, base_omx, trace
+            )
+
+            # 5) D. 제시 — 랑데부 계산 (티칭 폐기), so101 은 home 에 있음
+            present = await steps.plan_omx_present(
+                ctx, omx, roi_so, roi_omx, base_omx, grasp, pick,
+                list(home_so.joint_values), self._checker, trace,
+            )
+            await steps.omx_present(ctx, omx, present, trace)
+            self._publish_markers(so101, [
+                TaskMarker(label="handover", position=present.h_world),
+            ])
+
+            # 6) E. so101 수취 — 재검출 → 계획(충돌 게이트) → refine → 불변식 실행
+            so_obs = await steps.plan_so_observe(
+                ctx, so101, t_tcp_cam_so, present.h_world, trace
+            )
+            det2 = await steps.so_redetect(
+                ctx, so101, pick_object, so_obs, present.h_world, trace
+            )
+            plan = await steps.plan_receive(
+                ctx, so101, omx, det2, base_omx, self._checker, trace
+            )
+            await steps.set_gripper(ctx, so101, open_=True)
+            await steps.receive(ctx, so101, omx, plan, pick_object, trace)
+            await steps.omx_retreat(ctx, omx, so101, home_omx, self._checker)
+
+            # 7) 적치 (선택) — 비우면 든 채 home (사용자 인계. 계약 주석)
+            if place_object:
+                held_h = max(det2.height, 0.02)  # 단일뷰 과소 보정 하한
+                await steps.place_into(ctx, so101, place_object, held_h, home_so)
+            else:
+                await steps.go_home(ctx, so101, home_so)
+        except BaseException as e:
+            status, error = "failed", f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            # 실패해도 반드시 — 첫 실물 런의 진단은 이 파일이 전부다 (§6)
+            try:
+                await asyncio.to_thread(trace.finish, {
+                    "status": status,
+                    "error": error,
+                    "knobs": steps.knob_snapshot(),
+                })
+            except Exception:
+                logger.exception("handover trace summary 기록 실패")

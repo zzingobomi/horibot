@@ -73,6 +73,10 @@ class Detector:
         # 단일 뷰는 옆면 depth 부재로 과소). 순수 계산 (camera/모델 무관) — 뷰
         # 이동/수집 흐름은 소비자(task) 소유, 기하 산출은 detector 소유.
         FUSE_ORIENTED = "srv/detector/fuse_oriented"
+        # [DRAFT] mono 평면 검출 — depth 없는 카메라(omx 웹캠) 전용. mask 픽셀을
+        # undistort 후 카메라 ray ∩ (base z=plane_z) 로 역투영해 base XY OBB 를
+        # 얻는다 (omx handover — 펜류. projection.plane_points_from_pixels).
+        DETECT_PLANAR = "srv/detector/detect_planar"
 
     class Stream(StrEnum):
         # robot-scoped 키 — payload robot_id 로 framework 라우팅 (host-level 발행,
@@ -168,6 +172,26 @@ class FuseOrientedResponse(DraftModel):
     message: str = ""
 
 
+class DetectPlanarRequest(DraftModel):
+    """[DRAFT] mono 평면 검출 — 물체가 base z=plane_z 평면 **위에 놓여 있다**는
+    전제가 계약 (테이블 위 얇은 물체 — 펜). depth 를 전혀 안 읽으므로 rgbd 없는
+    robot(omx) 에서 동작한다.
+
+    plane_z 소유 = 호출자(task): 테이블 앵커는 1회 설정/측정 config — omx 는
+    depth 가 없어 스스로 못 잰다 (docs/omx_handover_prep.md §4 횡단 전제).
+    응답 = DetectOrientedResponse. 후보 의미 (mono 정직 표기):
+      position = (OBB 중심 XY, plane_z) — **평면 위 발자국 중심** (윗면 아님).
+      base_z = plane_z, height = 0.0 (mono 는 높이를 모른다 — 지름 가정은 소비자).
+      footprint/grasp_yaw = 평면 투영 OBB (펜 끝점 = 소비자가 position±long/2·yaw).
+    """
+
+    robot_id: str
+    plane_z: float  # base frame 평면 z (m) — 테이블 앵커
+    prompts: list[str] | None = None
+    prompt: str | None = None
+    top_k: int = 5
+
+
 class OrientedDetectionsUpdate(DraftModel):
     """[DRAFT] DETECT_ORIENTED 1회의 오버레이 스냅샷 — 카메라 패널 (DetectionsUpdate 의
     oriented 판). bbox + obb_2d(회전 사각형) + mask_contour(실루엣). on-demand publish."""
@@ -187,4 +211,5 @@ declare_service_timeouts({
     Detector.Service.DETECT: 30.0,  # GDINO 첫 추론이 느릴 수 있음
     Detector.Service.DETECT_ORIENTED: 30.0,
     Detector.Service.FUSE_ORIENTED: 10.0,  # 순수 계산 (점군 수천 수준)
+    Detector.Service.DETECT_PLANAR: 30.0,  # DETECT 와 동일 (모델 추론 지배)
 })

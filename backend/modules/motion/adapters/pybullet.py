@@ -21,6 +21,7 @@ import pybullet as p
 
 from ..kinematics import Position3, Quaternion, RotMatrix3x3
 from .analytic import AnalyticIk
+from .analytic_zyyyx import ZyyyxAnalyticIk
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +99,11 @@ class PybulletKinematics:
         # chain joint 의 movable result vector 내 위치
         self._chain_in_movable: list[int] = []
         # 해석적 branch 열거기 (docs/motion.md §11) — initialize 에서 시도,
-        # None = 수치 폴백 (EAIK 부재/비-Pieper 구조). 침묵 금지 — 모드는
-        # AnalyticIk 가 부팅 로그 1줄로 밝힌다.
-        self._analytic: AnalyticIk | None = None
+        # None = 수치 폴백. 침묵 금지 — 모드는 각 해석기가 부팅 로그 1줄로
+        # 밝힌다. 순서: EAIK(so101 6R + omx 5축 실측 분해 확인) → Z·YYY·X
+        # closed-form (EAIK 부재 환경 백업 — omx_handover_prep.md §8-2,
+        # pi 소스빌드 실패 클래스 대비).
+        self._analytic: AnalyticIk | ZyyyxAnalyticIk | None = None
         # 바닥 평면 body (floor_collision 게이트) — 첫 사용 시 lazy 생성
         self._plane = -1
         # 장애물 점군 body 들 (obstacle_collision 게이트) — set_obstacle_points 관리
@@ -172,12 +175,13 @@ class PybulletKinematics:
                 if self._analytic else "수치(walk+restart)",
             )
 
-    def _build_analytic(self) -> AnalyticIk | None:
+    def _build_analytic(self) -> AnalyticIk | ZyyyxAnalyticIk | None:
         """로드된 바디의 zero-pose 축/원점에서 해석기 구성 (파일 재파싱 없음).
 
         patched(캘) URDF 그대로 사용 — 캘 오차(~1.4° 스큐)는 snap 이 흡수하고
         정밀도는 polish(_ik_from_seed refine, 같은 캘 모델)가 회수한다.
         호출 시점: initialize 내부 (_lock 보유, zero pose 로 두고 추출).
+        EAIK(6R 계열) 우선, 불가 시 Z·YYY·X 5축 closed-form (omx) 시도.
         """
         self._set_chain([0.0] * len(self._chain_indices))
         axes: list[tuple[float, float, float]] = []
@@ -197,9 +201,14 @@ class PybulletKinematics:
             )
         tcp_pos, tcp_quat = self._ee_state()
         r0 = np.array(p.getMatrixFromQuaternion(tcp_quat)).reshape(3, 3)
-        return AnalyticIk.try_build(
+        ik: AnalyticIk | ZyyyxAnalyticIk | None = AnalyticIk.try_build(
             axes, origins, tcp_pos, r0, self._chain_lower, self._chain_upper
         )
+        if ik is None:
+            ik = ZyyyxAnalyticIk.try_build(
+                axes, origins, tcp_pos, r0, self._chain_lower, self._chain_upper
+            )
+        return ik
 
     # ── Protocol ──
 

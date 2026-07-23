@@ -54,6 +54,7 @@ from modules.shared_config.contract import (
 from . import geometry, projection
 from .contract import (
     DetectOrientedResponse,
+    DetectPlanarRequest,
     DetectRequest,
     DetectResponse,
     Detection,
@@ -103,12 +104,16 @@ def _write_ply(path: Path, points: list[tuple[float, float, float]]) -> None:
 # 서비스 응답에 싣는 물체 점군 상한 — voxel 다운샘플(3mm) 후에도 큰 물체(천 등)는
 # 수만 점이 될 수 있어 stride 로 추가 축소 (융합 기하에 이 밀도면 충분).
 _MAX_WIRE_POINTS = 2048
+# planar(mono) 역투영에 쓰는 mask 픽셀 상한 — undistort/교차 비용 캡 (평면 OBB
+# 에 이 밀도면 충분, stride 서브샘플).
+_PLANAR_MAX_PIXELS = 4096
 
 
 @dataclass(slots=True)
 class _Proj:
     """한 프레임의 투영 파라미터 (모든 후보 공통) — intrinsic + TCP pose + hand_eye.
-    detect_oriented 가 base OBB 코너를 픽셀로 reproject (오버레이) 할 때 사용."""
+    detect_oriented 가 base OBB 코너를 픽셀로 reproject (오버레이) 할 때 사용.
+    dist = dist_coeffs — planar(mono) 경로만 채움 (광각 웹캠 오버레이 왜곡 반영)."""
 
     fx: float
     fy: float
@@ -118,6 +123,7 @@ class _Proj:
     t_be: np.ndarray
     r_ce: np.ndarray
     t_ce: np.ndarray
+    dist: np.ndarray | None = None
 
 
 @dataclass(slots=True)
@@ -141,7 +147,7 @@ class _Cand:
     mask: np.ndarray
 
 
-def _req_prompts(req: DetectRequest) -> list[str]:
+def _req_prompts(req: DetectRequest | DetectPlanarRequest) -> list[str]:
     """요청 정규화 — prompts 우선, 없으면 prompt(하위호환). strip + 빈 항목 제거
     + 순서 보존 dedupe. 빈 결과 = 호출부가 found=False 로 응답."""
     raw = req.prompts if req.prompts else ([req.prompt] if req.prompt else [])
@@ -325,45 +331,7 @@ class DetectorModule:
                     mask=raw.mask,
                 )
             )
-        # 작업 셀 ROI 컷 — 셀 밖 후보 제거. 판정 = position(윗면 centroid) 과
-        # **base_z(물체 바닥)** 둘 다 셀 안 — 셀 물체는 셀 바닥 위에 "얹혀" 있다.
-        # position 만 보면 옆 테이블에서 솟은 물체(공유기: base_z −0.25, 꼭대기
-        # −0.03)의 꼭대기가 셀 하한(z_min −0.05)에 걸쳐 통과 (2026-07-21 23:41
-        # 실물: 그 공유기가 "white small round cube" 0.59 로 servo 관측을 뺏어
-        # 소실 중단). 공유기·로봇 몸통 등 오검출을 색/score 재튜닝(땜빵) 없이
-        # 기하로 소멸 (docs/pnp_scenario_rework.md §3.3). 관측성: 컷한 후보 로그
-        # (침묵 금지 — 진짜 물체가 잘리면 집에서 ROI 넓히라는 신호). 미설정 no-op.
-        bundle = self.workcell.peek()
-        if bundle is None:
-            # owner(shared_config) 미수렴 — 컷 없이 진행하되 침묵하지 않는다
-            # (부팅 직후 잠깐이거나 owner 다운 — 후자면 이 로그가 유일한 신호).
-            logger.warning(
-                "detector ROI: shared_config Mirror 미수렴 — 이번 검출은 셀 컷 "
-                "없이 진행 (owner 부팅 시 자동 수렴)"
-            )
-        rec = bundle.robots.get(robot_id) if bundle is not None else None
-        if rec is not None:
-            x0, x1, y0, y1 = rec.x_min, rec.x_max, rec.y_min, rec.y_max
-            z0, z1 = rec.z_min, rec.z_max
-            kept = [
-                c for c in cands
-                if x0 <= c.position[0] <= x1
-                and y0 <= c.position[1] <= y1
-                and z0 <= c.position[2] <= z1
-                and c.base_z >= z0
-            ]
-            if len(kept) < len(cands):
-                dropped = [c for c in cands if c not in kept]
-                logger.info(
-                    "detector ROI 컷(robot=%s): 셀 밖 후보 %d개 제거 %s "
-                    "(셀 x[%.2f,%.2f] y[%.2f,%.2f] z[%.2f,%.2f])",
-                    robot_id, len(dropped),
-                    [f"{c.prompt}@({c.position[0]:.2f},{c.position[1]:.2f},"
-                     f"{c.position[2]:.2f})base_z={c.base_z:.2f} "
-                     f"s={c.score:.2f}" for c in dropped],
-                    x0, x1, y0, y1, z0, z1,
-                )
-            cands = kept
+        cands = self._workcell_cut(robot_id, cands)
         # 전역 score desc — 단일 prompt 는 driver 가 이미 desc (no-op), 멀티는
         # prompt-major 로 이어붙어 섞임 (응답/오버레이/덤프 순서 일관용).
         cands.sort(key=lambda c: c.score, reverse=True)
@@ -373,6 +341,50 @@ class DetectorModule:
             cands, color.width, color.height, msg, proj=proj, img=img,
             depth=depth, depth_scale=depth_f.depth_scale,
         )
+
+    def _workcell_cut(self, robot_id: str, cands: list[_Cand]) -> list[_Cand]:
+        """작업 셀 ROI 컷 — 셀 밖 후보 제거 (detect/detect_oriented/detect_planar
+        공통). 판정 = position(윗면 centroid) 과 **base_z(물체 바닥)** 둘 다 셀 안
+        — 셀 물체는 셀 바닥 위에 "얹혀" 있다. position 만 보면 옆 테이블에서 솟은
+        물체(공유기: base_z −0.25, 꼭대기 −0.03)의 꼭대기가 셀 하한(z_min −0.05)에
+        걸쳐 통과 (2026-07-21 23:41 실물: 그 공유기가 "white small round cube"
+        0.59 로 servo 관측을 뺏어 소실 중단). 공유기·로봇 몸통 등 오검출을
+        색/score 재튜닝(땜빵) 없이 기하로 소멸 (docs/pnp_scenario_rework.md §3.3).
+        관측성: 컷한 후보 로그 (침묵 금지 — 진짜 물체가 잘리면 집에서 ROI 넓히라는
+        신호). 미설정 no-op.
+        """
+        bundle = self.workcell.peek()
+        if bundle is None:
+            # owner(shared_config) 미수렴 — 컷 없이 진행하되 침묵하지 않는다
+            # (부팅 직후 잠깐이거나 owner 다운 — 후자면 이 로그가 유일한 신호).
+            logger.warning(
+                "detector ROI: shared_config Mirror 미수렴 — 이번 검출은 셀 컷 "
+                "없이 진행 (owner 부팅 시 자동 수렴)"
+            )
+        rec = bundle.robots.get(robot_id) if bundle is not None else None
+        if rec is None:
+            return cands
+        x0, x1, y0, y1 = rec.x_min, rec.x_max, rec.y_min, rec.y_max
+        z0, z1 = rec.z_min, rec.z_max
+        kept = [
+            c for c in cands
+            if x0 <= c.position[0] <= x1
+            and y0 <= c.position[1] <= y1
+            and z0 <= c.position[2] <= z1
+            and c.base_z >= z0
+        ]
+        if len(kept) < len(cands):
+            dropped = [c for c in cands if c not in kept]
+            logger.info(
+                "detector ROI 컷(robot=%s): 셀 밖 후보 %d개 제거 %s "
+                "(셀 x[%.2f,%.2f] y[%.2f,%.2f] z[%.2f,%.2f])",
+                robot_id, len(dropped),
+                [f"{c.prompt}@({c.position[0]:.2f},{c.position[1]:.2f},"
+                 f"{c.position[2]:.2f})base_z={c.base_z:.2f} "
+                 f"s={c.score:.2f}" for c in dropped],
+                x0, x1, y0, y1, z0, z1,
+            )
+        return kept
 
     @service(Detector.Service.DETECT)
     async def detect(self, req: DetectRequest) -> DetectResponse:
@@ -491,6 +503,173 @@ class DetectorModule:
             )
         return DetectOrientedResponse(found=True, candidates=oriented)
 
+    async def _detect_candidates_planar(
+        self, robot_id: str, prompts: list[str], top_k: int, plane_z: float
+    ) -> _DetectResult:
+        """mono 평면 파이프라인 — depth 스냅샷 없이 color+2D 검출만으로.
+
+        mask 픽셀 → undistort → ray∩(z=plane_z) → base 평면 점군 → OBB.
+        depth 없는 robot(omx) 이 유일한 소비자 전제라 DEPTH_DECODED_SNAPSHOT 을
+        아예 안 부른다 (부르면 rgbd 없는 camera 가 에러).
+        """
+        bundle = await self.runtime.call(
+            Calibration.Service.SNAPSHOT_BUNDLE,
+            SnapshotBundleRequest(robot_id=robot_id),
+            CalibrationBundle,
+        )
+        if bundle.intrinsic is None or bundle.hand_eye is None:
+            return _DetectResult([], 0, 0, "intrinsic/hand_eye 캘 없음 — 캘 먼저")
+        color = await self.runtime.call(
+            Camera.Service.DECODED_SNAPSHOT,
+            DecodedSnapshotRequest(),
+            CameraDecodedFrame,
+            robot_id=robot_id,
+        )
+        img = np.frombuffer(color.ndarray_bytes, dtype=np.uint8).reshape(
+            color.height, color.width, 3
+        )
+        raws = await asyncio.to_thread(self._backend.detect, img, prompts, top_k)
+        if not raws:
+            return _DetectResult(
+                [], color.width, color.height,
+                f"'{', '.join(prompts)}' 감지 실패",
+            )
+        tcp = await self.runtime.call(
+            Motion.Service.TCP_SNAPSHOT,
+            TcpSnapshotRequest(),
+            TcpState,
+            robot_id=robot_id,
+        )
+        r_be = Rotation.from_quat(tcp.quaternion).as_matrix()
+        t_be = np.array(tcp.position, dtype=float)
+        cm = bundle.intrinsic.result_data.camera_matrix
+        fx, fy, cx, cy = cm[0][0], cm[1][1], cm[0][2], cm[1][2]
+        # 광각 undistort 필수 (§5.3 — 생략하면 유효 화각 94°→62° 축소 + 엣지 오차)
+        dist = np.asarray(
+            bundle.intrinsic.result_data.dist_coeffs, dtype=np.float64
+        )
+        r_ce = np.array(bundle.hand_eye.result_data.R_cam2gripper, dtype=float)
+        t_ce = np.array(
+            bundle.hand_eye.result_data.t_cam2gripper, dtype=float
+        ).reshape(3)
+        cands: list[_Cand] = []
+        for raw in raws:
+            vs, us = np.nonzero(raw.mask)
+            if us.size == 0:
+                continue
+            if us.size > _PLANAR_MAX_PIXELS:  # undistort 비용 상한 (기하엔 과밀)
+                stride = us.size // _PLANAR_MAX_PIXELS + 1
+                us, vs = us[::stride], vs[::stride]
+            pts = projection.plane_points_from_pixels(
+                us.astype(np.float64), vs.astype(np.float64), plane_z,
+                fx, fy, cx, cy, dist, r_be, t_be, r_ce, t_ce,
+            )
+            if pts is None:
+                # ray 가 평면과 카메라 앞에서 안 만남 (카메라가 평면 아래/위를
+                # 봄) — 후보가 아니라 관측 기하 자체가 틀렸을 신호 (침묵 금지).
+                logger.warning(
+                    "detect_planar(robot=%s): '%s' mask 픽셀 전부 평면 교차 실패 "
+                    "— 카메라 자세/plane_z(%.3f) 확인",
+                    robot_id, raw.prompt, plane_z,
+                )
+                continue
+            obb = geometry.obb_from_base_points(pts)
+            if obb is None:
+                continue
+            cands.append(
+                _Cand(
+                    bbox=raw.bbox,
+                    score=float(raw.score),
+                    prompt=raw.prompt,
+                    position=(obb.center_xy[0], obb.center_xy[1], plane_z),
+                    base_z=plane_z,
+                    height=0.0,  # mono — 높이는 모른다 (지름 가정은 소비자)
+                    base_points=pts,
+                    mask=raw.mask,
+                )
+            )
+        cands = self._workcell_cut(robot_id, cands)
+        cands.sort(key=lambda c: c.score, reverse=True)
+        msg = "" if cands else "후보 평면 투영 전부 무효"
+        proj = _Proj(fx, fy, cx, cy, r_be, t_be, r_ce, t_ce, dist=dist)
+        return _DetectResult(
+            cands, color.width, color.height, msg, proj=proj, img=img
+        )
+
+    @service(Detector.Service.DETECT_PLANAR)
+    async def detect_planar(self, req: DetectPlanarRequest) -> DetectOrientedResponse:
+        """[DRAFT] mono 평면 검출 — DETECT_ORIENTED 의 depth-없는 판.
+
+        전제/의미는 DetectPlanarRequest docstring. 오버레이/디버그 덤프는
+        DETECT_ORIENTED 와 동일 채널 (DETECTIONS_ORIENTED + debug/detect 세션
+        폴더 — 평면 투영 시각화가 mono 검증의 핵심, omx_handover_prep.md §6).
+        """
+        prompts = _req_prompts(req)
+        if not prompts:
+            return DetectOrientedResponse(found=False, message="prompt 필요")
+        result = await self._detect_candidates_planar(
+            req.robot_id, prompts, req.top_k, req.plane_z
+        )
+        oriented: list[OrientedDetection] = []
+        debug_rows: list[tuple[np.ndarray, list[tuple[float, float]] | None]] = []
+        for c in result.cands:
+            obb = geometry.obb_from_base_points(c.base_points)
+            if obb is None:
+                continue
+            obb_2d: list[tuple[float, float]] | None = None
+            if result.proj is not None:
+                p = result.proj
+                corners = geometry.obb_corners(obb, z=req.plane_z)
+                # 왜곡 반영 reproject — pinhole 로 그리면 광각 엣지에서 어긋남
+                px = projection.project_base_to_pixel_distorted(
+                    corners, p.fx, p.fy, p.cx, p.cy, p.dist,
+                    p.r_be, p.t_be, p.r_ce, p.t_ce,
+                )
+                obb_2d = [(float(u), float(v)) for u, v in px]
+            contour = geometry.mask_contour(c.mask)
+            mask_contour = (
+                [(float(x), float(y)) for x, y in contour]
+                if contour is not None
+                else None
+            )
+            debug_rows.append((c.mask, obb_2d))
+            ds = geometry.voxel_downsample(c.base_points)
+            if len(ds) > _MAX_WIRE_POINTS:
+                ds = ds[:: len(ds) // _MAX_WIRE_POINTS + 1]
+            oriented.append(
+                OrientedDetection(
+                    prompt=c.prompt,
+                    position=c.position,
+                    score=c.score,
+                    base_z=c.base_z,
+                    height=c.height,
+                    grasp_yaw=obb.yaw_rad,
+                    footprint=obb.footprint,
+                    bbox_2d=c.bbox,
+                    obb_2d=obb_2d,
+                    mask_contour=mask_contour,
+                    points=[(float(p[0]), float(p[1]), float(p[2])) for p in ds],
+                )
+            )
+        if result.color_w > 0:
+            self._publish_oriented(
+                req.robot_id, ", ".join(prompts), result.color_w,
+                result.color_h, oriented,
+            )
+        if result.img is not None and debug_rows:
+            t = asyncio.create_task(asyncio.to_thread(
+                self._dump_debug_image,
+                result.img, oriented, debug_rows,
+                proj=result.proj, depth=None, plane_z=req.plane_z,
+            ))
+            self._dump_tasks.add(t)
+            t.add_done_callback(self._on_dump_done)
+        if not oriented:
+            return DetectOrientedResponse(
+                found=False, message=result.message or "평면 OBB 산출 실패"
+            )
+        return DetectOrientedResponse(found=True, candidates=oriented)
+
     @service(Detector.Service.FUSE_ORIENTED)
     async def fuse_oriented(self, req: FuseOrientedRequest) -> FuseOrientedResponse:
         """[DRAFT] 멀티뷰 관측 융합 — 순수 계산 (camera/모델/robot 무관).
@@ -586,6 +765,7 @@ class DetectorModule:
         proj: _Proj | None = None,
         depth: np.ndarray | None = None,
         depth_scale: float = 0.001,
+        plane_z: float | None = None,
     ) -> None:
         """검출 1회 덤프 — mask 알파 오버레이+bbox+OBB+yaw PNG, 후보별 점군 PLY.
         세션 폴더에 순번으로 쌓고(검색 스윕 여러 뷰/집기·놓기 다 보존),
@@ -648,7 +828,9 @@ class DetectorModule:
                 _write_ply(Path(f"{prefix}_c{i}.ply"), det.points)
         # raw 계측 — clean color + 16-bit depth + 후보 mask + intrinsic/pose JSON.
         # (센서 depth 편향 vs 캘/프레임 오차 분리용 — docstring/§6.)
-        self._dump_debug_raw(prefix, img_bgr, oriented, rows, proj, depth, depth_scale)
+        self._dump_debug_raw(
+            prefix, img_bgr, oriented, rows, proj, depth, depth_scale, plane_z
+        )
         cv2.imwrite(str(_DEBUG_DIR / "detect_oriented_last.png"), canvas)
         logger.info("detect_oriented 디버그 덤프: %s.png (+PLY/raw)", prefix)
 
@@ -661,13 +843,17 @@ class DetectorModule:
         proj: _Proj | None,
         depth: np.ndarray | None,
         depth_scale: float,
+        plane_z: float | None = None,
     ) -> None:
         """원본 계측 저장 — 재투영/depth-bias 재분석의 입력 (mask→base 를 손으로
-        다시 굴려 센서 depth 를 mm 단위로 측정할 수 있게). proj/depth 없으면 skip."""
-        if proj is None or depth is None:
+        다시 굴려 센서 depth 를 mm 단위로 측정할 수 있게). proj 없으면 skip.
+        depth=None(planar/mono) 이면 depth 산출물만 빼고 저장 — mask+intrinsic
+        (+dist)+pose+plane_z 만으로 평면 역투영을 재현할 수 있다."""
+        if proj is None:
             return
         cv2.imwrite(f"{prefix}_color.png", img_bgr)  # clean BGR (tint 전)
-        cv2.imwrite(f"{prefix}_depth.png", depth)  # 16-bit aligned depth (LSB)
+        if depth is not None:
+            cv2.imwrite(f"{prefix}_depth.png", depth)  # 16-bit aligned depth (LSB)
         for i, (mask, _obb) in enumerate(rows):  # 후보 SAM mask (0/255)
             cv2.imwrite(f"{prefix}_mask_c{i}.png", mask.astype(np.uint8) * 255)
         meta = {
@@ -675,9 +861,17 @@ class DetectorModule:
             "timestamp_unix": time.time(),
             "depth_scale": float(depth_scale),
             "color_png": Path(f"{prefix.name}_color.png").name,
-            "depth_png": Path(f"{prefix.name}_depth.png").name,
-            "depth_dtype": str(depth.dtype),
-            "depth_shape": list(depth.shape),
+            "depth_png": (
+                Path(f"{prefix.name}_depth.png").name if depth is not None else None
+            ),
+            "depth_dtype": str(depth.dtype) if depth is not None else None,
+            "depth_shape": list(depth.shape) if depth is not None else None,
+            # planar(mono) 검출의 평면 앵커 — depth 없는 재투영 재현의 필수 입력.
+            "plane_z": plane_z,
+            "dist_coeffs": (
+                np.asarray(proj.dist, dtype=float).tolist()
+                if proj.dist is not None else None
+            ),
             # 좌표 규약 (projection.py): obj_base = R_be·(R_ce·obj_cam + t_ce) + t_be
             "intrinsics": {
                 "fx": float(proj.fx), "fy": float(proj.fy),

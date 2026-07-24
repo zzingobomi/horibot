@@ -98,6 +98,7 @@ class HandoverModule:
             task_name="handover",
             pick_object=req.pick_object,
             place_object=req.place_object,
+            stop_before_receive=req.stop_before_receive,
         )
         return RunResponse(accepted=r.accepted, message=r.message)
 
@@ -193,7 +194,11 @@ class HandoverModule:
     # ─── Scenario ─────────
 
     async def scenario(
-        self, ctx: TaskContext, pick_object: str, place_object: str = ""
+        self,
+        ctx: TaskContext,
+        pick_object: str,
+        place_object: str = "",
+        stop_before_receive: bool = False,
     ) -> None:
         so101, omx = self.TASK_ROBOTS
         marks = MarkerPublisher(self._publish_markers, giver=omx, receiver=so101)
@@ -222,7 +227,10 @@ class HandoverModule:
             t_tcp_cam_omx = await steps.load_hand_eye(ctx, omx)
             t_tcp_cam_so = await steps.load_hand_eye(ctx, so101)
 
-            # 1) 시작 자세
+            # 1) 시작 자세 — 토크 enable 먼저 (omx Dynamixel 전원 on 시 off 기본,
+            # 헤드리스 실행엔 프론트 토크 토글이 없어 limp 로 시작. 2026-07-24 실물)
+            await steps.enable_torque(ctx, so101)
+            await steps.enable_torque(ctx, omx)
             await steps.go_home(ctx, so101, home_so)
             await steps.go_home(ctx, omx, home_omx)
             await steps.set_gripper(ctx, omx, open_=True)
@@ -242,11 +250,9 @@ class HandoverModule:
             )
             marks.show_grasp(g_world)
 
-            # 4) B+C. top-down 계획 → look-then-move 집기
+            # 4) B+C. 파지점(책상면 top-down) 계획 → move_j 스윙인 집기
             pick = await steps.plan_omx_pick_pen(ctx, omx, grasp, trace)
-            grasp = await steps.omx_pick_pen(
-                ctx, omx, pick, grasp, pick_object, base_omx, trace
-            )
+            grasp = await steps.omx_pick_pen(ctx, omx, pick, grasp, trace)
 
             # 5) D. 제시 — 랑데부 계산 (티칭 폐기), so101 은 home 에 있음
             present = await steps.plan_omx_present(
@@ -255,6 +261,12 @@ class HandoverModule:
             )
             await steps.omx_present(ctx, omx, present, trace)
             marks.show_handover(present.h_world)
+
+            # omx 집기+제시까지만 (테스트용) — so101 수취 진입 전 성공 종료.
+            # omx 는 펜을 든 채로 남는다 (파지/제시 자세를 눈으로 검증하도록).
+            if stop_before_receive:
+                logger.info("stop_before_receive=True — omx 제시까지만 하고 종료")
+                return
 
             # 6) E. so101 수취 — 재검출 → 계획(충돌 게이트) → refine → 불변식 실행
             so_obs = await steps.plan_so_observe(

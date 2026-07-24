@@ -6,7 +6,8 @@
   A. omx 가 본다 — 계산된 nadir 관측 자세 + DETECT_PLANAR (mono ray∩z=table).
   B. omx 파지 계획 — top-down 전용(5축 도달성 §5.1) + J5 roll=조를 펜에 정렬 +
      파지점 = so101 에서 **먼 끝** frac 지점 (노출 부족 = 계획 단계 명시 실패).
-  C. omx 집기 — look-then-move (pre 에서 재관측 → XY refine → blind 하강).
+  C. omx 집기 — 파지 해로 move_j 스윙인 → close (top-down 은 책상면 전용 관절
+     리밋이라 위에서 수직 접근·refine 불가 — omx=best-effort, 정밀은 so101).
   D. omx 제시 — 티칭 폐기, **계산**: 랑데부(두 workcell ROI 교집합) + 노출 끝을
      so101 방향으로 (tool z ∥ 펜 노출 방향 규약).
   E. so101 수취 — omx TCP FK 짐작 폐기, **재검출** (공중 대역) + refine 1 tick +
@@ -66,6 +67,8 @@ from modules.motor.contract import (
     ReadStateRequest,
     SetGripperRequest,
     SetGripperResponse,
+    SetTorqueRequest,
+    SetTorqueResponse,
 )
 from modules.shared_config.contract import (
     SharedConfig,
@@ -135,14 +138,15 @@ _PEN_GRASP_FRAC = 0.30  # 파지점 = 먼 끝에서 30% (§1.1 안정성↔노�
 _OMX_JAW_ALONG_PEN_M = 0.020  # omx 조가 펜 축 방향으로 차지하는 폭 (실물 실측 대상)
 _SO_MIN_GRASP_M = 0.040  # so101 이 물 최소 노출 길이
 _EXPOSED_MARGIN_M = 0.020  # 노출 여유 (관측/제시 오차 흡수)
-_PEN_D_MIN_M = 0.006  # 관측 폭(≈지름) clamp — mono 번짐/과소 방어
-_PEN_D_MAX_M = 0.030
-_OMX_PRE_ABOVE_M = 0.10  # pre = 파지점 수직 위 (재관측 높이 겸용)
-_OMX_LIFT_M = 0.08
+# 관측 폭(≈지름) clamp — 파지 Z(=table+pen_d/2)의 유일 입력. mono footprint 는
+# 번짐으로 지름을 크게 과대추정한다 (실측 10mm 펜이 21mm 로 검출 → 파지 Z 가
+# 펜 꼭대기 위로 떠서 짧은축 중심을 못 물고 미끄러짐, 2026-07-25 실물). 상한을
+# 실제 펜 지름 근처로 조여 파지 Z 를 지름 한가운데에 맞춘다 (펜 교체 시 조정).
+_PEN_D_MIN_M = 0.006
+_PEN_D_MAX_M = 0.012
 
-# ── C. look-then-move ──
-_REFINE_MATCH_RADIUS_M = 0.06  # coarse 펜 중심 반경 — 밖이면 다른 물체 (기각)
-_REFINE_JUMP_MAX_M = 0.03  # 파지점 보정 상한 — 초과 = 관측 오염 의심 (coarse 유지)
+# ── C. 수취 refine 보정 게이트 (so101 수취측 so_refine 사용) ──
+_REFINE_JUMP_MAX_M = 0.03  # 겨냥점 보정 상한 — 초과 = 관측 오염 의심 (계획값 유지)
 
 # ── D. 제시 (랑데부 계산) ──
 _PRESENT_Z_WORLD = (0.10, 0.12, 0.08, 0.14)  # 파지점(TCP)의 world z 후보 (선호순)
@@ -513,13 +517,13 @@ def plan_pen_grasp_from(det: OrientedDetection, base_omx: BasePose) -> PenGrasp:
 
 @dataclass(frozen=True, slots=True)
 class PickPlan:
-    """omx 파지 계획 산출 — 실행(look-then-move)과 제시(present)가 공유.
+    """omx 파지 계획 산출 — 실행(집기)과 제시(present)가 공유.
 
     s_pen: tool z 와 펜 노출 방향 u 의 부호 (+1 = tool z ∥ u). 제시 계획이
     "노출 끝을 so101 로" 돌릴 때 이 부호로 tool z 목표를 세운다.
     """
 
-    sols: list[list[float]]  # [pre, grasp, lift] 관절해
+    sols: list[list[float]]  # [grasp] 관절해 (단일 — top-down pre/lift 폐기)
     quat: Quat
     grasp_omx: Vec3  # 파지점 (omx frame — z = table + 지름/2)
     pen_d: float  # 채택 펜 지름 (관측 폭 clamp)
@@ -533,9 +537,12 @@ async def plan_omx_pick_pen(
     grasp: PenGrasp,
     trace: HandoverTrace | None = None,
 ) -> PickPlan:
-    """top-down 전용 (§5.1 — tilt 은 5축에서 방위각 제약이 살아나 대체로 불가)
-    × tool z ∥ ±u (J5 roll 이 조를 펜 짧은 축에 정렬). [pre, grasp, lift]
-    linear resolve — 판정 해 == 실행 해."""
+    """파지점(책상면 top-down)만 resolve. top-down 은 관절 리밋상 책상 근처에서만
+    도달한다(§5.1 은 DOF 수 얘기 — 실측 도달 밴드는 z≈table). 위에서 수직 접근하는
+    pre / 수직 lift 를 top-down 으로 강제하면 IK 전멸이라 폐기했다: 접근은 관측
+    자세에서 파지 해로 move_j 스윙인, 리프트는 제시 단계가 도달 가능한 자세로 수행
+    (omx=best-effort, 정밀은 so101). × tool z ∥ ±u (J5 roll=조를 펜 짧은 축에 정렬).
+    후보 2개뿐 = resolve 가볍다 (몇십초 stall 방지)."""
     pen_d = min(max(grasp.width_m, _PEN_D_MIN_M), _PEN_D_MAX_M)
     g_z = _OMX_TABLE_Z_M + pen_d / 2.0
     g = (grasp.grasp_xy[0], grasp.grasp_xy[1], g_z)
@@ -544,21 +551,11 @@ async def plan_omx_pick_pen(
     for s in (1.0, -1.0):  # tool z ∥ +u 선호 (제시 회전량 최소), 폴백 −u
         yaw = math.atan2(s * grasp.u[1], s * grasp.u[0])
         quat = _grasp_quat(yaw, 0)
-        pre = (g[0], g[1], g[2] + _OMX_PRE_ABOVE_M)
-        lift = (g[0], g[1], g[2] + _OMX_LIFT_M)
-        groups.append(
-            [
-                TcpPose(position=pre, quaternion=quat),
-                TcpPose(position=g, quaternion=quat),
-                TcpPose(position=lift, quaternion=quat),
-            ]
-        )
+        groups.append([TcpPose(position=g, quaternion=quat)])
         metas.append((quat, s))
     res = await ctx.call(
         Motion.Service.RESOLVE_REACHABLE,
-        ResolveReachableRequest(
-            groups=groups, floor_z=_OMX_TABLE_Z_M - 0.002, linear=True
-        ),
+        ResolveReachableRequest(groups=groups, floor_z=_OMX_TABLE_Z_M - 0.002),
         ResolveReachableResponse,
         robot_id=omx,
     )
@@ -597,81 +594,7 @@ async def plan_omx_pick_pen(
     )
 
 
-# ─── C. omx 집기 (look-then-move) ─────────────────────────────────────
-
-
-@step(title="omx 재관측")
-async def refine_pen(
-    ctx: TaskContext,
-    omx: str,
-    prompt: str,
-    coarse: PenGrasp,
-    base_omx: BasePose,
-    trace: HandoverTrace | None = None,
-) -> PenGrasp | None:
-    """pre(파지점 위)에서 재관측 → 파지 기하 재계산 (eye-in-hand common-mode:
-    측정과 하강 명령이 같은 자세의 FK 오차를 공유 — §3 총론의 mono 판).
-
-    실패(미검출/매치 밖/도약 초과) = **coarse 로 blind 진행** — omx 는 best-effort
-    giver (so101 closed-loop 가 흡수). 단 침묵 금지: 사유를 로그+trace 에 남긴다.
-    """
-    await asyncio.sleep(_OBSERVE_SETTLE_S)
-    res = await ctx.call(
-        Detector.Service.DETECT_PLANAR,
-        DetectPlanarRequest(
-            robot_id=omx, plane_z=_OMX_TABLE_Z_M, prompts=[prompt], top_k=_TOP_K
-        ),
-        DetectOrientedResponse,
-    )
-    coarse_center = (
-        (coarse.tip_far[0] + coarse.tip_near[0]) / 2.0,
-        (coarse.tip_far[1] + coarse.tip_near[1]) / 2.0,
-    )
-    trusted = [
-        c
-        for c in _trusted_pen_candidates(res.candidates)
-        if math.hypot(
-            c.position[0] - coarse_center[0], c.position[1] - coarse_center[1]
-        )
-        <= _REFINE_MATCH_RADIUS_M
-    ]
-    if not trusted:
-        reason = (
-            f"재관측 매치 실패 (후보 {len(res.candidates)}건, 신뢰·반경 "
-            f"{_REFINE_MATCH_RADIUS_M * 1000:.0f}mm 컷) — coarse 로 blind 진행"
-        )
-        logger.warning("refine_pen: %s", reason)
-        await _emit(trace, {"phase": "pick", "event": "refine_miss", "reason": reason})
-        return None
-    best = max(trusted, key=lambda c: c.score)
-    refined = plan_pen_grasp_from(best, base_omx)
-    jump = math.hypot(
-        refined.grasp_xy[0] - coarse.grasp_xy[0],
-        refined.grasp_xy[1] - coarse.grasp_xy[1],
-    )
-    await _emit(
-        trace,
-        {
-            "phase": "pick",
-            "event": "refine",
-            "coarse_grasp": list(coarse.grasp_xy),
-            "refined_grasp": list(refined.grasp_xy),
-            "jump_mm": round(jump * 1000, 1),
-            "score": best.score,
-        },
-    )
-    if jump > _REFINE_JUMP_MAX_M:
-        reason = (
-            f"재관측 파지점 도약 {jump * 1000:.0f}mm > "
-            f"{_REFINE_JUMP_MAX_M * 1000:.0f}mm — 관측 오염 의심, coarse 유지"
-        )
-        logger.warning("refine_pen: %s", reason)
-        await _emit(
-            trace, {"phase": "pick", "event": "refine_rejected", "reason": reason}
-        )
-        return None
-    logger.info("refine_pen: 파지점 보정 %.1fmm 채택", jump * 1000)
-    return refined
+# ─── C. omx 집기 (move_j 스윙인 — look-then-move 폐기) ─────────────────
 
 
 @step(title="omx 집기")
@@ -680,35 +603,17 @@ async def omx_pick_pen(
     omx: str,
     plan: PickPlan,
     coarse: PenGrasp,
-    prompt: str,
-    base_omx: BasePose,
     trace: HandoverTrace | None = None,
 ) -> PenGrasp:
-    """pre(관절해) → 재관측 refine → (보정 이동) → blind 하강(감속) → close →
-    판정 → lift(감속) → 판정. 반환 = 실제 파지에 쓴 펜 기하 (제시 계산 입력)."""
+    """관측 자세 → 파지 해로 바로 move_j(속도 cap 으로 부드럽게) → close → 판정.
+    top-down 은 책상면에서만 도달하므로 위에서의 수직 접근(pre)·수직 lift 는 불가 —
+    스윙인으로 간다. 리프트/제시는 다음 단계(plan_omx_present)가 도달 가능한 자세로
+    수행. refine(look-then-move) 폐기 — omx=best-effort, 정밀은 so101 수취가 흡수.
+    반환 = 파지에 쓴 펜 기하 (제시 계산 입력)."""
     await _move_j(ctx, omx, joints=plan.sols[0])
-    refined = await refine_pen(ctx, omx, prompt, coarse, base_omx, trace)
-    used = refined if refined is not None else coarse
-    g = (used.grasp_xy[0], used.grasp_xy[1], plan.grasp_omx[2])
-    if refined is not None:
-        # pre 높이에서 XY 보정 (자세 고정 직선) — blind 하강 직전 최종 정렬
-        await _move_l(
-            ctx,
-            omx,
-            position=(g[0], g[1], g[2] + _OMX_PRE_ABOVE_M),
-            quaternion=plan.quat,
-        )
-    await _move_l(
-        ctx, omx, position=g, quaternion=plan.quat, speed_scale=_GENTLE_SPEED_SCALE
-    )
     await set_gripper(ctx, omx, open_=False)
     await verify_grasp(ctx, omx, phase="omx close 직후", trace=trace)
-    lift = (g[0], g[1], g[2] + _OMX_LIFT_M)
-    await _move_l(
-        ctx, omx, position=lift, quaternion=plan.quat, speed_scale=_GENTLE_SPEED_SCALE
-    )
-    await verify_grasp(ctx, omx, phase="omx lift 후", trace=trace)
-    return used
+    return coarse
 
 
 # ─── D. omx 제시 (랑데부 계산 — 티칭 폐기) ────────────────────────────
@@ -1476,6 +1381,22 @@ async def place_into(
 async def go_home(ctx: TaskContext, robot_id: str, home: WaypointRecord) -> None:
     logger.info("go_home robot=%s → '%s'", robot_id, home.name)
     await _move_j(ctx, robot_id, joints=home.joint_values)
+
+
+@step(title="토크 on")
+async def enable_torque(ctx: TaskContext, robot_id: str) -> None:
+    """참여 로봇 토크 enable — 모션 전 필수. Dynamixel(omx)은 전원 on 시 torque
+    off 가 기본이라(dynamixel.py open() 은 안 켬) 안 켜면 MoveJ 를 받아도 limp,
+    엔코더 FK 로 mono 투영까지 어긋난다 (2026-07-24 실물 확인). Feetech(so101)는
+    기본 on 이라 재확인일 뿐 무해. 프론트 토크 토글 없이 헤드리스 실행하는
+    task 는 자기 참여 robot 을 스스로 enable 해야 self-contained."""
+    logger.info("enable_torque robot=%s", robot_id)
+    await ctx.call(
+        Motor.Service.SET_TORQUE,
+        SetTorqueRequest(enabled=True),
+        SetTorqueResponse,
+        robot_id=robot_id,
+    )
 
 
 @step(title="그리퍼")

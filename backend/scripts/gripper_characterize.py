@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -127,9 +129,34 @@ async def _run(args: argparse.Namespace) -> int:
         # 4) 임계값 제안 — 빈손과 물림 사이 중간(gap 기준)이 안전한 경계.
         empty_gap = abs(empty_raw - close_raw)
         held_gap = abs(held_raw - close_raw)
+        # 결과를 파일로 — Dynamixel 은 gap 보다 부하(Present Current)가 정밀 신호.
+        # 빈손·물림 부하의 분리가 곧 전류 기반 held 임계의 근거 (자동 튜닝 소스).
+        out_dir = BACKEND_ROOT / "debug" / "gripper_characterize"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{args.robot}_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        out_path.write_text(
+            json.dumps(
+                {
+                    "robot": args.robot,
+                    "open_raw": open_raw,
+                    "close_raw": close_raw,
+                    "opened_achieved": opened,
+                    "empty_achieved": empty_raw,
+                    "empty_gap": empty_gap,
+                    "empty_load": empty_load,
+                    "held_achieved": held_raw,
+                    "held_gap": held_gap,
+                    "held_load": held_load,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         print("\n===== 결과 =====", flush=True)
         print(f"빈손 gap={empty_gap} (부하 {empty_load}) / 물림 gap={held_gap} "
               f"(부하 {held_load})", flush=True)
+        print(f"저장: {out_path}", flush=True)
         if held_gap <= empty_gap:
             print(
                 "⚠️ 물림 gap 이 빈손보다 크지 않음 — 위치 신호로 구분 불가.\n"

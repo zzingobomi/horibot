@@ -14,6 +14,12 @@ class MotorSpec(BaseModel):
     limit_min: int
     limit_max: int
     reverse: bool = False
+    # operating mode (Dynamixel 만 의미 — Feetech 는 무시). None = 미선언 = servo
+    # 기존 모드 유지(팔 모터는 공장 기본 position 3 으로 스트리밍이 이미 정상 —
+    # 건드리지 않는다). 값이 있으면(예: 그리퍼) driver 가 open 마다 그 모드를 명시
+    # 적용한다 — 안 하면 EEPROM 잔존값(goal current 0 인 mode5 등)으로 그리퍼가
+    # 힘없이 안 열린 실물 사고 2026-07-25.
+    mode: str | None = None
     velocity_dps: float
     acceleration_dpss: float
     # Position PID (motors.yaml `pid` 블록). Dynamixel = RAM 이라 driver 가

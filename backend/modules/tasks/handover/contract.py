@@ -36,6 +36,7 @@ class Handover:
 class RunRequest(StrictModel):
     pick_object: str
     place_object: str = ""  # 비우면 수취 후 적치 생략 (so101 이 든 채 종료 방지 — home 에 내려놓기 없음, §시나리오 주석)
+    stop_before_receive: bool = False  # True = omx 집기+제시까지만 하고 성공 종료 (so101 수취 진입 전) — omx 쪽 반복 테스트용
 
 
 class ListRobotsRequest(StrictModel):

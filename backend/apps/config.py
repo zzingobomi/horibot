@@ -129,6 +129,7 @@ def _load_motors(robot_type: str, robot_dir: Path) -> list[MotorSpec]:
                 limit_min=limit["min"],
                 limit_max=limit["max"],
                 reverse=m.get("reverse", False),
+                mode=m.get("mode"),  # 미선언 = servo 기존 모드 유지 (팔은 안 건드림)
                 velocity_dps=profile.get("velocity_dps", 0.0),
                 acceleration_dpss=profile.get("acceleration_dpss", 0.0),
                 # pid 블록 없으면 None — Dynamixel(RAM) 만 driver 가 재적용,

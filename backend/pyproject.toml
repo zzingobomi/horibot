@@ -49,6 +49,7 @@ pi-hori3 = [
     "yourdfpy>=0.0.56",
     "opencv-python-headless>=4.10.0,<5",
     "zstandard>=0.22.0",
+    "eaik>=1.2.2",
 ]
 
 # PC

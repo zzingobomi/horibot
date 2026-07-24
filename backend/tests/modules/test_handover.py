@@ -8,9 +8,7 @@
      공중 재검출 실패 (FK 후퇴 금지)
   ④ 수취 계획의 cross-robot 충돌 게이트 — 충돌 그룹 제외 재시도 / 전멸 명시
      실패 + **근접 국면 파라미터** (omx 그리퍼 닫힘 fraction / margin 축소)
-  ⑤ look-then-move — refine 채택 시 보정 이동, refine 실패 시 coarse blind
-     진행 (침묵 아님 — trace/로그는 별도)
-  ⑥ module 배선 (preview 정적 트리 / list_robots)
+  ⑤ module 배선 (preview 정적 트리 / list_robots)
 """
 
 from __future__ import annotations
@@ -39,7 +37,12 @@ from modules.motion.contract import (
     ResolveReachableResponse,
     TcpState,
 )
-from modules.motor.contract import JointState, Motor, SetGripperResponse
+from modules.motor.contract import (
+    JointState,
+    Motor,
+    SetGripperResponse,
+    SetTorqueResponse,
+)
 from modules.shared_config.contract import SharedConfig, WorkcellBundle, WorkcellRoi
 from modules.tasks.core.contract import PreviewRequest
 from modules.tasks.core.errors import (
@@ -69,6 +72,7 @@ _SELECT = str(Motion.Service.RESOLVE_REACHABLE)
 _MOVE_J = str(Motion.Service.MOVE_J)
 _MOVE_L = str(Motion.Service.MOVE_L)
 _GRIP = str(Motor.Service.SET_GRIPPER)
+_SET_TORQUE = str(Motor.Service.SET_TORQUE)
 _READ_STATE = str(Motor.Service.READ_STATE)
 _TCP_SNAP = str(Motion.Service.TCP_SNAPSHOT)
 _GET_WP_BY_NAME = str(Waypoint.Service.GET_WAYPOINT_BY_NAME)
@@ -197,9 +201,8 @@ def _happy_script() -> dict:
         _GET_WP_BY_NAME: [so_home, omx_home],
         _WORKCELL: [WorkcellBundle(robots={SO: _ROI_SO, OMX: _ROI_OMX})],
         _CAL_BUNDLE: [_hand_eye_bundle(OMX), _hand_eye_bundle(SO)],
-        # observe(1) + refine(1) — 같은 펜 (refine 채택 → 보정 이동 발생)
+        # omx 관측 검출 1건 (refine=look-then-move 폐기)
         _DETECT_PLANAR: [
-            DetectOrientedResponse(found=True, candidates=[_pen_det()]),
             DetectOrientedResponse(found=True, candidates=[_pen_det()]),
         ],
         # so101 재검출(1) + 수취 refine(1) — 제시점 그대로
@@ -210,10 +213,8 @@ def _happy_script() -> dict:
         _SELECT: [
             # omx 관측 자세 (ψ 격자 중 첫 그룹)
             ResolveReachableResponse(index=0, solutions=[[0.1] * 5]),
-            # omx pick [pre, grasp, lift]
-            ResolveReachableResponse(
-                index=0, solutions=[[0.2] * 5, [0.25] * 5, [0.3] * 5]
-            ),
+            # omx pick — 파지점 단일 (top-down pre/lift 폐기)
+            ResolveReachableResponse(index=0, solutions=[[0.2] * 5]),
             # omx 제시 자세
             ResolveReachableResponse(index=0, solutions=[[0.4] * 5]),
             # so101 수취 관측 자세
@@ -221,15 +222,16 @@ def _happy_script() -> dict:
             # so101 수취 [pre, grasp]
             ResolveReachableResponse(index=0, solutions=[[0.6] * 6, [0.65] * 6]),
         ],
-        # so home / omx home / omx observe / omx pick pre / omx present /
+        _SET_TORQUE: [SetTorqueResponse(ok=True)] * 2,  # so101 / omx enable
+        # so home / omx home / omx observe / omx pick / omx present /
         # so observe / so pre / omx retreat home / so 종료 home = 9
         _MOVE_J: [MoveJResponse()] * 9,
-        # refine XY 보정 / blind 하강 / lift / 수취 진입 / withdraw = 5
-        _MOVE_L: [MoveLResponse()] * 5,
+        # 수취 진입 / withdraw = 2 (omx pick 은 move_j 스윙인 — MoveL 없음)
+        _MOVE_L: [MoveLResponse()] * 2,
         # omx open / omx close / so open / so close / omx release open = 5
         _GRIP: [SetGripperResponse()] * 5,
-        # omx close후 / omx lift후 / 제시 도달 / so close후 / so 이탈후 = 5
-        _READ_STATE: [_joint_state(_HELD_RAW)] * 5,
+        # omx close후 / 제시 도달 / so close후 / so 이탈후 = 4 (omx lift 판정 제거)
+        _READ_STATE: [_joint_state(_HELD_RAW)] * 4,
         # 제시 계획(omx) / 수취 계획(omx) / retreat(so, omx) = 4
         _TCP_SNAP: [
             _tcp((0.25, 0.0, 0.10), [0.3] * 5),
@@ -283,10 +285,12 @@ async def test_scenario_happy_path_and_release_order():
         if c["key"] == _READ_STATE and c["robot_id"] == SO
     ]
     assert between, "so101 held 판정 전에 omx 가 열림 — 낙하 위험 순서 위반"
-    # robot-scoped 라우팅: 양쪽 robot 모두 명령이 갔는지 (참여 명부 검증 경유)
-    assert {c["robot_id"] for c in ctx.calls(_MOVE_L)} == {SO, OMX}
-    # 검출 채널: omx = DETECT_PLANAR(mono) ×2, so101 = DETECT_ORIENTED ×2
-    assert len(ctx.calls(_DETECT_PLANAR)) == 2
+    # omx pick 이 move_j 스윙인이라 MoveL 은 so101 수취만
+    assert {c["robot_id"] for c in ctx.calls(_MOVE_L)} == {SO}
+    # robot-scoped 라우팅: 양쪽 robot 모두 명령이 갔는지 (move_j 로 검증)
+    assert {c["robot_id"] for c in ctx.calls(_MOVE_J)} == {SO, OMX}
+    # 검출 채널: omx = DETECT_PLANAR(mono) ×1, so101 = DETECT_ORIENTED ×2
+    assert len(ctx.calls(_DETECT_PLANAR)) == 1
     assert all(
         c["req"].robot_id == OMX for c in ctx.calls(_DETECT_PLANAR)
     )
@@ -294,26 +298,12 @@ async def test_scenario_happy_path_and_release_order():
     assert all(
         c["req"].robot_id == SO for c in ctx.calls(_DETECT_ORIENTED)
     )
-    # 접촉 인접 이동 감속 — blind 하강/수취 진입/withdraw 가 gentle
+    # 접촉 인접 이동 감속 — 수취 진입/withdraw 가 gentle
     gentle = [
         c for c in ctx.calls(_MOVE_L)
         if c["req"].speed_scale == steps._GENTLE_SPEED_SCALE
     ]
-    assert len(gentle) >= 3, [c["req"].speed_scale for c in ctx.calls(_MOVE_L)]
-
-
-async def test_scenario_refine_miss_proceeds_with_coarse():
-    """look-then-move 의 재관측 실패 = coarse 로 blind 진행 (omx best-effort —
-    so101 이 흡수). refine 보정 MoveL 1건이 줄어든다 (침묵이 아니라 로그/trace
-    는 남는다 — 여기선 경로만 잠금)."""
-    script = _happy_script()
-    script[_DETECT_PLANAR] = [
-        DetectOrientedResponse(found=True, candidates=[_pen_det()]),
-        DetectOrientedResponse(found=False, candidates=[]),  # refine 미검출
-    ]
-    ctx = _ctx(script)
-    await _module().scenario(ctx, pick_object="pen")
-    assert len(ctx.calls(_MOVE_L)) == 4  # 보정 이동 1건 감소 (하강/lift/진입/이탈)
+    assert len(gentle) == 2, [c["req"].speed_scale for c in ctx.calls(_MOVE_L)]
 
 
 # ─── ③ 명시 실패 클래스 ──────────────────────────────────────────────
@@ -476,6 +466,7 @@ async def test_module_list_robots_and_preview():
     assert top == [
         "named_waypoint", "named_waypoint", "load_workcells",
         "load_hand_eye", "load_hand_eye",
+        "enable_torque", "enable_torque",
         "go_home", "go_home", "set_gripper",
         "plan_omx_observe", "omx_observe_detect",
         "plan_omx_pick_pen", "omx_pick_pen",

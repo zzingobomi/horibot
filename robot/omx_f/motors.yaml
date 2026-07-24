@@ -99,7 +99,11 @@ motors:
   - id: 6
     name: "gripper_joint_1"
     model: "XL330-M288"
-    mode: "current_position"
+    # position = 전류한계까지 풀토크 위치제어 → 확실히 열리고 펜을 꽉 쥠.
+    # (current_position 은 goal current 를 별도로 걸어야 힘이 나는데 안 걸려서
+    #  힘없이 안 열린 실물 사고 2026-07-25 → position 으로 전환. 섬세한 힘제어가
+    #  필요해지면 driver 에 goal current 배선 후 current_position 복귀.)
+    mode: "position"
     kind: gripper
     home: 2048
     limit:

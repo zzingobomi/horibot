@@ -55,6 +55,7 @@ from ..layout import MotorSpec
 logger = logging.getLogger(__name__)
 
 # ─── Control Table (XL430 / XL330, Protocol 2.0) ──────────────
+ADDR_OPERATING_MODE = 11  # EEPROM — torque OFF 상태에서만 write 가능
 ADDR_TORQUE_ENABLE = 64
 ADDR_POSITION_D_GAIN = 80  # RAM — 전원 cycle 소실, open 마다 재적용
 ADDR_POSITION_I_GAIN = 82
@@ -71,6 +72,12 @@ LEN_PRESENT_POSITION = 4
 LEN_PRESENT_LOAD = 2
 
 PROTOCOL_VERSION = 2.0
+
+# operating mode 값 (Control Table addr 11). position=3 은 전류한계까지 풀토크로
+# goal position 을 추종 — 그리퍼가 확실히 열리고(풀토크로 open raw 도달) 물체를
+# 꽉 쥔다(정지 시 전류한계까지 클램프). current_position(5)/current_control(0)은
+# goal current 를 별도로 걸어야 움직여서, 안 걸면 힘없이 안 열림 (2026-07-25 실물).
+_OPERATING_MODE = {"position": 3, "current_position": 5, "current_control": 0}
 
 # ─── Profile dps ↔ raw 변환 (X-series, v1 검증값) ──────────────
 #   Profile_Velocity unit = 0.229 rev/min = 1.374 °/s per raw
@@ -143,6 +150,7 @@ class DynamixelBackend:
             self._sync_read_position.addParam(mid)
             self._sync_read_load.addParam(mid)
 
+        self._apply_operating_mode()
         self._apply_pid()
         self._apply_profiles()
         logger.info("Dynamixel 연결: %s @ %d", self._port, self._baudrate)
@@ -260,6 +268,28 @@ class DynamixelBackend:
             logger.warning("Dynamixel SyncWrite(goal) 실패")
 
     # ── PID / profile 적용 (open + reboot 공용) ──
+
+    def _apply_operating_mode(self) -> None:
+        """mode 를 **명시 선언한 모터만** operating mode 확정 (EEPROM addr 11 —
+        torque OFF 필수라 먼저 끈다). 미선언(mode=None) 모터는 건드리지 않는다:
+        팔 모터는 공장 기본 position(3) 으로 스트리밍이 이미 정상이라 불필요한
+        EEPROM write/모드 변경 위험을 피한다.
+
+        선언 모터(그리퍼)는 반드시 적용해야 한다 — servo EEPROM 잔존값(goal current
+        0 인 mode5 등)이면 open raw 를 줘도 힘없이 안 열리고 약하게 문다 (2026-07-25
+        실물 — 안 열린 그리퍼가 eye-in-hand 시야를 막아 검출 실패). position(3) =
+        전류한계까지 풀토크 위치제어 → 확실히 열리고 꽉 쥔다.
+        """
+        declared = [m for m in self._motors if m.mode is not None]
+        if not declared:
+            return
+        self.set_torque(False)  # EEPROM write 전제 (모드 변경은 torque off 에서만)
+        for m in declared:
+            self._write1(m.id, ADDR_OPERATING_MODE, _OPERATING_MODE.get(m.mode, 3))
+        logger.info(
+            "Dynamixel operating mode 적용: %s",
+            {m.id: m.mode for m in declared},
+        )
 
     def _apply_pid(self) -> None:
         """motors.yaml `pid` 재적용 — RAM 이라 전원 cycle 마다 소실 (v1 계승).

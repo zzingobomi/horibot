@@ -67,11 +67,9 @@ from modules.tasks.pick_and_place.contract import (
 )
 from modules.tasks.pick_and_place.module import PickAndPlaceModule
 from modules.waypoint.contract import (
-    ListGroupMembersResponse,
-    ListGroupsResponse,
-    ListWaypointsResponse,
+    GetWaypointByNameResponse,
+    ListGroupMembersByNameResponse,
     Waypoint,
-    WaypointGroupRecord,
     WaypointRecord,
 )
 
@@ -93,9 +91,8 @@ _MOVE_L = str(Motion.Service.MOVE_L)
 _GRIP = str(Motor.Service.SET_GRIPPER)
 _READ_STATE = str(Motor.Service.READ_STATE)
 _TCP_SNAP = str(Motion.Service.TCP_SNAPSHOT)
-_LIST_WP = str(Waypoint.Service.LIST)
-_LIST_GROUPS = str(Waypoint.Service.LIST_GROUPS)
-_LIST_MEMBERS = str(Waypoint.Service.LIST_GROUP_MEMBERS)
+_GET_WP_BY_NAME = str(Waypoint.Service.GET_WAYPOINT_BY_NAME)
+_LIST_MEMBERS_BY_NAME = str(Waypoint.Service.LIST_GROUP_MEMBERS_BY_NAME)
 _TS = datetime.fromtimestamp(0, UTC)
 
 _HOME_JOINTS = [0.0, 0.5, -1.0, 0.0, 0.5, 1.5]  # 티칭된 home (임의 유효값)
@@ -120,7 +117,7 @@ def _home_record() -> WaypointRecord:
 
 
 def _home_responses() -> dict:
-    return {_LIST_WP: [ListWaypointsResponse(waypoints=[_home_record()])] * 2}
+    return {_GET_WP_BY_NAME: [GetWaypointByNameResponse(waypoint=_home_record())] * 2}
 
 
 _HELD_RAW = 2400  # gap=|2400-1935|=465 > margin |2100-1935|=165 → HELD
@@ -199,22 +196,19 @@ _MIDSTOP = servo.standoff(_G_TCP, _FAM, _CFG.commit_midstop_m)
 
 
 def _search_responses(n_members: int = 1, sweeps: int = 1) -> dict:
-    grp = ListGroupsResponse(
-        groups=[WaypointGroupRecord(id=1, robot_id=_BOT, name="search")]
-    )
-    members = ListGroupMembersResponse(
+    members = ListGroupMembersByNameResponse(
+        found=True,
         waypoints=[
             WaypointRecord(
                 id=i + 1, robot_id=_BOT, name=f"s{i}",
                 joint_values=[0.0] * 6, joint_names=[], created_at=_TS,
             )
             for i in range(n_members)
-        ]
+        ],
     )
     return {
         **_home_responses(),
-        _LIST_GROUPS: [grp] * (sweeps + 1),
-        _LIST_MEMBERS: [members] * (sweeps + 1),
+        _LIST_MEMBERS_BY_NAME: [members] * (sweeps + 1),
     }
 
 
@@ -325,8 +319,8 @@ async def test_scenario_servo_pick_only_sequence():
     await mod.scenario(ctx, pick_object="white cube")
 
     assert ctx.keys() == [
-        _LIST_WP,  # home 조회 (모션 0)
-        _LIST_GROUPS, _LIST_MEMBERS, _MOVE_J, _DETECT,  # 스윕 (coarse 찾기)
+        _GET_WP_BY_NAME,  # home 조회 (모션 0)
+        _LIST_MEMBERS_BY_NAME, _MOVE_J, _DETECT,  # 스윕 (coarse 찾기)
         *_APPROACH_KEYS,  # 접근·관측: look resolve → transit 계획 → look → 관측
         _SELECT,  # servo 접근 계획 (가족+사다리, 모션 0)
         _PLAN_PATH, _MOVE_J, _GRIP,  # servo 진입: transit 계획 → rung0 → open
@@ -1164,7 +1158,7 @@ async def test_search_sweep_buckets_by_prompt_single_pass():
 async def test_search_group_missing_fails_explicitly():
     ctx = _ctx({
         **_home_responses(),
-        _LIST_GROUPS: [ListGroupsResponse(groups=[])],
+        _LIST_MEMBERS_BY_NAME: [ListGroupMembersByNameResponse(found=False)],
     })
     with pytest.raises(TaskError, match="search"):
         await _module_for_scenario().scenario(ctx, pick_object="white cube")
@@ -1172,11 +1166,11 @@ async def test_search_group_missing_fails_explicitly():
 
 
 async def test_scenario_home_waypoint_missing_fails_before_any_motion():
-    ctx = _ctx({_LIST_WP: [ListWaypointsResponse(waypoints=[])]})
+    ctx = _ctx({_GET_WP_BY_NAME: [GetWaypointByNameResponse(waypoint=None)]})
     with pytest.raises(TaskError, match="home"):
         await _module_for_scenario().scenario(ctx, pick_object="white cube")
     assert ctx.calls(_MOVE_J) == []
-    assert ctx.calls(_LIST_GROUPS) == []
+    assert ctx.calls(_LIST_MEMBERS_BY_NAME) == []
 
 
 async def test_servo_success_writes_trace_and_summary(tmp_path: Path):
@@ -1437,17 +1431,15 @@ class _WireStub:
 
 async def test_module_run_reports_failure_reason_and_allows_rerun():
     rt = _WireStub()
-    rt.responses[_LIST_WP] = ListWaypointsResponse(waypoints=[_home_record()])
-    rt.responses[_LIST_GROUPS] = ListGroupsResponse(
-        groups=[WaypointGroupRecord(id=1, robot_id=_BOT, name="search")]
-    )
-    rt.responses[_LIST_MEMBERS] = ListGroupMembersResponse(
+    rt.responses[_GET_WP_BY_NAME] = GetWaypointByNameResponse(waypoint=_home_record())
+    rt.responses[_LIST_MEMBERS_BY_NAME] = ListGroupMembersByNameResponse(
+        found=True,
         waypoints=[
             WaypointRecord(
                 id=1, robot_id=_BOT, name="s0",
                 joint_values=[0.0] * 6, joint_names=[], created_at=_TS,
             )
-        ]
+        ],
     )
     rt.responses[_MOVE_J] = MoveJResponse()
     rt.responses[_DETECT] = DetectOrientedResponse(found=False, candidates=[])

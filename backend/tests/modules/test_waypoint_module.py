@@ -17,6 +17,8 @@ from modules.waypoint.contract import (
     AddToGroupRequest,
     CreateGroupRequest,
     DeleteWaypointRequest,
+    GetWaypointByNameRequest,
+    ListGroupMembersByNameRequest,
     ListGroupMembersRequest,
     ListGroupsRequest,
     ListWaypointsRequest,
@@ -188,6 +190,74 @@ def test_delete_waypoint_cascades_membership(tmp_path: Path):
         ListGroupMembersRequest(group_row_id=g.id)
     ).waypoints
     assert [m.name for m in members] == ["right"]
+
+
+# ──────────────── 이름 기반 조회 (소비자가 id 를 몰라도 됨) ────────────────
+
+
+def test_get_waypoint_by_name(tmp_path: Path):
+    """(robot_id, name) = ORM 식별자 → owner 가 직접 조회. 없으면 None."""
+    mod, _ = _module(tmp_path)
+    _feed(mod, [0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    mod.teach(TeachRequest(robot_id=_SO101, name="home"))
+    hit = mod.get_waypoint_by_name(
+        GetWaypointByNameRequest(robot_id=_SO101, name="home")
+    )
+    assert hit.waypoint is not None
+    assert hit.waypoint.name == "home"
+    assert hit.waypoint.joint_values == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    # 없는 이름 → None (found 플래그 없이 None 하나로 충분)
+    miss = mod.get_waypoint_by_name(
+        GetWaypointByNameRequest(robot_id=_SO101, name="nope")
+    )
+    assert miss.waypoint is None
+
+
+def test_get_waypoint_by_name_robot_scoped(tmp_path: Path):
+    """이름 유일성은 robot 단위 — so101 의 'home' 이 omx 조회에 새지 않는다."""
+    mod, _ = _module(tmp_path)
+    _feed(mod, [0.0] * 6, _SO101, _NAMES6)
+    mod.teach(TeachRequest(robot_id=_SO101, name="home"))
+    assert (
+        mod.get_waypoint_by_name(
+            GetWaypointByNameRequest(robot_id=_OMX, name="home")
+        ).waypoint
+        is None
+    )
+
+
+def test_list_group_members_by_name_distinguishes_missing_from_empty(tmp_path: Path):
+    """★ found 플래그의 존재 이유 — '그룹 없음' 과 '그룹은 있으나 멤버 0' 은
+    둘 다 waypoints=[] 라, 소비자가 서로 다른 에러 문구를 유지하려면 구분 필요."""
+    mod, _ = _module(tmp_path)
+    _feed(mod, [0.0] * 6)
+    w1 = mod.teach(TeachRequest(robot_id=_SO101, name="s0")).waypoint
+    w2 = mod.teach(TeachRequest(robot_id=_SO101, name="s1")).waypoint
+    assert w1 and w2 and w1.id and w2.id
+    g = mod.create_group(CreateGroupRequest(robot_id=_SO101, name="search")).group
+    assert g and g.id
+    mod.add_to_group(AddToGroupRequest(group_row_id=g.id, waypoint_row_id=w1.id))
+    mod.add_to_group(AddToGroupRequest(group_row_id=g.id, waypoint_row_id=w2.id))
+
+    # 그룹 있음 + 멤버 있음 → found=True, 추가 순 position
+    hit = mod.list_group_members_by_name(
+        ListGroupMembersByNameRequest(robot_id=_SO101, name="search")
+    )
+    assert hit.found is True
+    assert [m.name for m in hit.waypoints] == ["s0", "s1"]
+
+    # 그룹 없음 → found=False, waypoints=[]
+    missing = mod.list_group_members_by_name(
+        ListGroupMembersByNameRequest(robot_id=_SO101, name="nope")
+    )
+    assert missing.found is False and missing.waypoints == []
+
+    # 그룹 있음 + 멤버 0 → found=True, waypoints=[] (missing 과 구분되는 지점)
+    mod.create_group(CreateGroupRequest(robot_id=_SO101, name="empty"))
+    empty = mod.list_group_members_by_name(
+        ListGroupMembersByNameRequest(robot_id=_SO101, name="empty")
+    )
+    assert empty.found is True and empty.waypoints == []
 
 
 # ──────────────── multi-robot 눈속임 방지 (§2.7.3 acceptance) ────────────────

@@ -50,6 +50,7 @@ from .contract import (
     TaskMarkers,
 )
 from .pen import robot_to_world
+from .publish import MarkerPublisher
 from .trace import HandoverTrace
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,7 @@ class HandoverModule:
         self, ctx: TaskContext, pick_object: str, place_object: str = ""
     ) -> None:
         so101, omx = self.TASK_ROBOTS
+        marks = MarkerPublisher(self._publish_markers, giver=omx, receiver=so101)
         if self._omx_base_pose is None:
             raise RuntimeError(
                 "omx base_pose 미배선 — robots.yaml base_pose → apps/resolve.py "
@@ -238,9 +240,7 @@ class HandoverModule:
             g_world = robot_to_world(
                 (grasp.grasp_xy[0], grasp.grasp_xy[1], 0.0), base_omx
             )
-            self._publish_markers(omx, [
-                TaskMarker(label="grasp", position=g_world),
-            ])
+            marks.show_grasp(g_world)
 
             # 4) B+C. top-down 계획 → look-then-move 집기
             pick = await steps.plan_omx_pick_pen(ctx, omx, grasp, trace)
@@ -254,9 +254,7 @@ class HandoverModule:
                 list(home_so.joint_values), self._checker, trace,
             )
             await steps.omx_present(ctx, omx, present, trace)
-            self._publish_markers(so101, [
-                TaskMarker(label="handover", position=present.h_world),
-            ])
+            marks.show_handover(present.h_world)
 
             # 6) E. so101 수취 — 재검출 → 계획(충돌 게이트) → refine → 불변식 실행
             so_obs = await steps.plan_so_observe(

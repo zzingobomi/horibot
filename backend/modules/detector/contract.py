@@ -16,7 +16,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
-from framework.contract.model import DraftModel
+from framework.contract.model import DraftModel, StrictModel
 from framework.contract.service import declare_service_timeouts
 
 
@@ -64,11 +64,10 @@ class Detector:
         # robot-agnostic (host 당 1, backend.md §2.7) — robot_id 는 req field.
         # 무거운 모델(GDINO)은 1회 로드, 매 요청이 robot_id 로 그 로봇의 camera/캘/TCP 조회.
         DETECT = "srv/detector/detect"  # prompt + robot_id → base 3D 후보 Top-K
-        # [DRAFT] OBB(grasp yaw + footprint) 탐색용 — SAM mask → base 점군 → minAreaRect.
-        # /dev 로 shape(deg/rad, footprint 정확도) 굳으면 Detection 에 필드 승격 후 DETECT
-        # 로 흡수 (DraftModel → StrictModel). §17.5 회전 파지.
+        # OBB(grasp yaw + footprint) — SAM mask → base 점군 → minAreaRect.
+        # pnp 실물 검증으로 shape 확정 (StrictModel). §17.5 회전 파지.
         DETECT_ORIENTED = "srv/detector/detect_oriented"
-        # [DRAFT] 멀티뷰 관측 융합 — 여러 뷰의 OrientedDetection(points 포함)을
+        # 멀티뷰 관측 융합 — 여러 뷰의 OrientedDetection(points 포함)을
         # 같은 물체끼리 군집 → 점군 합쳐 기하 재계산 (실 height 는 여기서만 —
         # 단일 뷰는 옆면 depth 부재로 과소). 순수 계산 (camera/모델 무관) — 뷰
         # 이동/수집 흐름은 소비자(task) 소유, 기하 산출은 detector 소유.
@@ -82,8 +81,8 @@ class Detector:
         # robot-scoped 키 — payload robot_id 로 framework 라우팅 (host-level 발행,
         # scan BUILD_PROGRESS 동형).
         DETECTIONS = "stream/detector/{robot_id}/detections"
-        # [DRAFT] DETECT_ORIENTED 오버레이 — bbox + obb_2d + mask_contour. shape 굳으면
-        # DETECTIONS 로 흡수 (OrientedDetectionsUpdate payload = DraftModel).
+        # DETECT_ORIENTED 오버레이 — bbox + obb_2d + mask_contour
+        # (OrientedDetectionsUpdate payload). on-demand publish.
         DETECTIONS_ORIENTED = "stream/detector/{robot_id}/detections_oriented"
 
 
@@ -111,14 +110,13 @@ class DetectResponse(BaseModel):
     message: str = ""
 
 
-class OrientedDetection(DraftModel):
-    """[DRAFT] Detection + OBB(grasp yaw / footprint). 아직 shape 미확정 (extra=allow).
+class OrientedDetection(StrictModel):
+    """Detection + OBB(grasp yaw / footprint) — base frame 회전 파지 정보.
 
-    Detection 의 모든 필드 + base frame 회전 파지 정보 (base_z/height 의미는
-    Detection docstring — object-centric, 자기 점군). /dev 로 검증할 열린 질문:
-      grasp_yaw: base Z 회전 rad([-π/2,π/2)) — deg/rad·부호 규약 실물 확인 대상.
-      footprint: (long, short) m — mask 윗면 band vs 전체 점군 어느 쪽이 정확한지 tuning.
-    굳으면 Detection 에 필드 승격 + base 를 StrictModel 로 교체 (빠뜨린 필드 fail-fast).
+    pnp 실물 검증으로 shape 확정 (DraftModel → StrictModel, 2026-07). base_z/height
+    의미는 Detection docstring (object-centric, 자기 점군).
+      grasp_yaw: base Z 회전 rad ([-π/2, π/2)).
+      footprint: (long, short) m — 평면 투영 OBB 변 길이.
     """
 
     prompt: str
@@ -140,16 +138,16 @@ class OrientedDetection(DraftModel):
     points: list[tuple[float, float, float]] | None = None
 
 
-class DetectOrientedResponse(DraftModel):
-    """[DRAFT] detect_oriented 결과 — DETECT_ORIENTED. shape 굳으면 DetectResponse 로 흡수."""
+class DetectOrientedResponse(StrictModel):
+    """detect_oriented 결과 — DETECT_ORIENTED (Top-K OrientedDetection)."""
 
     found: bool
     candidates: list[OrientedDetection] = []
     message: str = ""
 
 
-class FuseOrientedRequest(DraftModel):
-    """[DRAFT] 멀티뷰 관측 융합 — 같은 prompt 로 여러 뷰에서 모은 후보들.
+class FuseOrientedRequest(StrictModel):
+    """멀티뷰 관측 융합 — 같은 prompt 로 여러 뷰에서 모은 후보들.
 
     입력 후보의 points(base 점군)가 융합 소스 — points 없는 후보는 위치 군집에만
     기여. base frame 이라 뷰 간 정렬이 이미 돼 있음 (쌓기만 하면 됨, §5.2).
@@ -160,8 +158,8 @@ class FuseOrientedRequest(DraftModel):
     cluster_eps_m: float = 0.04
 
 
-class FuseOrientedResponse(DraftModel):
-    """[DRAFT] 군집별 융합 결과 (score desc — score = 군집 내 최대).
+class FuseOrientedResponse(StrictModel):
+    """군집별 융합 결과 (score desc — score = 군집 내 최대).
 
     융합 후보의 position/base_z/height/footprint/grasp_yaw 는 합친 점군에서
     재계산 — height 가 비로소 실측 (옆면이 다른 뷰에서 채워짐). 뷰 종속 필드
@@ -192,8 +190,8 @@ class DetectPlanarRequest(DraftModel):
     top_k: int = 5
 
 
-class OrientedDetectionsUpdate(DraftModel):
-    """[DRAFT] DETECT_ORIENTED 1회의 오버레이 스냅샷 — 카메라 패널 (DetectionsUpdate 의
+class OrientedDetectionsUpdate(StrictModel):
+    """DETECT_ORIENTED 1회의 오버레이 스냅샷 — 카메라 패널 (DetectionsUpdate 의
     oriented 판). bbox + obb_2d(회전 사각형) + mask_contour(실루엣). on-demand publish."""
 
     robot_id: str

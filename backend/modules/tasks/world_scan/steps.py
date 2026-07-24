@@ -43,10 +43,8 @@ from modules.tasks.core.context import TaskContext
 from modules.tasks.core.errors import TaskError
 from modules.tasks.core.step import step
 from modules.waypoint.contract import (
-    ListGroupMembersRequest,
-    ListGroupMembersResponse,
-    ListGroupsRequest,
-    ListGroupsResponse,
+    ListGroupMembersByNameRequest,
+    ListGroupMembersByNameResponse,
     WaypointRecord,
     Waypoint,
 )
@@ -98,9 +96,7 @@ async def start_session(ctx: TaskContext, robot_id: str) -> int:
     return sid
 
 
-async def _prune_old_sessions(
-    ctx: TaskContext, robot_id: str, *, keep_id: int
-) -> None:
+async def _prune_old_sessions(ctx: TaskContext, robot_id: str, *, keep_id: int) -> None:
     """이전 world_scan 세션 삭제 (keep_id 제외). best-effort — 프루닝 실패가
     스캔을 막지 않게 경고만 (본 스캔은 새 세션에서 정상 진행)."""
     try:
@@ -110,7 +106,8 @@ async def _prune_old_sessions(
             ListSessionsResponse,
         )
         stale = [
-            s for s in listed.sessions
+            s
+            for s in listed.sessions
             if s.label == _SESSION_LABEL and s.id is not None and s.id != keep_id
         ]
         for s in stale:
@@ -145,7 +142,7 @@ async def sweep(
     n = len(poses)
     t0 = time.monotonic()
     for i, wp in enumerate(poses):
-        await _move_j(ctx, robot_id, wp.joint_values)
+        await _move_j(ctx, robot_id, joints=wp.joint_values)
         await asyncio.sleep(_SETTLE_S)  # 손목 진동 정착 (depth 품질)
         cap = await ctx.call(
             Scan.Service.CAPTURE,
@@ -160,7 +157,10 @@ async def sweep(
             )
         logger.info(
             "world_scan sweep pose %d/%d 캡처 (총 %d장, %.1fs)",
-            i + 1, n, cap.scan_count, time.monotonic() - t0,
+            i + 1,
+            n,
+            cap.scan_count,
+            time.monotonic() - t0,
         )
     # 스윕 끝 — mesh 1번 빌드 (전체 재빌드라 이 1회로 완전).
     build = await ctx.call(
@@ -177,41 +177,37 @@ async def sweep(
     rec = build.reconstruction
     logger.info(
         "world_scan 완료: %d 자세 캡처 + 최종 빌드 %d verts (%.1fs)",
-        n, rec.vertex_count if rec else -1, time.monotonic() - t0,
+        n,
+        rec.vertex_count if rec else -1,
+        time.monotonic() - t0,
     )
 
 
 async def _scan_waypoints(ctx: TaskContext, robot_id: str) -> list[WaypointRecord]:
     """스캔 자세 그룹('search') 멤버(티칭 순서). 그룹 없음/빔 = 명시 실패 (침묵
     단일-뷰 폴백 금지 — 관측 자세를 티칭해야 스윕 성립)."""
-    groups = await ctx.call(
-        Waypoint.Service.LIST_GROUPS,
-        ListGroupsRequest(robot_id=robot_id),
-        ListGroupsResponse,
+    res = await ctx.call(
+        Waypoint.Service.LIST_GROUP_MEMBERS_BY_NAME,
+        ListGroupMembersByNameRequest(robot_id=robot_id, name=_SCAN_GROUP),
+        ListGroupMembersByNameResponse,
     )
-    grp = next((g for g in groups.groups if g.name == _SCAN_GROUP), None)
-    if grp is None or grp.id is None:
+    if not res.found:
         raise TaskError(
             f"'{_SCAN_GROUP}' waypoint 그룹 없음 (robot={robot_id}) — 관측 자세를 "
             "티칭해 '검색' 그룹으로 묶은 뒤 다시 실행하세요"
         )
-    members = await ctx.call(
-        Waypoint.Service.LIST_GROUP_MEMBERS,
-        ListGroupMembersRequest(group_row_id=grp.id),
-        ListGroupMembersResponse,
-    )
-    if not members.waypoints:
+    if not res.waypoints:
         raise TaskError(
             f"'{_SCAN_GROUP}' 그룹이 비어있음 (robot={robot_id}) — 스캔 자세를 "
             "이 그룹에 추가하세요"
         )
-    return members.waypoints
+    return res.waypoints
 
 
-async def _move_j(ctx: TaskContext, robot_id: str, joints: list[float]) -> None:
+async def _move_j(ctx: TaskContext, robot_id: str, *, joints: list[float]) -> None:
     await ctx.call(
         Motion.Service.MOVE_J,
-        MoveJRequest(target=JointTarget(kind="joint", joints=list(joints))),
+        MoveJRequest(target=JointTarget(kind="joint", joints=joints)),
         MoveJResponse,
         robot_id=robot_id,
     )

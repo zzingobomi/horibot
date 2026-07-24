@@ -102,14 +102,15 @@ def test_contract_json_shape():
     # payload 타입은 TS 문자열로 이미 해소 (서버가 실 Python type 을 아니까)
     jog = next(t for t in data["topics"] if t["key"].endswith("/jog_j"))
     assert jog["payload"] == "JogJInput"
-    # draft 메타 — DraftModel 계약만 True (숨기지 않고 상태 표현). detector 회전 파지가
-    # 첫 노출 draft: DETECTIONS_ORIENTED 토픽 + DETECT_ORIENTED 서비스 + payload 인터페이스.
+    # draft 메타 — DraftModel 계약만 True (숨기지 않고 상태 표현). 회전 파지 계열은
+    # pnp 실물 검증으로 승격(StrictModel) — 현재 **노출된** draft 계약은 없다
+    # (DETECT_PLANAR/DetectPlanarRequest 는 draft 지만 frontend 미노출 = 여기 안 옴).
     draft_topics = {t["key"] for t in data["topics"] if t["draft"]}
     draft_services = {s["key"] for s in data["services"] if s["draft"]}
-    assert draft_topics == {"stream/detector/{robot_id}/detections_oriented"}
-    assert draft_services == {"srv/detector/detect_oriented"}
+    assert draft_topics == set()
+    assert draft_services == set()
     draft_ifaces = {i["name"] for i in data["interfaces"] if i["draft"]}
-    assert {"OrientedDetection", "OrientedDetectionsUpdate"} <= draft_ifaces
+    assert draft_ifaces == set()
 
 
 # ─── provider closure wiring (resolve/main) ──────────────────────
@@ -314,12 +315,11 @@ def test_graph_is_unfiltered():
     assert graph["keys"][move_j]["category"] == "service"
     assert "req" in graph["keys"][move_j] and "res" in graph["keys"][move_j]
     # draft 메타 — 모든 key 에 bool 존재 (그래프 배지용). DraftModel 계약은 True.
+    # 회전 파지 계열은 pnp 실물 검증으로 승격(StrictModel) → 이제 DETECT_PLANAR
+    # (handover mono, 미검증)가 남은 draft 예시.
     assert all(isinstance(k["draft"], bool) for k in graph["keys"].values())
-    assert graph["keys"]["srv/detector/detect_oriented"]["draft"] is True
-    assert (
-        graph["keys"]["stream/detector/{robot_id}/detections_oriented"]["draft"]
-        is True
-    )
+    assert graph["keys"]["srv/detector/detect_oriented"]["draft"] is False
+    assert graph["keys"]["srv/detector/detect_planar"]["draft"] is True
 
 
 def test_graph_name_conflict_resolution():

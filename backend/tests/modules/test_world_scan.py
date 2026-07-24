@@ -28,10 +28,8 @@ from modules.tasks.core.spec import TaskRobotSpec
 from modules.tasks.world_scan import steps
 from modules.tasks.world_scan.module import WorldScanModule
 from modules.waypoint.contract import (
-    ListGroupMembersResponse,
-    ListGroupsResponse,
+    ListGroupMembersByNameResponse,
     Waypoint,
-    WaypointGroupRecord,
     WaypointRecord,
 )
 
@@ -51,8 +49,7 @@ _LIST_SESS = str(Scan.Service.LIST_SESSIONS)
 _DEL_SESS = str(Scan.Service.DELETE_SESSION)
 _CAP = str(Scan.Service.CAPTURE)
 _BUILD = str(Scan.Service.BUILD)
-_LIST_GROUPS = str(Waypoint.Service.LIST_GROUPS)
-_LIST_MEMBERS = str(Waypoint.Service.LIST_GROUP_MEMBERS)
+_LIST_MEMBERS_BY_NAME = str(Waypoint.Service.LIST_GROUP_MEMBERS_BY_NAME)
 
 
 @pytest.fixture(autouse=True)
@@ -77,19 +74,17 @@ def _recon(verts: int = 1000) -> ReconstructionRecord:
 
 
 def _scan_group(n_poses: int = 3) -> dict:
-    grp = ListGroupsResponse(
-        groups=[WaypointGroupRecord(id=2, robot_id=_BOT, name="search")]
-    )
-    members = ListGroupMembersResponse(
+    members = ListGroupMembersByNameResponse(
+        found=True,
         waypoints=[
             WaypointRecord(
                 id=i + 1, robot_id=_BOT, name=f"scan_{i}",
                 joint_values=[float(i)] * 6, joint_names=[], created_at=_TS,
             )
             for i in range(n_poses)
-        ]
+        ],
     )
-    return {_LIST_GROUPS: [grp], _LIST_MEMBERS: [members]}
+    return {_LIST_MEMBERS_BY_NAME: [members]}
 
 
 def _script(
@@ -198,7 +193,9 @@ async def test_build_failure_raises():
 async def test_missing_scan_group_raises():
     """'search' 그룹 없음 = 명시 실패 (침묵 단일-뷰 폴백 금지 — 티칭 안내)."""
     script = _script(n_poses=3)
-    script[_LIST_GROUPS] = [ListGroupsResponse(groups=[])]  # search 그룹 없음
+    script[_LIST_MEMBERS_BY_NAME] = [
+        ListGroupMembersByNameResponse(found=False)
+    ]  # search 그룹 없음
     ctx = _ctx(script)
     with pytest.raises(TaskError, match="'search' waypoint 그룹 없음"):
         await _module().scenario(ctx, voxel_size=None)

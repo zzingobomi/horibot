@@ -9,9 +9,7 @@ dependencies = [
     "pydantic>=2.9.0",
     "msgspec>=0.18.0",
     "numpy>=1.26.0",
-    "pyyaml>=6.0",
-    # instance.yaml 프로그램적 갱신 (shared_config SET_WORKCELL) — 손 주석/순서
-    # 보존이 요건이라 pyyaml 재직렬화(주석 소멸) 불가, round-trip 전용.
+    "pyyaml>=6.0",    
     "ruamel-yaml>=0.18",
     "psutil>=6.0.0",
 ]
@@ -31,10 +29,7 @@ pi-hori1 = [
     "pybullet>=3.2",
     "ruckig>=0.9",
     "scipy>=1.11",
-    "yourdfpy>=0.0.56",
-    # 해석적 IK (docs/motion.md §11) — optional: import 실패 시 수치 폴백
-    # (adapters/analytic.py). Pi(aarch64) wheel 부재 시 소스빌드가 필요할 수
-    # 있음 — 설치 실패해도 부팅은 됨 (부팅 로그 "IK=수치" 로 모드 확인).
+    "yourdfpy>=0.0.56",    
     "eaik>=1.2.2",
 ]
 
@@ -58,7 +53,7 @@ pi-hori3 = [
 
 # PC
 pc = [
-    "eaik>=1.2.2",  # 해석적 IK — pi-hori1 주석 참조
+    "eaik>=1.2.2",
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
     "websockets>=13.0",

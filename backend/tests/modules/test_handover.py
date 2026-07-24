@@ -54,7 +54,7 @@ from modules.tasks.handover.collision import BasePose
 from modules.tasks.handover.contract import ListRobotsRequest
 from modules.tasks.handover.module import HandoverModule
 from modules.waypoint.contract import (
-    ListWaypointsResponse,
+    GetWaypointByNameResponse,
     Waypoint,
     WaypointRecord,
 )
@@ -71,7 +71,7 @@ _MOVE_L = str(Motion.Service.MOVE_L)
 _GRIP = str(Motor.Service.SET_GRIPPER)
 _READ_STATE = str(Motor.Service.READ_STATE)
 _TCP_SNAP = str(Motion.Service.TCP_SNAPSHOT)
-_LIST_WP = str(Waypoint.Service.LIST)
+_GET_WP_BY_NAME = str(Waypoint.Service.GET_WAYPOINT_BY_NAME)
 _WORKCELL = str(SharedConfig.Service.SNAPSHOT_WORKCELL)
 _CAL_BUNDLE = str(Calibration.Service.SNAPSHOT_BUNDLE)
 
@@ -191,10 +191,10 @@ def _module(checker=None) -> HandoverModule:  # noqa: ANN001
 
 def _happy_script() -> dict:
     """happy path 스크립트 — place_object="" (수취까지, 적치 생략)."""
-    so_wps = ListWaypointsResponse(waypoints=[_wp(SO, "home", 1)])
-    omx_wps = ListWaypointsResponse(waypoints=[_wp(OMX, "home", 2)])
+    so_home = GetWaypointByNameResponse(waypoint=_wp(SO, "home", 1))
+    omx_home = GetWaypointByNameResponse(waypoint=_wp(OMX, "home", 2))
     return {
-        _LIST_WP: [so_wps, omx_wps],
+        _GET_WP_BY_NAME: [so_home, omx_home],
         _WORKCELL: [WorkcellBundle(robots={SO: _ROI_SO, OMX: _ROI_OMX})],
         _CAL_BUNDLE: [_hand_eye_bundle(OMX), _hand_eye_bundle(SO)],
         # observe(1) + refine(1) — 같은 펜 (refine 채택 → 보정 이동 발생)

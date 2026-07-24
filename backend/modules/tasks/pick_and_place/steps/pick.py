@@ -31,9 +31,6 @@ from modules.detector.contract import (
 )
 from modules.motion.contract import (
     Motion,
-    MoveJRequest,
-    MoveJResponse,
-    PoseTarget,
     ResolveReachableRequest,
     ResolveReachableResponse,
     TcpSnapshotRequest,
@@ -55,7 +52,7 @@ from .primitives import (
     _VIEW_MATCH_RADIUS_M,
     _fmt,
     _log_reached_tcp,
-    _move_j_joints,
+    _move_j,
     _move_l,
     _nearest_within,
     close_gripper,
@@ -554,10 +551,8 @@ async def _withdraw_with_fallback(
     try:
         await _move_l(
             ctx, robot_id,
-            servo.standoff(
-                run.g_tcp, run.fam, cfg.withdraw_standoff_m
-            ),
-            run.fam.quat,
+            position=servo.standoff(run.g_tcp, run.fam, cfg.withdraw_standoff_m),
+            quaternion=run.fam.quat,
             speed_scale=cfg.gentle_speed_scale,
         )
     except asyncio.CancelledError:
@@ -573,7 +568,7 @@ async def _withdraw_with_fallback(
             "tick": state.ticks,
             "reason": str(e_w),
         })
-        await _move_j_joints(ctx, robot_id, plan.rung0_joints)
+        await _move_j(ctx, robot_id, joints=plan.rung0_joints)
 
 
 async def _replan_family(
@@ -636,7 +631,7 @@ async def _replan_family(
     state.rung = 0
     state.corrections = 0
     state.misses = 0
-    await _move_j_joints(ctx, robot_id, res.solutions[0])
+    await _move_j(ctx, robot_id, joints=res.solutions[0])
     return True
 
 
@@ -737,7 +732,8 @@ async def _touch_up(
             "cmd": [round(v, 4) for v in grasp_cmd],
         })
         await _move_l(
-            ctx, robot_id, grasp_cmd, run.fam.quat,
+            ctx, robot_id,
+            position=grasp_cmd, quaternion=run.fam.quat,
             speed_scale=cfg.gentle_speed_scale,
         )
         comp.commanded(grasp_cmd)
@@ -761,7 +757,9 @@ async def _descend_profiled(
     이동이 즉시 끝나면(=mock) 샘플 0 (첫 폴링 전에 1 tick 양보) — 스크립트
     테스트의 응답 소비를 오염하지 않는 결정성 계약."""
     move = asyncio.ensure_future(_move_l(
-        ctx, robot_id, position, quat, speed_scale=cfg.gentle_speed_scale,
+        ctx, robot_id,
+        position=position, quaternion=quat,
+        speed_scale=cfg.gentle_speed_scale,
     ))
     await asyncio.sleep(0)  # mock 즉시완료 이동은 아래 루프 진입 전에 done
     try:
@@ -824,7 +822,8 @@ async def _retreat_for_retry(
     [-1] = 사다리 길이 무관 (적응 진입 1-rung 사다리에서 [1] 은 범위 밖)."""
     cmd = comp.apply(servo.standoff(run.g_tcp, run.fam, cfg.standoffs[-1]))
     await _move_l(  # 물체 옆에서 시작하는 후퇴 — 감속 (재밀침 방지)
-        ctx, robot_id, cmd, run.fam.quat,
+        ctx, robot_id,
+        position=cmd, quaternion=run.fam.quat,
         speed_scale=cfg.gentle_speed_scale,
     )
     comp.commanded(cmd)
@@ -845,7 +844,7 @@ async def _servo_move(
     (handoff §2 표) — 여기서 명시적으로 끊는다.
     """
     try:
-        await _move_l(ctx, robot_id, position, quat)
+        await _move_l(ctx, robot_id, position=position, quaternion=quat)
         return
     except asyncio.CancelledError:
         raise
@@ -860,16 +859,9 @@ async def _servo_move(
             "target": [round(v, 4) for v in position],
         })
         try:
-            await ctx.call(
-                Motion.Service.MOVE_J,
-                MoveJRequest(
-                    target=PoseTarget(
-                        kind="pose", position=position, quaternion=quat
-                    )
-                ),
-                MoveJResponse,
-                robot_id=robot_id,
-            )
+            # pose-MoveJ (position IK) — _move_j 가 MoveTarget union 을 받으므로
+            # PoseTarget 도 같은 helper 로 (관절 보간이라 자세가 경로 따라 자유).
+            await _move_j(ctx, robot_id, position=position, quaternion=quat)
             return
         except asyncio.CancelledError:
             raise

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import time
 
 from framework.contract.publisher import publishes
@@ -25,7 +24,7 @@ from modules.tasks.core.preview import build_preview
 from modules.tasks.core.runner import RunState, TaskRunner
 from modules.tasks.core.spec import TaskRobotSpec
 
-from . import servo, steps
+from . import steps
 from .contract import (
     ListRobotsRequest,
     ListRobotsResponse,
@@ -34,6 +33,7 @@ from .contract import (
     TaskMarker,
     TaskMarkers,
 )
+from .publish import MarkerPublisher
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +172,7 @@ class PickAndPlaceModule:
         place_object: str = "",
     ) -> None:
         so101 = self.TASK_ROBOTS[0]
+        marks = MarkerPublisher(self._publish_markers, so101)
 
         home = await steps.home_waypoint(ctx, so101)
 
@@ -181,16 +182,9 @@ class PickAndPlaceModule:
             prompts.append(place_object)
         found = await steps.detect(ctx, so101, prompts)
 
-        # 2) 접근·관측 + 계획 (2026-07-21 재구조) — **관측(팔 이동)은 상자 먼저 →
-        # 물건 마지막**: 물건을 마지막에 봐야 관측이 최신이고, 물건 본 뒤엔 계획
-        # (plan_* = 모션 0, 팔 안 움직임)만 하다 **바로 집으러** 간다 (상자로 왕복
-        # 없음). 놓기 계획은 집기와 독립(상자 정중앙 위, 물건 폭/높이 무시 —
-        # geometry TODO)이라 먼저 세운다. 집기·놓기 도달성을 **둘 다 집기 전에**
-        # 검증 — 놓을 곳 도달 불가면 아무것도 안 집는다 (쥔 채 멈춤 corrupt 방지).
-        drop, drop_pre, place_marker = None, None, None
+        # place_object 관측 및 놓기 계획
+        drop, drop_pre = None, None
         if place_object:
-            # 상자 빈손 관측 (§3.3 — 든 물건이 상자 가리는 것 회피, 집기 전 관측)
-            # → 놓기 계획 (coarse 스윕 노이즈 대신 정확 관측).
             place_cands, _, _ = await steps.approach_observe(
                 ctx, so101, found.get(place_object, []), place_object, home
             )
@@ -201,18 +195,9 @@ class PickAndPlaceModule:
                 home=home,
                 spots=place_cands,
             )
-            place_marker = TaskMarker(
-                label="place",
-                position=drop.place,
-                # 적치 진입 방향 = pre→place (수직 삽입 축), 자세 = 계획 quat.
-                # 조 축은 place 마커엔 생략 (release 는 조 방향이 관심사 아님).
-                approach=_unit_dir(drop.pre, drop.place),
-                quaternion=drop.quat,
-            )
+            marks.set_place(drop)
 
-        # 물건은 **마지막에** 관측 → 파지 계획 (그 뒤엔 이동 없이 바로 집으러).
-        # 가까이 정확 관측 성공(pick_close) 시 관측 yaw 를 믿어 파지 yaw 격자를
-        # 끈다 (trust_yaw → 가족 312→~52, 전멸 CT 6배↓). 폴백이면 격자 유지.
+        # pick_object 관측 및 집기 계획
         pick_cands, _, pick_close = await steps.approach_observe(
             ctx, so101, found.get(pick_object, []), pick_object, home
         )
@@ -225,62 +210,27 @@ class PickAndPlaceModule:
             trust_yaw=pick_close,
         )
 
-        # 마커: 파지[0] + 적치[1] (on_grasp 가 [0] 만 실시간 갱신, [1:] 유지).
-        markers = [_grasp_marker(plan.grasp_point0, plan.family)]
-        if place_marker is not None:
-            markers.append(place_marker)
-        # 계획 확정 시점에 마커 표시 (파지·적치 지점을 실행 전 미리 보여줌).
-        self._publish_markers(so101, markers)
+        # 집기·놓기 계획 마커 표시
+        marks.show_grasp(plan.grasp_point0, plan.family)
 
-        # servo 가 파지점을 갱신할 때마다 마커 재발행 — 계획 시점 마커가 실행
-        # 내내 고정 표시되던 UI 구멍 (2026-07-17 사용자 리포트. 스트림은
-        # latest-wins 라 매 채택 발행이 곧 실시간 표시). fam 도 함께 — refit/
-        # 재플랜으로 파지 방향이 바뀌면 화살표·조 축 바가 실시간 따라간다.
-        def on_grasp(p: tuple[float, float, float], fam: servo.GraspFamily) -> None:
-            self._publish_markers(
-                so101,
-                [
-                    _grasp_marker(p, fam),
-                    *markers[1:],  # place 마커 유지 (계획값 — 적치는 open-loop)
-                ],
-            )
-
-        # 3) 실행 — 집기 = closed-loop servo (물체 근처에서 관측→보정 루프,
-        # steps/servo.py 정본), 놓기 = open-loop (상자 적치는 오차 관대).
-        # 적치 동반 시 end_home=False — 쥔 채 home 왕복 대신 execute_place 의
-        # 운반 transit 이 withdraw 자세에서 바로 적치 접근을 계획 (§12).
+        # 집기는 servo(closed-loop), 놓기는 계획(open-loop)으로 수행.
+        # servo 가 파지점을 채택할 때마다 마커 실시간 갱신
         await steps.servo_pick(
-            ctx, so101, plan, pick_object, home, on_grasp,
+            ctx,
+            so101,
+            plan,
+            pick_object,
+            home,
+            marks.show_grasp,
             end_home=drop is None,
         )
         if drop is not None and drop_pre is not None:
             await steps.execute_place(
-                ctx, so101, drop, drop_pre, home,
+                ctx,
+                so101,
+                drop,
+                drop_pre,
+                home,
                 carry_floor_z=plan.floor_z,
                 held_height_m=plan.coarse.height,
             )
-
-
-def _grasp_marker(p: tuple[float, float, float], fam: servo.GraspFamily) -> TaskMarker:
-    """파지 마커 — 위치 + 가족 방향(approach/jaw_axis/quat) 동봉.
-
-    계획 확정·servo 채택 갱신이 같은 구성을 쓴다 — "어느 면을 어느 방향으로
-    무는지"의 시각화 소스는 항상 servo.GraspFamily (contract.TaskMarker)."""
-    return TaskMarker(
-        label="grasp",
-        position=p,
-        approach=fam.approach,
-        jaw_axis=fam.jaw_axis,
-        quaternion=fam.quat,
-    )
-
-
-def _unit_dir(
-    a: tuple[float, float, float], b: tuple[float, float, float]
-) -> tuple[float, float, float] | None:
-    """a→b 단위벡터 — 퇴화(0 길이)면 None (마커는 방향 표시 생략)."""
-    d = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
-    n = math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2)
-    if n < 1e-9:
-        return None
-    return (d[0] / n, d[1] / n, d[2] / n)

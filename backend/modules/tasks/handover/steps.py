@@ -82,12 +82,10 @@ from modules.tasks.core.errors import (
 )
 from modules.tasks.core.step import step
 from modules.waypoint.contract import (
-    ListGroupMembersRequest,
-    ListGroupMembersResponse,
-    ListGroupsRequest,
-    ListGroupsResponse,
-    ListWaypointsRequest,
-    ListWaypointsResponse,
+    GetWaypointByNameRequest,
+    GetWaypointByNameResponse,
+    ListGroupMembersByNameRequest,
+    ListGroupMembersByNameResponse,
     Waypoint,
     WaypointRecord,
 )
@@ -206,9 +204,7 @@ _BASE_Z_MAX_M = 0.08  # 적치 spot 대역 (테이블)
 # 기준 자세: 툴 x(approach)→base -z (수직 하향), y(조 축)→base +y — so101
 # URDF tcp 규약 (pick_and_place geometry._TOPDOWN 동일. omx 도 동일 — §5.2
 # 구조 확정, 물리 조립 일치는 실물 미지수 가정 ①).
-_TOPDOWN = Rotation.from_matrix(
-    np.column_stack([[0, 0, -1], [0, 1, 0], [1, 0, 0]])
-)
+_TOPDOWN = Rotation.from_matrix(np.column_stack([[0, 0, -1], [0, 1, 0], [1, 0, 0]]))
 
 
 def knob_snapshot() -> dict[str, float | tuple]:
@@ -217,9 +213,7 @@ def knob_snapshot() -> dict[str, float | tuple]:
     return {
         k: g[k]
         for k in sorted(g)
-        if k.startswith("_") and k.isupper() and isinstance(
-            g[k], (int, float, tuple)
-        )
+        if k.startswith("_") and k.isupper() and isinstance(g[k], (int, float, tuple))
     }
 
 
@@ -264,16 +258,13 @@ async def named_waypoint(
     ctx: TaskContext, robot_id: str, name: str, teach_hint: str
 ) -> WaypointRecord:
     res = await ctx.call(
-        Waypoint.Service.LIST,
-        ListWaypointsRequest(robot_id=robot_id),
-        ListWaypointsResponse,
+        Waypoint.Service.GET_WAYPOINT_BY_NAME,
+        GetWaypointByNameRequest(robot_id=robot_id, name=name),
+        GetWaypointByNameResponse,
     )
-    wp = next((w for w in res.waypoints if w.name == name), None)
-    if wp is None:
-        raise TaskError(
-            f"'{name}' waypoint 없음 (robot={robot_id}) — {teach_hint}"
-        )
-    return wp
+    if res.waypoint is None:
+        raise TaskError(f"'{name}' waypoint 없음 (robot={robot_id}) — {teach_hint}")
+    return res.waypoint
 
 
 @step(title="workcell 조회")
@@ -315,9 +306,9 @@ async def load_hand_eye(ctx: TaskContext, robot_id: str) -> np.ndarray:
         )
     x = np.eye(4)
     x[:3, :3] = np.array(bundle.hand_eye.result_data.R_cam2gripper, dtype=float)
-    x[:3, 3] = np.array(
-        bundle.hand_eye.result_data.t_cam2gripper, dtype=float
-    ).reshape(3)
+    x[:3, 3] = np.array(bundle.hand_eye.result_data.t_cam2gripper, dtype=float).reshape(
+        3
+    )
     return x
 
 
@@ -356,16 +347,18 @@ def _camera_pose_groups(
         t_base_cam[:3, 3] = c
         t_base_tcp = t_base_cam @ x_inv
         q = Rotation.from_matrix(t_base_tcp[:3, :3]).as_quat()
-        groups.append([
-            TcpPose(
-                position=(
-                    float(t_base_tcp[0, 3]),
-                    float(t_base_tcp[1, 3]),
-                    float(t_base_tcp[2, 3]),
-                ),
-                quaternion=(float(q[0]), float(q[1]), float(q[2]), float(q[3])),
-            )
-        ])
+        groups.append(
+            [
+                TcpPose(
+                    position=(
+                        float(t_base_tcp[0, 3]),
+                        float(t_base_tcp[1, 3]),
+                        float(t_base_tcp[2, 3]),
+                    ),
+                    quaternion=(float(q[0]), float(q[1]), float(q[2]), float(q[3])),
+                )
+            ]
+        )
         metas.append(psi_deg)
     return groups, metas
 
@@ -393,12 +386,18 @@ async def plan_omx_observe(
         ResolveReachableResponse,
         robot_id=omx,
     )
-    await _emit(trace, {
-        "phase": "observe", "event": "plan_omx_observe",
-        "look": [look_x, look_y], "cam_h": _OMX_OBSERVE_CAM_H_M,
-        "psi_candidates": list(metas), "index": res.index,
-        "group_failures": res.group_failures,
-    })
+    await _emit(
+        trace,
+        {
+            "phase": "observe",
+            "event": "plan_omx_observe",
+            "look": [look_x, look_y],
+            "cam_h": _OMX_OBSERVE_CAM_H_M,
+            "psi_candidates": list(metas),
+            "index": res.index,
+            "group_failures": res.group_failures,
+        },
+    )
     if res.index < 0:
         raise NoReachableGrasp(
             f"omx 관측 자세 후보 {len(groups)}개 전멸 — {res.message}. "
@@ -406,7 +405,10 @@ async def plan_omx_observe(
         )
     logger.info(
         "plan_omx_observe: ψ=%.0f° 채택, look=(%.3f,%.3f) h=%.2f",
-        metas[res.index], look_x, look_y, _OMX_OBSERVE_CAM_H_M,
+        metas[res.index],
+        look_x,
+        look_y,
+        _OMX_OBSERVE_CAM_H_M,
     )
     return res.solutions[0]
 
@@ -417,7 +419,8 @@ def _trusted_pen_candidates(
     """펜 신뢰 게이트 — score + 기하(길이 대역/폭 상한). mono 는 depth 게이트가
     없으므로 기하가 오검출 컷의 주력 (셀 밖 컷은 detector ROI 가 상류 담당)."""
     return [
-        c for c in cands
+        c
+        for c in cands
         if c.score >= _SCORE_MIN
         and _PEN_LEN_MIN_M <= c.footprint[0] <= _PEN_LEN_MAX_M
         and c.footprint[1] <= _PEN_WIDTH_MAX_M
@@ -434,7 +437,7 @@ async def omx_observe_detect(
 ) -> OrientedDetection:
     """관측 자세 이동 → 정지 → DETECT_PLANAR (mono ray∩z=table). 신뢰 컷 후
     최고 score. 0건 = 명시 실패 (사유 + 다음 행동)."""
-    await _move_j_joints(ctx, omx, observe_joints)
+    await _move_j(ctx, omx, joints=observe_joints)
     await asyncio.sleep(_OBSERVE_SETTLE_S)
     res = await ctx.call(
         Detector.Service.DETECT_PLANAR,
@@ -443,19 +446,25 @@ async def omx_observe_detect(
         ),
         DetectOrientedResponse,
     )
-    await _emit(trace, {
-        "phase": "observe", "event": "detect_planar", "prompt": prompt,
-        "plane_z": _OMX_TABLE_Z_M,
-        "candidates": [
-            {
-                "position": list(c.position), "score": c.score,
-                "yaw_deg": round(math.degrees(c.grasp_yaw), 1),
-                "footprint_mm": [round(v * 1000) for v in c.footprint],
-                "points": len(c.points or []),
-            }
-            for c in res.candidates
-        ],
-    })
+    await _emit(
+        trace,
+        {
+            "phase": "observe",
+            "event": "detect_planar",
+            "prompt": prompt,
+            "plane_z": _OMX_TABLE_Z_M,
+            "candidates": [
+                {
+                    "position": list(c.position),
+                    "score": c.score,
+                    "yaw_deg": round(math.degrees(c.grasp_yaw), 1),
+                    "footprint_mm": [round(v * 1000) for v in c.footprint],
+                    "points": len(c.points or []),
+                }
+                for c in res.candidates
+            ],
+        },
+    )
     trusted = _trusted_pen_candidates(res.candidates)
     if not trusted:
         raise DetectionNotFound(
@@ -472,9 +481,13 @@ async def omx_observe_detect(
     logger.info(
         "omx_observe_detect: '%s' 채택 — center=(%.3f,%.3f) yaw=%.1f° "
         "len=%.0fmm w=%.0fmm score=%.2f",
-        prompt, best.position[0], best.position[1],
-        math.degrees(best.grasp_yaw), best.footprint[0] * 1000,
-        best.footprint[1] * 1000, best.score,
+        prompt,
+        best.position[0],
+        best.position[1],
+        math.degrees(best.grasp_yaw),
+        best.footprint[0] * 1000,
+        best.footprint[1] * 1000,
+        best.score,
     )
     return best
 
@@ -482,9 +495,7 @@ async def omx_observe_detect(
 # ─── B. omx 파지 계획 (top-down + J5 roll) ────────────────────────────
 
 
-def plan_pen_grasp_from(
-    det: OrientedDetection, base_omx: BasePose
-) -> PenGrasp:
+def plan_pen_grasp_from(det: OrientedDetection, base_omx: BasePose) -> PenGrasp:
     """검출 → 펜 파지 기하 (omx frame). 짧은 펜은 pen.plan_pen_grasp 가 명시
     실패 (§1.1). 순수 계산 — step 아님 (모션 0, 즉시 raise)."""
     toward3 = world_to_robot((0.0, 0.0, 0.0), base_omx)  # so101 원점 (omx frame)
@@ -535,11 +546,13 @@ async def plan_omx_pick_pen(
         quat = _grasp_quat(yaw, 0)
         pre = (g[0], g[1], g[2] + _OMX_PRE_ABOVE_M)
         lift = (g[0], g[1], g[2] + _OMX_LIFT_M)
-        groups.append([
-            TcpPose(position=pre, quaternion=quat),
-            TcpPose(position=g, quaternion=quat),
-            TcpPose(position=lift, quaternion=quat),
-        ])
+        groups.append(
+            [
+                TcpPose(position=pre, quaternion=quat),
+                TcpPose(position=g, quaternion=quat),
+                TcpPose(position=lift, quaternion=quat),
+            ]
+        )
         metas.append((quat, s))
     res = await ctx.call(
         Motion.Service.RESOLVE_REACHABLE,
@@ -549,12 +562,19 @@ async def plan_omx_pick_pen(
         ResolveReachableResponse,
         robot_id=omx,
     )
-    await _emit(trace, {
-        "phase": "pick", "event": "plan_omx_pick_pen",
-        "grasp_omx": list(g), "pen_d": pen_d, "u": list(grasp.u),
-        "exposed_len": grasp.exposed_len_m, "index": res.index,
-        "group_failures": res.group_failures,
-    })
+    await _emit(
+        trace,
+        {
+            "phase": "pick",
+            "event": "plan_omx_pick_pen",
+            "grasp_omx": list(g),
+            "pen_d": pen_d,
+            "u": list(grasp.u),
+            "exposed_len": grasp.exposed_len_m,
+            "index": res.index,
+            "group_failures": res.group_failures,
+        },
+    )
     if res.index < 0:
         raise NoReachableGrasp(
             f"omx top-down 파지 후보 {len(groups)}개 전멸 — {res.message} "
@@ -565,7 +585,12 @@ async def plan_omx_pick_pen(
     logger.info(
         "plan_omx_pick_pen: s_pen=%+.0f 채택 — grasp(omx)=(%.3f,%.3f,%.3f) "
         "펜지름=%.0fmm 노출=%.0fmm",
-        s_pen, g[0], g[1], g[2], pen_d * 1000, grasp.exposed_len_m * 1000,
+        s_pen,
+        g[0],
+        g[1],
+        g[2],
+        pen_d * 1000,
+        grasp.exposed_len_m * 1000,
     )
     return PickPlan(
         sols=res.solutions, quat=quat, grasp_omx=g, pen_d=pen_d, s_pen=s_pen
@@ -603,10 +628,12 @@ async def refine_pen(
         (coarse.tip_far[1] + coarse.tip_near[1]) / 2.0,
     )
     trusted = [
-        c for c in _trusted_pen_candidates(res.candidates)
+        c
+        for c in _trusted_pen_candidates(res.candidates)
         if math.hypot(
             c.position[0] - coarse_center[0], c.position[1] - coarse_center[1]
-        ) <= _REFINE_MATCH_RADIUS_M
+        )
+        <= _REFINE_MATCH_RADIUS_M
     ]
     if not trusted:
         reason = (
@@ -614,8 +641,7 @@ async def refine_pen(
             f"{_REFINE_MATCH_RADIUS_M * 1000:.0f}mm 컷) — coarse 로 blind 진행"
         )
         logger.warning("refine_pen: %s", reason)
-        await _emit(trace, {"phase": "pick", "event": "refine_miss",
-                            "reason": reason})
+        await _emit(trace, {"phase": "pick", "event": "refine_miss", "reason": reason})
         return None
     best = max(trusted, key=lambda c: c.score)
     refined = plan_pen_grasp_from(best, base_omx)
@@ -623,20 +649,26 @@ async def refine_pen(
         refined.grasp_xy[0] - coarse.grasp_xy[0],
         refined.grasp_xy[1] - coarse.grasp_xy[1],
     )
-    await _emit(trace, {
-        "phase": "pick", "event": "refine",
-        "coarse_grasp": list(coarse.grasp_xy),
-        "refined_grasp": list(refined.grasp_xy),
-        "jump_mm": round(jump * 1000, 1), "score": best.score,
-    })
+    await _emit(
+        trace,
+        {
+            "phase": "pick",
+            "event": "refine",
+            "coarse_grasp": list(coarse.grasp_xy),
+            "refined_grasp": list(refined.grasp_xy),
+            "jump_mm": round(jump * 1000, 1),
+            "score": best.score,
+        },
+    )
     if jump > _REFINE_JUMP_MAX_M:
         reason = (
             f"재관측 파지점 도약 {jump * 1000:.0f}mm > "
             f"{_REFINE_JUMP_MAX_M * 1000:.0f}mm — 관측 오염 의심, coarse 유지"
         )
         logger.warning("refine_pen: %s", reason)
-        await _emit(trace, {"phase": "pick", "event": "refine_rejected",
-                            "reason": reason})
+        await _emit(
+            trace, {"phase": "pick", "event": "refine_rejected", "reason": reason}
+        )
         return None
     logger.info("refine_pen: 파지점 보정 %.1fmm 채택", jump * 1000)
     return refined
@@ -654,20 +686,27 @@ async def omx_pick_pen(
 ) -> PenGrasp:
     """pre(관절해) → 재관측 refine → (보정 이동) → blind 하강(감속) → close →
     판정 → lift(감속) → 판정. 반환 = 실제 파지에 쓴 펜 기하 (제시 계산 입력)."""
-    await _move_j_joints(ctx, omx, plan.sols[0])
+    await _move_j(ctx, omx, joints=plan.sols[0])
     refined = await refine_pen(ctx, omx, prompt, coarse, base_omx, trace)
     used = refined if refined is not None else coarse
     g = (used.grasp_xy[0], used.grasp_xy[1], plan.grasp_omx[2])
     if refined is not None:
         # pre 높이에서 XY 보정 (자세 고정 직선) — blind 하강 직전 최종 정렬
         await _move_l(
-            ctx, omx, (g[0], g[1], g[2] + _OMX_PRE_ABOVE_M), plan.quat
+            ctx,
+            omx,
+            position=(g[0], g[1], g[2] + _OMX_PRE_ABOVE_M),
+            quaternion=plan.quat,
         )
-    await _move_l(ctx, omx, g, plan.quat, speed_scale=_GENTLE_SPEED_SCALE)
+    await _move_l(
+        ctx, omx, position=g, quaternion=plan.quat, speed_scale=_GENTLE_SPEED_SCALE
+    )
     await set_gripper(ctx, omx, open_=False)
     await verify_grasp(ctx, omx, phase="omx close 직후", trace=trace)
     lift = (g[0], g[1], g[2] + _OMX_LIFT_M)
-    await _move_l(ctx, omx, lift, plan.quat, speed_scale=_GENTLE_SPEED_SCALE)
+    await _move_l(
+        ctx, omx, position=lift, quaternion=plan.quat, speed_scale=_GENTLE_SPEED_SCALE
+    )
     await verify_grasp(ctx, omx, phase="omx lift 후", trace=trace)
     return used
 
@@ -754,7 +793,11 @@ async def plan_omx_present(
     펜이 so101 을 정조준하지 않는다 (도달 가능 자세족의 물리 — receive 는
     어차피 재검출 기반이라 펜 방위는 detection 이 알려준다)."""
     cands = pen.rendezvous_candidates(
-        roi_so, roi_omx, base_omx, _PRESENT_Z_WORLD, limit=_PRESENT_LIMIT,
+        roi_so,
+        roi_omx,
+        base_omx,
+        _PRESENT_Z_WORLD,
+        limit=_PRESENT_LIMIT,
         prefer_r_so=_RENDEZVOUS_R_SO_M,
     )
     if not cands:
@@ -772,9 +815,7 @@ async def plan_omx_present(
         if not orients:
             rejects.append(f"tcp={tcp_w}: 자세족 없음")
             continue
-        groups = [
-            [TcpPose(position=tcp_omx, quaternion=q)] for _l, q, _d in orients
-        ]
+        groups = [[TcpPose(position=tcp_omx, quaternion=q)] for _l, q, _d in orients]
         alive = list(range(len(groups)))
         for _attempt in range(_RECV_COLLISION_RETRY):
             res = await ctx.call(
@@ -789,7 +830,8 @@ async def plan_omx_present(
             gi = alive[res.index]
             label, quat, d_w = orients[gi]
             if checker is not None and _omx_path_collides(
-                checker, so101_joints,
+                checker,
+                so101_joints,
                 [list(omx_tcp.joints), res.solutions[0]],
             ):
                 rejects.append(f"tcp={tcp_w}/{label}: so101 충돌 위험")
@@ -802,25 +844,42 @@ async def plan_omx_present(
                 tcp_w[1] + d_w[1] * grasp.exposed_center_offset_m,
                 tcp_w[2],
             )
-            await _emit(trace, {
-                "phase": "present", "event": "plan_omx_present",
-                "tcp_world": list(tcp_w), "orientation": label,
-                "h_world": list(h_world), "d_world": list(d_w),
-                "rejects": rejects,
-            })
+            await _emit(
+                trace,
+                {
+                    "phase": "present",
+                    "event": "plan_omx_present",
+                    "tcp_world": list(tcp_w),
+                    "orientation": label,
+                    "h_world": list(h_world),
+                    "d_world": list(d_w),
+                    "rejects": rejects,
+                },
+            )
             logger.info(
                 "plan_omx_present: tcp=(%.3f,%.3f,%.3f) %s 채택 (기각 %d) — "
                 "노출 %.0fmm, H=(%.3f,%.3f,%.3f)",
-                tcp_w[0], tcp_w[1], tcp_w[2], label, len(rejects),
-                grasp.exposed_len_m * 1000, h_world[0], h_world[1], h_world[2],
+                tcp_w[0],
+                tcp_w[1],
+                tcp_w[2],
+                label,
+                len(rejects),
+                grasp.exposed_len_m * 1000,
+                h_world[0],
+                h_world[1],
+                h_world[2],
             )
             return PresentPlan(
                 sols=res.solutions, quat=quat, h_world=h_world, d_world=d_w
             )
-    await _emit(trace, {
-        "phase": "present", "event": "plan_omx_present_exhausted",
-        "rejects": rejects,
-    })
+    await _emit(
+        trace,
+        {
+            "phase": "present",
+            "event": "plan_omx_present_exhausted",
+            "rejects": rejects,
+        },
+    )
     raise NoReachableGrasp(
         f"제시 후보 {len(cands)}개 전멸 — {rejects}. workcell 교집합/제시 높이"
         "(_PRESENT_Z_WORLD) 조정 후 다시 실행하세요"
@@ -835,18 +894,14 @@ def _omx_path_collides(
     """omx 관절 경로 vs so101 고정 구성 — checker 는 (a=so101, b=omx) 로 생성돼
     path_in_collision 이 a 경로만 받으므로 b 경로는 표본을 직접 돈다."""
     prev = omx_path[0]
-    if checker.in_collision(
-        so101_joints, prev, grip_b=_OMX_HOLD_GRIP_FRAC
-    ):
+    if checker.in_collision(so101_joints, prev, grip_b=_OMX_HOLD_GRIP_FRAC):
         return True
     for nxt in omx_path[1:]:
         qa, qb = np.asarray(prev, float), np.asarray(nxt, float)
         n = max(1, int(math.ceil(float(np.max(np.abs(qb - qa))) / math.radians(6.0))))
         for k in range(1, n + 1):
             q = [float(v) for v in qa + (qb - qa) * (k / n)]
-            if checker.in_collision(
-                so101_joints, q, grip_b=_OMX_HOLD_GRIP_FRAC
-            ):
+            if checker.in_collision(so101_joints, q, grip_b=_OMX_HOLD_GRIP_FRAC):
                 return True
         prev = nxt
     return False
@@ -862,9 +917,11 @@ async def omx_present(
     """물체를 든 채 계산된 제시 자세로 (관절해 그대로) + held 재확인."""
     logger.info(
         "omx_present → H_world=(%.3f,%.3f,%.3f)",
-        present.h_world[0], present.h_world[1], present.h_world[2],
+        present.h_world[0],
+        present.h_world[1],
+        present.h_world[2],
     )
-    await _move_j_joints(ctx, omx, present.sols[0])
+    await _move_j(ctx, omx, joints=present.sols[0])
     await verify_grasp(ctx, omx, phase="제시 자세 도달", trace=trace)
 
 
@@ -891,14 +948,18 @@ async def plan_so_observe(
             for dist in _RECV_OBS_DIST_M:
                 az = az0 + math.radians(az_off)
                 elev = math.radians(elev_deg)
-                c = np.array([
-                    h_world[0] - math.cos(az) * dist * math.cos(elev),
-                    h_world[1] - math.sin(az) * dist * math.cos(elev),
-                    h_world[2] + dist * math.sin(elev),
-                ])
+                c = np.array(
+                    [
+                        h_world[0] - math.cos(az) * dist * math.cos(elev),
+                        h_world[1] - math.sin(az) * dist * math.cos(elev),
+                        h_world[2] + dist * math.sin(elev),
+                    ]
+                )
                 g, m = _camera_pose_groups(
-                    c, np.asarray(h_world, dtype=float) - c,
-                    _RECV_OBS_PSI_DEG, t_tcp_cam,
+                    c,
+                    np.asarray(h_world, dtype=float) - c,
+                    _RECV_OBS_PSI_DEG,
+                    t_tcp_cam,
                 )
                 groups.extend(g)
                 metas.extend((az_off, elev_deg, dist, psi) for psi in m)
@@ -908,12 +969,17 @@ async def plan_so_observe(
         ResolveReachableResponse,
         robot_id=so101,
     )
-    await _emit(trace, {
-        "phase": "receive", "event": "plan_so_observe",
-        "h_world": list(h_world), "index": res.index,
-        "meta": metas[res.index] if res.index >= 0 else None,
-        "n_groups": len(groups),
-    })
+    await _emit(
+        trace,
+        {
+            "phase": "receive",
+            "event": "plan_so_observe",
+            "h_world": list(h_world),
+            "index": res.index,
+            "meta": metas[res.index] if res.index >= 0 else None,
+            "n_groups": len(groups),
+        },
+    )
     if res.index < 0:
         raise NoReachableGrasp(
             f"so101 수취 관측 자세 전멸 ({len(groups)}개) — {res.message}. "
@@ -934,13 +1000,13 @@ def _match_aerial(
     (테이블 대역 게이트의 개방판 — base_z 가 아니라 position z 로 판정: 공중
     물체의 base_z 는 '보이는 band 하단'이라 물리 바닥이 아니다.)"""
     trusted = [
-        c for c in cands
+        c
+        for c in cands
         if c.score >= _RECV_SCORE_MIN
         and len(c.points or []) >= _RECV_MIN_POINTS
         and abs(c.position[2] - h_world[2]) <= _RECV_Z_BAND_M
-        and math.hypot(
-            c.position[0] - h_world[0], c.position[1] - h_world[1]
-        ) <= _RECV_MATCH_RADIUS_M
+        and math.hypot(c.position[0] - h_world[0], c.position[1] - h_world[1])
+        <= _RECV_MATCH_RADIUS_M
     ]
     return max(trusted, key=lambda c: c.score) if trusted else None
 
@@ -957,24 +1023,30 @@ async def so_redetect(
     """관측 자세 이동 → 공중의 제시된 펜 재검출. 실패 = 명시 실패 (FK 로
     후퇴하지 않는다 — §8-4: 정적 계산 ~1–2cm 자세의존 오차가 so101 이
     closed-loop 로 간 이유 그 자체)."""
-    await _move_j_joints(ctx, so101, observe_joints)
+    await _move_j(ctx, so101, joints=observe_joints)
     await asyncio.sleep(_OBSERVE_SETTLE_S)
     res = await ctx.call(
         Detector.Service.DETECT_ORIENTED,
         DetectRequest(robot_id=so101, prompts=[prompt], top_k=_TOP_K),
         DetectOrientedResponse,
     )
-    await _emit(trace, {
-        "phase": "receive", "event": "so_redetect", "h_world": list(h_world),
-        "candidates": [
-            {
-                "position": list(c.position), "score": c.score,
-                "points": len(c.points or []),
-                "yaw_deg": round(math.degrees(c.grasp_yaw), 1),
-            }
-            for c in res.candidates
-        ],
-    })
+    await _emit(
+        trace,
+        {
+            "phase": "receive",
+            "event": "so_redetect",
+            "h_world": list(h_world),
+            "candidates": [
+                {
+                    "position": list(c.position),
+                    "score": c.score,
+                    "points": len(c.points or []),
+                    "yaw_deg": round(math.degrees(c.grasp_yaw), 1),
+                }
+                for c in res.candidates
+            ],
+        },
+    )
     best = _match_aerial(res.candidates, h_world)
     if best is None:
         raise DetectionNotFound(
@@ -1037,6 +1109,7 @@ async def plan_receive(
         (omx_tcp.position[0], omx_tcp.position[1], omx_tcp.position[2]), base_omx
     )
     target = _receive_target(det, (omx_tcp_world[0], omx_tcp_world[1]))
+
     # 가족 = **절대 yaw 15° 전방위 격자 × tilt 사다리** (servo §11 절대 격자
     # 사상 — so101 공중 도달 밴드는 30~40° 폭이라 toward-상대 coarse 부채꼴은
     # 밴드를 통째로 놓친다. 실측 = 노브 블록 주석). 선호: ① 조 축 ⟂ 펜 축
@@ -1046,8 +1119,7 @@ async def plan_receive(
         d = abs(math.degrees(yaw_rad - det.grasp_yaw)) % 180.0
         return min(d, 180.0 - d)
 
-    yaws = [math.radians(g) for g in
-            np.arange(0.0, 360.0, _RECV_YAW_GRID_DEG)]
+    yaws = [math.radians(g) for g in np.arange(0.0, 360.0, _RECV_YAW_GRID_DEG)]
     fan = sorted(
         ((tilt, yaw) for tilt in _RECV_TILTS_DEG for yaw in yaws),
         key=lambda f: (round(_perp_dist(f[1])), _RECV_TILTS_DEG.index(f[0])),
@@ -1062,18 +1134,18 @@ async def plan_receive(
             target[1] - a[1] * _RECV_PRE_CLEAR_M,
             target[2] - a[2] * _RECV_PRE_CLEAR_M,
         )
-        groups.append([
-            TcpPose(position=pre, quaternion=quat),
-            TcpPose(position=target, quaternion=quat),
-        ])
+        groups.append(
+            [
+                TcpPose(position=pre, quaternion=quat),
+                TcpPose(position=target, quaternion=quat),
+            ]
+        )
         metas.append(quat)
     alive = list(range(len(groups)))
     for attempt in range(_RECV_COLLISION_RETRY):
         res = await ctx.call(
             Motion.Service.RESOLVE_REACHABLE,
-            ResolveReachableRequest(
-                groups=[groups[i] for i in alive], linear=True
-            ),
+            ResolveReachableRequest(groups=[groups[i] for i in alive], linear=True),
             ResolveReachableResponse,
             robot_id=so101,
         )
@@ -1084,24 +1156,35 @@ async def plan_receive(
             )
         gi = alive[res.index]
         if checker is None or not checker.path_in_collision(
-            res.solutions, omx_joints,
+            res.solutions,
+            omx_joints,
             grip_a=1.0,  # 접근은 조를 벌린 채 (실 충돌 형상)
             grip_b=_OMX_HOLD_GRIP_FRAC,
             margin_m=_RECV_COLLISION_MARGIN_M,
         ):
-            await _emit(trace, {
-                "phase": "receive", "event": "plan_receive",
-                "target": list(target), "group": gi, "attempt": attempt,
-            })
+            await _emit(
+                trace,
+                {
+                    "phase": "receive",
+                    "event": "plan_receive",
+                    "target": list(target),
+                    "group": gi,
+                    "attempt": attempt,
+                },
+            )
             return ReceivePlan(
-                sols=res.solutions, quat=metas[gi], target=target,
+                sols=res.solutions,
+                quat=metas[gi],
+                target=target,
                 omx_joints=omx_joints,
                 omx_tcp_xy=(omx_tcp_world[0], omx_tcp_world[1]),
             )
         logger.warning(
             "plan_receive: 그룹 %d 채택안이 omx 와 충돌 위험 (margin %.0fmm) — "
             "제외 후 재시도 %d/%d",
-            gi, _RECV_COLLISION_MARGIN_M * 1000, attempt + 1,
+            gi,
+            _RECV_COLLISION_MARGIN_M * 1000,
+            attempt + 1,
             _RECV_COLLISION_RETRY,
         )
         alive.remove(gi)
@@ -1134,8 +1217,9 @@ async def so_refine(
     if best is None:
         reason = "수취 refine 재검출 실패 — 계획 겨냥점으로 진행"
         logger.warning("so_refine: %s", reason)
-        await _emit(trace, {"phase": "receive", "event": "refine_miss",
-                            "reason": reason})
+        await _emit(
+            trace, {"phase": "receive", "event": "refine_miss", "reason": reason}
+        )
         return plan.target
     updated = _receive_target(best, plan.omx_tcp_xy)
     jump = math.dist(updated, plan.target)
@@ -1145,13 +1229,19 @@ async def so_refine(
             f"{_REFINE_JUMP_MAX_M * 1000:.0f}mm — 계획 겨냥점 유지"
         )
         logger.warning("so_refine: %s", reason)
-        await _emit(trace, {"phase": "receive", "event": "refine_rejected",
-                            "reason": reason})
+        await _emit(
+            trace, {"phase": "receive", "event": "refine_rejected", "reason": reason}
+        )
         return plan.target
-    await _emit(trace, {
-        "phase": "receive", "event": "refine",
-        "target": list(updated), "jump_mm": round(jump * 1000, 1),
-    })
+    await _emit(
+        trace,
+        {
+            "phase": "receive",
+            "event": "refine",
+            "target": list(updated),
+            "jump_mm": round(jump * 1000, 1),
+        },
+    )
     return updated
 
 
@@ -1169,10 +1259,14 @@ async def receive(
 
     수취 순서 불변식 (모듈 docstring): so101 판정 전 omx 를 열면 물체 낙하 —
     회귀 테스트가 호출 순서를 잠근다."""
-    await _move_j_joints(ctx, so101, plan.sols[0])
+    await _move_j(ctx, so101, joints=plan.sols[0])
     target = await so_refine(ctx, so101, prompt, plan, trace)
     await _move_l(
-        ctx, so101, target, plan.quat, speed_scale=_GENTLE_SPEED_SCALE
+        ctx,
+        so101,
+        position=target,
+        quaternion=plan.quat,
+        speed_scale=_GENTLE_SPEED_SCALE,
     )
     await set_gripper(ctx, so101, open_=False)
     await verify_grasp(ctx, so101, phase="수취 close 직후", trace=trace)
@@ -1185,7 +1279,11 @@ async def receive(
         target[2] - a[2] * _RECV_WITHDRAW_M,
     )
     await _move_l(
-        ctx, so101, withdraw, plan.quat, speed_scale=_GENTLE_SPEED_SCALE
+        ctx,
+        so101,
+        position=withdraw,
+        quaternion=plan.quat,
+        speed_scale=_GENTLE_SPEED_SCALE,
     )
     await verify_grasp(ctx, so101, phase="수취 이탈 후", trace=trace)
 
@@ -1203,22 +1301,27 @@ async def omx_retreat(
     멈추는 쪽이 안전). so101 은 파지 상태(닫힘)라 grip_a 를 좁혀 실 형상으로."""
     if checker is not None:
         so_tcp = await ctx.call(
-            Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
+            Motion.Service.TCP_SNAPSHOT,
+            TcpSnapshotRequest(),
+            TcpState,
             robot_id=so101,
         )
         omx_tcp = await ctx.call(
-            Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
+            Motion.Service.TCP_SNAPSHOT,
+            TcpSnapshotRequest(),
+            TcpState,
             robot_id=omx,
         )
         if _so_static_path_collides(
-            checker, list(so_tcp.joints),
+            checker,
+            list(so_tcp.joints),
             [list(omx_tcp.joints), list(home_omx.joint_values)],
         ):
             raise TaskError(
                 "omx 복귀 경로가 so101 과 충돌 위험 — omx 정지 유지. so101 을 "
                 "먼저 적치/이탈시킨 뒤 omx 를 수동 복귀하세요"
             )
-    await _move_j_joints(ctx, omx, home_omx.joint_values)
+    await _move_j(ctx, omx, joints=home_omx.joint_values)
 
 
 def _so_static_path_collides(
@@ -1250,32 +1353,24 @@ def _approach_of_quat(quat: Quat) -> Vec3:
 
 
 @step(title="검출")
-async def detect(
-    ctx: TaskContext, so101: str, prompt: str
-) -> list[OrientedDetection]:
+async def detect(ctx: TaskContext, so101: str, prompt: str) -> list[OrientedDetection]:
     """search 그룹 자세 전부 순회 → 후보 누적 (so101 카메라 — 적치 spot 검출)."""
-    groups = await ctx.call(
-        Waypoint.Service.LIST_GROUPS,
-        ListGroupsRequest(robot_id=so101),
-        ListGroupsResponse,
+    members = await ctx.call(
+        Waypoint.Service.LIST_GROUP_MEMBERS_BY_NAME,
+        ListGroupMembersByNameRequest(robot_id=so101, name=_SEARCH_GROUP),
+        ListGroupMembersByNameResponse,
     )
-    grp = next((g for g in groups.groups if g.name == _SEARCH_GROUP), None)
-    if grp is None or grp.id is None:
+    if not members.found:
         raise TaskError(
             f"'{_SEARCH_GROUP}' waypoint 그룹 없음 (robot={so101}) — 검색 자세를 "
             "티칭해 그룹으로 저장한 뒤 다시 실행하세요"
         )
-    members = await ctx.call(
-        Waypoint.Service.LIST_GROUP_MEMBERS,
-        ListGroupMembersRequest(group_row_id=grp.id),
-        ListGroupMembersResponse,
-    )
     if not members.waypoints:
         raise TaskError(f"'{_SEARCH_GROUP}' 그룹이 비어있음 (robot={so101})")
     t0 = time.monotonic()
     cands: list[OrientedDetection] = []
     for wp in members.waypoints:
-        await _move_j_joints(ctx, so101, wp.joint_values)
+        await _move_j(ctx, so101, joints=wp.joint_values)
         await asyncio.sleep(_SEARCH_SETTLE_S)
         res = await ctx.call(
             Detector.Service.DETECT_ORIENTED,
@@ -1285,7 +1380,10 @@ async def detect(
         cands.extend(res.candidates)
     logger.info(
         "detect(%s): %d 자세 → 후보 %d (%.1fs)",
-        prompt, len(members.waypoints), len(cands), time.monotonic() - t0,
+        prompt,
+        len(members.waypoints),
+        len(cands),
+        time.monotonic() - t0,
     )
     return cands
 
@@ -1329,10 +1427,12 @@ async def place_into(
                     place[1] - a[1] * _PLACE_PRE_CLEAR_M,
                     place[2] - a[2] * _PLACE_PRE_CLEAR_M,
                 )
-                groups.append([
-                    TcpPose(position=pre, quaternion=quat),
-                    TcpPose(position=place, quaternion=quat),
-                ])
+                groups.append(
+                    [
+                        TcpPose(position=pre, quaternion=quat),
+                        TcpPose(position=place, quaternion=quat),
+                    ]
+                )
                 metas.append((quat, place, pre))
         res = await ctx.call(
             Motion.Service.RESOLVE_REACHABLE,
@@ -1345,22 +1445,23 @@ async def place_into(
         if res.index < 0:
             logger.info(
                 "place_into: spot score=%.2f 전멸 — 다음 spot (%s)",
-                spot.score, res.message,
+                spot.score,
+                res.message,
             )
             continue
         quat, place, _pre = metas[res.index]
-        await _move_j_joints(ctx, so101, res.solutions[0])
-        await _move_l(ctx, so101, place, quat)
+        await _move_j(ctx, so101, joints=res.solutions[0])
+        await _move_l(ctx, so101, position=place, quaternion=quat)
         await verify_grasp(ctx, so101, phase="적치 직전")
         await set_gripper(ctx, so101, open_=True)
         try:
-            await _move_l(ctx, so101, _pre, quat)
+            await _move_l(ctx, so101, position=_pre, quaternion=quat)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning("place 후퇴 MoveL 실패 (%s) — pre 관절해 MoveJ 폴백", e)
-            await _move_j_joints(ctx, so101, res.solutions[0])
-        await _move_j_joints(ctx, so101, home_so.joint_values)
+            await _move_j(ctx, so101, joints=res.solutions[0])
+        await _move_j(ctx, so101, joints=home_so.joint_values)
         return
     raise NoReachableGrasp(
         f"적치 spot {len(ranked)}건 전부 도달 불가 — 상자를 so101 쪽으로 "
@@ -1374,7 +1475,7 @@ async def place_into(
 @step(title="home 경유")
 async def go_home(ctx: TaskContext, robot_id: str, home: WaypointRecord) -> None:
     logger.info("go_home robot=%s → '%s'", robot_id, home.name)
-    await _move_j_joints(ctx, robot_id, home.joint_values)
+    await _move_j(ctx, robot_id, joints=home.joint_values)
 
 
 @step(title="그리퍼")
@@ -1383,7 +1484,9 @@ async def set_gripper(ctx: TaskContext, robot_id: str, *, open_: bool) -> None:
     raw = spec.gripper_open_raw if open_ else spec.gripper_close_raw
     logger.info(
         "gripper robot=%s → %s (raw=%d)",
-        robot_id, "OPEN" if open_ else "CLOSE", raw,
+        robot_id,
+        "OPEN" if open_ else "CLOSE",
+        raw,
     )
     await ctx.call(
         Motor.Service.SET_GRIPPER,
@@ -1421,15 +1524,28 @@ async def verify_grasp(
     held = gap > margin or (load is not None and load >= _HELD_LOAD_MIN_RAW)
     logger.info(
         "verify_grasp[%s] robot=%s achieved=%d (close=%d thr=%d load=%s) → %s",
-        phase, robot_id, achieved, spec.gripper_close_raw,
-        spec.gripper_held_threshold_raw, load, "HELD" if held else "EMPTY",
+        phase,
+        robot_id,
+        achieved,
+        spec.gripper_close_raw,
+        spec.gripper_held_threshold_raw,
+        load,
+        "HELD" if held else "EMPTY",
     )
-    await _emit(trace, {
-        "phase": "grasp", "event": "verify_grasp", "robot_id": robot_id,
-        "grasp_phase": phase, "achieved_raw": achieved,
-        "close_raw": spec.gripper_close_raw, "gap": gap, "load_raw": load,
-        "held": held,
-    })
+    await _emit(
+        trace,
+        {
+            "phase": "grasp",
+            "event": "verify_grasp",
+            "robot_id": robot_id,
+            "grasp_phase": phase,
+            "achieved_raw": achieved,
+            "close_raw": spec.gripper_close_raw,
+            "gap": gap,
+            "load_raw": load,
+            "held": held,
+        },
+    )
     if not held:
         raise GraspFailed(
             phase=phase,
@@ -1439,12 +1555,10 @@ async def verify_grasp(
         )
 
 
-async def _move_j_joints(
-    ctx: TaskContext, robot_id: str, joints: list[float]
-) -> None:
+async def _move_j(ctx: TaskContext, robot_id: str, *, joints: list[float]) -> None:
     await ctx.call(
         Motion.Service.MOVE_J,
-        MoveJRequest(target=JointTarget(kind="joint", joints=list(joints))),
+        MoveJRequest(target=JointTarget(kind="joint", joints=joints)),
         MoveJResponse,
         robot_id=robot_id,
     )
@@ -1453,16 +1567,15 @@ async def _move_j_joints(
 async def _move_l(
     ctx: TaskContext,
     robot_id: str,
+    *,
     position: Vec3,
-    quaternion: Quat,
+    quaternion: Quat | None = None,
     speed_scale: float = 1.0,
 ) -> None:
     await ctx.call(
         Motion.Service.MOVE_L,
         MoveLRequest(
-            target=PoseTarget(
-                kind="pose", position=position, quaternion=quaternion
-            ),
+            target=PoseTarget(kind="pose", position=position, quaternion=quaternion),
             speed_scale=speed_scale,
         ),
         MoveLResponse,

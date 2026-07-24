@@ -16,6 +16,10 @@ from .contract import (
     DeleteGroupResponse,
     DeleteWaypointRequest,
     DeleteWaypointResponse,
+    GetWaypointByNameRequest,
+    GetWaypointByNameResponse,
+    ListGroupMembersByNameRequest,
+    ListGroupMembersByNameResponse,
     ListGroupMembersRequest,
     ListGroupMembersResponse,
     ListGroupsRequest,
@@ -81,6 +85,14 @@ class WaypointModule:
     @service(Waypoint.Service.LIST)
     def list_waypoints(self, req: ListWaypointsRequest) -> ListWaypointsResponse:
         return ListWaypointsResponse(waypoints=self._repo.list_waypoints(req.robot_id))
+
+    @service(Waypoint.Service.GET_WAYPOINT_BY_NAME)
+    def get_waypoint_by_name(
+        self, req: GetWaypointByNameRequest
+    ) -> GetWaypointByNameResponse:
+        return GetWaypointByNameResponse(
+            waypoint=self._repo.get_waypoint_by_name(req.robot_id, req.name)
+        )
 
     @service(Waypoint.Service.RENAME)
     def rename(self, req: RenameWaypointRequest) -> RenameWaypointResponse:
@@ -156,4 +168,15 @@ class WaypointModule:
     ) -> ListGroupMembersResponse:
         return ListGroupMembersResponse(
             waypoints=self._repo.list_group_members(req.group_row_id)
+        )
+
+    @service(Waypoint.Service.LIST_GROUP_MEMBERS_BY_NAME)
+    def list_group_members_by_name(
+        self, req: ListGroupMembersByNameRequest
+    ) -> ListGroupMembersByNameResponse:
+        group = self._repo.get_group_by_name(req.robot_id, req.name)
+        if group is None or group.id is None:
+            return ListGroupMembersByNameResponse(found=False, waypoints=[])
+        return ListGroupMembersByNameResponse(
+            found=True, waypoints=self._repo.list_group_members(group.id)
         )

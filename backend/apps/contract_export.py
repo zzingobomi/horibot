@@ -103,8 +103,8 @@ FRONTEND_EXPOSED: set[str] = {
         # Detector
         Detector.Service.DETECT,
         Detector.Stream.DETECTIONS,  # 카메라 패널 bbox 오버레이 (v1 DETECTOR_STATE 계승)
-        Detector.Service.DETECT_ORIENTED,  # [DRAFT] 회전 파지 — /dev shape 확정 전
-        Detector.Stream.DETECTIONS_ORIENTED,  # [DRAFT] obb + mask contour 오버레이
+        Detector.Service.DETECT_ORIENTED,  # 회전 파지 (shape 확정 — StrictModel)
+        Detector.Stream.DETECTIONS_ORIENTED,  # obb + mask contour 오버레이
         # Llm
         Llm.Service.PARSE_COMMAND,
         # Pick & Place (task 모듈 표준 표면 — srv/<task>/... 규약)

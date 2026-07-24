@@ -98,11 +98,6 @@ class PybulletKinematics:
         self._movable_ranges: list[float] = []
         # chain joint 의 movable result vector 내 위치
         self._chain_in_movable: list[int] = []
-        # 해석적 branch 열거기 (docs/motion.md §11) — initialize 에서 시도,
-        # None = 수치 폴백. 침묵 금지 — 모드는 각 해석기가 부팅 로그 1줄로
-        # 밝힌다. 순서: EAIK(so101 6R + omx 5축 실측 분해 확인) → Z·YYY·X
-        # closed-form (EAIK 부재 환경 백업 — omx_handover_prep.md §8-2,
-        # pi 소스빌드 실패 클래스 대비).
         self._analytic: AnalyticIk | ZyyyxAnalyticIk | None = None
         # 바닥 평면 body (floor_collision 게이트) — 첫 사용 시 lazy 생성
         self._plane = -1
@@ -120,8 +115,7 @@ class PybulletKinematics:
                 str(self._urdf_path),
                 useFixedBase=True,
                 flags=(
-                    p.URDF_USE_SELF_COLLISION
-                    | p.URDF_USE_SELF_COLLISION_EXCLUDE_PARENT
+                    p.URDF_USE_SELF_COLLISION | p.URDF_USE_SELF_COLLISION_EXCLUDE_PARENT
                 ),
                 physicsClientId=self._client,
             )
@@ -168,11 +162,13 @@ class PybulletKinematics:
 
             self._initialized = True
             logger.info(
-                "PybulletKinematics: dof=%d (chain) / %d movable, tcp=%s, "
-                "IK=%s",
-                len(chain), len(movable), TCP_LINK_NAME,
+                "PybulletKinematics: dof=%d (chain) / %d movable, tcp=%s, IK=%s",
+                len(chain),
+                len(movable),
+                TCP_LINK_NAME,
                 f"해석적({self._analytic.family})+polish"
-                if self._analytic else "수치(walk+restart)",
+                if self._analytic
+                else "수치(walk+restart)",
             )
 
     def _build_analytic(self) -> AnalyticIk | ZyyyxAnalyticIk | None:
@@ -189,16 +185,16 @@ class PybulletKinematics:
         for j in self._chain_indices:
             info = p.getJointInfo(self._robot, j, physicsClientId=self._client)
             st = p.getLinkState(
-                self._robot, j, computeForwardKinematics=True,
+                self._robot,
+                j,
+                computeForwardKinematics=True,
                 physicsClientId=self._client,
             )
             rot = np.array(p.getMatrixFromQuaternion(st[5])).reshape(3, 3)
             a = rot @ np.asarray(info[13], dtype=float)
             a = a / np.linalg.norm(a)
             axes.append((float(a[0]), float(a[1]), float(a[2])))
-            origins.append(
-                (float(st[4][0]), float(st[4][1]), float(st[4][2]))
-            )
+            origins.append((float(st[4][0]), float(st[4][1]), float(st[4][2])))
         tcp_pos, tcp_quat = self._ee_state()
         r0 = np.array(p.getMatrixFromQuaternion(tcp_quat)).reshape(3, 3)
         ik: AnalyticIk | ZyyyxAnalyticIk | None = AnalyticIk.try_build(
@@ -244,9 +240,7 @@ class PybulletKinematics:
             # 0) 해석적 경로 (§11) — 전 branch 열거 + polish. 완전(모든 basin)
             #    + 결정적 + "도달불가" 를 수 ms 에 증명. walk/restart 불필요.
             if target_quaternion is not None and self._analytic is not None:
-                return self._ik_analytic(
-                    target_position, target_quaternion, seed
-                )
+                return self._ik_analytic(target_position, target_quaternion, seed)
             # 1) seeded 1회 — 현재 자세 근처 해 (motion 연속성, 대부분 여기서 끝).
             sol = self._ik_from_seed(target_position, target_quaternion, seed)
             if sol is not None:
@@ -255,9 +249,7 @@ class PybulletKinematics:
             #    자세를 slerp 사다리로 회전 (관절만 움직임). one-shot 이 못 찾는
             #    좁은 basin 의 해를 결정적으로 찾는다 (상단 _WALK_* 주석).
             if target_quaternion is not None:
-                sol = self._ik_walk(
-                    target_position, target_quaternion, seed, restarts
-                )
+                sol = self._ik_walk(target_position, target_quaternion, seed, restarts)
                 if sol is not None:
                     return sol
             # 3) 실패 = local 솔버가 seed basin 에서 못 찾은 것일 수 있음 (해는 존재
@@ -284,7 +276,8 @@ class PybulletKinematics:
             if best is None:
                 logger.debug(
                     "IK 실패 (seed + restart %d 모두) target=%s",
-                    IK_RESTARTS, target_position,
+                    IK_RESTARTS,
+                    target_position,
                 )
                 return None
             # 승자만 refine — probe 에서 내준 위치(≤10mm)를 결과-seed 재해로 회수.
@@ -312,9 +305,7 @@ class PybulletKinematics:
         branches = self._analytic.branches(  # type: ignore[union-attr]
             target_position, target_quaternion
         )
-        branches.sort(
-            key=lambda b: sum((a - s) ** 2 for a, s in zip(b, seed))
-        )
+        branches.sort(key=lambda b: sum((a - s) ** 2 for a, s in zip(b, seed)))
         for b in branches:
             sol = self._ik_from_seed(target_position, target_quaternion, b)
             if sol is None:
@@ -327,7 +318,8 @@ class PybulletKinematics:
             return sol
         logger.debug(
             "IK 도달불가 확정 (해석 branch %d개 전부 기각) target=%s",
-            len(branches), target_position,
+            len(branches),
+            target_position,
         )
         return None
 
@@ -379,9 +371,7 @@ class PybulletKinematics:
 
         self._set_chain(angles)
         actual_pos, _ = self._ee_state()
-        error = float(
-            np.linalg.norm(np.array(actual_pos) - np.array(target_position))
-        )
+        error = float(np.linalg.norm(np.array(actual_pos) - np.array(target_position)))
         # 조건부 refine — 잔차가 임계 초과일 때만 결과-seed 재해 (상단 상수 주석).
         # 게이트 검사 앞이라 15mm 단발도 ~sub-mm 로 회수해 통과. quat 포함 재해라
         # 자세도 함께 재수렴 (자세 잔차 검증은 기존대로 walk/호출자 책임).
@@ -447,7 +437,8 @@ class PybulletKinematics:
                 logger.debug(
                     "IK walk 실패 @위치-only: target=%s (재시작 %d 포함) — "
                     "위치 자체가 workspace 밖",
-                    target_position, budget,
+                    target_position,
+                    budget,
                 )
                 return None
         # b) 그 지점의 실제 자세 → 목표 자세 slerp 사다리 (TCP 위치 고정, 관절만
@@ -457,9 +448,7 @@ class PybulletKinematics:
         _, cur = self._ee_state()
         dot = sum(a * b for a, b in zip(cur, target_quaternion))
         tgt = (  # 반대 반구 표현이면 뒤집어 최단호 보간 (같은 회전)
-            target_quaternion
-            if dot >= 0
-            else tuple(-v for v in target_quaternion)
+            target_quaternion if dot >= 0 else tuple(-v for v in target_quaternion)
         )
         angle = 2.0 * math.acos(min(1.0, abs(dot)))
         n = max(1, int(math.ceil(angle / _WALK_STEP_RAD)))
@@ -474,9 +463,7 @@ class PybulletKinematics:
                 self._set_chain(cand)
                 actual_pos, _ = self._ee_state()
                 pos_err = float(
-                    np.linalg.norm(
-                        np.array(actual_pos) - np.array(target_position)
-                    )
+                    np.linalg.norm(np.array(actual_pos) - np.array(target_position))
                 )
                 seed_k = cand
                 if pos_err <= IK_POS_ERROR_LIMIT:
@@ -487,8 +474,11 @@ class PybulletKinematics:
             if sol is None:
                 logger.debug(
                     "IK walk 실패 @slerp %d/%d (총 %.0f°): %s target=%s",
-                    k, n, math.degrees(angle),
-                    "self-collision" if collided
+                    k,
+                    n,
+                    math.degrees(angle),
+                    "self-collision"
+                    if collided
                     else f"pos_err {pos_err * 1000:.1f}mm > "
                     f"{IK_POS_ERROR_LIMIT * 1000:.0f}mm "
                     f"(refine {_WALK_REFINE_ITERS}회)",
@@ -507,13 +497,17 @@ class PybulletKinematics:
         if err > _WALK_ORI_TOL_RAD:
             logger.debug(
                 "IK walk 실패 @최종검증: 자세 잔차 %.1f° > %.0f° target=%s",
-                math.degrees(err), math.degrees(_WALK_ORI_TOL_RAD),
+                math.degrees(err),
+                math.degrees(_WALK_ORI_TOL_RAD),
                 target_position,
             )
             return None
         logger.debug(
             "IK walk 성공: %d스텝(%.0f°) 자세잔차 %.2f° target=%s",
-            n, math.degrees(angle), math.degrees(err), target_position,
+            n,
+            math.degrees(angle),
+            math.degrees(err),
+            target_position,
         )
         return q
 
@@ -550,9 +544,7 @@ class PybulletKinematics:
         self._require_init()
         with self._lock:
             if self._plane == -1:
-                col = p.createCollisionShape(
-                    p.GEOM_PLANE, physicsClientId=self._client
-                )
+                col = p.createCollisionShape(p.GEOM_PLANE, physicsClientId=self._client)
                 self._plane = p.createMultiBody(
                     baseCollisionShapeIndex=col,
                     basePosition=(0.0, 0.0, floor_z),
@@ -676,7 +668,11 @@ class PybulletKinematics:
                 continue
             excluded.add(pair)
             p.setCollisionFilterPair(
-                self._robot, self._robot, pair[0], pair[1], 0,
+                self._robot,
+                self._robot,
+                pair[0],
+                pair[1],
+                0,
                 physicsClientId=self._client,
             )
             logger.warning(

@@ -419,12 +419,11 @@ class DetectorModule:
 
     @service(Detector.Service.DETECT_ORIENTED)
     async def detect_oriented(self, req: DetectRequest) -> DetectOrientedResponse:
-        """[DRAFT] DETECT + mask→base 점군→minAreaRect OBB (grasp yaw + footprint).
+        """DETECT + mask→base 점군→minAreaRect OBB (grasp yaw + footprint).
 
         오버레이용 image-space 도 산출: obb_2d = base OBB 코너를 픽셀로 reproject(회전
         사각형), mask_contour = SAM mask 윤곽(실루엣). DETECTIONS_ORIENTED 스트림 publish.
-        shape 굳으면 Detection 승격 + DETECT 흡수. depth 점군 부족으로 OBB 못 만든 후보는
-        누락 (draft — 실물에서 임계 tuning).
+        depth 점군 부족으로 OBB 못 만든 후보는 누락.
         """
         prompts = _req_prompts(req)
         if not prompts:
@@ -672,7 +671,7 @@ class DetectorModule:
 
     @service(Detector.Service.FUSE_ORIENTED)
     async def fuse_oriented(self, req: FuseOrientedRequest) -> FuseOrientedResponse:
-        """[DRAFT] 멀티뷰 관측 융합 — 순수 계산 (camera/모델/robot 무관).
+        """멀티뷰 관측 융합 — 순수 계산 (camera/모델/robot 무관).
 
         위치 XY 군집 → **뷰 간 정합(중심차 평행이동)** → 병합 → object-centric
         기하 재계산. 단일 뷰에서 안 보이던 옆면이 다른 뷰 점군으로 채워져

@@ -322,7 +322,6 @@ export interface UndoLastCaptureResponse {
   ok: boolean;
 }
 
-/** @draft 탐색 단계 계약 — 타입 미확정 (필드 추가/변경 가능). */
 export interface OrientedDetection {
   prompt: string;
   position: [number, number, number];
@@ -337,7 +336,6 @@ export interface OrientedDetection {
   points?: [number, number, number][] | null;
 }
 
-/** @draft 탐색 단계 계약 — 타입 미확정 (필드 추가/변경 가능). */
 export interface DetectOrientedResponse {
   found: boolean;
   candidates?: OrientedDetection[];
@@ -376,7 +374,6 @@ export interface DetectionsUpdate {
   candidates?: Detection[];
 }
 
-/** @draft 탐색 단계 계약 — 타입 미확정 (필드 추가/변경 가능). */
 export interface OrientedDetectionsUpdate {
   robot_id: string;
   seq: number;
@@ -860,10 +857,6 @@ export interface DeleteWaypointResponse {
   ok: boolean;
 }
 
-export interface ListGroupMembersRequest {
-  group_row_id: number;
-}
-
 export interface WaypointRecord {
   id?: number | null;
   robot_id: string;
@@ -871,6 +864,10 @@ export interface WaypointRecord {
   joint_values: number[];
   joint_names: string[];
   created_at: unknown;
+}
+
+export interface ListGroupMembersRequest {
+  group_row_id: number;
 }
 
 export interface ListGroupMembersResponse {
@@ -1096,8 +1093,3 @@ export type ServiceMap = {
   "srv/world_scan/run": { req: WorldScanRunRequest; res: RunResponse };
   "srv/world_scan/stop": { req: ControlRequest; res: ControlResponse };
 };
-
-export const DRAFT_CONTRACTS: ReadonlySet<string> = new Set([
-  "stream/detector/{robot_id}/detections_oriented",
-  "srv/detector/detect_oriented",
-]);

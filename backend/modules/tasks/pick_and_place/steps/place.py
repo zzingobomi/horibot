@@ -15,7 +15,7 @@ from ..geometry import PlaceCandidate
 from .primitives import (
     _fmt,
     _fmt_joints,
-    _move_j_joints,
+    _move_j,
     _move_l,
     _set_gripper,
     close_gripper,
@@ -79,13 +79,13 @@ async def pre_place(
     ctx: TaskContext, robot_id: str, pre_joints: list[float]
 ) -> None:
     logger.info("pre_place robot=%s → joints=%s", robot_id, _fmt_joints(pre_joints))
-    await _move_j_joints(ctx, robot_id, pre_joints)
+    await _move_j(ctx, robot_id, joints=pre_joints)
 
 
 @step(title="삽입")
 async def insert(ctx: TaskContext, robot_id: str, c: PlaceCandidate) -> None:
     logger.info("insert robot=%s → place %s", robot_id, _fmt(c.place))
-    await _move_l(ctx, robot_id, c.place, c.quat)
+    await _move_l(ctx, robot_id, position=c.place, quaternion=c.quat)
 
 
 @step(title="적치 후퇴")
@@ -107,12 +107,12 @@ async def retreat(
     """
     logger.info("retreat robot=%s → pre %s", robot_id, _fmt(c.pre))
     try:
-        await _move_l(ctx, robot_id, c.pre, c.quat)
+        await _move_l(ctx, robot_id, position=c.pre, quaternion=c.quat)
     except asyncio.CancelledError:
         raise
     except Exception as e:
         logger.warning("retreat MoveL 실패 (%s) — 계획 관절해(pre) MoveJ 폴백", e)
-        await _move_j_joints(ctx, robot_id, pre_joints)
+        await _move_j(ctx, robot_id, joints=pre_joints)
 
 
 @step(title="내려놓기")

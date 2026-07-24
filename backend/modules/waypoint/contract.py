@@ -13,6 +13,7 @@ class Waypoint:
         # waypoint CRUD
         TEACH = "srv/waypoint/teach"
         LIST = "srv/waypoint/list"
+        GET_WAYPOINT_BY_NAME = "srv/waypoint/get_waypoint_by_name"
         RENAME = "srv/waypoint/rename"
         DELETE = "srv/waypoint/delete"
         # group CRUD
@@ -24,6 +25,7 @@ class Waypoint:
         REMOVE_FROM_GROUP = "srv/waypoint/remove_from_group"
         REORDER_GROUP = "srv/waypoint/reorder_group"
         LIST_GROUP_MEMBERS = "srv/waypoint/list_group_members"
+        LIST_GROUP_MEMBERS_BY_NAME = "srv/waypoint/list_group_members_by_name"
 
 
 class WaypointRecord(StrictModel):
@@ -61,6 +63,15 @@ class ListWaypointsRequest(BaseModel):
 
 class ListWaypointsResponse(BaseModel):
     waypoints: list[WaypointRecord]
+
+
+class GetWaypointByNameRequest(BaseModel):
+    robot_id: str
+    name: str
+
+
+class GetWaypointByNameResponse(BaseModel):
+    waypoint: WaypointRecord | None = None
 
 
 class RenameWaypointRequest(BaseModel):
@@ -143,3 +154,13 @@ class ListGroupMembersRequest(BaseModel):
 
 class ListGroupMembersResponse(BaseModel):
     waypoints: list[WaypointRecord]
+
+
+class ListGroupMembersByNameRequest(BaseModel):
+    robot_id: str
+    name: str
+
+
+class ListGroupMembersByNameResponse(BaseModel):
+    found: bool
+    waypoints: list[WaypointRecord] = []

@@ -1,11 +1,3 @@
-"""계획 (모션 0 판정) — 스윕 누적 후보 → 집기 servo 진입 계획 / 놓기 후보.
-
-순서 규약 (2026-07-13): 물리 파지 **전에** 집기·놓기 도달성을 모두 검증한다 —
-놓을 곳이 도달 불가면 아무것도 집기 전에 실패 (쥔 채 멈춤 corrupt 방지).
-놓기 계획의 held 기하는 coarse 관측 (단일 뷰 height 과소 가능 — release 가
-수 mm 낮아질 수 있으나 상자 삽입은 관대. 정밀화는 실물 데이터 후 판단).
-"""
-
 from __future__ import annotations
 
 import logging
@@ -120,85 +112,6 @@ class ServoPlan:
 _ENTRY_LADDERS: tuple[tuple[float, ...], ...] = ((0.05,), (0.03,), (0.02,))
 
 
-def _fmt_ladder(entry: tuple[float, ...]) -> str:
-    """진입 사다리 로그 표기 (cm) — 명명 헬퍼인 이유: 프리뷰 정적 인덱서가
-    step 본문의 인라인 join 을 `<동적>` 노이즈 행으로 잡는다 (_join_msgs 동형)."""
-    return "/".join(f"{s * 100:.0f}" for s in entry)
-
-
-def _join_round_msgs(msgs: list[str]) -> str:
-    """라운드별 전멸 사유 병합 — 명명 헬퍼 (프리뷰 노이즈 회피, _fmt_ladder 동형)."""
-    return "; ".join(msgs)
-
-
-def servo_ladder_groups(
-    coarse: OrientedDetection,
-    cfg: servo.ServoConfig,
-    floor_z: float | None = None,
-    *,
-    yaw_grid: bool = True,
-    standoffs: tuple[float, ...] | None = None,
-) -> tuple[list[list[TcpPose]], list[tuple[servo.GraspFamily, Vec3, Vec3, float]]]:
-    """coarse 관측 → resolve 후보 그룹 ([standoff 사다리…, 파지] × 가족) + 메타.
-
-    plan_pick 과 sim 게이트 테스트(test_motion — 실 URDF IK 로 이 그룹이 진짜
-    풀리는지)가 공유하는 그룹 구성 SSOT. 가족 = 절대 yaw 격자 (§11 —
-    servo.grasp_families). **width 물리 게이트**: 그 yaw 방향 관측 폭이 조
-    개구를 넘는 가족은 물 수 없다 — 여기서 제외 (직사각 물체의 긴 변 물기가
-    자연 기각되는 자리, 옛 aspect 문턱의 물리 기반 대체).
-    standoffs: 진입 사다리 override (None = cfg 기본) — _ENTRY_LADDERS 폴백."""
-    entry = cfg.standoffs if standoffs is None else standoffs
-    families = servo.grasp_families(coarse, yaw_grid=yaw_grid)
-    groups: list[list[TcpPose]] = []
-    metas: list[tuple[servo.GraspFamily, Vec3, Vec3, float]] = []
-    g_point0 = servo.grasp_point(coarse, coarse, cfg, floor_z)
-    width_dropped = 0
-    for fam in families:
-        width = servo.width_along(
-            coarse.points, fam.jaw_axis, fallback_m=coarse.footprint[1]
-        )
-        if width > _PICK_MAX_WIDTH_M:
-            width_dropped += 1
-            continue
-        lateral = servo.lateral_offset(width)
-        g_tcp0 = servo.grasp_tcp(g_point0, fam, lateral, cfg.engage_m)
-        poses = [
-            TcpPose(
-                position=servo.standoff(g_tcp0, fam, s), quaternion=fam.quat
-            )
-            for s in entry
-        ]
-        poses.append(TcpPose(position=g_tcp0, quaternion=fam.quat))
-        groups.append(poses)
-        metas.append((fam, g_point0, g_tcp0, lateral))
-    if width_dropped:
-        logger.info(
-            "servo_ladder_groups: 개구 초과 yaw 가족 %d/%d 제외 "
-            "(관측 폭 > %.0fmm)",
-            width_dropped, len(families), _PICK_MAX_WIDTH_M * 1000.0,
-        )
-    return groups, metas
-
-
-def _fail_histogram(
-    metas: list[tuple[servo.GraspFamily, Vec3, Vec3, float]],
-    group_failures: list[str],
-    top_n: int = 8,
-) -> str:
-    """전멸 사유 히스토그램 (tilt×사유) — §11 관측성, 실물 디버깅 1차 데이터.
-
-    "어느 자세 축이 어느 게이트에서 죽었나"가 로그만으로 갈린다 (2026-07-20
-    "전멸인데 원인 모름" 재발 방지). 모듈 레벨 함수인 이유 = 시나리오 프리뷰
-    정적 인덱서가 step 본문의 `.join` 등을 `<동적>` 행으로 만드는 것 방지
-    (pick._notify_grasp 전례)."""
-    hist: dict[str, int] = {}
-    for (fam, _, _, _), why in zip(metas, group_failures):
-        key = f"tilt{fam.tilt_deg:+d}/{why or '?'}"
-        hist[key] = hist.get(key, 0) + 1
-    top = sorted(hist.items(), key=lambda kv: -kv[1])[:top_n]
-    return ", ".join(f"{k}×{v}" for k, v in top)
-
-
 @step(title="집기 계획")
 async def plan_pick(
     ctx: TaskContext,
@@ -242,7 +155,8 @@ async def plan_pick(
         logger.info(
             "plan_pick(%s): 개구 초과 후보 %d개 제외 (짧은 변 %s > %.0fmm — "
             "조가 못 무는 크기)",
-            prompt, len(oversize),
+            prompt,
+            len(oversize),
             [f"{c.footprint[1] * 1000:.0f}mm" for c in oversize],
             _PICK_MAX_WIDTH_M * 1000,
         )
@@ -251,7 +165,9 @@ async def plan_pick(
     if len(trusted) < len(sized):
         logger.info(
             "plan_pick(%s): 저신뢰 후보 %d개 제외 (score < %.2f — 오검출 방지)",
-            prompt, len(sized) - len(trusted), _PICK_SCORE_MIN,
+            prompt,
+            len(sized) - len(trusted),
+            _PICK_SCORE_MIN,
         )
     if not trusted:
         raise DetectionNotFound(
@@ -271,8 +187,7 @@ async def plan_pick(
     ordered = sorted(
         trusted,
         key=lambda c: (
-            c.base_z < _BASE_Z_PLAUSIBLE_MIN_M
-            or c.base_z > _BASE_Z_PLAUSIBLE_MAX_M,
+            c.base_z < _BASE_Z_PLAUSIBLE_MIN_M or c.base_z > _BASE_Z_PLAUSIBLE_MAX_M,
             -c.score,
         ),
     )[:_PLAN_TRY_MAX]
@@ -284,7 +199,8 @@ async def plan_pick(
         # 윗면 근처 가짜 바닥이 생겨 깊은 파지가 계획에서 전멸한다. 옆면을 본
         # 뷰의 base_z 가 실 바닥에 가장 가깝다 (min 이 그 뷰를 고른다).
         cluster_base = [
-            c.base_z for c in cands
+            c.base_z
+            for c in cands
             if _xy_dist(c.position, coarse.position) <= _VIEW_MATCH_RADIUS_M
         ]
         floor_z = min(cluster_base) - _FLOOR_GATE_MARGIN_M
@@ -327,13 +243,13 @@ async def plan_pick(
             if res.index >= 0:
                 break
             round_msgs.append(
-                f"진입 {_fmt_ladder(entry)}cm: "
-                f"{len(groups)}가족 전멸 — {res.message}"
+                f"진입 {_fmt_ladder(entry)}cm: {len(groups)}가족 전멸 — {res.message}"
             )
             logger.info(
-                "plan_pick(%s): 진입 사다리 %s 전멸 — 낮은 진입 재시도 | "
-                "사유 상위: %s",
-                prompt, entry, _fail_histogram(metas, res.group_failures),
+                "plan_pick(%s): 진입 사다리 %s 전멸 — 낮은 진입 재시도 | 사유 상위: %s",
+                prompt,
+                entry,
+                _fail_histogram(metas, res.group_failures),
             )
         resolve_s = time.monotonic() - t0
         if res is None or res.index < 0:
@@ -350,9 +266,17 @@ async def plan_pick(
         logger.info(
             "plan_pick(%s): 후보%d/%d 채택 (score %.2f) — 가족 %d/%d %s, "
             "grasp0=%s lateral=%.1fmm 진입=%scm (resolve %.1fs)",
-            prompt, rank, len(ordered), coarse.score, res.index,
-            len(groups), fam.label, _fmt(g_tcp0), lateral * 1000.0,
-            _fmt_ladder(entry), resolve_s,
+            prompt,
+            rank,
+            len(ordered),
+            coarse.score,
+            res.index,
+            len(groups),
+            fam.label,
+            _fmt(g_tcp0),
+            lateral * 1000.0,
+            _fmt_ladder(entry),
+            resolve_s,
         )
         return ServoPlan(
             coarse=coarse,
@@ -388,23 +312,15 @@ def _neighbor_points(
 
 
 def _fuse_place_center(spots: list[OrientedDetection]) -> OrientedDetection | None:
-    """스윕에서 모인 같은 상자 검출들을 융합 → 안정된 중심 (2026-07-18 실물 버그).
+    """여러 시점에서 검출된 같은 적치 대상의 위치를 융합해 중심 오차를 줄인다.
 
-    상자는 **정적**이라 여러 search pose 관측이 한 자리에 몰린다. 그런데 단일
-    검출 중심은 부분-림 관측으로 pose 마다 2~3cm 흔들려(실측 dump: 같은 상자가
-    X 0.276→0.298 / Y 0.085→0.117), 7cm 짜리 상자에선 그 오차가 곧 **모서리 적치**
-    였다 (pick 은 closed-loop servo 로 잡지만 place 는 open-loop 라 coarse 오차를
-    그대로 물려받음). closed-loop place 는 물체를 든 채라 상자가 가려 어렵다 —
-    대신 **집기 전 스윕의 가림 없는 관측들을 융합**해 occlusion 을 아예 회피한다.
+    같은 상자를 여러 번 관측한 경우 XY 위치를 클러스터링하고 score 가중 평균으로 중심을 계산한다.
+    대표 검출의 기하 정보(yaw, footprint, points 등)는 유지하고 위치만 교체해 반환한다.
 
-    plausible base_z 검출을 XY 클러스터링 → 최대 score 군집의 score-가중 평균
-    중심을 **대표(최고 score) 검출에 덮어** 반환 (산포 √N 감소). footprint/yaw/
-    base_z/points 는 대표 실검출 값 유지 — 위치만 융합 (기하 fabricate 최소).
-    군집이 1개(융합 이득 없음)면 None → 호출부가 기존 단일-spot 경로 유지."""
+    반복 관측이 없어 융합할 수 없으면 None을 반환한다.
+    """
     good = [
-        s
-        for s in spots
-        if _PLACE_BASE_Z_MIN_M <= s.base_z <= _BASE_Z_PLAUSIBLE_MAX_M
+        s for s in spots if _PLACE_BASE_Z_MIN_M <= s.base_z <= _BASE_Z_PLAUSIBLE_MAX_M
     ]
     if len(good) < 2:
         return None
@@ -418,7 +334,7 @@ def _fuse_place_center(spots: list[OrientedDetection]) -> OrientedDetection | No
             clusters.append([s])
     best = max(clusters, key=lambda cl: sum(d.score for d in cl))
     if len(best) < 2:
-        return None  # 대표 뷰가 하나뿐 = 융합할 이웃 없음
+        return None
     wsum = sum(d.score for d in best) or 1.0
     fx = sum(d.position[0] * d.score for d in best) / wsum
     fy = sum(d.position[1] * d.score for d in best) / wsum
@@ -435,42 +351,36 @@ async def plan_place(
     home: WaypointRecord,
     spots: list[OrientedDetection],
 ) -> tuple[PlaceCandidate, list[float]]:
-    """관측 spot(spots — detect/approach 산출) 게이트 판정 (모션 0) → (적치 후보,
-    pre 관절해).
+    """검출된 적치 spot 중 실제 도달 가능한 pose를 선택한다.
 
-    **도달성 우선 선택 (2026-07-14)**: 점수 1등에 무조건 커밋하지 않는다 — spot
-    을 점수순으로 돌며 팔이 실제로 닿는 첫 spot 채택. spot 마다 yaw 두 가족 순차
-    (① 상자 방위 정렬 ② 전멸 시 자유 — 삐딱하게라도 놓는 게 task 실패보다 낫다).
-    **놓기 자리 = 상자 정중앙 위** (2026-07-21 단순화 — 물건 폭/높이 무시,
-    geometry._place_candidates TODO). 집기 계획과 독립 (held/lateral 의존 제거)
-    이라 집기 전에 미리 계획 가능."""
+    spot을 우선순위 순으로 검사하고, 정렬 yaw 후보를 먼저 시도한 뒤 실패하면
+    자유 yaw 후보로 확장한다. resolve를 통과한 첫 후보의 적치 pose와 pre
+    관절해를 반환한다.
+
+    적치 위치는 현재 상자 중심 위 고정 모델을 사용한다.
+    """
     if not spots:
         raise TaskError(
-            f"'{prompt}' 적치 대상 검출 0건 — 물체 배치/조명 확인 후 다시 "
-            "실행하세요"
+            f"'{prompt}' 적치 대상 검출 0건 — 물체 배치/조명 확인 후 다시 실행하세요"
         )
-    # 물리 타당(base_z 대역 안) spot 먼저 — plan_pick 과 같은 원칙 (기각 아님,
-    # 최종 심판은 resolve). 2026-07-17 실물: 공중 부양 오염 spot(base_z=+0.156
-    # ~0.175)이 score 상위를 차지해 spot 당 정렬+자유 resolve ~55s 를 먼저
-    # 태우고, 최악 런은 plan_place 에만 3.5분 소모 후 실패.
     ranked = sorted(
         spots,
         key=lambda s: (
-            s.base_z < _PLACE_BASE_Z_MIN_M
-            or s.base_z > _BASE_Z_PLAUSIBLE_MAX_M,
+            s.base_z < _PLACE_BASE_Z_MIN_M or s.base_z > _BASE_Z_PLAUSIBLE_MAX_M,
             -s.score,
         ),
     )
-    # 상자 중심 융합 (정적 상자 = 스윕 관측 몰림). 융합 중심을 **먼저** 시도하고
-    # 도달 불가/실패 시 기존 단일-spot 순회로 폴백 (안전 — 동작 후퇴 없음).
     fused = _fuse_place_center(spots)
     if fused is not None:
         best_single = ranked[0]
         logger.info(
             "plan_place(%s): 상자 중심 융합 — 단일 best (%.3f,%.3f) → 융합 "
             "(%.3f,%.3f), 이동 %.1fcm (모서리 적치 방지)",
-            prompt, best_single.position[0], best_single.position[1],
-            fused.position[0], fused.position[1],
+            prompt,
+            best_single.position[0],
+            best_single.position[1],
+            fused.position[0],
+            fused.position[1],
             _xy_dist(fused.position, best_single.position) * 100.0,
         )
         ranked = [fused, *ranked]
@@ -480,7 +390,9 @@ async def plan_place(
             ("자유", geometry.plan_place_free(spot)),
         ):
             got = await resolve_place(
-                ctx, robot_id, pplan,
+                ctx,
+                robot_id,
+                pplan,
                 floor_z=spot.base_z - _FLOOR_GATE_MARGIN_M,
                 home=home,
             )
@@ -489,14 +401,25 @@ async def plan_place(
                 logger.info(
                     "plan_place(%s): spot 채택 score=%.2f base_z=%.3fm "
                     "pos=(%.3f,%.3f) — %s yaw %s (후보 %d건 중)",
-                    prompt, spot.score, spot.base_z, spot.position[0],
-                    spot.position[1], pplan[idx].label, family, len(ranked),
+                    prompt,
+                    spot.score,
+                    spot.base_z,
+                    spot.position[0],
+                    spot.position[1],
+                    pplan[idx].label,
+                    family,
+                    len(ranked),
                 )
                 return pplan[idx], sols[0]
             logger.info(
                 "plan_place(%s): spot score=%.2f pos=(%.3f,%.3f) %s yaw %d후보 "
-                "전멸 — %s", prompt, spot.score, spot.position[0],
-                spot.position[1], family, len(pplan),
+                "전멸 — %s",
+                prompt,
+                spot.score,
+                spot.position[0],
+                spot.position[1],
+                family,
+                len(pplan),
                 "자유 yaw 폴백" if family == "정렬" else "다음 spot",
             )
     raise NoReachableGrasp(
@@ -506,7 +429,7 @@ async def plan_place(
     )
 
 
-@step(title="적치 후보 선별")
+@step(title="적치 후보 도달성 검사")
 async def resolve_place(
     ctx: TaskContext,
     robot_id: str,
@@ -538,6 +461,86 @@ async def resolve_place(
         return None
     logger.info(
         "resolve_place: group %d — %s (%.1fs)",
-        res.index, plan[res.index].label, resolve_s,
+        res.index,
+        plan[res.index].label,
+        resolve_s,
     )
     return res.index, res.solutions
+
+
+def _fmt_ladder(entry: tuple[float, ...]) -> str:
+    """진입 사다리 로그 표기 (cm) — 명명 헬퍼인 이유: 프리뷰 정적 인덱서가
+    step 본문의 인라인 join 을 `<동적>` 노이즈 행으로 잡는다 (_join_msgs 동형)."""
+    return "/".join(f"{s * 100:.0f}" for s in entry)
+
+
+def _join_round_msgs(msgs: list[str]) -> str:
+    """라운드별 전멸 사유 병합 — 명명 헬퍼 (프리뷰 노이즈 회피, _fmt_ladder 동형)."""
+    return "; ".join(msgs)
+
+
+def servo_ladder_groups(
+    coarse: OrientedDetection,
+    cfg: servo.ServoConfig,
+    floor_z: float | None = None,
+    *,
+    yaw_grid: bool = True,
+    standoffs: tuple[float, ...] | None = None,
+) -> tuple[list[list[TcpPose]], list[tuple[servo.GraspFamily, Vec3, Vec3, float]]]:
+    """coarse 관측 → resolve 후보 그룹 ([standoff 사다리…, 파지] × 가족) + 메타.
+
+    plan_pick 과 sim 게이트 테스트(test_motion — 실 URDF IK 로 이 그룹이 진짜
+    풀리는지)가 공유하는 그룹 구성 SSOT. 가족 = 절대 yaw 격자 (§11 —
+    servo.grasp_families). **width 물리 게이트**: 그 yaw 방향 관측 폭이 조
+    개구를 넘는 가족은 물 수 없다 — 여기서 제외 (직사각 물체의 긴 변 물기가
+    자연 기각되는 자리, 옛 aspect 문턱의 물리 기반 대체).
+    standoffs: 진입 사다리 override (None = cfg 기본) — _ENTRY_LADDERS 폴백."""
+    entry = cfg.standoffs if standoffs is None else standoffs
+    families = servo.grasp_families(coarse, yaw_grid=yaw_grid)
+    groups: list[list[TcpPose]] = []
+    metas: list[tuple[servo.GraspFamily, Vec3, Vec3, float]] = []
+    g_point0 = servo.grasp_point(coarse, coarse, cfg, floor_z)
+    width_dropped = 0
+    for fam in families:
+        width = servo.width_along(
+            coarse.points, fam.jaw_axis, fallback_m=coarse.footprint[1]
+        )
+        if width > _PICK_MAX_WIDTH_M:
+            width_dropped += 1
+            continue
+        lateral = servo.lateral_offset(width)
+        g_tcp0 = servo.grasp_tcp(g_point0, fam, lateral, cfg.engage_m)
+        poses = [
+            TcpPose(position=servo.standoff(g_tcp0, fam, s), quaternion=fam.quat)
+            for s in entry
+        ]
+        poses.append(TcpPose(position=g_tcp0, quaternion=fam.quat))
+        groups.append(poses)
+        metas.append((fam, g_point0, g_tcp0, lateral))
+    if width_dropped:
+        logger.info(
+            "servo_ladder_groups: 개구 초과 yaw 가족 %d/%d 제외 (관측 폭 > %.0fmm)",
+            width_dropped,
+            len(families),
+            _PICK_MAX_WIDTH_M * 1000.0,
+        )
+    return groups, metas
+
+
+def _fail_histogram(
+    metas: list[tuple[servo.GraspFamily, Vec3, Vec3, float]],
+    group_failures: list[str],
+    top_n: int = 8,
+) -> str:
+    """전멸 사유 히스토그램 (tilt×사유) — §11 관측성, 실물 디버깅 1차 데이터.
+
+    "어느 자세 축이 어느 게이트에서 죽었나"가 로그만으로 갈린다 (2026-07-20
+    "전멸인데 원인 모름" 재발 방지). 모듈 레벨 함수인 이유 = 시나리오 프리뷰
+    정적 인덱서가 step 본문의 `.join` 등을 `<동적>` 행으로 만드는 것 방지
+    (pick._notify_grasp 전례)."""
+    hist: dict[str, int] = {}
+    for (fam, _, _, _), why in zip(metas, group_failures):
+        key = f"tilt{fam.tilt_deg:+d}/{why or '?'}"
+        hist[key] = hist.get(key, 0) + 1
+    top = sorted(hist.items(), key=lambda kv: -kv[1])[:top_n]
+    return ", ".join(f"{k}×{v}" for k, v in top)

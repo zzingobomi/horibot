@@ -1,14 +1,3 @@
-"""로봇 기초 동작 + 파지 판정 — 집기(pick)와 놓기(place)가 함께 쓰는 바닥층.
-
-이동(_move_l/_move_j_joints)·그리퍼(open/close/_set_gripper)·home 경유·파지
-판정(verify_grasp — 물었나/놓쳤나)과 포맷 유틸. phase 파일(search/plan/pick/
-place)은 전부 여기 위에 선다 — 역방향 import 금지 (계층: primitives ← phase).
-
-servo 노브 SSOT(_SERVO_CFG)도 여기 — plan(사다리 구성)과 pick(servo 루프)이
-같은 값을 봐야 하고, 테스트가 한 자리(steps.primitives._SERVO_CFG)만 패치하면
-두 소비자에 다 걸리도록 소비 측은 `primitives._SERVO_CFG` 모듈 참조로 읽는다.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -22,6 +11,7 @@ from modules.motion.contract import (
     MoveJResponse,
     MoveLRequest,
     MoveLResponse,
+    MoveTarget,
     PlanPathRequest,
     PlanPathResponse,
     PoseTarget,
@@ -39,8 +29,8 @@ from modules.tasks.core.context import TaskContext
 from modules.tasks.core.errors import GraspFailed, TaskError
 from modules.tasks.core.step import step
 from modules.waypoint.contract import (
-    ListWaypointsRequest,
-    ListWaypointsResponse,
+    GetWaypointByNameRequest,
+    GetWaypointByNameResponse,
     Waypoint,
     WaypointRecord,
 )
@@ -52,19 +42,11 @@ from ..geometry import Quat, Vec3
 
 logger = logging.getLogger(__name__)
 
-# gripper 이동 완료 대기 — SET_GRIPPER 는 단발 goal 이라 완료 통지가 없다.
-# 2026-07-17 close 30°/s 감속(타격 발사 방지)에 맞춰 1.2→4.0: open↔close 풀
-# 스트로크 ~110° ≈ 3.7s. 짧으면 verify 가 닫히는 도중 raw 를 읽어 오판.
+# 완료 통지가 없어 verify 전에 그리퍼 이동 완료를 기다림.
 _GRIPPER_SETTLE_S = 4.0
 _TOP_K = 5
-
-# 경유 자세 waypoint — 긴 이동(관측→접근)이 관절 공간으로 여기를 거친다. 티칭 필수.
 _HOME_WAYPOINT = "home"
-
-# 같은 물체 판정 반경 — 융합 결과에서 타깃 군집을 찾을 때 (base frame 정렬 전제).
 _VIEW_MATCH_RADIUS_M = 0.05
-
-# servo 파라미터 SSOT (servo.ServoConfig docstring — 실물 첫 런 데이터로 튜닝).
 _SERVO_CFG = servo.ServoConfig()
 
 
@@ -73,37 +55,32 @@ _SERVO_CFG = servo.ServoConfig()
 
 @step(title="home 자세 조회")
 async def home_waypoint(ctx: TaskContext, robot_id: str) -> WaypointRecord:
-    """'home' waypoint 조회 (긴 이동 경유 자세). 없음 = 명시적 실패 — 모션 0
-    시점(계획 전)에 걸리도록 시나리오 맨 앞에서 호출한다."""
     res = await ctx.call(
-        Waypoint.Service.LIST,
-        ListWaypointsRequest(robot_id=robot_id),
-        ListWaypointsResponse,
+        Waypoint.Service.GET_WAYPOINT_BY_NAME,
+        GetWaypointByNameRequest(robot_id=robot_id, name=_HOME_WAYPOINT),
+        GetWaypointByNameResponse,
     )
-    wp = next((w for w in res.waypoints if w.name == _HOME_WAYPOINT), None)
-    if wp is None:
+    if res.waypoint is None:
         raise TaskError(
             f"'{_HOME_WAYPOINT}' waypoint 없음 (robot={robot_id}) — 픽↔플레이스"
             " 사이 경유할 안전 자세를 티칭해 'home' 으로 저장한 뒤 다시 실행하세요"
         )
-    return wp
+    return res.waypoint
 
 
 @step(title="home 경유")
 async def go_home(ctx: TaskContext, robot_id: str, home: WaypointRecord) -> None:
     logger.info("go_home robot=%s → '%s'", robot_id, home.name)
-    await _move_j_joints(ctx, robot_id, home.joint_values)
+    await _move_j(ctx, robot_id, joints=home.joint_values)
 
 
-# ── 계획 이동 (transit) — home 허브 강등 (2026-07-22, docs/motion.md §12) ──
+# ── transit 경로 계획 및 실행 ─────────────────────────────────────────
 #
-# 긴 이동(관측 전환/servo 진입/운반)의 기본 = PLAN_PATH 로 현재→목표 직접 계획,
-# **실패(부정 결과/wire 예외)는 home 경유 폴백** — 옛 실행 계약 그대로라 동작
-# 후퇴가 없고, resolve 게이트 ④(path_from=home)가 폴백 경로를 여전히 계획
-# 시점에 증명한다 (플래너는 최적화지 의존성이 아니다 — 침묵 없이 로그).
+# 긴 이동은 현재 자세→목표 자세를 PLAN_PATH로 직접 계획한다.
+# 경로 계획 실패 시 기존 안전 동작대로 home 경유 후 목표로 이동한다.
 
 
-@step(title="이동 (계획 경로)")
+@step(title="이동 (경로 계획)")
 async def transit(
     ctx: TaskContext,
     robot_id: str,
@@ -115,8 +92,6 @@ async def transit(
     gripper_open: bool = False,
     tcp_min_z: float | None = None,
 ) -> None:
-    """현재 자세 → goal_joints 계획 이동. 실행 = 계획 waypoint 순차 MoveJ
-    (판정 경로 == 실행 경로 — resolve 의 판정 해 == 실행 해 원칙과 동일)."""
     res: PlanPathResponse | None = None
     try:
         res = await ctx.call(
@@ -126,7 +101,8 @@ async def transit(
                 floor_z=floor_z,
                 obstacle_points=(
                     [(p[0], p[1], p[2]) for p in obstacle_points]
-                    if obstacle_points else None
+                    if obstacle_points
+                    else None
                 ),
                 gripper_open=gripper_open,
                 tcp_min_z=tcp_min_z,
@@ -139,34 +115,50 @@ async def transit(
     except Exception as e:
         logger.warning(
             "transit robot=%s: PLAN_PATH 호출 실패 (%s) — home 경유 폴백",
-            robot_id, e,
+            robot_id,
+            e,
         )
     if res is not None and not res.found:
         logger.warning(
             "transit robot=%s: 경로 계획 실패 (%s, %.0fms) — home 경유 폴백",
-            robot_id, res.message, res.planning_ms,
+            robot_id,
+            res.message,
+            res.planning_ms,
         )
     if res is None or not res.found:
         await go_home(ctx, robot_id, home)
-        await _move_j_joints(ctx, robot_id, goal_joints)
+        await _move_j(ctx, robot_id, joints=goal_joints)
         return
     logger.info(
         "transit robot=%s: %s (%.0fms, 검사 %d회) — 경유 %d + 목표",
-        robot_id, "직선" if res.direct else "RRT",
-        res.planning_ms, res.checks, len(res.waypoints),
+        robot_id,
+        "직선" if res.direct else "RRT",
+        res.planning_ms,
+        res.checks,
+        len(res.waypoints),
     )
     for wp in res.waypoints:
-        await _move_j_joints(ctx, robot_id, wp)
-    await _move_j_joints(ctx, robot_id, goal_joints)
+        await _move_j(ctx, robot_id, joints=wp)
+    await _move_j(ctx, robot_id, joints=goal_joints)
 
 
-async def _move_j_joints(
-    ctx: TaskContext, robot_id: str, joints: list[float]
+async def _move_j(
+    ctx: TaskContext,
+    robot_id: str,
+    *,
+    joints: list[float] | None = None,
+    position: Vec3 | None = None,
+    quaternion: Quat | None = None,
 ) -> None:
-    """관절값으로 MoveJ (waypoint joint_values 그대로 — WaypointPanel 이동과 동일)."""
+    if joints is not None:
+        target: MoveTarget = JointTarget(kind="joint", joints=joints)
+    elif position is not None:
+        target = PoseTarget(kind="pose", position=position, quaternion=quaternion)
+    else:
+        raise ValueError("_move_j: joints= 또는 position= 중 하나 필요")
     await ctx.call(
         Motion.Service.MOVE_J,
-        MoveJRequest(target=JointTarget(kind="joint", joints=list(joints))),
+        MoveJRequest(target=target),
         MoveJResponse,
         robot_id=robot_id,
     )
@@ -175,9 +167,9 @@ async def _move_j_joints(
 async def _move_l(
     ctx: TaskContext,
     robot_id: str,
-    position: Vec3,
-    quaternion: Quat,
     *,
+    position: Vec3,
+    quaternion: Quat | None = None,
     speed_scale: float = 1.0,
 ) -> None:
     await ctx.call(
@@ -199,7 +191,9 @@ async def _log_reached_tcp(
     파지 흐름은 계속 — 로깅은 부수)."""
     try:
         tcp = await ctx.call(
-            Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
+            Motion.Service.TCP_SNAPSHOT,
+            TcpSnapshotRequest(),
+            TcpState,
             robot_id=robot_id,
         )
     except Exception as e:  # 로깅 실패가 파지를 막지 않게
@@ -209,10 +203,16 @@ async def _log_reached_tcp(
     dx, dy, dz = a[0] - expected[0], a[1] - expected[1], a[2] - expected[2]
     err_mm = math.sqrt(dx * dx + dy * dy + dz * dz) * 1000.0
     logger.info(
-        "reached[%s] robot=%s 계획=(%.3f,%.3f,%.3f) 도달=(%.3f,%.3f,%.3f) "
-        "오차=%.1fmm",
-        phase, robot_id, expected[0], expected[1], expected[2],
-        a[0], a[1], a[2], err_mm,
+        "reached[%s] robot=%s 계획=(%.3f,%.3f,%.3f) 도달=(%.3f,%.3f,%.3f) 오차=%.1fmm",
+        phase,
+        robot_id,
+        expected[0],
+        expected[1],
+        expected[2],
+        a[0],
+        a[1],
+        a[2],
+        err_mm,
     )
 
 
@@ -256,7 +256,9 @@ _HELD_LOAD_MIN_RAW = 150
 
 
 def _gripper_holding(
-    achieved_raw: int, load_raw: int | None, spec  # noqa: ANN001 — TaskRobotSpec
+    achieved_raw: int,
+    load_raw: int | None,
+    spec,  # noqa: ANN001 — TaskRobotSpec
 ) -> bool:
     """물었나 판정 (벤더 무관). 신호 2개의 OR:
 
@@ -299,8 +301,14 @@ async def verify_grasp(
     logger.info(
         "verify_grasp[%s] robot=%s grip achieved=%d (close=%d open=%d held_thr=%d "
         "load=%s) 계획폭=%s → %s",
-        phase, robot_id, achieved, spec.gripper_close_raw, spec.gripper_open_raw,
-        spec.gripper_held_threshold_raw, load, grasp_label or "?",
+        phase,
+        robot_id,
+        achieved,
+        spec.gripper_close_raw,
+        spec.gripper_open_raw,
+        spec.gripper_held_threshold_raw,
+        load,
+        grasp_label or "?",
         "HELD" if held else "EMPTY",
     )
     if not held:

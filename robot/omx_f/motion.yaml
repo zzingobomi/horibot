@@ -11,27 +11,31 @@
 # 이전 trajectory_runner.py 하드코드 값 (XL430 ~41 rpm ≈ 4.3 rad/s 의 ~35% 수준)
 # 을 그대로 옮김 — 운영 검증 끝난 baseline.
 
+# ⚠ 2026-07-26 하향: handover 실물에서 omx 움직임이 "안 부드럽고 빠르다"(사용자)
+# → 속도/가속/저크 모두 완화 (snappy 느낌은 acc/jerk 가 주범이라 그쪽을 더 줄임).
+# 전역 영향 (move/calibration/scan 등 omx 전부 더 천천히) — 너무 느리면 아래 값
+# ↑, 아직 급하면 acc/jerk ↓. arm 은 Dynamixel profile=0 이라 이 값이 유일 스무딩.
 joint_limits:
   joint1:
-    max_velocity: 1.5      # rad/s (XL430 base yaw)
-    max_acceleration: 3.0  # rad/s²
-    max_jerk: 10.0         # rad/s³
+    max_velocity: 1.0      # rad/s (XL430 base yaw)  [1.5→1.0]
+    max_acceleration: 2.0  # rad/s²                  [3.0→2.0]
+    max_jerk: 7.0          # rad/s³                  [10→7]
   joint2:
-    max_velocity: 1.5      # XL430 shoulder (중력 부하 보수적)
-    max_acceleration: 3.0
-    max_jerk: 10.0
+    max_velocity: 1.0      # XL430 shoulder (중력 부하 보수적)
+    max_acceleration: 2.0
+    max_jerk: 7.0
   joint3:
-    max_velocity: 1.5      # XL430 elbow
-    max_acceleration: 3.0
-    max_jerk: 10.0
+    max_velocity: 1.0      # XL430 elbow
+    max_acceleration: 2.0
+    max_jerk: 7.0
   joint4:
-    max_velocity: 2.5      # XL330 wrist pitch (작은 모터, 빠름)
-    max_acceleration: 5.0
-    max_jerk: 20.0
+    max_velocity: 1.6      # XL330 wrist pitch (작은 모터)  [2.5→1.6]
+    max_acceleration: 3.0  # [5.0→3.0]
+    max_jerk: 12.0         # [20→12]
   joint5:
-    max_velocity: 2.5      # XL330 wrist roll
-    max_acceleration: 5.0
-    max_jerk: 20.0
+    max_velocity: 1.6      # XL330 wrist roll
+    max_acceleration: 3.0
+    max_jerk: 12.0
 
 cartesian_limits:
   # 저속 (<0.08 m/s) 에서 J3 P=1500 static friction → stick-slip chatter.

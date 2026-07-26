@@ -220,6 +220,30 @@ class CrossRobotChecker:
             )
             return len(pts) > 0
 
+    def min_link_world_x(
+        self, side: str, joints: list[float], *, grip: float = 1.0
+    ) -> float:
+        """robot(side='a'=world 원점 / 'b'=base_pose) 링크들의 world x 최소값.
+
+        벽(뒤) 침범 판정용 (handover: 로봇 뒤는 벽 — steps._behind_wall). resolve
+        는 벽을 모르므로 채택 IK 해를 이걸로 후처리 기각한다. base + 모든 link
+        frame 원점의 world x 중 최소 (링크 mesh 두께는 무시 — 프레임 기준 근사)."""
+        with self._lock:
+            self._ensure_init()
+            body = self._a if side == "a" else self._b
+            assert body is not None
+            self._set_config(body, joints, grip)
+            xs = [
+                p.getBasePositionAndOrientation(
+                    body.body, physicsClientId=self._client
+                )[0][0]
+            ]
+            for j in range(p.getNumJoints(body.body, physicsClientId=self._client)):
+                xs.append(
+                    p.getLinkState(body.body, j, physicsClientId=self._client)[4][0]
+                )
+            return min(xs)
+
     def path_in_collision(
         self,
         path_a: list[list[float]],

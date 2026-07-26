@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 
 import pytest
 from pydantic import BaseModel
+from scipy.spatial.transform import Rotation
 
 from modules.calibration.contract import (
     Calibration,
@@ -53,7 +54,7 @@ from modules.tasks.core.errors import (
 )
 from modules.tasks.core.fake import FakeContext
 from modules.tasks.core.spec import TaskRobotSpec
-from modules.tasks.handover import cube, frames, steps
+from modules.tasks.handover import frames, steps
 from modules.tasks.handover.collision import BasePose
 from modules.tasks.handover.contract import ListRobotsRequest
 from modules.tasks.handover.module import HandoverModule
@@ -89,10 +90,10 @@ _BASE_OMX = BasePose(x=0.0342, y=0.2702, z=-0.0094, yaw_rad=math.radians(-3.33))
 _HELD_RAW = 2400  # gap > margin → HELD
 
 _ROI_SO = WorkcellRoi(
-    x_min=0.13, x_max=0.36, y_min=-0.16, y_max=0.39, z_min=-0.04, z_max=0.22
+    x_min=0.13, x_max=0.36, y_min=-0.16, y_max=0.39, z_min=-0.04, z_max=0.34
 )
 _ROI_OMX = WorkcellRoi(
-    x_min=0.08, x_max=0.34, y_min=-0.22, y_max=0.22, z_min=-0.02, z_max=0.25
+    x_min=0.08, x_max=0.34, y_min=-0.22, y_max=0.22, z_min=-0.02, z_max=0.34
 )
 # happy path 의 제시 TCP 점 — 시나리오와 같은 계산으로 유도 (기대값 하드코딩
 # 대신 같은 순수 함수: 랑데부 후보 [0] 이 첫 resolve 성공으로 채택된다). 큐브는
@@ -377,6 +378,9 @@ class _FakeChecker:
     def in_collision(self, ja, jb, **kw) -> bool:  # noqa: ANN001, ANN003
         return False
 
+    def min_link_world_x(self, side, joints, *, grip=1.0) -> float:  # noqa: ANN001
+        return 0.0  # 벽 침범 없음 (게이트 배선만 검증, 벽은 sim feasibility 몫)
+
 
 def _receive_script(n_resolve: int) -> dict:
     return {
@@ -402,8 +406,9 @@ async def test_plan_receive_retries_past_colliding_group():
 
 
 async def test_plan_receive_all_colliding_fails_explicitly():
-    checker = _FakeChecker(hits=[True, True, True])
-    ctx = _ctx(_receive_script(3))
+    n = steps._RECV_COLLISION_RETRY
+    checker = _FakeChecker(hits=[True] * n)
+    ctx = _ctx(_receive_script(n))
     with pytest.raises(NoReachableGrasp, match="충돌"):
         await steps.plan_receive(
             ctx, SO, OMX, _aerial_det(_H), _BASE_OMX, checker  # type: ignore[arg-type]
@@ -425,18 +430,18 @@ def test_plan_cube_grasp_center_and_yaw_candidates():
     assert g.yaw_candidates[2] == pytest.approx(0.1 + math.radians(45), abs=1e-9)
 
 
-def test_perp_face_distance_prefers_alignment_with_omx_jaw():
-    """다른 면 집기 — so101 파지 yaw 가 omx 조 축 yaw 에 정렬될수록 0 (두 조 축이
-    직교 = 큐브의 다른 면 쌍). mod 180 대칭."""
-    assert cube.perp_face_distance(
-        math.radians(30), math.radians(30)
-    ) == pytest.approx(0.0)
-    assert cube.perp_face_distance(
-        math.radians(120), math.radians(30)
-    ) == pytest.approx(90.0)
-    assert cube.perp_face_distance(
-        math.radians(210), math.radians(30)
-    ) == pytest.approx(0.0)
+def test_recv_family_includes_vertical_jaw():
+    """수취 자세족에 **위/아래 면(수직 조축)** 파지가 있어야 한다 (스윕: so101
+    수취해가 전부 수직 조축 — 이게 없으면 악수 높이에서 도달 0개). tool y(조축)의
+    z 성분이 큰 자세가 존재 = 수직 조축."""
+    vert = [
+        (lbl, q) for lbl, q, _a in steps._RECV_FAMILY
+        if abs(Rotation.from_quat(q).apply([0.0, 1.0, 0.0])[2]) > 0.7
+    ]
+    assert vert, "수취 자세족에 수직 조축(위/아래면) 파지가 없음 — 스윕 결론 회귀"
+    # 선호 순서: 첫 후보가 수직 조축 (r90 우선)
+    q0 = steps._RECV_FAMILY[0][1]
+    assert abs(Rotation.from_quat(q0).apply([0.0, 1.0, 0.0])[2]) > 0.7
 
 
 def test_rendezvous_candidates_inside_both_rois():

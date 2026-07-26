@@ -23,6 +23,7 @@ import math
 
 import numpy as np
 import pytest
+from scipy.spatial.transform import Rotation as _R
 
 from apps.config import _ROBOT_DIR, load_robots
 from infra.database.boot import open_database
@@ -121,21 +122,21 @@ def test_omx_topdown_pick_grid(env):
 
 
 def _adopt_present(env):
-    """시나리오와 같은 순서로 제시 채택 — (tcp_w, sol, h_world). 큐브는 대칭이라
-    방위 제약 없음(펜의 접선족 폐기) → yaw×tilt 격자에서 첫 도달. H(재검출
-    겨냥점) = 제시 TCP = 큐브 중심."""
+    """시나리오와 같은 순서로 제시 채택 — (tcp_w, sol, h_world). 일반 grasp
+    자세족(_present_orientations)에서 첫 도달. H(재검출 겨냥점) = 제시 TCP =
+    큐브 중심. 악수 높이(_PRESENT_Z_WORLD ~0.32)에서 성립해야 한다."""
     cands = frames.rendezvous_candidates(
         env["roi_so"], env["roi_omx"], env["base"], steps._PRESENT_Z_WORLD,
         limit=steps._PRESENT_LIMIT, prefer_r_so=steps._RENDEZVOUS_R_SO_M,
     )
-    assert cands, "랑데부 교집합 비어 있음 — workcell ROI 회귀"
+    assert cands, "랑데부 교집합 비어 있음 — workcell ROI z_max(악수높이) 회귀"
     for tcp_w in cands:
         tcp_o = frames.world_to_robot(tcp_w, env["base"])
-        for _label, quat in steps._present_orientations(tcp_o):
+        for _label, quat in steps._present_orientations():
             sol = _ik(env["k_omx"], tcp_o, quat)
             if sol:
                 return tcp_w, sol, tcp_w
-    pytest.fail("제시 자세족 전멸 — _present_orientations(접선+spin) 회귀")
+    pytest.fail("제시 자세족 전멸 — _present_orientations(일반 샘플러)/악수높이 회귀")
 
 
 def test_present_and_receive_feasible_with_clearance(env):
@@ -169,49 +170,45 @@ def test_present_and_receive_feasible_with_clearance(env):
             break
     assert obs_ok, "so101 수취 관측 사다리 전멸 — _RECV_OBS_* 회귀"
 
-    # 수취 가족 (절대 yaw 격자, 겨냥 = 큐브 중심 H) ≥1 + 여유
+    # 수취 가족 (일반 grasp 샘플러 — 위/아래면 수직 조축 포함), 겨냥 = 큐브 중심 H.
+    # ≥1 도달 + 벽밖 + 여유. 도달해가 수직 조축을 포함하는지도 확인(스윕 결론).
     tgt = h
     so_sols = []
-    for tilt in steps._RECV_TILTS_DEG:
-        for yaw_deg in np.arange(0.0, 360.0, steps._RECV_YAW_GRID_DEG):
-            yaw = math.radians(float(yaw_deg))
-            quat = steps._grasp_quat(yaw, tilt)
-            a = steps._approach_of(yaw, tilt)
-            pre = tuple(
-                tgt[i] - a[i] * steps._RECV_PRE_CLEAR_M for i in range(3)
-            )
-            s_pre, s_g = _ik(env["k_so"], pre, quat), _ik(env["k_so"], tgt, quat)
-            if s_pre and s_g:
-                so_sols.append(s_g)
+    vert_reach = 0
+    for _label, quat, a in steps._RECV_FAMILY:
+        pre = tuple(tgt[i] - a[i] * steps._RECV_PRE_CLEAR_M for i in range(3))
+        s_pre, s_g = _ik(env["k_so"], pre, quat), _ik(env["k_so"], tgt, quat)
+        if s_pre and s_g:
+            so_sols.append(s_g)
+            jaw_z = abs(_R.from_quat(quat).apply([0.0, 1.0, 0.0])[2])
+            if jaw_z > 0.7:
+                vert_reach += 1
     assert so_sols, (
-        "so101 수취 가족 전멸 — 절대 yaw 격자/tilt 사다리/랑데부 정렬 회귀 "
-        f"(H={h})"
+        f"so101 수취 가족 전멸 — 일반 샘플러(_RECV_FAMILY)/악수높이 회귀 (H={h})"
     )
-    # ⑤ 여유: 충돌 게이트가 살릴 수 있는(=margin 통과) 가족이 ≥1 있어야 한다
-    # (alive-loop 이 실행에서 고르는 것과 동형). ⚠ 큐브 handover 는 같은 2cm 큐브를
-    # 두 그리퍼가 직교로 동시에 물어 **구조적으로 tight** — best ~8mm/med ~4mm,
-    # 일부 관통(게이트가 기각). margin=5mm 는 크로스캘 σ_t 보다 작아 sim 여유가
-    # 실물 오차에 묻힌다 → **실물 수취 전 재특성화 필수** (cube_clearance_probe).
-    # 여기선 "게이트가 비관통 tight 가족을 최소 1개 남긴다"만 잠근다.
+    assert vert_reach, "수취 도달해에 수직 조축(위/아래면)이 없음 — 스윕 결론 회귀"
+
     so_t, omx_t = env["so"].type, env["omx"].type
     chk = CrossRobotChecker(
         _ROBOT_DIR / so_t / "urdf" / f"{so_t}.urdf",
         _ROBOT_DIR / omx_t / "urdf" / f"{omx_t}.urdf", env["base"],
     )
     try:
+        # 벽밖 + 충돌여유(margin) 통과 가족 ≥1 (실행 alive-loop 과 동형). 악수
+        # 높이라 여유가 σ_t 위(스윕 16~22mm)여야 정상 — 전멸이면 높이/랑데부 회귀.
         clear = [
             s for s in so_sols
-            if not chk.in_collision(
+            if chk.min_link_world_x("a", s, grip=1.0) >= steps._WALL_MIN_X_M
+            and not chk.in_collision(
                 s, omx_sol, grip_a=1.0,
                 grip_b=steps._OMX_HOLD_GRIP_FRAC,
                 margin_m=steps._RECV_COLLISION_MARGIN_M,
             )
         ]
         assert clear, (
-            f"수취 가족 {len(so_sols)}개 전부 margin "
-            f"{steps._RECV_COLLISION_MARGIN_M * 1000:.0f}mm 미달 — 큐브 근접 여유 "
-            "회귀 (best ~8mm, cube_clearance_probe 재실행으로 재특성화). 전멸이면 "
-            "큐브를 더 크게/제시 자세 조정"
+            f"수취 가족 {len(so_sols)}개 전부 벽/여유 미달 (margin "
+            f"{steps._RECV_COLLISION_MARGIN_M * 1000:.0f}mm) — handoff_sweep 재실행 "
+            "으로 재특성화 (악수 높이면 여유 16~22mm 나와야 정상)"
         )
     finally:
         chk.close()

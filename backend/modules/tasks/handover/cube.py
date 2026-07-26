@@ -8,7 +8,9 @@
 
 펜과의 근본 차이: 큐브는 **대칭** — 펜의 "먼 끝/노출 길이/짧음 실패" 개념이 없다.
 omx 는 큐브 **중심**을 top-down 으로 물고, 조 축(어느 두 면)은 도달성이 고른다.
-handover 의 다른 면 집기 = so101 조 축 ⟂ omx 조 축 (perp_face_distance).
+handover 의 다른 면 집기 = omx 옆면 / so101 **위·아래 면(수직 조축)** — 실제로
+어느 자세가 나오나는 so101 수취 도달성이 결정하고(steps._RECV_FAMILY, 스윕
+2026-07-26), 두 그리퍼가 안 부딪는 물리 보증은 충돌 게이트가 담당한다.
 
 omx 는 depth 가 없다(웹캠) → 큐브도 mono DETECT_PLANAR(z=table)로 **XY 위치만**
 잡고, 파지 높이(Z)는 큐브 크기 가정이 앵커 (steps 의 Z 사다리 — 2cm 큐브 →
@@ -58,17 +60,3 @@ def plan_cube_grasp(
     size = min(max((footprint[0] + footprint[1]) / 2.0, size_min_m), size_max_m)
     yaws = [grasp_yaw + math.radians(o) for o in yaw_offsets_deg]
     return CubeGrasp(center_xy=center_xy, yaw_candidates=yaws, size_m=size)
-
-
-def perp_face_distance(so101_grasp_yaw: float, omx_jaw_yaw: float) -> float:
-    """so101 파지 yaw 가 omx 조 축 yaw 와 얼마나 정렬됐나 (도, mod 180 — 작을수록 선호).
-
-    ⚠ 이름과 방향 주의 (handover 의 핵심): "다른 면 집기" = 두 그리퍼 조 축이
-    서로 **직교**. so101 조 축(tool y)의 world yaw = grasp_yaw + 90°. 이게 omx
-    조 축(yaw=omx_jaw_yaw)과 직교하려면 (grasp_yaw+90) ⟂ omx_jaw ⟺ grasp_yaw ≡
-    omx_jaw (mod 180). 즉 **so101 파지 yaw 를 omx 조 축 yaw 에 맞출수록** 두 조
-    축이 직교(= 큐브의 다른 면 쌍) → 0 에 가까울수록 선호. (펜 코드의 "조 축 ⟂
-    펜 축" 과 같은 형태 — 기준이 펜 축에서 omx 조 축으로 바뀐 것뿐.)
-    """
-    d = abs(math.degrees(so101_grasp_yaw - omx_jaw_yaw)) % 180.0
-    return min(d, 180.0 - d)

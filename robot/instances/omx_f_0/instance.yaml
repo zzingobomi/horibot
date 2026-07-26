@@ -17,7 +17,8 @@ camera:
 # 작업 셀 ROI (omx base frame, m) — detector 셀 밖 컷 + handover observe 포즈
 # 겨냥(셀 centroid) 공통 SSOT. 값 근거 = offline IK 도달 특성화 (2026-07-23,
 # docs/omx_handover_prep.md §8-1: z=0 도달 영역 26cm(전후)×44cm(좌우), centroid
-# ≈ (0.208, 0.0)). z_max 는 도달보다 높게 열어둠 — handover 공중 물체.
+# ≈ (0.208, 0.0)). z_max 는 도달보다 높게 열어둠 — handover **악수 높이(~0.32)**
+# 공중 물체 (2026-07-26 스윕/실측: 핸드오프가 z≈0.31 에서 성립 → z_max 0.34 로 상향).
 # ⚠️ 집에서 실 테이블/도달 경계 보고 숫자 보정 (omx 는 depth 가 없어 스스로 못 잼
 # — 이 1회 설정이 mono z=0 검출의 유일한 수작업 앵커).
 workcell:
@@ -26,4 +27,4 @@ workcell:
   y_min: -0.22
   y_max: 0.22
   z_min: -0.02
-  z_max: 0.25
+  z_max: 0.34

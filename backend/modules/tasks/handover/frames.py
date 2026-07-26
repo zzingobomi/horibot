@@ -58,11 +58,12 @@ def rendezvous_candidates(
     step_m: float = 0.03,
     limit: int = 8,
     prefer_r_so: float | None = None,
+    prefer_point: Vec2 | None = None,
 ) -> list[Vec3]:
     """world 격자 중 so101 ROI ∩ omx ROI(omx frame 변환) 교집합 점들 — 제시
-    파지점(omx TCP)의 후보. 선호순: z_values 순서 → prefer_r_so 지정 시 so101
-    원점 거리와의 차 (수취 sweet 반경 — so101 공중 도달이 좁은 환대 실측,
-    steps._RENDEZVOUS_R_SO_M 주석), 미지정 시 교집합 중심 근접.
+    파지점(omx TCP)의 후보. 선호순: z_values 순서 → **prefer_point 지정 시 그 world
+    xy 에 가까운 순** (so101 도달이 razor-thin 이라 도달 robust 실측 지점을 직접
+    겨냥 — steps._RENDEZVOUS_PREFER_XY) → 아니면 prefer_r_so(원점 거리차) → 중심.
 
     흉터 5 (워크스페이스 전멸 — standoff 가 먼저 죽음) 예방: 랑데부를 애초에
     두 셀의 공통 영역 **안쪽**에 배치. 실 도달성 판정은 여전히 motion resolve
@@ -85,7 +86,10 @@ def rendezvous_candidates(
                     hits.append((zi, x, y, z))
     if not hits:
         return []
-    if prefer_r_so is not None:
+    if prefer_point is not None:
+        px0, py0 = prefer_point
+        hits.sort(key=lambda h: (h[0], math.hypot(h[1] - px0, h[2] - py0)))
+    elif prefer_r_so is not None:
         hits.sort(key=lambda h: (
             h[0], abs(math.hypot(h[1], h[2]) - prefer_r_so),
         ))

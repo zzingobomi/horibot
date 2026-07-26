@@ -150,24 +150,35 @@ _CUBE_SIZE_MIN_M = 0.012
 _CUBE_SIZE_MAX_M = 0.030
 # 파지 Z 사다리 (table 위 dz, 첫 도달+바닥클리어 채택). ⚠ 실물(2026-07-26):
 # TCP=바닥+1cm 로 하니 **그리퍼가 바닥을 훑었다** — omx URDF 상 물리 손끝이
-# TCP(link5 x 9.19cm)보다 ~1cm 더 아래로 뻗기 때문 (손가락은 2.95cm 에서 시작).
-# 오프라인 probe(scratchpad omx_pick_z_probe): top-down 은 6~28mm 전부 도달하나
-# 손끝이 바닥(+3mm)을 클리어하는 최저 높이 = **14mm** (6~12mm 은 손끝 침투=긁힘).
-# → 사다리 14mm 시작, 상한 20mm(큐브 top — 그 이상은 조가 큐브 위로 뜸). floor
-# 게이트(_CUBE_PICK_FLOOR_CLEAR_M)가 실 손가락 메시로 걸러 가장 낮게 클리어하는
-# 높이를 채택. 집는 위치가 이상하면 chosen_dz(trace)로 보정.
-_CUBE_PICK_DZ_LADDER = (0.014, 0.016, 0.018, 0.020)
-_CUBE_PICK_FLOOR_CLEAR_M = 0.003  # resolve 바닥 게이트 — 손끝이 이만큼 위를 요구
+# TCP(link5 x 9.19cm)보다 ~11mm 아래로 뻗고(probe omx_pick_z_probe), 게다가
+# **손끝에 붙인 골무(finger cot)는 URDF 에 없어** 그 두께만큼 더 내려간다.
+# → floor 게이트 = URDF 여유(_CUBE_PICK_FLOOR_CLEAR_M) + 골무 오프셋
+# (_GRIPPER_TIP_EXTRA_M) 를 요구해 그만큼 TCP 를 올린다. 2cm 큐브라 TCP 가
+# 높아도(≤22mm) 긴 손가락이 옆면 아래쪽까지 문다. resolve 가 실 손가락 메시로
+# 걸러 사다리 중 가장 낮게 클리어하는 높이를 채택 — chosen_dz(trace)로 확인.
+_CUBE_PICK_DZ_LADDER = (0.014, 0.016, 0.018, 0.020, 0.022, 0.024)
+# floor 게이트 = table + (실 손끝 목표 여유 + 골무 연장). URDF 손끝은 TCP−11mm
+# 이라 14mm 면 3mm 뜨지만, 얇은 골무(~2mm)가 그걸 거의 먹어 "거의 훑음"이었다
+# (2026-07-26 실물, 둘 다 재시작 후). → 실 손끝이 눈에 띄게 뜨게 5mm 목표.
+_CUBE_PICK_FLOOR_CLEAR_M = 0.01  # 실 손끝이 바닥에서 뜰 목표 여유 (조금 더 위로, 2026-07-26)
+# 골무 등 URDF 미모델 손끝 연장 — floor 게이트에 가산 (URDF 는 골무를 모름).
+# ⚠ **실물 튜닝 노브**: 여전히 긁으면 ↑ / 큐브 위를 잡아 미끄러지면 ↓
+# (chosen_dz 로그 확인). 사용자 실측 "얼마 안 튀어나옴" → 2mm.
+_GRIPPER_TIP_EXTRA_M = 0.002
 
 # ── C. 수취 refine 보정 게이트 (so101 수취측 so_refine 사용) ──
 _REFINE_JUMP_MAX_M = 0.03  # 겨냥점 보정 상한 — 초과 = 관측 오염 의심 (계획값 유지)
 
 # ── D. 제시 (랑데부 계산) ──
-# ⚠ 제시 높이 = **악수 높이 ~0.32m** (2026-07-26 전수 스윕 handoff_sweep + 사용자
-# torque-off 실측). 옛 0.08~0.14 는 책상 근처라 so101 이 손목 각을 못 세워 못
-# 받았다 (사용자 첫 사진의 직접 원인). 스윕: z0.32 는 두 팔 링크 여유 16~22mm,
-# z≤0.28 은 대부분 충돌 → **높이가 도달성+충돌여유 둘 다 해결**.
-_PRESENT_Z_WORLD = (0.32, 0.30, 0.34, 0.28)  # 파지점(TCP)의 world z 후보 (선호순)
+# ⚠ 랑데부 = **so101 도달 robust 실측 지점** (2026-07-26 실물+probe). so101 공중
+# 도달이 razor-thin(어디서든 192개 중 3~5개)이라, 랑데부를 omx/전방x/반경으로
+# 고르면 실 큐브(omx 그립으로 ~3cm 어긋남)에서 도달 0 이 된다(실물 확인). robust
+# probe: (x0.16~0.20, y0.26, z0.28)만 [so101 도달(±3cm 버팀)+omx 제시+비가림+충돌
+# 여유15mm] 전부 통과 → 그 지점을 prefer_point 로 직접 겨냥 (z0.32 는 그 지점서
+# omx 제시 도달 X 라 제외). 실 큐브는 여전히 재검출로 잡음(closed-loop) — 이건
+# omx 가 큐브를 가져다 놓을 목표점.
+_PRESENT_Z_WORLD = (0.28, 0.30, 0.26)  # 파지점(TCP)의 world z 후보 (선호순)
+_RENDEZVOUS_PREFER_XY = (0.18, 0.26)  # so101 도달 robust 지점 (world xy, 실측)
 _PRESENT_LIMIT = 8  # 랑데부 후보 상한 (resolve+충돌 게이트 시도 수)
 # 제시 자세족 파라미터 — **일반 grasp 샘플러**(_grasp_family): e=접근고도(0수평..
 # 90수직하향) / az=방위 스텝 / r=조축 roll. 큐브는 대칭이라 임의 tool 방위가 유효,
@@ -183,13 +194,23 @@ _PRESENT_FAMILY_R = (0.0, 90.0)
 # (= 자연스러운 "다른 면", 두 그리퍼 회피). 옛 _grasp_quat family 는 조축을 항상
 # **수평**으로만 만들어 이 파지를 못 냈고 → 악수 높이 실 중심에서 도달 0개였다.
 # 그래서 수취도 **일반 grasp 샘플러**(_grasp_family) 로 열거, 수직 조축(r90) 우선.
-_RECV_OBS_DIST_M = (0.18, 0.22)  # 재검출 카메라-큐브 거리 사다리 (D405 검증 대역)
-_RECV_OBS_ELEV_DEG = (40.0, 55.0, 25.0)  # 고도 사다리 (실측: 55° 가 잘 풀림)
-_RECV_OBS_AZOFF_DEG = (0.0, 45.0, -45.0, 90.0)  # 카메라 방위 오프셋 (base→H 기준)
+# ⚠ 관측 사다리 — omx 가림 회피가 지배 (2026-07-26 실물: omx 그리퍼가 큐브를
+# 가려 검출 실패 + 높은 관측 자세라 J2 떨림). occlusion probe(scratchpad
+# so101_observe_occlusion_probe): **저각(elev 30°) + so101 측 방위만 비가림**,
+# 높은 각(40/55)은 omx 에 전부 가림 + 더 뻗어 J2 부하↑. 이 밴드로 좁혀 resolve
+# 가 뭘 고르든 비가림 (밴드 전체가 clear 실측). ⚠ 큐브 위치가 크게 바뀌면 가림
+# 기하도 바뀌니 재-probe.
+_RECV_OBS_DIST_M = (0.18, 0.15)  # 재검출 카메라-큐브 거리 (probe: 0.18 최적)
+_RECV_OBS_ELEV_DEG = (30.0, 25.0)  # 저각만 비가림 (40/55 는 omx 가림 + J2 부하↑)
+_RECV_OBS_AZOFF_DEG = (20.0, 0.0, 40.0, -20.0)  # so101 측, +20 이 비가림+최소 J2
 _RECV_OBS_PSI_DEG = (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0)
 _RECV_MATCH_RADIUS_M = 0.08  # 제시 계획점 대비 재검출 매치 반경
 _RECV_Z_BAND_M = 0.06  # 공중 대역 — 제시 z ± 이 값 (테이블 대역 게이트의 개방판)
-_RECV_SCORE_MIN = 0.35  # 공중 큐브 + 그리퍼 가림 — pick 보다 완화
+# 공중 큐브는 작고 omx 그리퍼 옆이라 GDINO 신뢰도가 낮다 — 2026-07-26 실물:
+# 위치 정확(계획점 3cm)·z 1mm·점군 116 인 진짜 검출인데 score 0.327 로 0.35 문턱에
+# 걸림. 위치/z/반경(8cm)/점군(≥20) 게이트가 오검출 방어를 하므로 score 는 낮춰도
+# 안전. → 0.25 (0.327 에 여유 + 다음 런 변동 대비).
+_RECV_SCORE_MIN = 0.25
 _RECV_MIN_POINTS = 20  # 공중 물체 점군 하한 (큐브는 펜보다 조밀 — 가림만 주의)
 # 수취 자세족 파라미터 — 일반 grasp 샘플러. r90(수직 조축=위/아래면)을 앞에 둬
 # 선호(스윕: 도달·비관통 해가 전부 수직 조축). resolve 가 순서대로 첫 도달 채택.
@@ -197,9 +218,10 @@ _RECV_FAMILY_E = (0.0, 30.0, 60.0, 90.0)
 _RECV_FAMILY_AZ_STEP = 30.0
 _RECV_FAMILY_R = (90.0, 45.0, 0.0, 135.0)
 _RECV_PRE_CLEAR_M = 0.07
-# 랑데부 정렬 — so101 수취 sweet 반경 (스윕: (0.20,0.14)/(0.15,0.18) r≈0.23~0.24,
-# x 를 앞으로 뺀 지점. 옛 0.27 은 접힌 뒤쪽 해였음).
-_RENDEZVOUS_R_SO_M = 0.24
+# 랑데부 반경 선호 — prefer_point(위 _RENDEZVOUS_PREFER_XY) 폴백용만 남김.
+# ⚠ 반경만으론 so101-robust 지점을 못 겨냥해서(같은 r 딴 y 채택) prefer_point 로
+# 대체됨 (2026-07-26 실물: r0.24 겨냥이 실 큐브 도달 0 이었음).
+_RENDEZVOUS_R_SO_M = 0.30
 _RECV_WITHDRAW_M = 0.08
 _RECV_COLLISION_RETRY = 5
 # 핸드오프 근접 국면 margin — 악수 높이(z~0.32)에선 두 팔이 벌어져 스윕 여유가
@@ -225,7 +247,8 @@ _BASE_Z_MAX_M = 0.08  # 적치 spot 대역 (테이블)
 # 기준 자세: 툴 x(approach)→base -z (수직 하향), y(조 축)→base +y — so101
 # URDF tcp 규약 (pick_and_place geometry._TOPDOWN 동일. omx 도 동일 — §5.2
 # 구조 확정, 물리 조립 일치는 실물 미지수 가정 ①).
-_TOPDOWN = Rotation.from_matrix(np.column_stack([[0, 0, -1], [0, 1, 0], [1, 0, 0]]))
+_TOPDOWN = Rotation.from_matrix(
+    np.column_stack([[0, 0, -1], [0, 1, 0], [1, 0, 0]]))
 
 
 def knob_snapshot() -> dict[str, float | tuple]:
@@ -289,7 +312,8 @@ def _grasp_family(
         for az_deg in np.arange(0.0, 360.0, az_step_deg):
             az = math.radians(float(az_deg))
             a = np.array(
-                [math.cos(e) * math.cos(az), math.cos(e) * math.sin(az), -math.sin(e)]
+                [math.cos(e) * math.cos(az), math.cos(e)
+                 * math.sin(az), -math.sin(e)]
             )
             a = a / np.linalg.norm(a)
             ref = np.cross([0.0, 0.0, 1.0], a)
@@ -300,7 +324,8 @@ def _grasp_family(
                 jaw = Rotation.from_rotvec(a * math.radians(r_deg)).apply(ref)
                 jaw = jaw / np.linalg.norm(jaw)
                 z = np.cross(a, jaw)
-                q = Rotation.from_matrix(np.column_stack([a, jaw, z])).as_quat()
+                q = Rotation.from_matrix(
+                    np.column_stack([a, jaw, z])).as_quat()
                 out.append(
                     (
                         f"e{e_deg:.0f}/az{az_deg:.0f}/r{r_deg:.0f}",
@@ -315,7 +340,8 @@ def _grasp_family(
 _PRESENT_FAMILY = _grasp_family(
     _PRESENT_FAMILY_E, _PRESENT_FAMILY_AZ_STEP, _PRESENT_FAMILY_R
 )
-_RECV_FAMILY = _grasp_family(_RECV_FAMILY_E, _RECV_FAMILY_AZ_STEP, _RECV_FAMILY_R)
+_RECV_FAMILY = _grasp_family(
+    _RECV_FAMILY_E, _RECV_FAMILY_AZ_STEP, _RECV_FAMILY_R)
 
 
 # ─── 0. 자산/설정 fail-fast (모션 0 시점) ─────────────────────────────
@@ -331,7 +357,8 @@ async def named_waypoint(
         GetWaypointByNameResponse,
     )
     if res.waypoint is None:
-        raise TaskError(f"'{name}' waypoint 없음 (robot={robot_id}) — {teach_hint}")
+        raise TaskError(
+            f"'{name}' waypoint 없음 (robot={robot_id}) — {teach_hint}")
     return res.waypoint
 
 
@@ -348,7 +375,8 @@ async def load_workcells(
     )
     roi_so = bundle.robots.get(so101)
     roi_omx = bundle.robots.get(omx)
-    missing = [r for r, roi in ((so101, roi_so), (omx, roi_omx)) if roi is None]
+    missing = [r for r, roi in (
+        (so101, roi_so), (omx, roi_omx)) if roi is None]
     if missing:
         raise TaskError(
             f"workcell ROI 미설정: {missing} — robot/instances/<id>/instance.yaml "
@@ -373,7 +401,8 @@ async def load_hand_eye(ctx: TaskContext, robot_id: str) -> np.ndarray:
             "(관측 자세 계산에 필수, 침묵 identity 금지)"
         )
     x = np.eye(4)
-    x[:3, :3] = np.array(bundle.hand_eye.result_data.R_cam2gripper, dtype=float)
+    x[:3, :3] = np.array(
+        bundle.hand_eye.result_data.R_cam2gripper, dtype=float)
     x[:3, 3] = np.array(bundle.hand_eye.result_data.t_cam2gripper, dtype=float).reshape(
         3
     )
@@ -423,7 +452,8 @@ def _camera_pose_groups(
                         float(t_base_tcp[1, 3]),
                         float(t_base_tcp[2, 3]),
                     ),
-                    quaternion=(float(q[0]), float(q[1]), float(q[2]), float(q[3])),
+                    quaternion=(float(q[0]), float(q[1]),
+                                float(q[2]), float(q[3])),
                 )
             ]
         )
@@ -512,7 +542,8 @@ async def omx_observe_detect(
     res = await ctx.call(
         Detector.Service.DETECT_PLANAR,
         DetectPlanarRequest(
-            robot_id=omx, plane_z=_OMX_TABLE_Z_M, prompts=[prompt], top_k=_TOP_K
+            robot_id=omx, plane_z=_OMX_TABLE_Z_M, prompts=[
+                prompt], top_k=_TOP_K
         ),
         DetectOrientedResponse,
     )
@@ -639,7 +670,8 @@ async def plan_omx_pick_cube(
             "index": res.index,
             "chosen_dz": (metas[res.index][2] - _OMX_TABLE_Z_M) if res.index >= 0 else None,
             "chosen_jaw_deg": (
-                round(math.degrees(metas[res.index][1]), 1) if res.index >= 0 else None
+                round(math.degrees(metas[res.index][1]),
+                      1) if res.index >= 0 else None
             ),
             "group_failures": res.group_failures,
         },
@@ -734,7 +766,7 @@ async def plan_omx_present(
         base_omx,
         _PRESENT_Z_WORLD,
         limit=_PRESENT_LIMIT,
-        prefer_r_so=_RENDEZVOUS_R_SO_M,
+        prefer_point=_RENDEZVOUS_PREFER_XY,  # so101 도달 robust 지점 직접 겨냥
     )
     if not cands:
         raise TaskError(
@@ -748,7 +780,8 @@ async def plan_omx_present(
     )
     for tcp_w in cands:
         tcp_omx = world_to_robot(tcp_w, base_omx)
-        groups = [[TcpPose(position=tcp_omx, quaternion=q)] for _l, q in orients]
+        groups = [[TcpPose(position=tcp_omx, quaternion=q)]
+                  for _l, q in orients]
         alive = list(range(len(groups)))
         for _attempt in range(_RECV_COLLISION_RETRY):
             res = await ctx.call(
@@ -1054,7 +1087,8 @@ async def plan_receive(
     for attempt in range(_RECV_COLLISION_RETRY):
         res = await ctx.call(
             Motion.Service.RESOLVE_REACHABLE,
-            ResolveReachableRequest(groups=[groups[i] for i in alive], linear=True),
+            ResolveReachableRequest(groups=[groups[i]
+                                    for i in alive], linear=True),
             ResolveReachableResponse,
             robot_id=so101,
         )
@@ -1134,7 +1168,8 @@ async def so_refine(
         reason = "수취 refine 재검출 실패 — 계획 겨냥점으로 진행"
         logger.warning("so_refine: %s", reason)
         await _emit(
-            trace, {"phase": "receive", "event": "refine_miss", "reason": reason}
+            trace, {"phase": "receive",
+                    "event": "refine_miss", "reason": reason}
         )
         return plan.target
     updated = (best.position[0], best.position[1], best.position[2])  # 큐브 중심
@@ -1146,7 +1181,8 @@ async def so_refine(
         )
         logger.warning("so_refine: %s", reason)
         await _emit(
-            trace, {"phase": "receive", "event": "refine_rejected", "reason": reason}
+            trace, {"phase": "receive",
+                    "event": "refine_rejected", "reason": reason}
         )
         return plan.target
     await _emit(
@@ -1507,7 +1543,8 @@ async def _move_l(
     await ctx.call(
         Motion.Service.MOVE_L,
         MoveLRequest(
-            target=PoseTarget(kind="pose", position=position, quaternion=quaternion),
+            target=PoseTarget(kind="pose", position=position,
+                              quaternion=quaternion),
             speed_scale=speed_scale,
         ),
         MoveLResponse,

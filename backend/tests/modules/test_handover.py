@@ -100,7 +100,7 @@ _ROI_OMX = WorkcellRoi(
 # H(재검출 겨냥점)=제시 TCP 라 det 를 이 점에 두면 so_redetect/refine 이 매치.
 _H = frames.rendezvous_candidates(
     _ROI_SO, _ROI_OMX, _BASE_OMX, steps._PRESENT_Z_WORLD,
-    limit=steps._PRESENT_LIMIT, prefer_r_so=steps._RENDEZVOUS_R_SO_M,
+    limit=steps._PRESENT_LIMIT, prefer_point=steps._RENDEZVOUS_PREFER_XY,
 )[0]
 
 

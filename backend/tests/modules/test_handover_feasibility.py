@@ -127,7 +127,7 @@ def _adopt_present(env):
     큐브 중심. 악수 높이(_PRESENT_Z_WORLD ~0.32)에서 성립해야 한다."""
     cands = frames.rendezvous_candidates(
         env["roi_so"], env["roi_omx"], env["base"], steps._PRESENT_Z_WORLD,
-        limit=steps._PRESENT_LIMIT, prefer_r_so=steps._RENDEZVOUS_R_SO_M,
+        limit=steps._PRESENT_LIMIT, prefer_point=steps._RENDEZVOUS_PREFER_XY,
     )
     assert cands, "랑데부 교집합 비어 있음 — workcell ROI z_max(악수높이) 회귀"
     for tcp_w in cands:

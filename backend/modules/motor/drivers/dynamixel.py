@@ -229,9 +229,23 @@ class DynamixelBackend:
     # ── write ──
 
     def set_torque(self, enabled: bool) -> None:
-        val = 1 if enabled else 0
+        if not enabled:
+            for mid in self._motor_ids:
+                self._write1(mid, ADDR_TORQUE_ENABLE, 0)
+            return
+        # safe-enable: 토크 켜기 **전에** Goal ← Present 로 맞춰 제자리 유지.
+        # 안 하면 전원 off 중 축이 sag 로 Present≠Goal 인데, 토크 on 순간 servo 가
+        # stale Goal 로 **profile=0(무제한 속도) 슬램** → "딱"/충돌 위험 (2026-07-26
+        # 실물: omx 첫 go_home 직전 딱 소리 = 이 슬램). Goal 은 RAM 이라 torque off
+        # 에서 write 가능. ⚠ write_positions 는 _clamp(reverse 매핑 포함)를 타므로
+        # 여기선 servo-raw present 를 ADDR_GOAL_POSITION 에 **직접** 써야 한다
+        # (present=servo-raw, goal=servo-raw 동일 공간 — reverse 재적용 금지).
+        present = self.read_positions()  # servo-raw (getData 그대로)
+        for i, m in enumerate(self._motors):
+            if i < len(present):
+                self._write4(m.id, ADDR_GOAL_POSITION, present[i])
         for mid in self._motor_ids:
-            self._write1(mid, ADDR_TORQUE_ENABLE, val)
+            self._write1(mid, ADDR_TORQUE_ENABLE, 1)
 
     def reboot(self) -> None:
         with self._lock:

@@ -1,12 +1,14 @@
-"""HandoverModule — omx(giver)가 **자기 웹캠으로 보고** 집어 든 펜을
-so101(receiver)이 **재검출**해 받아 (선택) 상자 적치.
+"""HandoverModule — omx(giver)가 **자기 웹캠으로 보고** 집어 든 큐브를
+so101(receiver)이 **재검출**해 omx 가 문 면이 아닌 **직교 면**을 받아 (선택)
+상자 적치.
 
-pick_and_place 표준형 복제 (task.md §3). ⚠ 2026-07-23 전면 재배선 — **실물
-미검증** (설계 근거/가정/미지수 = docs/omx_handover_prep.md + steps.py
-docstring. v1 의 "so101=눈, omx=blind, 티칭 handover waypoint" 전제 폐기).
+pick_and_place 표준형 복제 (task.md §3). ⚠ 2026-07-23 전면 재배선 + 2026-07-26
+펜→큐브 전환 — **실물 미검증** (설계 근거/가정/미지수 = docs/omx_handover_prep.md
++ steps.py/cube.py docstring. 동그란 펜은 omx 평행조로 안정 파지가 어려워 폐기).
 frontend 페이지/노출 없음 — 터미널 실행:
     uv run --no-sync python scripts/run_task.py srv/handover/run \
-        --param "pick_object=pen" --param "place_object=blue box"
+        --param "pick_object=cube" --param "place_object=blue box"
+    # omx 집기+제시만 먼저 눈으로 볼 때: --param "stop_before_receive=true"
 (mock deployment 에만 활성 — pc.yaml 은 실물 검증 완료 전까지 주석 TODO.)
 
 관측성: run 마다 debug/handover/<ts>/{trace.jsonl, summary.json} — omx 실물
@@ -49,7 +51,7 @@ from .contract import (
     TaskMarker,
     TaskMarkers,
 )
-from .pen import robot_to_world
+from .frames import robot_to_world
 from .publish import MarkerPublisher
 from .trace import HandoverTrace
 
@@ -243,27 +245,29 @@ class HandoverModule:
                 ctx, omx, pick_object, obs_joints, trace
             )
 
-            # 3) B. 파지 기하 (먼 끝 frac + 노출 판정 — 짧은 펜은 여기서 명시 실패)
-            grasp = steps.plan_pen_grasp_from(det, base_omx)
+            # 3) B. 파지 기하 (큐브 중심 + 조 축 후보 — 큐브는 짧음 실패 없음)
+            grasp = steps.plan_cube_grasp_from(det, base_omx)
             g_world = robot_to_world(
-                (grasp.grasp_xy[0], grasp.grasp_xy[1], 0.0), base_omx
+                (grasp.center_xy[0], grasp.center_xy[1], 0.0), base_omx
             )
             marks.show_grasp(g_world)
 
             # 4) B+C. 파지점(책상면 top-down) 계획 → move_j 스윙인 집기
-            pick = await steps.plan_omx_pick_pen(ctx, omx, grasp, trace)
-            grasp = await steps.omx_pick_pen(ctx, omx, pick, grasp, trace)
+            pick = await steps.plan_omx_pick_cube(ctx, omx, grasp, trace)
+            await steps.omx_pick_cube(ctx, omx, pick, trace)
 
             # 5) D. 제시 — 랑데부 계산 (티칭 폐기), so101 은 home 에 있음
             present = await steps.plan_omx_present(
-                ctx, omx, roi_so, roi_omx, base_omx, grasp, pick,
+                ctx, omx, roi_so, roi_omx, base_omx,
                 list(home_so.joint_values), self._checker, trace,
             )
             await steps.omx_present(ctx, omx, present, trace)
             marks.show_handover(present.h_world)
 
             # omx 집기+제시까지만 (테스트용) — so101 수취 진입 전 성공 종료.
-            # omx 는 펜을 든 채로 남는다 (파지/제시 자세를 눈으로 검증하도록).
+            # omx 는 큐브를 든 채로 남는다 (파지/제시 자세를 눈으로 검증하도록).
+            # ⚠ 사용자 지시(2026-07-26): 실물에서 omx 집기+제시가 어떻게 나오는지
+            # 먼저 눈으로 확인해야 하므로 이 게이트를 아직 지우지 않는다.
             if stop_before_receive:
                 logger.info("stop_before_receive=True — omx 제시까지만 하고 종료")
                 return

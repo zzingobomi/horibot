@@ -4,8 +4,9 @@
 로 잠근다 (각 구멍 = 설계 변경으로 이어진 실측):
   ① omx nadir 관측 ψ 격자에 도달 자세가 있다 (ψ=90° 실측)
   ② omx top-down 파지 격자 다수 도달 (§5.1 manifold)
-  ③ **제시 자세족** — pen→so101 조준(top-down/up)은 J2–J4 리밋으로 전멸했던
-     실측 → 접선족(_present_orientations C)이 랑데부 후보에서 도달해야 한다
+  ③ **제시 자세족** — omx 5축이 공중 랑데부에 도달하는 tool 자세는 접선(tool-z
+     ∥ TCP 방위 접선)+spin 족뿐 (큐브 대칭이 방위를 자유롭게 한다는 착각 방지 —
+     top-down/tilt 는 J2–J4 리밋 전멸). _present_orientations 가 ≥1 도달해야 한다
   ④ **so101 수취** — v1 의 toward-상대 coarse 부채꼴은 0/21 전멸 실측 → 절대
      yaw 15° 격자 × tilt 사다리가 채택 H 에서 ≥1 가족을 찾아야 한다 + 수취
      관측 사다리 ≥1
@@ -30,7 +31,7 @@ from modules.motion.adapters.pybullet import PybulletKinematics
 from modules.motion.kinematics_builder import build_calibrated_kinematics
 from modules.motor.contract import MotorKind
 from modules.shared_config.contract import WorkcellRoi
-from modules.tasks.handover import pen, steps
+from modules.tasks.handover import frames, steps
 from modules.tasks.handover.collision import BasePose, CrossRobotChecker
 
 pytestmark = pytest.mark.sim  # PyBullet/URDF/DB 부팅 — fast loop 제외
@@ -120,29 +121,25 @@ def test_omx_topdown_pick_grid(env):
 
 
 def _adopt_present(env):
-    """시나리오와 같은 순서로 제시 채택 — (tcp_w, sol, h_world, d_w)."""
-    cands = pen.rendezvous_candidates(
+    """시나리오와 같은 순서로 제시 채택 — (tcp_w, sol, h_world). 큐브는 대칭이라
+    방위 제약 없음(펜의 접선족 폐기) → yaw×tilt 격자에서 첫 도달. H(재검출
+    겨냥점) = 제시 TCP = 큐브 중심."""
+    cands = frames.rendezvous_candidates(
         env["roi_so"], env["roi_omx"], env["base"], steps._PRESENT_Z_WORLD,
         limit=steps._PRESENT_LIMIT, prefer_r_so=steps._RENDEZVOUS_R_SO_M,
     )
     assert cands, "랑데부 교집합 비어 있음 — workcell ROI 회귀"
     for tcp_w in cands:
-        tcp_o = pen.world_to_robot(tcp_w, env["base"])
-        for _label, quat, d_w in steps._present_orientations(
-            tcp_o, env["base"], 1.0
-        ):
+        tcp_o = frames.world_to_robot(tcp_w, env["base"])
+        for _label, quat in steps._present_orientations(tcp_o):
             sol = _ik(env["k_omx"], tcp_o, quat)
             if sol:
-                off = 0.049  # 14cm 펜/30% 파지 기준 노출 오프셋 (probe 동일)
-                h = (
-                    tcp_w[0] + d_w[0] * off, tcp_w[1] + d_w[1] * off, tcp_w[2],
-                )
-                return tcp_w, sol, h, d_w
-    pytest.fail("제시 자세족 전멸 — 접선족(_present_orientations) 회귀")
+                return tcp_w, sol, tcp_w
+    pytest.fail("제시 자세족 전멸 — _present_orientations(접선+spin) 회귀")
 
 
 def test_present_and_receive_feasible_with_clearance(env):
-    _tcp_w, omx_sol, h, _d = _adopt_present(env)
+    _tcp_w, omx_sol, h = _adopt_present(env)
     # so101 수취 관측 사다리 ≥1
     az0 = math.atan2(h[1], h[0])
     obs_ok = False
@@ -172,12 +169,8 @@ def test_present_and_receive_feasible_with_clearance(env):
             break
     assert obs_ok, "so101 수취 관측 사다리 전멸 — _RECV_OBS_* 회귀"
 
-    # 수취 가족 (절대 yaw 격자, 겨냥 = H + tip offset 방향 근사) ≥1 + 여유
-    tgt = (
-        h[0] + _d[0] * steps._RECV_TIP_OFFSET_M,
-        h[1] + _d[1] * steps._RECV_TIP_OFFSET_M,
-        h[2],
-    )
+    # 수취 가족 (절대 yaw 격자, 겨냥 = 큐브 중심 H) ≥1 + 여유
+    tgt = h
     so_sols = []
     for tilt in steps._RECV_TILTS_DEG:
         for yaw_deg in np.arange(0.0, 360.0, steps._RECV_YAW_GRID_DEG):
@@ -194,8 +187,12 @@ def test_present_and_receive_feasible_with_clearance(env):
         "so101 수취 가족 전멸 — 절대 yaw 격자/tilt 사다리/랑데부 정렬 회귀 "
         f"(H={h})"
     )
-    # ⑤ 여유: 어떤 가족이든 margin 을 통과해야 한다 (충돌 게이트 alive-loop 이
-    # 실행에서 고르는 것과 동형)
+    # ⑤ 여유: 충돌 게이트가 살릴 수 있는(=margin 통과) 가족이 ≥1 있어야 한다
+    # (alive-loop 이 실행에서 고르는 것과 동형). ⚠ 큐브 handover 는 같은 2cm 큐브를
+    # 두 그리퍼가 직교로 동시에 물어 **구조적으로 tight** — best ~8mm/med ~4mm,
+    # 일부 관통(게이트가 기각). margin=5mm 는 크로스캘 σ_t 보다 작아 sim 여유가
+    # 실물 오차에 묻힌다 → **실물 수취 전 재특성화 필수** (cube_clearance_probe).
+    # 여기선 "게이트가 비관통 tight 가족을 최소 1개 남긴다"만 잠근다.
     so_t, omx_t = env["so"].type, env["omx"].type
     chk = CrossRobotChecker(
         _ROBOT_DIR / so_t / "urdf" / f"{so_t}.urdf",
@@ -212,8 +209,9 @@ def test_present_and_receive_feasible_with_clearance(env):
         ]
         assert clear, (
             f"수취 가족 {len(so_sols)}개 전부 margin "
-            f"{steps._RECV_COLLISION_MARGIN_M * 1000:.0f}mm 미달 — 근접 여유 "
-            "회귀 (실측 11.1mm, handoff_clearance_probe 재실행으로 재특성화)"
+            f"{steps._RECV_COLLISION_MARGIN_M * 1000:.0f}mm 미달 — 큐브 근접 여유 "
+            "회귀 (best ~8mm, cube_clearance_probe 재실행으로 재특성화). 전멸이면 "
+            "큐브를 더 크게/제시 자세 조정"
         )
     finally:
         chk.close()

@@ -20,6 +20,10 @@ class MotorSpec(BaseModel):
     # 적용한다 — 안 하면 EEPROM 잔존값(goal current 0 인 mode5 등)으로 그리퍼가
     # 힘없이 안 열린 실물 사고 2026-07-25.
     mode: str | None = None
+    # current_position(mode5) 의 Goal Current (raw ≈ mA, XL330). 무는 힘 상한 =
+    # 과부하 방지 핵심. position 풀토크는 스톨 홀딩 시 과부하 에러(red LED)로 모터
+    # 셧다운 → current_position + 이 값으로 힘 제한 (2026-07-25 실물). None = 미설정.
+    goal_current: int | None = None
     velocity_dps: float
     acceleration_dpss: float
     # Position PID (motors.yaml `pid` 블록). Dynamixel = RAM 이라 driver 가

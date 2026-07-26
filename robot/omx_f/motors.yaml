@@ -99,11 +99,12 @@ motors:
   - id: 6
     name: "gripper_joint_1"
     model: "XL330-M288"
-    # position = 전류한계까지 풀토크 위치제어 → 확실히 열리고 펜을 꽉 쥠.
-    # (current_position 은 goal current 를 별도로 걸어야 힘이 나는데 안 걸려서
-    #  힘없이 안 열린 실물 사고 2026-07-25 → position 으로 전환. 섬세한 힘제어가
-    #  필요해지면 driver 에 goal current 배선 후 current_position 복귀.)
-    mode: "position"
+    # current_position = Goal Current(아래 current)로 무는 힘 상한 → 과부하 없이
+    # 홀딩. position 풀토크는 스톨 홀딩 시 과부하 에러(red LED)로 모터 셧다운돼서
+    # 복귀 (2026-07-25 실물). current = 힘 상한(raw≈mA): 너무 낮으면 못 들고 너무
+    # 높으면(풀토크급) 과부하 — 첫 실물 ~791 에서 과부하났으니 그 아래에서 튜닝.
+    mode: "current_position"
+    current: 500
     kind: gripper
     home: 2048
     limit:

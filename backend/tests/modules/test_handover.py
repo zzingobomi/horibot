@@ -1,14 +1,15 @@
-"""handover task 검증 — mock(FakeContext) 레벨 (2026-07-23 재배선판).
+"""handover task 검증 — mock(FakeContext) 레벨 (2026-07-26 펜→큐브 전환판).
 
 잠그는 것:
-  ① frame 변환 왕복 (base_pose 크로스캘 규약 — 정의는 pen.py 로 이동)
+  ① frame 변환 왕복 (base_pose 크로스캘 규약 — 정의는 frames.py)
   ② 시나리오 happy path 의 호출 경로 — 특히 **수취 순서 불변식**: so101 이
      close + held 판정한 뒤에만 omx 가 연다 (뒤집히면 물체 낙하)
-  ③ 명시 실패 클래스 — 짧은 펜 / workcell 미설정 / hand_eye 없음 /
+  ③ 명시 실패 클래스 — 큐브 신뢰 게이트 / workcell 미설정 / hand_eye 없음 /
      공중 재검출 실패 (FK 후퇴 금지)
   ④ 수취 계획의 cross-robot 충돌 게이트 — 충돌 그룹 제외 재시도 / 전멸 명시
      실패 + **근접 국면 파라미터** (omx 그리퍼 닫힘 fraction / margin 축소)
-  ⑤ module 배선 (preview 정적 트리 / list_robots)
+  ⑤ 큐브 기하 (순수) — 중심 파지 / 조 축 후보 / **직교 면 선호**
+  ⑥ module 배선 (preview 정적 트리 / list_robots)
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ from modules.tasks.core.errors import (
 )
 from modules.tasks.core.fake import FakeContext
 from modules.tasks.core.spec import TaskRobotSpec
-from modules.tasks.handover import pen, steps
+from modules.tasks.handover import cube, frames, steps
 from modules.tasks.handover.collision import BasePose
 from modules.tasks.handover.contract import ListRobotsRequest
 from modules.tasks.handover.module import HandoverModule
@@ -94,10 +95,9 @@ _ROI_OMX = WorkcellRoi(
     x_min=0.08, x_max=0.34, y_min=-0.22, y_max=0.22, z_min=-0.02, z_max=0.25
 )
 # happy path 의 제시 TCP 점 — 시나리오와 같은 계산으로 유도 (기대값 하드코딩
-# 대신 같은 순수 함수: 랑데부 후보 [0] 이 첫 resolve 성공으로 채택된다).
-# 실제 H(노출 중심)는 여기서 ~5cm 노출 방향 오프셋 — 매치 반경(8cm) 안이라
-# det 를 이 점에 둬도 so_redetect/refine 매치가 성립한다.
-_H = pen.rendezvous_candidates(
+# 대신 같은 순수 함수: 랑데부 후보 [0] 이 첫 resolve 성공으로 채택된다). 큐브는
+# H(재검출 겨냥점)=제시 TCP 라 det 를 이 점에 두면 so_redetect/refine 이 매치.
+_H = frames.rendezvous_candidates(
     _ROI_SO, _ROI_OMX, _BASE_OMX, steps._PRESENT_Z_WORLD,
     limit=steps._PRESENT_LIMIT, prefer_r_so=steps._RENDEZVOUS_R_SO_M,
 )[0]
@@ -140,22 +140,22 @@ def _hand_eye_bundle(robot: str) -> CalibrationBundle:
     )
 
 
-def _pen_det(
-    position=(0.20, 0.0, 0.0), score=0.9, footprint=(0.14, 0.012), yaw=0.0,
+def _cube_det(
+    position=(0.20, 0.0, 0.0), score=0.9, footprint=(0.020, 0.020), yaw=0.0,
 ) -> OrientedDetection:
-    """omx mono 검출 (omx base frame) — 펜 신뢰 게이트 통과 기본값."""
+    """omx mono 검출 (omx base frame) — 큐브 신뢰 게이트 통과 기본값 (2cm)."""
     return OrientedDetection(
-        prompt="pen", position=position, score=score, base_z=position[2],
+        prompt="cube", position=position, score=score, base_z=position[2],
         height=0.0, grasp_yaw=yaw, footprint=footprint,
         points=[(position[0], position[1], position[2])] * 60,
     )
 
 
 def _aerial_det(position, score=0.8) -> OrientedDetection:
-    """so101 공중 재검출 (world frame)."""
+    """so101 공중 재검출 (world frame) — 큐브."""
     return OrientedDetection(
-        prompt="pen", position=position, score=score, base_z=position[2],
-        height=0.01, grasp_yaw=0.3, footprint=(0.09, 0.012),
+        prompt="cube", position=position, score=score, base_z=position[2],
+        height=0.02, grasp_yaw=0.3, footprint=(0.020, 0.020),
         points=[(position[0], position[1], position[2])] * 60,
     )
 
@@ -169,10 +169,10 @@ def _joint_state(gripper_raw: int) -> JointState:
     )
 
 
-def _tcp(position, joints) -> TcpState:
+def _tcp(position, joints, quat=(0.0, 0.0, 0.0, 1.0)) -> TcpState:
     return TcpState(
         robot_id=OMX, seq=0, timestamp_unix=0.0, position=position,
-        quaternion=(0.0, 0.0, 0.0, 1.0), joint_names=[], joints=list(joints),
+        quaternion=quat, joint_names=[], joints=list(joints),
     )
 
 
@@ -203,7 +203,7 @@ def _happy_script() -> dict:
         _CAL_BUNDLE: [_hand_eye_bundle(OMX), _hand_eye_bundle(SO)],
         # omx 관측 검출 1건 (refine=look-then-move 폐기)
         _DETECT_PLANAR: [
-            DetectOrientedResponse(found=True, candidates=[_pen_det()]),
+            DetectOrientedResponse(found=True, candidates=[_cube_det()]),
         ],
         # so101 재검출(1) + 수취 refine(1) — 제시점 그대로
         _DETECT_ORIENTED: [
@@ -265,7 +265,7 @@ def test_base_pose_transform_roundtrip():
 
 async def test_scenario_happy_path_and_release_order():
     ctx = _ctx(_happy_script())
-    await _module().scenario(ctx, pick_object="pen")
+    await _module().scenario(ctx, pick_object="cube")
     log = ctx.wire.call_log
     grip_events = [
         (i, c["robot_id"], c["req"].position_raw)
@@ -309,18 +309,12 @@ async def test_scenario_happy_path_and_release_order():
 # ─── ③ 명시 실패 클래스 ──────────────────────────────────────────────
 
 
-def test_short_pen_fails_explicitly():
-    det = _pen_det(footprint=(0.07, 0.010))  # 7cm — 노출 부족
-    with pytest.raises(TaskError, match="짧아"):
-        steps.plan_pen_grasp_from(det, _BASE_OMX)
-
-
 async def test_missing_workcell_fails_before_motion():
     script = _happy_script()
     script[_WORKCELL] = [WorkcellBundle(robots={SO: _ROI_SO})]  # omx 미설정
     ctx = _ctx(script)
     with pytest.raises(TaskError, match="workcell"):
-        await _module().scenario(ctx, pick_object="pen")
+        await _module().scenario(ctx, pick_object="cube")
     assert ctx.calls(_MOVE_J) == []  # 모션 0 시점 실패
 
 
@@ -329,7 +323,7 @@ async def test_missing_hand_eye_fails_before_motion():
     script[_CAL_BUNDLE] = [CalibrationBundle(robot_id=OMX)]  # hand_eye 없음
     ctx = _ctx(script)
     with pytest.raises(TaskError, match="hand_eye"):
-        await _module().scenario(ctx, pick_object="pen")
+        await _module().scenario(ctx, pick_object="cube")
     assert ctx.calls(_MOVE_J) == []
 
 
@@ -341,25 +335,25 @@ async def test_aerial_redetect_failure_is_explicit_no_fk_fallback():
         _DETECT_ORIENTED: [DetectOrientedResponse(found=False, candidates=[])],
     })
     with pytest.raises(DetectionNotFound, match="재검출"):
-        await steps.so_redetect(ctx, SO, "pen", [0.5] * 6, _H)
+        await steps.so_redetect(ctx, SO, "cube", [0.5] * 6, _H)
     # 실패 후 추가 모션/TCP 조회 없음 (FK 폴백 경로 부재)
     assert len(ctx.calls(_MOVE_J)) == 1
     assert ctx.calls(_TCP_SNAP) == []
 
 
-async def test_pen_gate_rejects_untrusted_candidates():
-    """관측 신뢰 게이트 — score/길이/폭 컷 미달은 명시 실패."""
+async def test_cube_gate_rejects_untrusted_candidates():
+    """관측 신뢰 게이트 — score/변 대역/종횡비 컷 미달은 명시 실패."""
     bad = [
-        _pen_det(score=0.2),  # score 미달
-        _pen_det(footprint=(0.02, 0.01)),  # 너무 짧음 (펜 아님)
-        _pen_det(footprint=(0.14, 0.06)),  # 폭 초과
+        _cube_det(score=0.2),  # score 미달
+        _cube_det(footprint=(0.005, 0.005)),  # 너무 작음 (변 하한 미달)
+        _cube_det(footprint=(0.14, 0.012)),  # 길쭉함 (펜류 — 종횡비/상한 초과)
     ]
     ctx = _ctx({
         _MOVE_J: [MoveJResponse()],
         _DETECT_PLANAR: [DetectOrientedResponse(found=True, candidates=bad)],
     })
     with pytest.raises(DetectionNotFound, match="신뢰 컷"):
-        await steps.omx_observe_detect(ctx, OMX, "pen", [0.1] * 5)
+        await steps.omx_observe_detect(ctx, OMX, "cube", [0.1] * 5)
 
 
 # ─── ④ 수취 충돌 게이트 (근접 국면 파라미터) ─────────────────────────
@@ -402,7 +396,7 @@ async def test_plan_receive_retries_past_colliding_group():
     assert len(checker.calls) == 2  # 1차 충돌 → 그룹 제외 재-resolve → 2차 통과
     assert len(ctx.calls(_SELECT)) == 2
     assert plan.sols[0] == [0.1] * 6
-    # 근접 국면 파라미터 — omx 는 펜 든 상태(거의 닫힘), margin 축소 (정밀화 ③)
+    # 근접 국면 파라미터 — omx 는 큐브 든 상태(거의 닫힘), margin 축소 (정밀화 ③)
     assert checker.calls[0]["grip_b"] == steps._OMX_HOLD_GRIP_FRAC
     assert checker.calls[0]["margin_m"] == steps._RECV_COLLISION_MARGIN_M
 
@@ -416,31 +410,44 @@ async def test_plan_receive_all_colliding_fails_explicitly():
         )
 
 
-# ─── ⑤ pen 기하 (순수) ───────────────────────────────────────────────
+# ─── ⑤ 큐브 기하 (순수) ──────────────────────────────────────────────
 
 
-def test_pen_grasp_bites_far_end_and_exposes_toward_so101():
-    det = _pen_det()  # 중심 (0.20, 0), yaw 0, 길이 0.14 → 끝점 (0.13,0)/(0.27,0)
-    g = steps.plan_pen_grasp_from(det, _BASE_OMX)
-    # so101 원점은 omx frame 에서 (−0.018, −0.272) 근방 → 먼 끝 = (0.27, 0)
-    assert g.tip_far == pytest.approx((0.27, 0.0), abs=1e-9)
-    assert g.tip_near == pytest.approx((0.13, 0.0), abs=1e-9)
-    # 파지점 = 먼 끝에서 30% = 0.27 − 0.042
-    assert g.grasp_xy == pytest.approx((0.228, 0.0), abs=1e-9)
-    assert g.u == pytest.approx((-1.0, 0.0), abs=1e-9)
-    # 노출 = 0.14 − 0.042 − 0.01 = 0.088
-    assert g.exposed_len_m == pytest.approx(0.088, abs=1e-9)
+def test_plan_cube_grasp_center_and_yaw_candidates():
+    det = _cube_det(position=(0.20, 0.05, 0.0), footprint=(0.021, 0.019), yaw=0.1)
+    g = steps.plan_cube_grasp_from(det, _BASE_OMX)
+    assert g.center_xy == pytest.approx((0.20, 0.05), abs=1e-9)
+    # size = footprint 평균(0.020) clamp [0.012, 0.030] 안
+    assert g.size_m == pytest.approx(0.020, abs=1e-9)
+    # 조 축 후보 = 검출 yaw + (0, 90, 45, 135)° — 면 정렬(0/90) 우선
+    assert g.yaw_candidates[0] == pytest.approx(0.1, abs=1e-9)
+    assert g.yaw_candidates[1] == pytest.approx(0.1 + math.radians(90), abs=1e-9)
+    assert g.yaw_candidates[2] == pytest.approx(0.1 + math.radians(45), abs=1e-9)
+
+
+def test_perp_face_distance_prefers_alignment_with_omx_jaw():
+    """다른 면 집기 — so101 파지 yaw 가 omx 조 축 yaw 에 정렬될수록 0 (두 조 축이
+    직교 = 큐브의 다른 면 쌍). mod 180 대칭."""
+    assert cube.perp_face_distance(
+        math.radians(30), math.radians(30)
+    ) == pytest.approx(0.0)
+    assert cube.perp_face_distance(
+        math.radians(120), math.radians(30)
+    ) == pytest.approx(90.0)
+    assert cube.perp_face_distance(
+        math.radians(210), math.radians(30)
+    ) == pytest.approx(0.0)
 
 
 def test_rendezvous_candidates_inside_both_rois():
-    cands = pen.rendezvous_candidates(
+    cands = frames.rendezvous_candidates(
         _ROI_SO, _ROI_OMX, _BASE_OMX, (0.12,), limit=100
     )
     assert cands, "공통 워크스페이스가 비어 있으면 안 됨 (설정 ROI 기준)"
     for x, y, z in cands:
         assert _ROI_SO.x_min <= x <= _ROI_SO.x_max
         assert _ROI_SO.y_min <= y <= _ROI_SO.y_max
-        px, py, pz = pen.world_to_robot((x, y, z), _BASE_OMX)
+        px, py, pz = frames.world_to_robot((x, y, z), _BASE_OMX)
         assert _ROI_OMX.x_min <= px <= _ROI_OMX.x_max
         assert _ROI_OMX.y_min <= py <= _ROI_OMX.y_max
         assert _ROI_OMX.z_min <= pz <= _ROI_OMX.z_max
@@ -450,7 +457,7 @@ def test_rendezvous_empty_when_no_overlap():
     far = WorkcellRoi(
         x_min=5.0, x_max=5.2, y_min=5.0, y_max=5.2, z_min=0.0, z_max=0.3
     )
-    assert pen.rendezvous_candidates(_ROI_SO, far, _BASE_OMX, (0.12,)) == []
+    assert frames.rendezvous_candidates(_ROI_SO, far, _BASE_OMX, (0.12,)) == []
 
 
 # ─── ⑥ module 배선 ───────────────────────────────────────────────────
@@ -469,7 +476,7 @@ async def test_module_list_robots_and_preview():
         "enable_torque", "enable_torque",
         "go_home", "go_home", "set_gripper",
         "plan_omx_observe", "omx_observe_detect",
-        "plan_omx_pick_pen", "omx_pick_pen",
+        "plan_omx_pick_cube", "omx_pick_cube",
         "plan_omx_present", "omx_present",
         "plan_so_observe", "so_redetect", "plan_receive",
         "set_gripper", "receive", "omx_retreat",

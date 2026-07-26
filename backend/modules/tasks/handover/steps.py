@@ -1,22 +1,27 @@
-"""handover 시나리오 step 들 — omx(giver)가 **자기 eye-in-hand 웹캠으로** 펜을
-보고 집어 공중에 제시하면, so101(receiver)이 **재검출**해 받아 상자에 적치.
+"""handover 시나리오 step 들 — omx(giver)가 **자기 eye-in-hand 웹캠으로** 큐브를
+보고 집어 공중에 제시하면, so101(receiver)이 **재검출**해 omx 가 문 면이 아닌
+**직교 면**을 받아 상자에 적치.
 
-⚠ **2026-07-23 전면 재배선, 실물 미검증** (설계 근거 = docs/omx_handover_prep.md).
-옛 v1 전제("so101=눈, omx=blind open-loop, 티칭된 handover waypoint")는 폐기:
+⚠ **2026-07-23 전면 재배선 + 2026-07-26 펜→큐브 전환, 실물 미검증** (설계 근거 =
+docs/omx_handover_prep.md). 동그란 펜은 omx 평행조로 안정 파지가 어려워 폐기
+(사용자 지시 — cube.py docstring):
   A. omx 가 본다 — 계산된 nadir 관측 자세 + DETECT_PLANAR (mono ray∩z=table).
-  B. omx 파지 계획 — top-down 전용(5축 도달성 §5.1) + J5 roll=조를 펜에 정렬 +
-     파지점 = so101 에서 **먼 끝** frac 지점 (노출 부족 = 계획 단계 명시 실패).
+  B. omx 파지 계획 — top-down 전용(5축 도달성 §5.1) + 큐브 **중심** 파지 + 조 축
+     = 검출 yaw 기준 면 정렬 후보(도달성이 채택). Z 사다리(depth 없어 크기 가정).
   C. omx 집기 — 파지 해로 move_j 스윙인 → close (top-down 은 책상면 전용 관절
      리밋이라 위에서 수직 접근·refine 불가 — omx=best-effort, 정밀은 so101).
-  D. omx 제시 — 티칭 폐기, **계산**: 랑데부(두 workcell ROI 교집합) + 노출 끝을
-     so101 방향으로 (tool z ∥ 펜 노출 방향 규약).
-  E. so101 수취 — omx TCP FK 짐작 폐기, **재검출** (공중 대역) + refine 1 tick +
-     수취 순서 불변식(so101 held 뒤에만 omx open) + cross-robot 충돌 게이트.
+  D. omx 제시 — 티칭 폐기, **계산**: 랑데부(두 workcell ROI 교집합) + 큐브는
+     대칭이라 방위 제약 없음 → yaw×tilt 격자 열거, 도달성/충돌이 채택.
+  E. so101 수취 — omx TCP FK 짐작 폐기, **재검출** (공중 대역) + omx 조 축에
+     **직교하는 면 쌍** 선호(perp_face_distance) + refine 1 tick + 수취 순서
+     불변식(so101 held 뒤에만 omx open) + cross-robot 충돌 게이트.
 
 실물 첫 런 전 확인 필수 가정 (omx_handover_prep.md §7 미지수):
   ① omx tcp/그리퍼 물리 조립이 URDF 규약(tool x=approach, y=jaw)과 일치 (§5.2).
   ② _OMX_TABLE_Z_M — omx base 가 책상 위 전제 (다르면 관측/파지 z 전체 시프트).
-  ③ omx held 판정 — gap 5%/load 80 은 so101 Feetech 실측값. omx=Dynamixel XL330
+  ③ 파지 Z — omx depth 없음 → 2cm 큐브 중심 = 바닥+1cm 가정 (사용자 지시
+     2026-07-26). 집는 위치가 이상하면 chosen_dz 로그로 보정 (_CUBE_PICK_DZ_LADDER).
+  ④ omx held 판정 — gap 5%/load 80 은 so101 Feetech 실측값. omx=Dynamixel XL330
      은 load 스케일이 달라 **미검증** (§5.4) — 실물 전 gripper_characterize.py.
 
 설계 원칙 (pick_and_place 계승): 계획(모션 0 resolve) 먼저·판정 해 == 실행 해 /
@@ -93,9 +98,10 @@ from modules.waypoint.contract import (
     WaypointRecord,
 )
 
-from . import pen
+from . import cube, frames
 from .collision import BasePose, CrossRobotChecker
-from .pen import PenGrasp, robot_to_world, world_to_robot
+from .cube import CubeGrasp
+from .frames import robot_to_world, world_to_robot
 from .trace import HandoverTrace
 
 logger = logging.getLogger(__name__)
@@ -127,23 +133,26 @@ _OMX_OBSERVE_CAM_H_M = 0.25  # nadir 카메라 높이 — §8-1 계산 (25cm = �
 # 90° = 넓은 화각 축(H 94°)을 omx 도달영역 넓은 축(좌우 44cm)에 정렬 (§8-1).
 _OMX_OBSERVE_PSI_DEG = (90.0, 60.0, 120.0, 30.0, 150.0, 0.0, -90.0)
 _OBSERVE_SETTLE_S = 0.6
-# 검출 신뢰 게이트 — 펜다운 기하 (mono 는 score 만으론 약함)
+# 검출 신뢰 게이트 — 큐브 footprint 기하 (mono 는 score 만으론 약함). 2cm 큐브라
+# 두 변 모두 ~2cm 대역 + 종횡비 1 근처 (펜류 길쭉함 컷).
 _SCORE_MIN = 0.45
-_PEN_LEN_MIN_M = 0.08  # footprint 긴 변 하한 — 이보다 짧으면 펜 후보 아님
-_PEN_LEN_MAX_M = 0.35
-_PEN_WIDTH_MAX_M = 0.035  # footprint 짧은 변 상한 (조 개구/펜 지름 대역)
+_CUBE_EDGE_MIN_M = 0.010  # footprint 짧은 변 하한
+_CUBE_EDGE_MAX_M = 0.045  # footprint 긴 변 상한 (mono 번짐 여유 포함)
+_CUBE_ASPECT_MAX = 2.2  # 긴 변/짧은 변 상한 (초과 = 펜류, 큐브 아님)
 
-# ── B. omx 파지 계획 ──
-_PEN_GRASP_FRAC = 0.30  # 파지점 = 먼 끝에서 30% (§1.1 안정성↔노출 트레이드오프)
-_OMX_JAW_ALONG_PEN_M = 0.020  # omx 조가 펜 축 방향으로 차지하는 폭 (실물 실측 대상)
-_SO_MIN_GRASP_M = 0.040  # so101 이 물 최소 노출 길이
-_EXPOSED_MARGIN_M = 0.020  # 노출 여유 (관측/제시 오차 흡수)
-# 관측 폭(≈지름) clamp — 파지 Z(=table+pen_d/2)의 유일 입력. mono footprint 는
-# 번짐으로 지름을 크게 과대추정한다 (실측 10mm 펜이 21mm 로 검출 → 파지 Z 가
-# 펜 꼭대기 위로 떠서 짧은축 중심을 못 물고 미끄러짐, 2026-07-25 실물). 상한을
-# 실제 펜 지름 근처로 조여 파지 Z 를 지름 한가운데에 맞춘다 (펜 교체 시 조정).
-_PEN_D_MIN_M = 0.006
-_PEN_D_MAX_M = 0.012
+# ── B. omx 파지 계획 (큐브 중심 top-down) ──
+# 큐브는 대칭 — 조 축은 검출 yaw 기준 면 정렬(0/90) 우선 + 대각(45/135) 폴백,
+# 도달성이 채택 (square footprint 의 grasp_yaw 는 노이지).
+_CUBE_PICK_YAW_OFFSETS_DEG = (0.0, 90.0, 45.0, 135.0)
+# footprint 평균 clamp (mono 번짐 방어) — 크기 로깅용, Z 는 아래 사다리.
+_CUBE_SIZE_MIN_M = 0.012
+_CUBE_SIZE_MAX_M = 0.030
+# 파지 Z 사다리 (table 위 dz, 첫 도달 채택). omx 는 depth 가 없어 높이를 못
+# 재므로 **큐브 크기 가정이 앵커**: 2cm 큐브 → 중심 = 바닥+1cm 를 TCP 가 문다
+# (사용자 지시 2026-07-26). 1cm 를 선호로, 도달/바닥클리어 위해 소폭 사다리.
+# ⚠ 실물에서 집는 위치가 이상하면 chosen_dz(plan_omx_pick_cube trace)로 보정 —
+# 손끝이 바닥 긁으면 ↑, 큐브 위를 스치면 ↓.
+_CUBE_PICK_DZ_LADDER = (0.010, 0.009, 0.011, 0.008, 0.012)
 
 # ── C. 수취 refine 보정 게이트 (so101 수취측 so_refine 사용) ──
 _REFINE_JUMP_MAX_M = 0.03  # 겨냥점 보정 상한 — 초과 = 관측 오염 의심 (계획값 유지)
@@ -151,13 +160,14 @@ _REFINE_JUMP_MAX_M = 0.03  # 겨냥점 보정 상한 — 초과 = 관측 오염 
 # ── D. 제시 (랑데부 계산) ──
 _PRESENT_Z_WORLD = (0.10, 0.12, 0.08, 0.14)  # 파지점(TCP)의 world z 후보 (선호순)
 _PRESENT_LIMIT = 6  # 랑데부 후보 상한 (resolve+충돌 게이트 시도 수)
-# 제시 자세 spin 사다리 (deg) — 펜 축 둘레 회전. 5축 다양체 분석 (2026-07-23
-# offline probe, scratchpad present_family_probe): 펜 수평 유지 시 도달 자세는
-# ① 펜이 TCP 방위의 **접선**(γ=±90° 특이족)이면 spin 자유 (probe 60/60 도달,
-#   spin 30° 부터), ② 펜 방위 임의(so101 조준)면 tool-x 정하향/정상향 둘뿐 —
-#   J2–J4 ±90° 리밋에 z 0.08~0.14 에서 전멸 (probe 0/60). → 조준(A/B)을 선호
-#   순서 앞에 두되 실질 채택은 접선+spin 이 기본.
-_PRESENT_SPIN_DEG = (30.0, -30.0, 0.0, 60.0, -60.0, 90.0, -90.0, 120.0, -120.0)
+# 제시 자세 spin 사다리 (deg) — tool-z(접선 축) 둘레 회전. ⚠ 큐브가 대칭이라
+# "아무 방위나 되겠지" 는 **틀렸다** (test_handover_feasibility 로 확인): omx 5축이
+# 공중 랑데부(z 0.08~0.14)에 도달하는 tool 자세는 **tool-z 가 TCP 방위의 접선**인
+# 족뿐 (2026-07-23 offline probe — top-down/tilt tool-x 는 J2–J4 리밋 전멸,
+# 접선족만 60/60 도달). 대칭이 자유롭게 하는 건 **파지(어느 면)** 선택이지 arm 의
+# tool 자세가 아니다. → 접선(±) × spin 사다리. 펜의 노출 반평면 필터/조준족은
+# 불필요 (대칭이라 부호/스핀 무관, 수취는 omx 실 TCP quat 에서 조 축 실측).
+_PRESENT_SPIN_DEG = (0.0, 30.0, -30.0, 60.0, -60.0, 90.0, -90.0, 120.0, -120.0)
 
 # ── E. so101 수취 ──
 # so101 공중 자세-고정 [pre,grasp] 도달성은 **극히 성김** (2026-07-23 offline
@@ -173,8 +183,7 @@ _RECV_OBS_PSI_DEG = (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0)
 _RECV_MATCH_RADIUS_M = 0.08  # 제시 계획점 대비 재검출 매치 반경
 _RECV_Z_BAND_M = 0.06  # 공중 대역 — 제시 z ± 이 값 (테이블 대역 게이트의 개방판)
 _RECV_SCORE_MIN = 0.35  # 얇은 펜 + 그리퍼 가림 — pick 보다 완화 (§5.6)
-_RECV_MIN_POINTS = 20  # 공중 thin 물체 점군은 성김 (실측 260점 — §5.6)
-_RECV_TIP_OFFSET_M = 0.010  # 겨냥점 = 검출 중심에서 노출 끝 쪽 보정
+_RECV_MIN_POINTS = 20  # 공중 물체 점군 하한 (큐브는 펜보다 조밀 — 가림만 주의)
 # tilt 사다리 (60/75 가 실측 포켓) × 절대 yaw 15° 격자 (servo §11 절대 격자와
 # 같은 사상 — 도달 밴드 30~40° 폭이라 coarse 부채꼴 표본은 밴드를 통째로
 # 놓친다. v1 의 toward-상대 (0,±30,±60,90) fan 은 실측 0/21 전멸).
@@ -185,15 +194,18 @@ _RECV_PRE_CLEAR_M = 0.07
 _RENDEZVOUS_R_SO_M = 0.27
 _RECV_WITHDRAW_M = 0.08
 _RECV_COLLISION_RETRY = 3
-# 핸드오프 근접 국면 margin — 기본 2cm 는 같은 펜을 cm 간격으로 무는 접근 자체를
-# 기각 (collision.py 정밀화 ③). 실측 (2026-07-23 offline, scratchpad
-# handoff_clearance_probe): 채택 구성 쌍의 링크 최근접 = **11.1mm**
-# (so101 gripper_fixed ↔ omx link5, 겨냥 tip-shift 1cm 기준 — shift 0 은
-# 4~5mm, 2cm 부터 so101 가족 전멸). ⚠ 크로스캘 σ_t ~8mm 대비 얇다 — 실물
-# 첫 런 특성화 1순위 (여유가 부족하면 펜을 더 긴 것으로: 노출 ↑ = H 가 omx
-# 에서 멀어져 여유 정비례 증가).
-_RECV_COLLISION_MARGIN_M = 0.010
-_OMX_HOLD_GRIP_FRAC = 0.2  # 충돌 형상 — 펜 든 omx 조 개구 (거의 닫힘)
+# 핸드오프 근접 국면 margin — ⚠ **큐브 handover 는 구조적으로 tight**. 펜은 노출
+# 세그먼트(~5cm)가 두 그리퍼를 벌려 11.1mm 여유가 났지만, 큐브는 **같은 2cm
+# 큐브를 두 그리퍼가 직교로 동시에 무는** 국면이라 최근접이 손가락 대역까지
+# 내려간다. 실측 (2026-07-26 offline, scratchpad cube_clearance_probe, 채택 제시
+# + so101 수취 13가족): 최근접 분포 best ~8.4mm / med ~4mm / 일부 관통(게이트가
+# 기각). 도달·비관통 가족을 살리려면 pen 의 10mm 는 못 쓴다 → 5mm.
+# ⚠⚠ 5mm 는 **크로스캘 σ_t ~8mm 보다 작다** — 즉 sim 여유가 실물 오차에 묻힌다.
+# **실물 수취(stop_before_receive=false) 는 이 값을 그대로 신뢰하지 말고 반드시
+# 재특성화**: 그래서 지금 stop_before_receive 로 omx 집기+제시만 먼저 검증하고,
+# 수취는 그 뒤 실물 여유를 재보고 연다 (module.py 시나리오 게이트).
+_RECV_COLLISION_MARGIN_M = 0.005
+_OMX_HOLD_GRIP_FRAC = 0.2  # 충돌 형상 — 큐브 든 omx 조 개구 (거의 닫힘)
 
 # 접촉 인접 이동 감속 (흉터 2 — 접촉 인접 이동이 물체를 흘림/이젝션)
 _GENTLE_SPEED_SCALE = 0.25
@@ -252,6 +264,20 @@ def _approach_of(yaw: float, tilt_deg: float) -> Vec3:
     )
     a = rot.apply([1.0, 0.0, 0.0])
     return (float(a[0]), float(a[1]), float(a[2]))
+
+
+def _jaw_yaw_world(quat: Quat, base_yaw_rad: float) -> float | None:
+    """robot-frame TCP quat → 그 그리퍼 **조 축(tool y)** 의 world 평면각 (rad).
+
+    큐브 handover 의 "직교 면" 기준: so101 이 omx 가 문 면이 아닌 다른 면을
+    물려면 두 조 축이 직교해야 한다 (cube.perp_face_distance). omx 조 축은
+    omx 의 현재 TCP quat 에서 실측(FK 짐작 아님 — 도구 자세는 확정값)한다.
+    조 축이 (거의) 수직이면 수평 투영이 무의미 → None (선호 없이 tilt 순만).
+    """
+    y = Rotation.from_quat(quat).apply([0.0, 1.0, 0.0])  # tool y = 조 축 (robot frame)
+    if math.hypot(float(y[0]), float(y[1])) < 0.2:
+        return None
+    return math.atan2(float(y[1]), float(y[0])) + base_yaw_rad
 
 
 # ─── 0. 자산/설정 fail-fast (모션 0 시점) ─────────────────────────────
@@ -417,17 +443,19 @@ async def plan_omx_observe(
     return res.solutions[0]
 
 
-def _trusted_pen_candidates(
+def _trusted_cube_candidates(
     cands: list[OrientedDetection],
 ) -> list[OrientedDetection]:
-    """펜 신뢰 게이트 — score + 기하(길이 대역/폭 상한). mono 는 depth 게이트가
-    없으므로 기하가 오검출 컷의 주력 (셀 밖 컷은 detector ROI 가 상류 담당)."""
+    """큐브 신뢰 게이트 — score + 기하(두 변 대역 + 종횡비 상한). mono 는 depth
+    게이트가 없으므로 기하가 오검출 컷의 주력 (셀 밖 컷은 detector ROI 가 상류
+    담당). footprint = (긴 변, 짧은 변)."""
     return [
         c
         for c in cands
         if c.score >= _SCORE_MIN
-        and _PEN_LEN_MIN_M <= c.footprint[0] <= _PEN_LEN_MAX_M
-        and c.footprint[1] <= _PEN_WIDTH_MAX_M
+        and _CUBE_EDGE_MIN_M <= c.footprint[1]
+        and c.footprint[0] <= _CUBE_EDGE_MAX_M
+        and c.footprint[0] <= _CUBE_ASPECT_MAX * max(c.footprint[1], 1e-6)
     ]
 
 
@@ -469,15 +497,15 @@ async def omx_observe_detect(
             ],
         },
     )
-    trusted = _trusted_pen_candidates(res.candidates)
+    trusted = _trusted_cube_candidates(res.candidates)
     if not trusted:
         raise DetectionNotFound(
             prompt,
             candidates=len(res.candidates),
             reason=(
-                f"신뢰 컷 미달 (score≥{_SCORE_MIN}, 길이 "
-                f"{_PEN_LEN_MIN_M * 100:.0f}~{_PEN_LEN_MAX_M * 100:.0f}cm, "
-                f"폭≤{_PEN_WIDTH_MAX_M * 1000:.0f}mm) — 펜 배치/조명/"
+                f"신뢰 컷 미달 (score≥{_SCORE_MIN}, 변 "
+                f"{_CUBE_EDGE_MIN_M * 1000:.0f}~{_CUBE_EDGE_MAX_M * 1000:.0f}mm, "
+                f"종횡비≤{_CUBE_ASPECT_MAX}) — 큐브 배치/조명/"
                 f"table_z({_OMX_TABLE_Z_M}) 확인 후 다시 실행하세요"
             ),
         )
@@ -499,60 +527,60 @@ async def omx_observe_detect(
 # ─── B. omx 파지 계획 (top-down + J5 roll) ────────────────────────────
 
 
-def plan_pen_grasp_from(det: OrientedDetection, base_omx: BasePose) -> PenGrasp:
-    """검출 → 펜 파지 기하 (omx frame). 짧은 펜은 pen.plan_pen_grasp 가 명시
-    실패 (§1.1). 순수 계산 — step 아님 (모션 0, 즉시 raise)."""
-    toward3 = world_to_robot((0.0, 0.0, 0.0), base_omx)  # so101 원점 (omx frame)
-    return pen.plan_pen_grasp(
+def plan_cube_grasp_from(det: OrientedDetection, base_omx: BasePose) -> CubeGrasp:
+    """검출 → 큐브 파지 기하 (omx frame). 순수 계산 — step 아님 (모션 0).
+    큐브는 대칭이라 짧음 실패가 없다 (펜과 달리 항상 파지 가능)."""
+    return cube.plan_cube_grasp(
         (det.position[0], det.position[1]),
         det.grasp_yaw,
-        det.footprint[0],
-        det.footprint[1],
-        (toward3[0], toward3[1]),
-        grasp_frac=_PEN_GRASP_FRAC,
-        jaw_width_m=_OMX_JAW_ALONG_PEN_M,
-        min_exposed_m=_SO_MIN_GRASP_M + _EXPOSED_MARGIN_M,
+        (det.footprint[0], det.footprint[1]),
+        yaw_offsets_deg=_CUBE_PICK_YAW_OFFSETS_DEG,
+        size_min_m=_CUBE_SIZE_MIN_M,
+        size_max_m=_CUBE_SIZE_MAX_M,
     )
 
 
 @dataclass(frozen=True, slots=True)
-class PickPlan:
-    """omx 파지 계획 산출 — 실행(집기)과 제시(present)가 공유.
+class CubePick:
+    """omx 큐브 파지 계획 산출 — 실행(집기)과 제시(present)가 공유.
 
-    s_pen: tool z 와 펜 노출 방향 u 의 부호 (+1 = tool z ∥ u). 제시 계획이
-    "노출 끝을 so101 로" 돌릴 때 이 부호로 tool z 목표를 세운다.
-    """
+    jaw_yaw_omx: 채택 조 축 방위 (omx frame, rad) — 어느 두 면을 물었나. 제시/
+    수취의 "직교 면" 판정 기준(단, 수취는 omx 의 **현재 TCP quat** 에서 실측하는
+    게 정본 — 이 값은 로깅/계획 추적용)."""
 
     sols: list[list[float]]  # [grasp] 관절해 (단일 — top-down pre/lift 폐기)
     quat: Quat
-    grasp_omx: Vec3  # 파지점 (omx frame — z = table + 지름/2)
-    pen_d: float  # 채택 펜 지름 (관측 폭 clamp)
-    s_pen: float
+    grasp_omx: Vec3  # 파지점 (omx frame — z = table + 파지 dz)
+    jaw_yaw_omx: float
+    size_m: float
+    chosen_dz: float  # 채택 파지 Z (table 위, 실물 보정 데이터)
 
 
 @step(title="omx 집기 계획")
-async def plan_omx_pick_pen(
+async def plan_omx_pick_cube(
     ctx: TaskContext,
     omx: str,
-    grasp: PenGrasp,
+    grasp: CubeGrasp,
     trace: HandoverTrace | None = None,
-) -> PickPlan:
-    """파지점(책상면 top-down)만 resolve. top-down 은 관절 리밋상 책상 근처에서만
-    도달한다(§5.1 은 DOF 수 얘기 — 실측 도달 밴드는 z≈table). 위에서 수직 접근하는
-    pre / 수직 lift 를 top-down 으로 강제하면 IK 전멸이라 폐기했다: 접근은 관측
-    자세에서 파지 해로 move_j 스윙인, 리프트는 제시 단계가 도달 가능한 자세로 수행
-    (omx=best-effort, 정밀은 so101). × tool z ∥ ±u (J5 roll=조를 펜 짧은 축에 정렬).
-    후보 2개뿐 = resolve 가볍다 (몇십초 stall 방지)."""
-    pen_d = min(max(grasp.width_m, _PEN_D_MIN_M), _PEN_D_MAX_M)
-    g_z = _OMX_TABLE_Z_M + pen_d / 2.0
-    g = (grasp.grasp_xy[0], grasp.grasp_xy[1], g_z)
+) -> CubePick:
+    """큐브 중심 파지점(책상면 top-down)만 resolve. top-down 은 관절 리밋상 책상
+    근처에서만 도달한다(§5.1 은 DOF 수 얘기 — 실측 도달 밴드는 z≈table). 위에서
+    수직 접근하는 pre / 수직 lift 를 top-down 으로 강제하면 IK 전멸이라 폐기했다:
+    접근은 관측 자세에서 파지 해로 move_j 스윙인, 리프트는 제시 단계가 도달 가능한
+    자세로 수행 (omx=best-effort, 정밀은 so101).
+
+    조 축 후보(면 정렬 우선) × Z 사다리(낮은→높은, 첫 도달 채택). omx 는 depth
+    가 없어 높이를 못 재므로 파지 Z 는 큐브 크기 가정(2cm → 중심 바닥+1cm)이
+    앵커 — 사다리는 도달/바닥클리어를 위한 소폭 탐색(chosen_dz 로 실물 보정)."""
+    gx, gy = grasp.center_xy
+    z_ladder = [_OMX_TABLE_Z_M + dz for dz in _CUBE_PICK_DZ_LADDER]
     groups: list[list[TcpPose]] = []
-    metas: list[tuple[Quat, float]] = []
-    for s in (1.0, -1.0):  # tool z ∥ +u 선호 (제시 회전량 최소), 폴백 −u
-        yaw = math.atan2(s * grasp.u[1], s * grasp.u[0])
+    metas: list[tuple[Quat, float, float]] = []  # (quat, jaw_yaw, gz)
+    for yaw in grasp.yaw_candidates:  # 면 정렬(0/90) 우선, 대각 폴백
         quat = _grasp_quat(yaw, 0)
-        groups.append([TcpPose(position=g, quaternion=quat)])
-        metas.append((quat, s))
+        for gz in z_ladder:  # 선호 dz(1cm) 우선
+            groups.append([TcpPose(position=(gx, gy, gz), quaternion=quat)])
+            metas.append((quat, yaw, gz))
     res = await ctx.call(
         Motion.Service.RESOLVE_REACHABLE,
         ResolveReachableRequest(groups=groups, floor_z=_OMX_TABLE_Z_M - 0.002),
@@ -563,34 +591,45 @@ async def plan_omx_pick_pen(
         trace,
         {
             "phase": "pick",
-            "event": "plan_omx_pick_pen",
-            "grasp_omx": list(g),
-            "pen_d": pen_d,
-            "u": list(grasp.u),
-            "exposed_len": grasp.exposed_len_m,
+            "event": "plan_omx_pick_cube",
+            "grasp_xy": [gx, gy],
+            "z_ladder": z_ladder,
+            "size_m": grasp.size_m,
+            "yaw_candidates_deg": [round(math.degrees(y), 1) for y in grasp.yaw_candidates],
             "index": res.index,
+            "chosen_dz": (metas[res.index][2] - _OMX_TABLE_Z_M) if res.index >= 0 else None,
+            "chosen_jaw_deg": (
+                round(math.degrees(metas[res.index][1]), 1) if res.index >= 0 else None
+            ),
             "group_failures": res.group_failures,
         },
     )
     if res.index < 0:
         raise NoReachableGrasp(
-            f"omx top-down 파지 후보 {len(groups)}개 전멸 — {res.message} "
-            f"(그룹별: {res.group_failures}). 펜을 omx 도달영역 중심 쪽으로 "
+            f"omx top-down 큐브 파지 후보 {len(groups)}개 전멸 — {res.message} "
+            f"(그룹별: {res.group_failures}). 큐브를 omx 도달영역 중심 쪽으로 "
             "옮긴 후 다시 실행하세요"
         )
-    quat, s_pen = metas[res.index]
+    quat, jaw_yaw, g_z = metas[res.index]
+    g = (gx, gy, g_z)
+    dz = g_z - _OMX_TABLE_Z_M
     logger.info(
-        "plan_omx_pick_pen: s_pen=%+.0f 채택 — grasp(omx)=(%.3f,%.3f,%.3f) "
-        "펜지름=%.0fmm 노출=%.0fmm",
-        s_pen,
+        "plan_omx_pick_cube: 조축=%.0f° 채택 — grasp(omx)=(%.3f,%.3f,%.3f) "
+        "파지dz=%.0fmm 큐브=%.0fmm",
+        math.degrees(jaw_yaw),
         g[0],
         g[1],
         g[2],
-        pen_d * 1000,
-        grasp.exposed_len_m * 1000,
+        dz * 1000,
+        grasp.size_m * 1000,
     )
-    return PickPlan(
-        sols=res.solutions, quat=quat, grasp_omx=g, pen_d=pen_d, s_pen=s_pen
+    return CubePick(
+        sols=res.solutions,
+        quat=quat,
+        grasp_omx=g,
+        jaw_yaw_omx=jaw_yaw,
+        size_m=grasp.size_m,
+        chosen_dz=dz,
     )
 
 
@@ -598,22 +637,19 @@ async def plan_omx_pick_pen(
 
 
 @step(title="omx 집기")
-async def omx_pick_pen(
+async def omx_pick_cube(
     ctx: TaskContext,
     omx: str,
-    plan: PickPlan,
-    coarse: PenGrasp,
+    plan: CubePick,
     trace: HandoverTrace | None = None,
-) -> PenGrasp:
+) -> None:
     """관측 자세 → 파지 해로 바로 move_j(속도 cap 으로 부드럽게) → close → 판정.
     top-down 은 책상면에서만 도달하므로 위에서의 수직 접근(pre)·수직 lift 는 불가 —
     스윙인으로 간다. 리프트/제시는 다음 단계(plan_omx_present)가 도달 가능한 자세로
-    수행. refine(look-then-move) 폐기 — omx=best-effort, 정밀은 so101 수취가 흡수.
-    반환 = 파지에 쓴 펜 기하 (제시 계산 입력)."""
+    수행. refine(look-then-move) 폐기 — omx=best-effort, 정밀은 so101 수취가 흡수."""
     await _move_j(ctx, omx, joints=plan.sols[0])
     await set_gripper(ctx, omx, open_=False)
     await verify_grasp(ctx, omx, phase="omx close 직후", trace=trace)
-    return coarse
 
 
 # ─── D. omx 제시 (랑데부 계산 — 티칭 폐기) ────────────────────────────
@@ -623,57 +659,27 @@ async def omx_pick_pen(
 class PresentPlan:
     sols: list[list[float]]  # [제시 자세] 관절해
     quat: Quat
-    h_world: Vec3  # 노출 세그먼트 중심 목표 (world) — so101 재검출 겨냥점
-    d_world: tuple[float, float]  # 펜 노출 방향 (world XY 단위벡터, so101 쪽)
+    h_world: Vec3  # 큐브 중심 목표 (world) — so101 재검출 겨냥점 (≈ 제시 TCP)
 
 
-def _present_orientations(
-    tcp_omx: Vec3, base_omx: BasePose, s_pen: float
-) -> list[tuple[str, Quat, tuple[float, float]]]:
-    """제시 자세 후보 (선호순) — (라벨, quat(omx frame), 노출 방향 world XY).
+def _present_orientations(tcp_omx: Vec3) -> list[tuple[str, Quat]]:
+    """제시 자세 후보 (선호순) — (라벨, quat(omx frame)). tcp 방위에 의존.
 
-    펜 수평 유지 제약에서 5축이 도달 가능한 자세족 (_PRESENT_SPIN_DEG 주석):
-      A/B. 펜을 so101 원점으로 조준 + tool-x 정하향/정상향 (정확 조준 — 도달만
-           되면 최선. probe 상 현 셀 배치에선 거의 전멸이나 후보는 싸다)
-      C.   펜 = TCP 방위의 접선 (노출 부호는 so101 쪽 반평면) + spin 사다리
-           — 실질 채택 경로 (probe 60/60).
-    tool z ∥ s_pen·(노출 방향) 규약 — pick 이 문 쪽의 반대가 노출."""
-    tcp_w = robot_to_world(tcp_omx, base_omx)
-    out: list[tuple[str, Quat, tuple[float, float]]] = []
-
-    def _quat(exp_omx: tuple[float, float], spin_deg: float) -> Quat:
-        # tool z = s_pen·(노출 방향) — 그 축 둘레 spin (tool-x down 이 spin 0)
-        zeta = (s_pen * exp_omx[0], s_pen * exp_omx[1])
-        beta = math.atan2(zeta[1], zeta[0])
-        q0 = Rotation.from_euler("z", beta) * _TOPDOWN
-        spun = (
-            Rotation.from_rotvec(
-                np.array([zeta[0], zeta[1], 0.0]) * math.radians(spin_deg)
-            )
-            * q0
-        )
-        qx, qy, qz, qw = (float(v) for v in spun.as_quat())
-        return (qx, qy, qz, qw)
-
-    # A/B — so101 조준 (world 방향 → omx frame 회전)
-    r_w = math.hypot(tcp_w[0], tcp_w[1])
-    if r_w > 1e-6:
-        d_w = (-tcp_w[0] / r_w, -tcp_w[1] / r_w)
-        yaw_o = math.atan2(d_w[1], d_w[0]) - base_omx.yaw_rad
-        d_o = (math.cos(yaw_o), math.sin(yaw_o))
-        out.append(("aim-down", _quat(d_o, 0.0), d_w))
-        out.append(("aim-up", _quat(d_o, 180.0), d_w))
-    # C — 접선 (TCP 방위 ±90°) 중 노출이 so101 쪽 반평면인 부호 + spin 사다리
-    alpha = math.atan2(tcp_omx[1], tcp_omx[0])
+    omx 5축이 공중 랑데부에서 도달하는 tool 자세족 = **tool-z 가 TCP 방위의
+    접선**(±) × spin 사다리 (_PRESENT_SPIN_DEG 주석 — 큐브 대칭이 방위를 자유롭게
+    한다는 착각 방지). 펜의 노출 반평면 필터/조준족은 제거 (대칭이라 부호/스핀이
+    파지엔 무관, 수취는 omx 실 TCP quat 에서 조 축을 실측). spin 0(조 축 수평)
+    우선 — 그 경우 수취 직교 선호(_jaw_yaw_world)가 잘 선다."""
+    out: list[tuple[str, Quat]] = []
+    alpha = math.atan2(tcp_omx[1], tcp_omx[0])  # TCP 방위 (omx frame)
     for sgn in (1.0, -1.0):
-        beta = alpha + sgn * math.pi / 2
-        t_o = (math.cos(beta), math.sin(beta))
-        t_w_yaw = beta + base_omx.yaw_rad
-        t_w = (math.cos(t_w_yaw), math.sin(t_w_yaw))
-        if t_w[0] * (-tcp_w[0]) + t_w[1] * (-tcp_w[1]) < 0:
-            continue  # 노출이 so101 반대쪽 — 이 부호 기각
+        beta = alpha + sgn * math.pi / 2  # 접선 방향
+        q0 = Rotation.from_euler("z", beta) * _TOPDOWN  # tool-z ∥ 접선, tool-x 하향
+        axis = np.array([math.cos(beta), math.sin(beta), 0.0])  # spin 축 = tool-z
         for spin in _PRESENT_SPIN_DEG:
-            out.append((f"tan{sgn:+.0f}/spin{spin:+.0f}", _quat(t_o, spin), t_w))
+            spun = Rotation.from_rotvec(axis * math.radians(spin)) * q0
+            qx, qy, qz, qw = (float(v) for v in spun.as_quat())
+            out.append((f"tan{sgn:+.0f}/spin{spin:+.0f}", (qx, qy, qz, qw)))
     return out
 
 
@@ -684,8 +690,6 @@ async def plan_omx_present(
     roi_so: WorkcellRoi,
     roi_omx: WorkcellRoi,
     base_omx: BasePose,
-    grasp: PenGrasp,
-    plan: PickPlan,
     so101_joints: list[float],
     checker: CrossRobotChecker | None,
     trace: HandoverTrace | None = None,
@@ -694,10 +698,11 @@ async def plan_omx_present(
     각 점에서 자세족(_present_orientations)을 resolve (그룹 순서 = 선호) 하고
     채택안을 cross-robot 충돌 게이트. 첫 통과 채택, 전멸 = 명시 실패.
 
-    H(so101 재검출 겨냥점) = TCP + 노출방향·exposed_center_offset — 접선족은
-    펜이 so101 을 정조준하지 않는다 (도달 가능 자세족의 물리 — receive 는
-    어차피 재검출 기반이라 펜 방위는 detection 이 알려준다)."""
-    cands = pen.rendezvous_candidates(
+    H(so101 재검출 겨냥점) = 제시 TCP = 큐브 중심 (omx 가 중심을 물었으므로 큐브가
+    TCP 에 매달림. so101 은 어차피 재검출로 실 위치를 잡으니 겨냥점은 근사면 충분).
+    큐브 조 축(so101 직교 기준)은 수취 시 omx 현재 TCP quat 에서 실측 (여기서 안
+    실음 — 계획 자세와 실 자세가 같아 동치이나 실측이 정본)."""
+    cands = frames.rendezvous_candidates(
         roi_so,
         roi_omx,
         base_omx,
@@ -716,11 +721,8 @@ async def plan_omx_present(
     )
     for tcp_w in cands:
         tcp_omx = world_to_robot(tcp_w, base_omx)
-        orients = _present_orientations(tcp_omx, base_omx, plan.s_pen)
-        if not orients:
-            rejects.append(f"tcp={tcp_w}: 자세족 없음")
-            continue
-        groups = [[TcpPose(position=tcp_omx, quaternion=q)] for _l, q, _d in orients]
+        orients = _present_orientations(tcp_omx)
+        groups = [[TcpPose(position=tcp_omx, quaternion=q)] for _l, q in orients]
         alive = list(range(len(groups)))
         for _attempt in range(_RECV_COLLISION_RETRY):
             res = await ctx.call(
@@ -733,7 +735,7 @@ async def plan_omx_present(
                 rejects.append(f"tcp={tcp_w}: 자세족 전멸 ({res.message})")
                 break
             gi = alive[res.index]
-            label, quat, d_w = orients[gi]
+            label, quat = orients[gi]
             if checker is not None and _omx_path_collides(
                 checker,
                 so101_joints,
@@ -744,11 +746,7 @@ async def plan_omx_present(
                 if not alive:
                     break
                 continue
-            h_world = (
-                tcp_w[0] + d_w[0] * grasp.exposed_center_offset_m,
-                tcp_w[1] + d_w[1] * grasp.exposed_center_offset_m,
-                tcp_w[2],
-            )
+            h_world = (tcp_w[0], tcp_w[1], tcp_w[2])
             await _emit(
                 trace,
                 {
@@ -757,26 +755,22 @@ async def plan_omx_present(
                     "tcp_world": list(tcp_w),
                     "orientation": label,
                     "h_world": list(h_world),
-                    "d_world": list(d_w),
                     "rejects": rejects,
                 },
             )
             logger.info(
                 "plan_omx_present: tcp=(%.3f,%.3f,%.3f) %s 채택 (기각 %d) — "
-                "노출 %.0fmm, H=(%.3f,%.3f,%.3f)",
+                "H=(%.3f,%.3f,%.3f)",
                 tcp_w[0],
                 tcp_w[1],
                 tcp_w[2],
                 label,
                 len(rejects),
-                grasp.exposed_len_m * 1000,
                 h_world[0],
                 h_world[1],
                 h_world[2],
             )
-            return PresentPlan(
-                sols=res.solutions, quat=quat, h_world=h_world, d_world=d_w
-            )
+            return PresentPlan(sols=res.solutions, quat=quat, h_world=h_world)
     await _emit(
         trace,
         {
@@ -962,32 +956,18 @@ async def so_redetect(
                 f"{_RECV_MATCH_RADIUS_M * 1000:.0f}mm · z±"
                 f"{_RECV_Z_BAND_M * 1000:.0f}mm · score≥{_RECV_SCORE_MIN} · "
                 f"점군≥{_RECV_MIN_POINTS}) — 제시 자세/조명 확인 후 다시 "
-                "실행하세요 (thin+가림 검출은 §5.6 미검증 리스크)"
+                "실행하세요 (공중 큐브 검출은 실물 미검증 — 가림 주의)"
             ),
         )
     return best
-
-
-def _receive_target(det: OrientedDetection, omx_tcp_xy: tuple[float, float]) -> Vec3:
-    """겨냥점 = 검출 중심을 펜 축 방향 **omx 반대쪽(노출 끝)** 으로 소폭 보정.
-    검출 중심은 가림 때문에 이미 노출 세그먼트 근사 — 보정은 안전 여유."""
-    p_axis = (math.cos(det.grasp_yaw), math.sin(det.grasp_yaw))
-    away = (det.position[0] - omx_tcp_xy[0], det.position[1] - omx_tcp_xy[1])
-    sign = 1.0 if (p_axis[0] * away[0] + p_axis[1] * away[1]) >= 0 else -1.0
-    return (
-        det.position[0] + sign * p_axis[0] * _RECV_TIP_OFFSET_M,
-        det.position[1] + sign * p_axis[1] * _RECV_TIP_OFFSET_M,
-        det.position[2],
-    )
 
 
 @dataclass(frozen=True, slots=True)
 class ReceivePlan:
     sols: list[list[float]]  # [pre, grasp] 관절해
     quat: Quat
-    target: Vec3  # 파지 겨냥점 (world)
+    target: Vec3  # 파지 겨냥점 (world) = 큐브 중심
     omx_joints: list[float]
-    omx_tcp_xy: tuple[float, float]  # refine 의 겨냥 보정 부호 기준
 
 
 @step(title="수취 계획")
@@ -1000,34 +980,32 @@ async def plan_receive(
     checker: CrossRobotChecker | None,
     trace: HandoverTrace | None = None,
 ) -> ReceivePlan:
-    """재검출 기반 수취 계획 — 수평 계열 접근 부채꼴 resolve + **충돌 게이트**
-    (근접 국면: omx 그리퍼=거의 닫힘, margin=_RECV_COLLISION_MARGIN_M — 기본
-    2cm 는 핸드오프 자체를 기각, collision.py 정밀화 ③). 채택 그룹이 충돌이면
-    빼고 재-resolve (상한 소진 = 명시 실패)."""
+    """재검출 기반 수취 계획 — 절대 yaw 격자 × tilt 사다리 resolve + **충돌 게이트**
+    (근접 국면: omx 그리퍼=거의 닫힘, margin=_RECV_COLLISION_MARGIN_M — 기본 2cm
+    는 핸드오프 자체를 기각, collision.py 정밀화 ③). 채택 그룹이 충돌이면 빼고
+    재-resolve (상한 소진 = 명시 실패).
+
+    겨냥점 = 큐브 중심(재검출 position). 선호 = **omx 가 문 면이 아닌 직교 면**:
+    omx 조 축 world yaw 를 omx 현재 TCP quat 에서 실측하고, so101 파지 yaw 를 그에
+    맞춘다 (그래야 두 조 축이 직교 = 다른 면 쌍, cube.perp_face_distance)."""
     omx_tcp = await ctx.call(
         Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState, robot_id=omx
     )
     omx_joints = list(omx_tcp.joints)
-    # TCP snapshot 은 omx 자기 base frame — world(so101 base) 로 변환해야
-    # 검출(world)과 같은 좌표에서 겨냥 부호를 잰다.
-    omx_tcp_world = robot_to_world(
-        (omx_tcp.position[0], omx_tcp.position[1], omx_tcp.position[2]), base_omx
-    )
-    target = _receive_target(det, (omx_tcp_world[0], omx_tcp_world[1]))
+    target = (det.position[0], det.position[1], det.position[2])
+    # omx 조 축(so101 직교 기준) — omx 현재 TCP quat 에서 실측 (FK 짐작 아님, 도구
+    # 자세는 확정값). 수직이면 None → 직교 선호 없이 tilt 순만 (아래 정렬 키에서 흡수).
+    omx_jaw_yaw = _jaw_yaw_world(omx_tcp.quaternion, base_omx.yaw_rad)
 
-    # 가족 = **절대 yaw 15° 전방위 격자 × tilt 사다리** (servo §11 절대 격자
-    # 사상 — so101 공중 도달 밴드는 30~40° 폭이라 toward-상대 coarse 부채꼴은
-    # 밴드를 통째로 놓친다. 실측 = 노브 블록 주석). 선호: ① 조 축 ⟂ 펜 축
-    # (검출 yaw 기준 — 조 축 방위 = yaw+90° 는 tilt 무관 수평 ⇒ ⟂펜 ⟺ yaw ≈
-    # 펜 yaw mod 180) ② tilt 사다리 순 (실측 포켓 60/75 우선).
-    def _perp_dist(yaw_rad: float) -> float:
-        d = abs(math.degrees(yaw_rad - det.grasp_yaw)) % 180.0
-        return min(d, 180.0 - d)
+    def _face_dist(yaw_rad: float) -> float:
+        if omx_jaw_yaw is None:
+            return 0.0
+        return cube.perp_face_distance(yaw_rad, omx_jaw_yaw)
 
     yaws = [math.radians(g) for g in np.arange(0.0, 360.0, _RECV_YAW_GRID_DEG)]
     fan = sorted(
         ((tilt, yaw) for tilt in _RECV_TILTS_DEG for yaw in yaws),
-        key=lambda f: (round(_perp_dist(f[1])), _RECV_TILTS_DEG.index(f[0])),
+        key=lambda f: (round(_face_dist(f[1])), _RECV_TILTS_DEG.index(f[0])),
     )
     groups: list[list[TcpPose]] = []
     metas: list[Quat] = []
@@ -1073,6 +1051,11 @@ async def plan_receive(
                     "phase": "receive",
                     "event": "plan_receive",
                     "target": list(target),
+                    "omx_jaw_deg": (
+                        round(math.degrees(omx_jaw_yaw), 1)
+                        if omx_jaw_yaw is not None
+                        else None
+                    ),
                     "group": gi,
                     "attempt": attempt,
                 },
@@ -1082,7 +1065,6 @@ async def plan_receive(
                 quat=metas[gi],
                 target=target,
                 omx_joints=omx_joints,
-                omx_tcp_xy=(omx_tcp_world[0], omx_tcp_world[1]),
             )
         logger.warning(
             "plan_receive: 그룹 %d 채택안이 omx 와 충돌 위험 (margin %.0fmm) — "
@@ -1126,7 +1108,7 @@ async def so_refine(
             trace, {"phase": "receive", "event": "refine_miss", "reason": reason}
         )
         return plan.target
-    updated = _receive_target(best, plan.omx_tcp_xy)
+    updated = (best.position[0], best.position[1], best.position[2])  # 큐브 중심
     jump = math.dist(updated, plan.target)
     if jump > _REFINE_JUMP_MAX_M:
         reason = (
@@ -1504,7 +1486,7 @@ async def _move_l(
     )
 
 
-# steps 표면에 frame 변환 재노출 (v1 소비자/테스트 호환 — 정의는 pen.py)
+# steps 표면에 frame 변환 재노출 (소비자/테스트 호환 — 정의는 frames.py)
 __all__ = [
     "world_to_robot",
     "robot_to_world",

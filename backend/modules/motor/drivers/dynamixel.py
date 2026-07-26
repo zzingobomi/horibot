@@ -62,6 +62,7 @@ ADDR_POSITION_I_GAIN = 82
 ADDR_POSITION_P_GAIN = 84
 ADDR_PROFILE_ACCELERATION = 108
 ADDR_PROFILE_VELOCITY = 112
+ADDR_GOAL_CURRENT = 102  # current_position/current_control 모드의 힘 상한 (2B signed)
 ADDR_GOAL_POSITION = 116
 ADDR_PRESENT_LOAD = 126
 ADDR_PRESENT_VELOCITY = 128
@@ -286,9 +287,16 @@ class DynamixelBackend:
         self.set_torque(False)  # EEPROM write 전제 (모드 변경은 torque off 에서만)
         for m in declared:
             self._write1(m.id, ADDR_OPERATING_MODE, _OPERATING_MODE.get(m.mode, 3))
+            # current_position/current_control 은 Goal Current(RAM)를 걸어야 힘이
+            # 난다. 안 걸면 힘없이 안 열리고, position 풀토크로 두면 스톨 홀딩 과부하
+            # (red LED 셧다운) — 이 상한이 그 사이 안전지대 (2026-07-25 실물).
+            if m.mode in ("current_position", "current_control") and (
+                m.goal_current is not None
+            ):
+                self._write2(m.id, ADDR_GOAL_CURRENT, m.goal_current)
         logger.info(
             "Dynamixel operating mode 적용: %s",
-            {m.id: m.mode for m in declared},
+            {m.id: (m.mode, m.goal_current) for m in declared},
         )
 
     def _apply_pid(self) -> None:

@@ -51,6 +51,7 @@ from modules.shared_config.contract import SharedConfig, WorkcellBundle, Workcel
 from modules.tasks.core.contract import PreviewRequest
 from modules.tasks.core.errors import (
     DetectionNotFound,
+    GraspFailed,
     NoReachableGrasp,
     TaskError,
 )
@@ -158,7 +159,7 @@ def _block_det(
 ) -> OrientedDetection:
     """omx mono 검출 (omx base frame) — 봉 신뢰 게이트 통과 기본값 (8×2cm)."""
     return OrientedDetection(
-        prompt="blue block", position=position, score=score, base_z=position[2],
+        prompt="orange block", position=position, score=score, base_z=position[2],
         height=0.0, grasp_yaw=yaw, footprint=footprint,
         points=[(position[0], position[1], position[2])] * 60,
     )
@@ -168,7 +169,7 @@ def _aerial_det(position, score=0.8) -> OrientedDetection:
     """so101 공중 재검출 (world frame) — 수직 봉의 보이는 노출부 (평면 투영
     footprint 는 ~단면 크기)."""
     return OrientedDetection(
-        prompt="blue block", position=position, score=score, base_z=position[2],
+        prompt="orange block", position=position, score=score, base_z=position[2],
         height=0.05, grasp_yaw=0.3, footprint=(0.022, 0.020),
         points=[(position[0], position[1], position[2])] * 60,
     )
@@ -279,7 +280,7 @@ def test_base_pose_transform_roundtrip():
 
 async def test_scenario_happy_path_and_release_order():
     ctx = _ctx(_happy_script())
-    await _module().scenario(ctx, pick_object="blue block")
+    await _module().scenario(ctx, pick_object="orange block")
     log = ctx.wire.call_log
     grip_events = [
         (i, c["robot_id"], c["req"].position_raw)
@@ -352,7 +353,7 @@ async def test_missing_workcell_fails_before_motion():
     script[_WORKCELL] = [WorkcellBundle(robots={SO: _ROI_SO})]  # omx 미설정
     ctx = _ctx(script)
     with pytest.raises(TaskError, match="workcell"):
-        await _module().scenario(ctx, pick_object="blue block")
+        await _module().scenario(ctx, pick_object="orange block")
     assert ctx.calls(_MOVE_J) == []  # 모션 0 시점 실패
 
 
@@ -361,7 +362,7 @@ async def test_missing_hand_eye_fails_before_motion():
     script[_CAL_BUNDLE] = [CalibrationBundle(robot_id=OMX)]  # hand_eye 없음
     ctx = _ctx(script)
     with pytest.raises(TaskError, match="hand_eye"):
-        await _module().scenario(ctx, pick_object="blue block")
+        await _module().scenario(ctx, pick_object="orange block")
     assert ctx.calls(_MOVE_J) == []
 
 
@@ -373,7 +374,7 @@ async def test_aerial_redetect_failure_is_explicit_no_fk_fallback():
         _DETECT_ORIENTED: [DetectOrientedResponse(found=False, candidates=[])],
     })
     with pytest.raises(DetectionNotFound, match="재검출"):
-        await steps.so_redetect(ctx, SO, "blue block", [0.5] * 6, _H)
+        await steps.so_redetect(ctx, SO, "orange block", [0.5] * 6, _H)
     # 실패 후 추가 모션/TCP 조회 없음 (FK 폴백 경로 부재)
     assert len(ctx.calls(_MOVE_J)) == 1
     assert ctx.calls(_TCP_SNAP) == []
@@ -392,7 +393,7 @@ async def test_block_gate_rejects_untrusted_candidates():
         _DETECT_PLANAR: [DetectOrientedResponse(found=True, candidates=bad)],
     })
     with pytest.raises(DetectionNotFound, match="신뢰 컷"):
-        await steps.omx_observe_detect(ctx, OMX, "blue block", [0.1] * 5)
+        await steps.omx_observe_detect(ctx, OMX, "orange block", [0.1] * 5)
 
 
 def test_short_block_fails_explicitly():
@@ -480,6 +481,56 @@ def test_plan_block_grasp_ends_and_offsets():
     assert g.exposed_len_m == pytest.approx(0.054)
     assert g.tcp_to_e_m == pytest.approx(0.01 + 0.65 * 0.054)
     assert g.below_e_m == pytest.approx(0.35 * 0.054)
+
+
+def test_plan_block_grasp_from_anchors_known_length():
+    """2026-07-27 실물 회귀 — mono 검출 길이가 mask 번짐+측면 유입으로 과대
+    (109mm, 실물 80)여도 파지/노출 기하는 known 길이(_BLOCK_LEN_M) 앵커.
+    옛 코드는 검출 footprint 를 그대로 써 "검출 tip 에서 20%" 파지점이 실물
+    끝 ~7mm 지점으로 밀림 = 헛집음 (E 겨냥점도 봉 끝 ~4mm 로 오염)."""
+    det = _block_det(
+        position=(0.171, 0.029, 0.02), footprint=(0.109, 0.030), yaw=0.0,
+    )
+    g = steps.plan_block_grasp_from(det, _BASE_OMX)
+    assert g.length_m == pytest.approx(steps._BLOCK_LEN_M)  # 검출 109mm 무시
+    # 파지점 = 검출 center ∓ (반길이 − frac·길이) = ∓(4 − 1.6)cm = ∓2.4cm
+    (g1, _u1), (g2, _u2) = g.ends
+    assert g1[0] == pytest.approx(0.171 - 0.024)
+    assert g2[0] == pytest.approx(0.171 + 0.024)
+    # E 오프셋도 known 기하 (실물 런에선 부푼 길이로 60mm → 봉 끝 지점)
+    assert g.tcp_to_e_m == pytest.approx(0.01 + 0.65 * 0.054)
+
+
+async def test_verify_grasp_counts_negative_load_magnitude():
+    """Dynamixel Present_Load 는 2B signed (부호=방향 — 2026-07-27 omx 실물
+    닫힘 스톨 −499). gap 이 margin 아래여도 |load| 로 물림 인정 (abs 회귀)."""
+    pos = [0] * 6
+    pos[_SPEC.gripper_index] = _SPEC.gripper_close_raw  # gap 0
+    loads = [0] * 6
+    loads[_SPEC.gripper_index] = -499
+    st = JointState(
+        robot_id=OMX, seq=0, timestamp_unix=0.0,
+        positions_raw=pos, loads_raw=loads,
+    )
+    ctx = _ctx({_READ_STATE: [st]})
+    await steps.verify_grasp(ctx, OMX, phase="test")  # raise 없음 = HELD
+
+
+async def test_verify_grasp_empty_close_raises():
+    """빈손 close (gap 0 + 저부하) = GraspFailed — 2026-07-27 실물 false-HELD
+    (omx limit_min 이 물리 스톨 너머라 gap 177 로 오판)의 판정측 잠금: close
+    ref 도달 + 부하 낮음이면 반드시 EMPTY."""
+    pos = [0] * 6
+    pos[_SPEC.gripper_index] = _SPEC.gripper_close_raw
+    loads = [0] * 6
+    loads[_SPEC.gripper_index] = 5
+    st = JointState(
+        robot_id=OMX, seq=0, timestamp_unix=0.0,
+        positions_raw=pos, loads_raw=loads,
+    )
+    ctx = _ctx({_READ_STATE: [st]})
+    with pytest.raises(GraspFailed):
+        await steps.verify_grasp(ctx, OMX, phase="test")
 
 
 def test_recv_orients_vertical_axis_and_approach_preference():

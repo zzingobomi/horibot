@@ -102,7 +102,10 @@ export const PANEL_CATALOG: Record<
     title: "Detect Camera",
     width: 440,
     height: 330,
-    requiredCapabilities: ["rgbd"], // 검출 = depth 투영 필요 (detector/module.py)
+    // capability 게이트 없음 — 옛 "검출 = depth(rgbd) 필요" 는 DETECT_PLANAR
+    // (mono, omx 웹캠) 신설로 폐기: detector 는 카메라만 있으면 오버레이 스트림
+    // (DETECTIONS_ORIENTED)을 발행한다 (2026-07-27 — rgbd 게이트가 handover
+    // omx 검출 확인을 막던 실사고). 일반 camera 패널과 동일 기준.
   },
   calibrationCamera: { title: "Calib Camera", width: 420, height: 340 },
   scan: { title: "Scan", width: 320, height: 460, requiredCapabilities: ["rgbd"] },

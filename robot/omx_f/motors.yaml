@@ -107,8 +107,13 @@ motors:
     current: 500
     kind: gripper
     home: 2048
+    # min(close 명령) = **실측 빈손 스톨** 기준 (2026-07-27 handover 실물:
+    # achieved=1977 스톨 — 옛 1800 은 물리 하드스톱(골무 포함) 너머라 ① 빈손이
+    # held gap 판정에 HELD 오판(gap 177 > margin 40) ② goal current 500 으로
+    # 항시 스트레인(load −499). 스톨 실측 −2 = 경미한 preload 로 완전 닫힘 보장.
+    # held 판정 규약 = "빈손 close ≈ limit_min 도달" (resolve.py, so101 동일).
     limit:
-      min: 1800
+      min: 1975
       max: 2600
     reverse: false
     profile:

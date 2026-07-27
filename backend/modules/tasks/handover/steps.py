@@ -5,7 +5,9 @@
 ⚠ **2026-07-27 큐브→봉(8×2×2cm) 전환, 실물 미검증** (설계 근거 = block.py
 docstring + scripts/handover_block_probe.py 결합 스윕. 2cm 큐브는 두 그리퍼가
 같은 점에 모여 도달↔가림 정면충돌 — omx_handover_realtest_handoff.md §T.3):
-  A. omx 가 본다 — 계산된 nadir 관측 자세 + DETECT_PLANAR (mono ray∩z=table).
+  A. omx 가 본다 — 계산된 nadir 관측 자세 + DETECT_PLANAR (mono ray∩봉 윗면
+     평면 z=table+단면 — 2026-07-27 실물: z=table 투영은 2cm 윗면의 원근 확대
+     +측면 mask 유입으로 footprint 109mm(실물 80) 과대 = 파지점 오염).
   B. omx 파지 계획 — top-down 전용(5축 도달성 §5.1) + 봉 **한쪽 끝** 파지
      (양 끝 동등 후보 — 축대칭, 도달성이 채택) + tool z ∥ 봉 축(노출 방향 u).
      Z 사다리(depth 없어 크기 가정 — 봉 단면 2cm = 큐브와 동일 사다리).
@@ -27,8 +29,11 @@ docstring + scripts/handover_block_probe.py 결합 스윕. 2cm 큐브는 두 그
   ② _OMX_TABLE_Z_M — omx base 가 책상 위 전제 (다르면 관측/파지 z 전체 시프트).
   ③ 파지 Z — omx depth 없음 → 봉 단면 2cm 가정. 집는 위치가 이상하면
      chosen_dz 로그로 보정 (_PICK_DZ_LADDER).
-  ④ omx held 판정 — gap 5%/load 80 은 so101 Feetech 실측값. omx=Dynamixel XL330
-     은 load 스케일이 달라 **미검증** (§5.4) — 실물 전 gripper_characterize.py.
+  ④ omx held 판정 — 2026-07-27 실물 1차: 빈손 close 가 achieved=1977 에서 스톨
+     (옛 limit_min 1800 이 물리 하드스톱 너머 → gap 177 로 **빈손 HELD 오판**
+     + 항시 스트레인 load −499). → motors.yaml limit_min 을 실측 스톨로 재설정
+     (1975) + load 판정은 abs() (Dynamixel Present_Load 는 방향 부호). 2cm 봉
+     물림 시 achieved/load 실측은 아직 없음 — 다음 런 verify_grasp trace 확인.
   ⑤ 픽(봉 수평)→제시(봉 수직) 재배향 스윙 중 봉 끝이 책상을 스칠 가능성 —
      move_j 관절 보간 경로는 봉을 모델링하지 않는다. 첫 런 stop_before_receive
      로 눈 확인 (긁으면 제시 TCP z 사다리를 올리거나 경유 자세 추가).
@@ -130,10 +135,12 @@ _TOP_K = 3
 _GRIPPER_SETTLE_S = 4.0  # close 완료 대기 (pick_and_place 와 동일 근거)
 # held 판정 load 하한 — ⚠ so101(Feetech STS3215) 실측값. omx(Dynamixel XL330)
 # 는 load 단위가 달라 무의미할 수 있음 (§5.4 — 얇은 펜은 gap≈닫힘이라 load 가
-# 유일 판별자). 실물 전 scripts/gripper_characterize.py 로 재도출.
+# 유일 판별자). 판정은 **abs(load)** — Dynamixel Present_Load 는 2B signed
+# (부호=방향, 2026-07-27 실물: 닫힘 방향 스톨이 −499). 실물 물림 raw 는
+# scripts/gripper_characterize.py 로 재도출.
 _HELD_LOAD_MIN_RAW = 80
 
-# ── A. omx 관측 (mono z=0) ──
+# ── A. omx 관측 (mono — 투영 평면은 봉 윗면 z=table+단면) ──
 # omx base frame 의 테이블 평면 z — **1회 설정/측정 앵커** (omx 는 depth 가 없어
 # 스스로 못 잼, omx_handover_prep.md §4 횡단 전제). base 가 책상 위 설치 전제
 # = 0.0. 실물 첫 런에서 자/블록로 실측 보정.
@@ -152,7 +159,13 @@ _BLOCK_WIDTH_MAX_M = 0.035  # footprint 짧은 변 상한 (2cm 단면 + 번짐)
 _BLOCK_ASPECT_MIN = 2.0  # 긴 변/짧은 변 하한 (미달 = 봉 아님 — 큐브류 컷)
 
 # ── B. omx 파지 계획 (봉 한쪽 끝 top-down, tool z ∥ 봉 축) ──
-# 봉 기하 (block.py plan_block_grasp 인자 — 8×2×2cm 파란 각봉 기준):
+# 봉 기하 (block.py plan_block_grasp 인자 — 8×2×2cm 주황 각봉 기준):
+# ⚠ 봉 스펙은 **known 노브** (검출값 아님) — 2026-07-27 실물: mono 검출 길이가
+# mask 번짐+측면 유입으로 109mm(실물 80) 과대 → "검출 tip 에서 20%" 파지점이
+# 실물 끝 ~7mm 지점 = 헛집음. 파지 Z 의 "단면 2cm 가정"과 동형으로 길이도
+# 물체 스펙을 앵커, 검출 footprint 는 신뢰 게이트 전용.
+_BLOCK_LEN_M = 0.080  # known 봉 길이 — 파지점/노출(E) 기하의 앵커
+_BLOCK_CROSS_M = 0.020  # known 봉 단면 — 검출 투영 평면(윗면) + 파지 Z 가정
 _BLOCK_GRASP_FRAC = 0.20  # 파지점 = 잡는 끝에서 20% (1.6cm — 조 접촉폭 확보)
 _OMX_JAW_ALONG_M = 0.020  # omx 조가 봉 축 방향으로 차지하는 폭 (실물 실측 대상)
 # so101 파지점 E = 노출 세그먼트의 조-쪽 끝에서 65% 지점 (probe 기준치 —
@@ -213,7 +226,7 @@ _RECV_Z_BAND_M = 0.06  # 공중 대역 — 제시 z ± 이 값 (테이블 대역
 # 공중 물체는 GDINO 신뢰도가 낮다 — 2026-07-26 실물(큐브): 위치 정확·z 1mm·
 # 점군 116 인 진짜 검출인데 score 0.327 로 0.35 문턱에 걸림. 위치/z/반경(8cm)/
 # 점군(≥20) 게이트가 오검출 방어를 하므로 score 는 낮춰도 안전. → 0.25.
-# 봉은 크고(8cm) 파란색이라 큐브보다 유리할 것 — 실물 첫 런 trace 로 확인.
+# 봉은 크고(8cm) 주황색이라 큐브보다 유리할 것 — 실물 첫 런 trace 로 확인.
 _RECV_SCORE_MIN = 0.25
 _RECV_MIN_POINTS = 20  # 공중 물체 점군 하한
 # 수취 자세족 — 수직 조축 spin 사다리 (±tool z × spin 45° 스텝, _recv_orients).
@@ -530,15 +543,18 @@ async def omx_observe_detect(
     observe_joints: list[float],
     trace: HandoverTrace | None = None,
 ) -> OrientedDetection:
-    """관측 자세 이동 → 정지 → DETECT_PLANAR (mono ray∩z=table). 신뢰 컷 후
-    최고 score. 0건 = 명시 실패 (사유 + 다음 행동)."""
+    """관측 자세 이동 → 정지 → DETECT_PLANAR (mono ray∩봉 **윗면** 평면
+    z=table+단면). z=table 투영은 윗면(z=2cm)이 원근으로 ~9% 확대 + 측면 mask
+    유입까지 겹쳐 footprint 과대 (2026-07-27 실물 109mm vs 80) — 윗면 평면
+    투영이 중심/크기 왜곡의 뿌리 수정. 신뢰 컷 후 최고 score. 0건 = 명시 실패
+    (사유 + 다음 행동)."""
     await _move_j(ctx, omx, joints=observe_joints)
     await asyncio.sleep(_OBSERVE_SETTLE_S)
+    plane_z = _OMX_TABLE_Z_M + _BLOCK_CROSS_M  # 봉 윗면
     res = await ctx.call(
         Detector.Service.DETECT_PLANAR,
         DetectPlanarRequest(
-            robot_id=omx, plane_z=_OMX_TABLE_Z_M, prompts=[
-                prompt], top_k=_TOP_K
+            robot_id=omx, plane_z=plane_z, prompts=[prompt], top_k=_TOP_K
         ),
         DetectOrientedResponse,
     )
@@ -548,7 +564,7 @@ async def omx_observe_detect(
             "phase": "observe",
             "event": "detect_planar",
             "prompt": prompt,
-            "plane_z": _OMX_TABLE_Z_M,
+            "plane_z": plane_z,
             "candidates": [
                 {
                     "position": list(c.position),
@@ -594,11 +610,15 @@ async def omx_observe_detect(
 
 def plan_block_grasp_from(det: OrientedDetection, base_omx: BasePose) -> BlockGrasp:
     """검출 → 봉 파지 기하 (omx frame). 순수 계산 — step 아님 (모션 0).
-    봉이 짧으면 block.plan_block_grasp 가 **명시 실패** (침묵 진행 금지)."""
+    봉이 짧으면 block.plan_block_grasp 가 **명시 실패** (침묵 진행 금지).
+
+    길이는 검출값이 아니라 known 스펙(_BLOCK_LEN_M) — 검출 center+yaw 만 소비
+    (2026-07-27 실물 헛집음의 뿌리: 검출 길이 과대 → 파지점이 실물 끝으로 밀림.
+    상세 = _BLOCK_LEN_M 노브 주석). 검출 footprint 는 신뢰 게이트가 이미 소비."""
     return block.plan_block_grasp(
         (det.position[0], det.position[1]),
         det.grasp_yaw,
-        (det.footprint[0], det.footprint[1]),
+        (_BLOCK_LEN_M, det.footprint[1]),
         grasp_frac=_BLOCK_GRASP_FRAC,
         jaw_along_m=_OMX_JAW_ALONG_M,
         exposed_frac=_BLOCK_EXPOSED_FRAC,
@@ -1491,7 +1511,8 @@ async def verify_grasp(
     )
     margin = abs(spec.gripper_held_threshold_raw - spec.gripper_close_raw)
     gap = abs(achieved - spec.gripper_close_raw)
-    held = gap > margin or (load is not None and load >= _HELD_LOAD_MIN_RAW)
+    # abs — Dynamixel Present_Load 는 부호=방향 (omx 닫힘 스톨 −499, 2026-07-27)
+    held = gap > margin or (load is not None and abs(load) >= _HELD_LOAD_MIN_RAW)
     logger.info(
         "verify_grasp[%s] robot=%s achieved=%d (close=%d thr=%d load=%s) → %s",
         phase,

@@ -273,7 +273,9 @@ def _gripper_holding(
     gap = abs(achieved_raw - spec.gripper_close_raw)
     if gap > margin:
         return True
-    return load_raw is not None and load_raw >= _HELD_LOAD_MIN_RAW
+    # abs — Present_Load 는 2B signed (부호=방향). so101 실측은 양수라 no-op,
+    # omx Dynamixel 은 닫힘 방향이 음수 (−499, 2026-07-27 handover 실물).
+    return load_raw is not None and abs(load_raw) >= _HELD_LOAD_MIN_RAW
 
 
 @step(title="파지 확인")

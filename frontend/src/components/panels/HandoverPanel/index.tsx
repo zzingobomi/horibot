@@ -25,8 +25,8 @@ export function HandoverPanel() {
   const runSvc = useService(ServiceKey.HANDOVER_RUN, robotId);
   const stopSvc = useService(ServiceKey.HANDOVER_STOP, robotId);
 
-  // 봉(8×2×2cm 파란 각봉) 기본 프롬프트 — 개발/실물 반복 입력 절감.
-  const [pickObject, setPickObject] = useState("blue block");
+  // 봉(8×2×2cm 주황 각봉) 기본 프롬프트 — 개발/실물 반복 입력 절감.
+  const [pickObject, setPickObject] = useState("orange block");
   const [placeObject, setPlaceObject] = useState("");
   const [stopBeforeReceive, setStopBeforeReceive] = useState(true);
   const [msg, setMsg] = useState("");
@@ -78,7 +78,7 @@ export function HandoverPanel() {
           <input
             value={pickObject}
             onChange={(e) => setPickObject(e.target.value)}
-            placeholder="예: blue block"
+            placeholder="예: orange block"
             data-testid="handover-pick"
             className="mt-0.5 w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono"
           />

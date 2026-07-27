@@ -1,4 +1,4 @@
-"""HandoverModule — omx(giver)가 **자기 웹캠으로 보고** 봉(8×2×2cm 파란 각봉)의
+"""HandoverModule — omx(giver)가 **자기 웹캠으로 보고** 봉(8×2×2cm 주황 각봉)의
 한쪽 끝을 집어 **수직으로 세워 늘어뜨려** 제시하면, so101(receiver)이
 **재검출**해 아래로 늘어진 노출부를 받아 (선택) 상자 적치.
 
@@ -8,7 +8,7 @@ scripts/handover_block_probe.py. 2cm 큐브는 도달↔가림 정면충돌로 �
 docs/omx_handover_realtest_handoff.md §T). frontend = /tasks/handover 페이지
 (stop_before_receive 토글 포함) 또는 터미널:
     uv run --no-sync python scripts/run_task.py srv/handover/run \
-        --param "pick_object=blue block" --param "place_object=white box"
+        --param "pick_object=orange block" --param "place_object=white box"
     # omx 집기+제시만 먼저 눈으로 볼 때: --param "stop_before_receive=true"
 
 관측성: run 마다 debug/handover/<ts>/{trace.jsonl, summary.json} — 봉 실물

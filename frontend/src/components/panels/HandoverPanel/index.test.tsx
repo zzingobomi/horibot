@@ -58,7 +58,7 @@ describe("HandoverPanel", () => {
     });
     const { getByTestId } = render(<HandoverPanel />);
 
-    // 기본값: pick="blue block" (봉 프롬프트), stop_before_receive=true
+    // 기본값: pick="orange block" (봉 프롬프트), stop_before_receive=true
     expect(
       (getByTestId("handover-stop-before-receive") as HTMLInputElement).checked,
     ).toBe(true);
@@ -71,7 +71,7 @@ describe("HandoverPanel", () => {
     );
     expect(calls.length).toBe(1);
     expect(calls[0][1]).toEqual({
-      pick_object: "blue block",
+      pick_object: "orange block",
       place_object: "",
       stop_before_receive: true, // 첫 런 안전 기본 — omx 집기+제시까지만
     });
@@ -95,7 +95,7 @@ describe("HandoverPanel", () => {
       (c) => String(c[0]) === "srv/handover/run",
     );
     expect(calls[0][1]).toEqual({
-      pick_object: "blue block",
+      pick_object: "orange block",
       place_object: "white box",
       stop_before_receive: false,
     });

@@ -1538,6 +1538,9 @@ def test_gripper_holding_judgment():
     # 얇은 물림/슬립 sliver: gap 은 margin 아래지만 부하가 누르는 중 (실측 296)
     thin = _SPEC.gripper_close_raw + 36
     assert steps._gripper_holding(thin, 296, _SPEC) is True
+    # Dynamixel 음수 load (2B signed, 부호=방향 — 2026-07-27 omx handover 실물
+    # −499): 크기로 판정해야 물림을 놓치지 않는다
+    assert steps._gripper_holding(thin, -296, _SPEC) is True
     # 같은 gap 인데 부하 낮음 = 빈손
     assert steps._gripper_holding(thin, 60, _SPEC) is False
     # 부하 신호 없는 모델 → gap 단독 (얇은 물림은 못 잡음 — 알려진 한계)

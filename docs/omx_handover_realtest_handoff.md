@@ -195,6 +195,59 @@ rayTest 비가림, production IK/checker/캘 DB 그대로) 를 돌린 결과:
 
 ---
 
+## §T.8. 2026-07-27 밤 — 봉 실물 1차 런 판정 + 수정 4건 (trace `debug/handover/20260727_215130/`)
+
+> 첫 실물 런: omx 가 봉 **끝을 헛집고**도 HELD 오판으로 제시까지 감
+> (status=success 로 기록 — 둘 다 오판). 원인은 전부 trace/debug 이미지로 특정
+> — 관측성 안전망이 설계대로 일함. 봉 색은 주황으로 변경(파란→orange block).
+
+### T.8.1 판정 (trace 가 말한 것)
+
+1. **검출 footprint 과대 → 파지점이 봉 끝으로 밀림 (헛집기의 뿌리)** —
+   `detect_planar` footprint **109×30mm (실물 80×20)**. `debug/detect/
+   20260727_214819/0001_det_orange_block.png`: mask 가 윗면+측면을 함께 물고
+   z=0(책상면) 투영이 2cm 윗면을 원근 확대. "검출 tip 에서 20%" 파지점이 실물
+   끝 ~7mm 지점 = 조 접촉폭 없음. `tcp_to_e_m=60mm` 도 같은 오염 (E 가 봉 끝
+   ~4mm — so101 수취도 실패했을 것).
+2. **빈손인데 HELD** — `verify_grasp achieved=1977 (close=1800 thr=1840
+   load=-499)`. omx 그리퍼 빈손 완전-닫힘 스톨 = **1977** (골무 포함 물리
+   하드스톱) 인데 limit_min 1800 이 그 너머 → gap 177 > margin 40 이 항상 발화
+   + goal current 500 으로 항시 스트레인 (load −499 ≈ current 상한). §3-3/§T.7.3-5
+   에서 예고된 "held 임계 미특성화"가 실물로 확정된 것.
+3. (frontend) handover 페이지가 receiver 포커스를 씬에 넘겨 **참여 robot 인
+   omx 가 딤 처리** / Detect Camera 패널의 rgbd 게이트가 **omx 검출 오버레이
+   확인을 차단** (backend 는 DETECTIONS_ORIENTED 발행 중이었음).
+4. (무해 확인) 관측 중 카메라 화면 회전 = 관측 roll ψ 후보 중 도달 가능이
+   ψ=90° 뿐 (`group_failures` 6/7 IK 실패) × 웹캠 마운트 방향. 검출은
+   intrinsic+hand_eye 가 방위 흡수 — 코스메틱, 수정 안 함.
+
+### T.8.2 수정 (같은 날 반영, 실물 재검증 대기)
+
+| # | 수정 | 자리 |
+| --- | --- | --- |
+| 1 | 검출 투영 평면 = **봉 윗면** (`plane_z = table + _BLOCK_CROSS_M`) | steps.py `omx_observe_detect` |
+| 2 | 파지/노출(E) 기하 = **known 길이 앵커** `_BLOCK_LEN_M=0.08` (검출 footprint 는 신뢰 게이트 전용 — "단면 2cm 가정"과 동형) | steps.py `plan_block_grasp_from` |
+| 3 | omx gripper `limit.min` 1800→**1975** (실측 스톨 1977−2, held 판정 규약 "빈손 close ≈ limit_min 도달" 회복 + 항시 스트레인 제거) | robot/omx_f/motors.yaml |
+| 4 | held load 판정 **abs()** (Dynamixel Present_Load 부호=방향) — handover + PnP 동일 sweep | steps.py / pick_and_place primitives.py |
+| 5 | handover 씬 `focusId=null` (두 robot 동등) / Detect Camera rgbd 게이트 제거 (DETECT_PLANAR mono 로 낡음) | HandoverPage.tsx / registry.ts |
+
+회귀 테스트: 부푼 footprint(109mm)→known 앵커 / 음수 load HELD / 빈손 close
+GraspFailed (test_handover.py, test_pick_and_place.py). fast pytest 79 + vitest
+초록.
+
+### T.8.3 다음 런에서 볼 것 (남은 미지수)
+
+1. **2cm 봉 물림 시 achieved/load 실측 없음** — verify_grasp trace 로 확인
+   (물림 achieved 가 thr=1975+31=2006 위인지). 애매하면
+   `scripts/gripper_characterize.py`.
+2. limit_min 1975 재부팅 반영 후 **빈손 close 가 실제로 ~1977 인지** (1975 목표
+   도달 = gap≈0 = EMPTY 정상 판정).
+3. 윗면 투영 후 footprint 가 ~80×20 대역인지 (`detect_planar` trace).
+4. 파지점이 봉 끝 1.6cm 안쪽인지 (눈 + `plan_omx_pick_block` trace).
+5. §T.7.3 의 기존 미지수 유지 (재배향 스윙 스침 / M1 카메라 충돌 모델).
+
+---
+
 ## 0. 어떻게 이어받나 (30초)
 
 1. **§4 배포 상태 먼저 읽어라** — PC 와 pi_hori3 가 다른 코드로 떠 있(었)다. 이게 혼란의 절반.

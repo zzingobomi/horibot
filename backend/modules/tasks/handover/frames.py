@@ -1,7 +1,7 @@
 """handover 의 **객체-무관** 기하 — frame 변환 + 랑데부(두 팔 공통 워크스페이스).
 
-물체(펜/큐브) 모양에 의존하지 않는 부분만 여기 모은다 (물체별 파지 기하는
-cube.py). 하드웨어/wire 0 — 오피스 단위테스트 대상.
+물체(펜/큐브/봉) 모양에 의존하지 않는 부분만 여기 모은다 (물체별 파지 기하는
+block.py). 하드웨어/wire 0 — 오피스 단위테스트 대상.
 
 책임:
   - frame 변환 (world=so101 base ↔ robot base — robots.yaml base_pose 규약)
@@ -57,13 +57,12 @@ def rendezvous_candidates(
     *,
     step_m: float = 0.03,
     limit: int = 8,
-    prefer_r_so: float | None = None,
     prefer_point: Vec2 | None = None,
 ) -> list[Vec3]:
     """world 격자 중 so101 ROI ∩ omx ROI(omx frame 변환) 교집합 점들 — 제시
     파지점(omx TCP)의 후보. 선호순: z_values 순서 → **prefer_point 지정 시 그 world
     xy 에 가까운 순** (so101 도달이 razor-thin 이라 도달 robust 실측 지점을 직접
-    겨냥 — steps._RENDEZVOUS_PREFER_XY) → 아니면 prefer_r_so(원점 거리차) → 중심.
+    겨냥 — steps._RENDEZVOUS_PREFER_XY) → 아니면 중심.
 
     흉터 5 (워크스페이스 전멸 — standoff 가 먼저 죽음) 예방: 랑데부를 애초에
     두 셀의 공통 영역 **안쪽**에 배치. 실 도달성 판정은 여전히 motion resolve
@@ -89,10 +88,6 @@ def rendezvous_candidates(
     if prefer_point is not None:
         px0, py0 = prefer_point
         hits.sort(key=lambda h: (h[0], math.hypot(h[1] - px0, h[2] - py0)))
-    elif prefer_r_so is not None:
-        hits.sort(key=lambda h: (
-            h[0], abs(math.hypot(h[1], h[2]) - prefer_r_so),
-        ))
     else:
         cx = sum(h[1] for h in hits) / len(hits)
         cy = sum(h[2] for h in hits) / len(hits)

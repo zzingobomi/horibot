@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
   Bot,
+  Handshake,
   LayoutDashboard,
   ListTodo,
   PanelLeftClose,
@@ -182,6 +183,22 @@ export function Sidebar() {
           >
             <ListTodo className="h-4 w-4 shrink-0" />
             {!collapsed && <span>Pick &amp; Place</span>}
+          </NavLink>
+          <NavLink
+            to="/tasks/handover"
+            title={collapsed ? "Handover" : undefined}
+            className={({ isActive }) =>
+              cn(
+                "flex items-center rounded-md py-2 text-sm transition-colors",
+                collapsed ? "justify-center px-2" : "gap-3 px-3",
+                isActive
+                  ? "bg-zinc-800 text-zinc-100 font-medium"
+                  : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
+              )
+            }
+          >
+            <Handshake className="h-4 w-4 shrink-0" />
+            {!collapsed && <span>Handover</span>}
           </NavLink>
         </div>
       </nav>

@@ -1,17 +1,17 @@
-"""HandoverModule — omx(giver)가 **자기 웹캠으로 보고** 집어 든 큐브를
-so101(receiver)이 **재검출**해 omx 가 문 면이 아닌 **직교 면**을 받아 (선택)
-상자 적치.
+"""HandoverModule — omx(giver)가 **자기 웹캠으로 보고** 봉(8×2×2cm 파란 각봉)의
+한쪽 끝을 집어 **수직으로 세워 늘어뜨려** 제시하면, so101(receiver)이
+**재검출**해 아래로 늘어진 노출부를 받아 (선택) 상자 적치.
 
-pick_and_place 표준형 복제 (task.md §3). ⚠ 2026-07-23 전면 재배선 + 2026-07-26
-펜→큐브 전환 — **실물 미검증** (설계 근거/가정/미지수 = docs/omx_handover_prep.md
-+ steps.py/cube.py docstring. 동그란 펜은 omx 평행조로 안정 파지가 어려워 폐기).
-frontend 페이지/노출 없음 — 터미널 실행:
+pick_and_place 표준형 복제 (task.md §3). ⚠ 2026-07-27 큐브→봉 전환 — **실물
+미검증** (설계 근거/가정/미지수 = block.py + steps.py docstring + probe
+scripts/handover_block_probe.py. 2cm 큐브는 도달↔가림 정면충돌로 폐기 —
+docs/omx_handover_realtest_handoff.md §T). frontend = /tasks/handover 페이지
+(stop_before_receive 토글 포함) 또는 터미널:
     uv run --no-sync python scripts/run_task.py srv/handover/run \
-        --param "pick_object=cube" --param "place_object=blue box"
+        --param "pick_object=blue block" --param "place_object=white box"
     # omx 집기+제시만 먼저 눈으로 볼 때: --param "stop_before_receive=true"
-(mock deployment 에만 활성 — pc.yaml 은 실물 검증 완료 전까지 주석 TODO.)
 
-관측성: run 마다 debug/handover/<ts>/{trace.jsonl, summary.json} — omx 실물
+관측성: run 마다 debug/handover/<ts>/{trace.jsonl, summary.json} — 봉 실물
 데이터 0 인 첫 런이 그 데이터만으로 원인분석 가능해야 한다 (§6).
 """
 
@@ -245,20 +245,18 @@ class HandoverModule:
                 ctx, omx, pick_object, obs_joints, trace
             )
 
-            # 3) B. 파지 기하 (큐브 중심 + 조 축 후보 — 큐브는 짧음 실패 없음)
-            grasp = steps.plan_cube_grasp_from(det, base_omx)
-            g_world = robot_to_world(
-                (grasp.center_xy[0], grasp.center_xy[1], 0.0), base_omx
-            )
+            # 3) B. 파지 기하 (봉 양 끝 후보 — 짧으면 명시 실패)
+            grasp = steps.plan_block_grasp_from(det, base_omx)
+
+            # 4) B+C. 끝 파지점(책상면 top-down) 계획 → move_j 스윙인 집기
+            pick = await steps.plan_omx_pick_block(ctx, omx, grasp, trace)
+            g_world = robot_to_world(pick.grasp_omx, base_omx)
             marks.show_grasp(g_world)
+            await steps.omx_pick_block(ctx, omx, pick, trace)
 
-            # 4) B+C. 파지점(책상면 top-down) 계획 → move_j 스윙인 집기
-            pick = await steps.plan_omx_pick_cube(ctx, omx, grasp, trace)
-            await steps.omx_pick_cube(ctx, omx, pick, trace)
-
-            # 5) D. 제시 — 랑데부 계산 (티칭 폐기), so101 은 home 에 있음
+            # 5) D. 제시 — B/down 수직 (봉을 늘어뜨림), so101 은 home 에 있음
             present = await steps.plan_omx_present(
-                ctx, omx, roi_so, roi_omx, base_omx,
+                ctx, omx, roi_so, roi_omx, base_omx, pick,
                 list(home_so.joint_values), self._checker, trace,
             )
             await steps.omx_present(ctx, omx, present, trace)
@@ -288,7 +286,9 @@ class HandoverModule:
 
             # 7) 적치 (선택) — 비우면 든 채 home (사용자 인계. 계약 주석)
             if place_object:
-                held_h = max(det2.height, 0.02)  # 단일뷰 과소 보정 하한
+                # 봉은 검출 height(mono/공중 과소) 대신 계획 기하로 — 적치
+                # 자세(tilt)에 따라 봉이 기울 수 있어 전체 길이를 보수 상한으로
+                held_h = pick.geom.length_m
                 await steps.place_into(ctx, so101, place_object, held_h, home_so)
             else:
                 await steps.go_home(ctx, so101, home_so)

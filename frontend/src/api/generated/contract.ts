@@ -776,6 +776,31 @@ export interface ToggleBreakpointRequest {
   name: string;
 }
 
+export interface HandoverListRobotsRequest {
+}
+
+export interface HandoverListRobotsResponse {
+  robot_ids: string[];
+}
+
+export interface HandoverRunRequest {
+  pick_object: string;
+  place_object?: string;
+  stop_before_receive?: boolean;
+}
+
+export interface HandoverTaskMarker {
+  label: string;
+  position: [number, number, number];
+}
+
+export interface HandoverTaskMarkers {
+  robot_id: string;
+  seq: number;
+  timestamp_unix: number;
+  markers?: HandoverTaskMarker[];
+}
+
 export interface PickAndPlaceListRobotsRequest {
 }
 
@@ -936,6 +961,9 @@ export const Topic = {
   CALIBRATION_PREVIEW: "stream/calibration/{robot_id}/preview",
   DETECTOR_DETECTIONS: "stream/detector/{robot_id}/detections",
   DETECTOR_DETECTIONS_ORIENTED: "stream/detector/{robot_id}/detections_oriented",
+  HANDOVER_MARKERS: "stream/handover/{robot_id}/markers",
+  HANDOVER_STATE: "stream/handover/{robot_id}/state",
+  HANDOVER_TRACE: "stream/handover/{robot_id}/trace",
   MOTION_JOG_J: "stream/motion/{robot_id}/jog_j",
   MOTION_JOG_TCP: "stream/motion/{robot_id}/jog_tcp",
   MOTION_TCP_STATE: "stream/motion/{robot_id}/tcp_state",
@@ -959,6 +987,9 @@ export type TopicPayloadMap = {
   "stream/calibration/{robot_id}/preview": CalibrationPreview;
   "stream/detector/{robot_id}/detections": DetectionsUpdate;
   "stream/detector/{robot_id}/detections_oriented": OrientedDetectionsUpdate;
+  "stream/handover/{robot_id}/markers": HandoverTaskMarkers;
+  "stream/handover/{robot_id}/state": TaskState;
+  "stream/handover/{robot_id}/trace": TaskTrace;
   "stream/motion/{robot_id}/jog_j": JogJInput;
   "stream/motion/{robot_id}/jog_tcp": JogTcpInput;
   "stream/motion/{robot_id}/tcp_state": TcpState;
@@ -989,6 +1020,15 @@ export const ServiceKey = {
   CALIBRATION_UNDO_LAST_CAPTURE: "srv/calibration/undo_last_capture",
   DETECTOR_DETECT: "srv/detector/detect",
   DETECTOR_DETECT_ORIENTED: "srv/detector/detect_oriented",
+  HANDOVER_LIST_ROBOTS: "srv/handover/list_robots",
+  HANDOVER_PAUSE: "srv/handover/pause",
+  HANDOVER_PREVIEW: "srv/handover/preview",
+  HANDOVER_RESUME: "srv/handover/resume",
+  HANDOVER_RUN: "srv/handover/run",
+  HANDOVER_RUN_TO: "srv/handover/run_to",
+  HANDOVER_STEP_ONCE: "srv/handover/step_once",
+  HANDOVER_STOP: "srv/handover/stop",
+  HANDOVER_TOGGLE_BREAKPOINT: "srv/handover/toggle_breakpoint",
   LLM_PARSE_COMMAND: "srv/llm/parse_command",
   MOTIONPREVIEW_PLAN: "srv/motion_preview/plan",
   MOTION_MOVE_J: "srv/motion/{robot_id}/move_j",
@@ -1049,6 +1089,15 @@ export type ServiceMap = {
   "srv/calibration/undo_last_capture": { req: UndoLastCaptureRequest; res: UndoLastCaptureResponse };
   "srv/detector/detect": { req: DetectRequest; res: DetectResponse };
   "srv/detector/detect_oriented": { req: DetectRequest; res: DetectOrientedResponse };
+  "srv/handover/list_robots": { req: HandoverListRobotsRequest; res: HandoverListRobotsResponse };
+  "srv/handover/pause": { req: ControlRequest; res: ControlResponse };
+  "srv/handover/preview": { req: PreviewRequest; res: PreviewResponse };
+  "srv/handover/resume": { req: ControlRequest; res: ControlResponse };
+  "srv/handover/run": { req: HandoverRunRequest; res: RunResponse };
+  "srv/handover/run_to": { req: RunToRequest; res: ControlResponse };
+  "srv/handover/step_once": { req: ControlRequest; res: ControlResponse };
+  "srv/handover/stop": { req: ControlRequest; res: ControlResponse };
+  "srv/handover/toggle_breakpoint": { req: ToggleBreakpointRequest; res: ControlResponse };
   "srv/llm/parse_command": { req: ParseCommandRequest; res: ParseCommandResponse };
   "srv/motion_preview/plan": { req: PlanPreviewRequest; res: PlanPreviewResponse };
   "srv/motion/{robot_id}/move_j": { req: MoveJRequest; res: MoveJResponse };

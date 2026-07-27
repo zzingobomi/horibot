@@ -47,12 +47,12 @@ test.describe("Pick & Place task 페이지 e2e (mock backend)", () => {
 
     await page.getByTestId("pnp-run").click();
 
-    // RUN → runner 감독 실행 → TRACE 에 step 누적 (중첩 자식 detect 까지 —
-    // title="검출" 이 주 표시, label 은 보조)
-    await expect(page.getByTestId("task-entries")).toContainText("검출", {
+    // RUN → runner 감독 실행 → TRACE 에 step 진입 누적. mock 은 자산(DB)이
+    // 비어 있어 모션 0 시점 fail-fast(home waypoint 조회)에서 자연 실패 —
+    // 실패는 침묵이 아니라 사유+다음 행동 (티칭 안내) 표시.
+    await expect(page.getByTestId("task-entries")).toContainText("자세 조회", {
       timeout: 10_000,
     });
-    // mock 은 캘 없음 → 검출 0 → FAILED. 실패는 침묵이 아니라 사유+다음 행동.
     await expect(page.getByTestId("task-status")).toHaveText(/failed/i, {
       timeout: 10_000,
     });
@@ -64,17 +64,18 @@ test.describe("Pick & Place task 페이지 e2e (mock backend)", () => {
   test("breakpoint → 재실행 PAUSED (hold) → [중지] = 탈출구", async ({ page }) => {
     await gotoReady(page);
 
-    // 1차 실행 — trace 를 만들어 breakpoint 대상(label) 확보
+    // 1차 실행 — trace 를 만들어 breakpoint 대상(label) 확보 (mock 은 자산이
+    // 비어 home waypoint 조회에서 자연 실패 — trace 는 그 진입까지 남는다)
     await page.getByTestId("pnp-pick").fill("white cube");
     await page.getByTestId("pnp-run").click();
-    await expect(page.getByTestId("task-entries")).toContainText("검출", {
+    await expect(page.getByTestId("task-entries")).toContainText("자세 조회", {
       timeout: 10_000,
     });
     await expect(page.getByTestId("task-status")).toHaveText(/failed/i, {
       timeout: 10_000,
     });
 
-    // 첫 entry (pick) 에 breakpoint (dot 클릭) — runner 가 run 간 보존
+    // 첫 entry 에 breakpoint (dot 클릭) — runner 가 run 간 보존
     await page.getByTestId("task-entry-bp").first().click();
 
     // 2차 실행 → pick 직전 hold = PAUSED

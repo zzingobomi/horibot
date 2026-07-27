@@ -1,14 +1,15 @@
-"""handover task 검증 — mock(FakeContext) 레벨 (2026-07-26 펜→큐브 전환판).
+"""handover task 검증 — mock(FakeContext) 레벨 (2026-07-27 큐브→봉 전환판).
 
 잠그는 것:
   ① frame 변환 왕복 (base_pose 크로스캘 규약 — 정의는 frames.py)
   ② 시나리오 happy path 의 호출 경로 — 특히 **수취 순서 불변식**: so101 이
      close + held 판정한 뒤에만 omx 가 연다 (뒤집히면 물체 낙하)
-  ③ 명시 실패 클래스 — 큐브 신뢰 게이트 / workcell 미설정 / hand_eye 없음 /
-     공중 재검출 실패 (FK 후퇴 금지)
+  ③ 명시 실패 클래스 — 봉 신뢰 게이트 / workcell 미설정 / hand_eye 없음 /
+     공중 재검출 실패 (FK 후퇴 금지) / 짧은 봉 (침묵 진행 금지)
   ④ 수취 계획의 cross-robot 충돌 게이트 — 충돌 그룹 제외 재시도 / 전멸 명시
      실패 + **근접 국면 파라미터** (omx 그리퍼 닫힘 fraction / margin 축소)
-  ⑤ 큐브 기하 (순수) — 중심 파지 / 조 축 후보 / **직교 면 선호**
+  ⑤ 봉 기하 (순수) — 양 끝 파지 후보 / 노출 오프셋 / B/down 제시 quat /
+     수취 수직 조축족 (handover_block_probe 결론 회귀 잠금)
   ⑥ module 배선 (preview 정적 트리 / list_robots)
 """
 
@@ -17,6 +18,7 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime
 
+import numpy as np
 import pytest
 from pydantic import BaseModel
 from scipy.spatial.transform import Rotation
@@ -54,7 +56,7 @@ from modules.tasks.core.errors import (
 )
 from modules.tasks.core.fake import FakeContext
 from modules.tasks.core.spec import TaskRobotSpec
-from modules.tasks.handover import frames, steps
+from modules.tasks.handover import block, frames, steps
 from modules.tasks.handover.collision import BasePose
 from modules.tasks.handover.contract import ListRobotsRequest
 from modules.tasks.handover.module import HandoverModule
@@ -95,13 +97,23 @@ _ROI_SO = WorkcellRoi(
 _ROI_OMX = WorkcellRoi(
     x_min=0.08, x_max=0.34, y_min=-0.22, y_max=0.22, z_min=-0.02, z_max=0.34
 )
-# happy path 의 제시 TCP 점 — 시나리오와 같은 계산으로 유도 (기대값 하드코딩
-# 대신 같은 순수 함수: 랑데부 후보 [0] 이 첫 resolve 성공으로 채택된다). 큐브는
-# H(재검출 겨냥점)=제시 TCP 라 det 를 이 점에 두면 so_redetect/refine 이 매치.
-_H = frames.rendezvous_candidates(
+# happy path 의 봉 기하/제시점 — 시나리오와 같은 순수 계산으로 유도 (기대값
+# 하드코딩 대신 같은 함수). 랑데부 후보 [0](TCP)이 첫 resolve 성공으로 채택되고,
+# H(so101 재검출 겨냥점) = E = TCP − (0,0,tcp_to_e) (B/down 수직 제시).
+_GEOM = block.plan_block_grasp(
+    (0.20, 0.0), 0.0, (0.080, 0.020),
+    grasp_frac=steps._BLOCK_GRASP_FRAC,
+    jaw_along_m=steps._OMX_JAW_ALONG_M,
+    exposed_frac=steps._BLOCK_EXPOSED_FRAC,
+    min_exposed_m=steps._SO_MIN_GRASP_M + steps._EXPOSED_MARGIN_M,
+    len_min_m=steps._BLOCK_LEN_MIN_M,
+    len_max_m=steps._BLOCK_LEN_MAX_M,
+)
+_TCP_W = frames.rendezvous_candidates(
     _ROI_SO, _ROI_OMX, _BASE_OMX, steps._PRESENT_Z_WORLD,
     limit=steps._PRESENT_LIMIT, prefer_point=steps._RENDEZVOUS_PREFER_XY,
 )[0]
+_H = (_TCP_W[0], _TCP_W[1], _TCP_W[2] - _GEOM.tcp_to_e_m)
 
 
 @pytest.fixture(autouse=True)
@@ -141,22 +153,23 @@ def _hand_eye_bundle(robot: str) -> CalibrationBundle:
     )
 
 
-def _cube_det(
-    position=(0.20, 0.0, 0.0), score=0.9, footprint=(0.020, 0.020), yaw=0.0,
+def _block_det(
+    position=(0.20, 0.0, 0.0), score=0.9, footprint=(0.080, 0.020), yaw=0.0,
 ) -> OrientedDetection:
-    """omx mono 검출 (omx base frame) — 큐브 신뢰 게이트 통과 기본값 (2cm)."""
+    """omx mono 검출 (omx base frame) — 봉 신뢰 게이트 통과 기본값 (8×2cm)."""
     return OrientedDetection(
-        prompt="cube", position=position, score=score, base_z=position[2],
+        prompt="blue block", position=position, score=score, base_z=position[2],
         height=0.0, grasp_yaw=yaw, footprint=footprint,
         points=[(position[0], position[1], position[2])] * 60,
     )
 
 
 def _aerial_det(position, score=0.8) -> OrientedDetection:
-    """so101 공중 재검출 (world frame) — 큐브."""
+    """so101 공중 재검출 (world frame) — 수직 봉의 보이는 노출부 (평면 투영
+    footprint 는 ~단면 크기)."""
     return OrientedDetection(
-        prompt="cube", position=position, score=score, base_z=position[2],
-        height=0.02, grasp_yaw=0.3, footprint=(0.020, 0.020),
+        prompt="blue block", position=position, score=score, base_z=position[2],
+        height=0.05, grasp_yaw=0.3, footprint=(0.022, 0.020),
         points=[(position[0], position[1], position[2])] * 60,
     )
 
@@ -204,9 +217,9 @@ def _happy_script() -> dict:
         _CAL_BUNDLE: [_hand_eye_bundle(OMX), _hand_eye_bundle(SO)],
         # omx 관측 검출 1건 (refine=look-then-move 폐기)
         _DETECT_PLANAR: [
-            DetectOrientedResponse(found=True, candidates=[_cube_det()]),
+            DetectOrientedResponse(found=True, candidates=[_block_det()]),
         ],
-        # so101 재검출(1) + 수취 refine(1) — 제시점 그대로
+        # so101 재검출(1) + 수취 refine(1) — 제시점(E) 그대로
         _DETECT_ORIENTED: [
             DetectOrientedResponse(found=True, candidates=[_aerial_det(_H)]),
             DetectOrientedResponse(found=True, candidates=[_aerial_det(_H)]),
@@ -214,9 +227,9 @@ def _happy_script() -> dict:
         _SELECT: [
             # omx 관측 자세 (ψ 격자 중 첫 그룹)
             ResolveReachableResponse(index=0, solutions=[[0.1] * 5]),
-            # omx pick — 파지점 단일 (top-down pre/lift 폐기)
+            # omx pick — 봉 끝 파지점 (양 끝 × z 사다리 중 첫 그룹)
             ResolveReachableResponse(index=0, solutions=[[0.2] * 5]),
-            # omx 제시 자세
+            # omx 제시 자세 (B/down 단일 — 랑데부 후보 [0] 채택)
             ResolveReachableResponse(index=0, solutions=[[0.4] * 5]),
             # so101 수취 관측 자세
             ResolveReachableResponse(index=0, solutions=[[0.5] * 6]),
@@ -231,7 +244,7 @@ def _happy_script() -> dict:
         _MOVE_L: [MoveLResponse()] * 2,
         # omx open / omx close / so open / so close / omx release open = 5
         _GRIP: [SetGripperResponse()] * 5,
-        # omx close후 / 제시 도달 / so close후 / so 이탈후 = 4 (omx lift 판정 제거)
+        # omx close후 / 제시 도달 / so close후 / so 이탈후 = 4
         _READ_STATE: [_joint_state(_HELD_RAW)] * 4,
         # 제시 계획(omx) / 수취 계획(omx) / retreat(so, omx) = 4
         _TCP_SNAP: [
@@ -266,7 +279,7 @@ def test_base_pose_transform_roundtrip():
 
 async def test_scenario_happy_path_and_release_order():
     ctx = _ctx(_happy_script())
-    await _module().scenario(ctx, pick_object="cube")
+    await _module().scenario(ctx, pick_object="blue block")
     log = ctx.wire.call_log
     grip_events = [
         (i, c["robot_id"], c["req"].position_raw)
@@ -307,6 +320,30 @@ async def test_scenario_happy_path_and_release_order():
     assert len(gentle) == 2, [c["req"].speed_scale for c in ctx.calls(_MOVE_L)]
 
 
+async def test_present_is_vertical_down_and_h_below_tcp():
+    """B/down 제시 잠금 — 채택 quat 의 tool z 가 world ↓ 이고, H(재검출
+    겨냥점)는 제시 TCP 의 tcp_to_e 아래 (probe 2026-07-27 설계 회귀)."""
+    ctx = _ctx(_happy_script())
+    script_pick = steps.BlockPick(
+        sols=[[0.2] * 5], quat=(0.0, 0.0, 0.0, 1.0),
+        grasp_omx=(0.2, 0.0, 0.016), u_omx=(1.0, 0.0),
+        geom=_GEOM, chosen_dz=0.016,
+    )
+    plan = await steps.plan_omx_present(
+        ctx, OMX, _ROI_SO, _ROI_OMX, _BASE_OMX, script_pick,
+        [0.1] * 6, None,
+    )
+    # tool z (omx frame) ↓ — base yaw 는 z 축 회전이라 world 에서도 ↓
+    tool_z = Rotation.from_quat(plan.quat).apply([0.0, 0.0, 1.0])
+    assert tool_z[2] == pytest.approx(-1.0, abs=1e-9)
+    assert plan.h_world[2] == pytest.approx(
+        _TCP_W[2] - _GEOM.tcp_to_e_m, abs=1e-9
+    )
+    assert (plan.h_world[0], plan.h_world[1]) == pytest.approx(
+        (_TCP_W[0], _TCP_W[1]), abs=1e-9
+    )
+
+
 # ─── ③ 명시 실패 클래스 ──────────────────────────────────────────────
 
 
@@ -315,7 +352,7 @@ async def test_missing_workcell_fails_before_motion():
     script[_WORKCELL] = [WorkcellBundle(robots={SO: _ROI_SO})]  # omx 미설정
     ctx = _ctx(script)
     with pytest.raises(TaskError, match="workcell"):
-        await _module().scenario(ctx, pick_object="cube")
+        await _module().scenario(ctx, pick_object="blue block")
     assert ctx.calls(_MOVE_J) == []  # 모션 0 시점 실패
 
 
@@ -324,7 +361,7 @@ async def test_missing_hand_eye_fails_before_motion():
     script[_CAL_BUNDLE] = [CalibrationBundle(robot_id=OMX)]  # hand_eye 없음
     ctx = _ctx(script)
     with pytest.raises(TaskError, match="hand_eye"):
-        await _module().scenario(ctx, pick_object="cube")
+        await _module().scenario(ctx, pick_object="blue block")
     assert ctx.calls(_MOVE_J) == []
 
 
@@ -336,25 +373,36 @@ async def test_aerial_redetect_failure_is_explicit_no_fk_fallback():
         _DETECT_ORIENTED: [DetectOrientedResponse(found=False, candidates=[])],
     })
     with pytest.raises(DetectionNotFound, match="재검출"):
-        await steps.so_redetect(ctx, SO, "cube", [0.5] * 6, _H)
+        await steps.so_redetect(ctx, SO, "blue block", [0.5] * 6, _H)
     # 실패 후 추가 모션/TCP 조회 없음 (FK 폴백 경로 부재)
     assert len(ctx.calls(_MOVE_J)) == 1
     assert ctx.calls(_TCP_SNAP) == []
 
 
-async def test_cube_gate_rejects_untrusted_candidates():
-    """관측 신뢰 게이트 — score/변 대역/종횡비 컷 미달은 명시 실패."""
+async def test_block_gate_rejects_untrusted_candidates():
+    """관측 신뢰 게이트 — score/긴 변 대역/종횡비 하한 컷 미달은 명시 실패."""
     bad = [
-        _cube_det(score=0.2),  # score 미달
-        _cube_det(footprint=(0.005, 0.005)),  # 너무 작음 (변 하한 미달)
-        _cube_det(footprint=(0.14, 0.012)),  # 길쭉함 (펜류 — 종횡비/상한 초과)
+        _block_det(score=0.2),  # score 미달
+        _block_det(footprint=(0.020, 0.020)),  # 정사각 (큐브류 — 길이/종횡비 미달)
+        _block_det(footprint=(0.20, 0.020)),  # 너무 김 (긴 변 상한 초과)
+        _block_det(footprint=(0.080, 0.050)),  # 짧은 변 초과 (봉 단면 아님)
     ]
     ctx = _ctx({
         _MOVE_J: [MoveJResponse()],
         _DETECT_PLANAR: [DetectOrientedResponse(found=True, candidates=bad)],
     })
     with pytest.raises(DetectionNotFound, match="신뢰 컷"):
-        await steps.omx_observe_detect(ctx, OMX, "cube", [0.1] * 5)
+        await steps.omx_observe_detect(ctx, OMX, "blue block", [0.1] * 5)
+
+
+def test_short_block_fails_explicitly():
+    """짧은 봉 = 계획 단계 명시 실패 (노출 부족 침묵 진행 금지 — 사유에 수치)."""
+    with pytest.raises(TaskError, match="짧아"):
+        block.plan_block_grasp(
+            (0.2, 0.0), 0.0, (0.055, 0.020),
+            grasp_frac=0.3, jaw_along_m=0.02, exposed_frac=0.65,
+            min_exposed_m=0.035, len_min_m=0.05, len_max_m=0.12,
+        )
 
 
 # ─── ④ 수취 충돌 게이트 (근접 국면 파라미터) ─────────────────────────
@@ -400,7 +448,7 @@ async def test_plan_receive_retries_past_colliding_group():
     assert len(checker.calls) == 2  # 1차 충돌 → 그룹 제외 재-resolve → 2차 통과
     assert len(ctx.calls(_SELECT)) == 2
     assert plan.sols[0] == [0.1] * 6
-    # 근접 국면 파라미터 — omx 는 큐브 든 상태(거의 닫힘), margin 축소 (정밀화 ③)
+    # 근접 국면 파라미터 — omx 는 봉 든 상태(거의 닫힘), margin 축소 (정밀화 ③)
     assert checker.calls[0]["grip_b"] == steps._OMX_HOLD_GRIP_FRAC
     assert checker.calls[0]["margin_m"] == steps._RECV_COLLISION_MARGIN_M
 
@@ -415,33 +463,55 @@ async def test_plan_receive_all_colliding_fails_explicitly():
         )
 
 
-# ─── ⑤ 큐브 기하 (순수) ──────────────────────────────────────────────
+# ─── ⑤ 봉 기하 (순수) ────────────────────────────────────────────────
 
 
-def test_plan_cube_grasp_center_and_yaw_candidates():
-    det = _cube_det(position=(0.20, 0.05, 0.0), footprint=(0.021, 0.019), yaw=0.1)
-    g = steps.plan_cube_grasp_from(det, _BASE_OMX)
-    assert g.center_xy == pytest.approx((0.20, 0.05), abs=1e-9)
-    # size = footprint 평균(0.020) clamp [0.012, 0.030] 안
-    assert g.size_m == pytest.approx(0.020, abs=1e-9)
-    # 조 축 후보 = 검출 yaw + (0, 90, 45, 135)° — 면 정렬(0/90) 우선
-    assert g.yaw_candidates[0] == pytest.approx(0.1, abs=1e-9)
-    assert g.yaw_candidates[1] == pytest.approx(0.1 + math.radians(90), abs=1e-9)
-    assert g.yaw_candidates[2] == pytest.approx(0.1 + math.radians(45), abs=1e-9)
+def test_plan_block_grasp_ends_and_offsets():
+    g = _GEOM  # (0.20, 0.0), yaw 0, footprint (0.080, 0.020)
+    assert g.length_m == pytest.approx(0.080)
+    assert len(g.ends) == 2  # 양 끝 동등 후보 (축대칭)
+    # 끝점 = 중심 ± 4cm, 파지점 = 끝에서 frac(20% = 1.6cm) 안쪽
+    (g1, u1), (g2, u2) = g.ends
+    assert g1 == pytest.approx((0.20 - 0.04 + 0.016, 0.0), abs=1e-12)
+    assert u1 == pytest.approx((1.0, 0.0), abs=1e-12)  # 노출 = +x (반대 끝)
+    assert g2 == pytest.approx((0.20 + 0.04 - 0.016, 0.0), abs=1e-12)
+    assert u2 == pytest.approx((-1.0, 0.0), abs=1e-12)
+    # 노출 = 8 − 1.6 − 1(조 절반) = 5.4cm / E 오프셋 = 1 + 0.65·5.4 = 4.51cm
+    assert g.exposed_len_m == pytest.approx(0.054)
+    assert g.tcp_to_e_m == pytest.approx(0.01 + 0.65 * 0.054)
+    assert g.below_e_m == pytest.approx(0.35 * 0.054)
 
 
-def test_recv_family_includes_vertical_jaw():
-    """수취 자세족에 **위/아래 면(수직 조축)** 파지가 있어야 한다 (스윕: so101
-    수취해가 전부 수직 조축 — 이게 없으면 악수 높이에서 도달 0개). tool y(조축)의
-    z 성분이 큰 자세가 존재 = 수직 조축."""
-    vert = [
-        (lbl, q) for lbl, q, _a in steps._RECV_FAMILY
-        if abs(Rotation.from_quat(q).apply([0.0, 1.0, 0.0])[2]) > 0.7
-    ]
-    assert vert, "수취 자세족에 수직 조축(위/아래면) 파지가 없음 — 스윕 결론 회귀"
-    # 선호 순서: 첫 후보가 수직 조축 (r90 우선)
-    q0 = steps._RECV_FAMILY[0][1]
-    assert abs(Rotation.from_quat(q0).apply([0.0, 1.0, 0.0])[2]) > 0.7
+def test_recv_orients_vertical_axis_and_approach_preference():
+    """수취 자세족 잠금 — 전부 수직 조축(tool z ∥ 봉 축 = 수직) + 수평 접근,
+    첫 후보의 접근이 base→E 방위 (so101 쪽 진입 선호). probe 2026-07-27 +
+    큐브 시대 실측("도달해는 전부 수직 조축") 회귀 잠금."""
+    e = (0.21, 0.16, 0.255)
+    orients = steps._recv_orients(e)
+    assert orients
+    for _label, q, a in orients:
+        tool_z = Rotation.from_quat(q).apply([0.0, 0.0, 1.0])
+        assert abs(tool_z[2]) == pytest.approx(1.0, abs=1e-9)  # 봉 축 정렬
+        assert abs(a[2]) < 1e-9  # 수평 접근
+        # 조축(tool y)은 수평 — 봉 단면을 가로질러 문다
+        tool_y = Rotation.from_quat(q).apply([0.0, 1.0, 0.0])
+        assert abs(tool_y[2]) < 1e-9
+    az_pref = math.atan2(e[1], e[0])
+    a0 = orients[0][2]
+    assert np.dot(a0, [math.cos(az_pref), math.sin(az_pref), 0.0]) == \
+        pytest.approx(1.0, abs=1e-9)
+
+
+def test_present_quat_down_is_manifold_aligned():
+    """B/down 제시 quat — tool z ↓ + tool x 가 팔 평면(방위 α) 수평 radial
+    (omx 5DOF 다양체 위 구성 — probe 1차 교훈 회귀 잠금)."""
+    alpha = math.radians(25.0)
+    q = steps._present_quat_down(alpha)
+    r = Rotation.from_quat(q)
+    assert r.apply([0.0, 0.0, 1.0]) == pytest.approx([0.0, 0.0, -1.0], abs=1e-9)
+    assert r.apply([1.0, 0.0, 0.0]) == pytest.approx(
+        [math.cos(alpha), math.sin(alpha), 0.0], abs=1e-9
+    )
 
 
 def test_rendezvous_candidates_inside_both_rois():
@@ -481,7 +551,7 @@ async def test_module_list_robots_and_preview():
         "enable_torque", "enable_torque",
         "go_home", "go_home", "set_gripper",
         "plan_omx_observe", "omx_observe_detect",
-        "plan_omx_pick_cube", "omx_pick_cube",
+        "plan_omx_pick_block", "omx_pick_block",
         "plan_omx_present", "omx_present",
         "plan_so_observe", "so_redetect", "plan_receive",
         "set_gripper", "receive", "omx_retreat",

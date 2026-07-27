@@ -300,6 +300,7 @@ class DynamixelBackend:
             return
         self.set_torque(False)  # EEPROM write 전제 (모드 변경은 torque off 에서만)
         for m in declared:
+            assert m.mode is not None  # declared 필터가 보장 (타입 좁힘)
             self._write1(m.id, ADDR_OPERATING_MODE, _OPERATING_MODE.get(m.mode, 3))
             # current_position/current_control 은 Goal Current(RAM)를 걸어야 힘이
             # 난다. 안 걸면 힘없이 안 열리고, position 풀토크로 두면 스톨 홀딩 과부하

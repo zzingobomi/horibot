@@ -23,11 +23,15 @@ import { WaypointPanel } from "./WaypointPanel";
 import { WorkcellRoiPanel } from "./WorkcellRoiPanel";
 import { WorkcellRoiScenePart } from "./WorkcellRoiPanel/scenePart";
 import { PickAndPlacePanel } from "./PickAndPlacePanel";
-import { TaskProgressPanel } from "./TaskProgressPanel";
+import { HandoverPanel } from "./HandoverPanel";
+import {
+  HandoverProgressPanel,
+  TaskProgressPanel,
+} from "./TaskProgressPanel";
 import { withRobotOwnership } from "@/components/shared/robotOwnership";
 
 // 모든 패널은 여기 등록 (§4.1 ② — dockview 가 string key→component 로 인스턴스화).
-// pickAndPlace/taskProgress 는 task 페이지(PickAndPlacePage) 의 PANELS 에서 배치.
+// task 패널(pickAndPlace/taskProgress/handover*)은 각 task 페이지 PANELS 에서 배치.
 export const PANEL_COMPONENTS = {
   robotState: RobotStatePanel,
   motion: MotionPanel,
@@ -42,6 +46,8 @@ export const PANEL_COMPONENTS = {
   workcellRoi: WorkcellRoiPanel,
   pickAndPlace: PickAndPlacePanel,
   taskProgress: TaskProgressPanel,
+  handover: HandoverPanel,
+  handoverProgress: HandoverProgressPanel,
 } as const;
 
 export type PanelComponentKey = keyof typeof PANEL_COMPONENTS;
@@ -122,6 +128,10 @@ export const PANEL_CATALOG: Record<
   },
   pickAndPlace: { title: "Pick & Place", width: 340, height: 340 },
   taskProgress: { title: "Task Progress", width: 340, height: 420 },
+  // handover 진행 패널 — taskProgress 와 같은 코어의 handover 키 판. 같은
+  // 화면에 둘이 공존할 수 있으므로 title 로 구분 (탭 title 구분 규약).
+  handover: { title: "Handover", width: 340, height: 340 },
+  handoverProgress: { title: "Handover Progress", width: 340, height: 420 },
 };
 
 /**

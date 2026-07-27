@@ -1,20 +1,21 @@
 """handover 계획 기하의 실-기구학 도달성 (sim) — 흉터 5(워크스페이스 전멸) 회귀.
 
-2026-07-23 offline probe 로 잡은 구멍들을 실 URDF/캘(repo horibot.db)/base_pose
-로 잠근다 (각 구멍 = 설계 변경으로 이어진 실측):
+offline probe 로 잡은 구멍들을 실 URDF/캘(repo horibot.db)/base_pose 로 잠근다
+(각 구멍 = 설계 변경으로 이어진 실측. 2026-07-27 봉(8×2×2)/B-down 전환판 —
+probe = scripts/handover_block_probe.py):
   ① omx nadir 관측 ψ 격자에 도달 자세가 있다 (ψ=90° 실측)
   ② omx top-down 파지 격자 다수 도달 (§5.1 manifold)
-  ③ **제시 자세족** — omx 5축이 공중 랑데부에 도달하는 tool 자세는 접선(tool-z
-     ∥ TCP 방위 접선)+spin 족뿐 (큐브 대칭이 방위를 자유롭게 한다는 착각 방지 —
-     top-down/tilt 는 J2–J4 리밋 전멸). _present_orientations 가 ≥1 도달해야 한다
-  ④ **so101 수취** — v1 의 toward-상대 coarse 부채꼴은 0/21 전멸 실측 → 절대
-     yaw 15° 격자 × tilt 사다리가 채택 H 에서 ≥1 가족을 찾아야 한다 + 수취
-     관측 사다리 ≥1
-  ⑤ 채택 구성 쌍의 링크 최근접 ≥ _RECV_COLLISION_MARGIN_M (실측 11.1mm —
-     margin 10mm. 노브를 흔들어 여유가 margin 밑으로 내려가면 여기서 깨진다)
+  ③ **B/down 제시** — 랑데부(prefer 밴드 (0.21,0.16), z 0.28~0.32)에서
+     _present_quat_down(다양체 위 구성 — tool z ↓)이 ≥1 도달해야 한다.
+     (probe 실측: 수평(접선)족은 so101 수취 도달 0 이라 기각 — 그 결론이
+     뒤집히면 여기가 아니라 probe 를 다시 돌려라.)
+  ④ **so101 수취** — 수직 조축족(_recv_orients, tool z ∥ 봉 축 = 수직)이
+     E(= 제시 TCP − tcp_to_e)에서 [pre, grasp] ≥1 도달 + 수취 관측 사다리 ≥1
+  ⑤ 채택 구성 쌍의 링크 최근접 ≥ _RECV_COLLISION_MARGIN_M (봉 축 방향 두
+     그리퍼 이격 ~2.5cm — 노브를 흔들어 여유가 margin 밑으로 내려가면 깨진다)
 
-노브(_PRESENT_*/_RECV_*/workcell)를 바꾸면 이 테스트가 실물 전에 먼저 비명을
-지르는 것이 목적 — 실패 시 scratchpad probe 계열로 재특성화.
+노브(_PRESENT_*/_RECV_*/봉 기하/workcell)를 바꾸면 이 테스트가 실물 전에 먼저
+비명을 지르는 것이 목적 — 실패 시 scripts/handover_block_probe.py 로 재특성화.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from modules.motion.adapters.pybullet import PybulletKinematics
 from modules.motion.kinematics_builder import build_calibrated_kinematics
 from modules.motor.contract import MotorKind
 from modules.shared_config.contract import WorkcellRoi
-from modules.tasks.handover import frames, steps
+from modules.tasks.handover import block, frames, steps
 from modules.tasks.handover.collision import BasePose, CrossRobotChecker
 
 pytestmark = pytest.mark.sim  # PyBullet/URDF/DB 부팅 — fast loop 제외
@@ -121,22 +122,44 @@ def test_omx_topdown_pick_grid(env):
     assert ok >= tried * 0.6, f"omx top-down 격자 {ok}/{tried} — §5.1 회귀"
 
 
+# 봉 명목 기하 — steps 노브에서 유도 (시나리오 plan_block_grasp_from 과 동일 식)
+_BLOCK_GEOM = block.plan_block_grasp(
+    (0.20, 0.0), 0.0, (0.080, 0.020),
+    grasp_frac=steps._BLOCK_GRASP_FRAC,
+    jaw_along_m=steps._OMX_JAW_ALONG_M,
+    exposed_frac=steps._BLOCK_EXPOSED_FRAC,
+    min_exposed_m=steps._SO_MIN_GRASP_M + steps._EXPOSED_MARGIN_M,
+    len_min_m=steps._BLOCK_LEN_MIN_M,
+    len_max_m=steps._BLOCK_LEN_MAX_M,
+)
+
+
 def _adopt_present(env):
-    """시나리오와 같은 순서로 제시 채택 — (tcp_w, sol, h_world). 일반 grasp
-    자세족(_present_orientations)에서 첫 도달. H(재검출 겨냥점) = 제시 TCP =
-    큐브 중심. 악수 높이(_PRESENT_Z_WORLD ~0.32)에서 성립해야 한다."""
+    """시나리오와 같은 순서로 제시 채택 — (tcp_w, sol, h_world). B/down 단일
+    자세(_present_quat_down — 다양체 위 구성)에서 첫 도달. H(재검출 겨냥점) =
+    E = TCP − (0,0,tcp_to_e) — 봉이 수직으로 매달리므로 so101 파지점은 TCP
+    아래 봉 축 위."""
     cands = frames.rendezvous_candidates(
         env["roi_so"], env["roi_omx"], env["base"], steps._PRESENT_Z_WORLD,
         limit=steps._PRESENT_LIMIT, prefer_point=steps._RENDEZVOUS_PREFER_XY,
     )
-    assert cands, "랑데부 교집합 비어 있음 — workcell ROI z_max(악수높이) 회귀"
+    assert cands, "랑데부 교집합 비어 있음 — workcell ROI z_max 회귀"
+    roi_so = env["roi_so"]
     for tcp_w in cands:
+        e = (tcp_w[0], tcp_w[1], tcp_w[2] - _BLOCK_GEOM.tcp_to_e_m)
+        if not (
+            roi_so.x_min <= e[0] <= roi_so.x_max
+            and roi_so.y_min <= e[1] <= roi_so.y_max
+            and roi_so.z_min <= e[2] <= roi_so.z_max
+        ):
+            continue  # 시나리오 E-ROI 게이트와 동형
         tcp_o = frames.world_to_robot(tcp_w, env["base"])
-        for _label, quat in steps._present_orientations():
-            sol = _ik(env["k_omx"], tcp_o, quat)
-            if sol:
-                return tcp_w, sol, tcp_w
-    pytest.fail("제시 자세족 전멸 — _present_orientations(일반 샘플러)/악수높이 회귀")
+        alpha = math.atan2(tcp_o[1], tcp_o[0])
+        sol = _ik(env["k_omx"], tcp_o, steps._present_quat_down(alpha))
+        if sol:
+            return tcp_w, sol, e
+    pytest.fail("B/down 제시 전멸 — _present_quat_down/랑데부 밴드 회귀 "
+                "(scripts/handover_block_probe.py 로 재특성화)")
 
 
 def test_present_and_receive_feasible_with_clearance(env):
@@ -170,23 +193,21 @@ def test_present_and_receive_feasible_with_clearance(env):
             break
     assert obs_ok, "so101 수취 관측 사다리 전멸 — _RECV_OBS_* 회귀"
 
-    # 수취 가족 (일반 grasp 샘플러 — 위/아래면 수직 조축 포함), 겨냥 = 큐브 중심 H.
-    # ≥1 도달 + 벽밖 + 여유. 도달해가 수직 조축을 포함하는지도 확인(스윕 결론).
+    # 수취 가족 (수직 조축족 — tool z ∥ 봉 축 = 수직), 겨냥 = E (노출부).
+    # ≥1 [pre, grasp] 도달 + 벽밖 + 여유. 자세족 자체가 수직 조축임도 잠근다
+    # (probe 결론: 수평 조축은 so101 공중 도달 0 — 회귀 방지).
     tgt = h
     so_sols = []
-    vert_reach = 0
-    for _label, quat, a in steps._RECV_FAMILY:
+    for _label, quat, a in steps._recv_orients(tgt):
+        tool_z = _R.from_quat(quat).apply([0.0, 0.0, 1.0])
+        assert abs(tool_z[2]) > 0.99, "수취 자세족에 비수직 tool z — 설계 회귀"
         pre = tuple(tgt[i] - a[i] * steps._RECV_PRE_CLEAR_M for i in range(3))
         s_pre, s_g = _ik(env["k_so"], pre, quat), _ik(env["k_so"], tgt, quat)
         if s_pre and s_g:
             so_sols.append(s_g)
-            jaw_z = abs(_R.from_quat(quat).apply([0.0, 1.0, 0.0])[2])
-            if jaw_z > 0.7:
-                vert_reach += 1
     assert so_sols, (
-        f"so101 수취 가족 전멸 — 일반 샘플러(_RECV_FAMILY)/악수높이 회귀 (H={h})"
+        f"so101 수취 가족 전멸 — 수직 조축족(_recv_orients)/E 높이 회귀 (E={h})"
     )
-    assert vert_reach, "수취 도달해에 수직 조축(위/아래면)이 없음 — 스윕 결론 회귀"
 
     so_t, omx_t = env["so"].type, env["omx"].type
     chk = CrossRobotChecker(

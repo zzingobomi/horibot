@@ -100,4 +100,14 @@ describe("ScanGrowth — scene3d 스트림 배선", () => {
     expect(calls).toHaveLength(1); // enable 만 — disable 없음
     expect(calls[0][1]).toMatchObject({ enabled: true });
   });
+
+  it("robots 로드 전(빈 목록 + focus null) throw 없이 미마운트 — 앱 사망 회귀", () => {
+    // 2026-07-27 실사고: robotId="" 를 RobotFrame 에 넘겨 throw → Canvas 전체
+    // 사망 (task 페이지는 focusId 가 계약 조회 응답 전 null 이라 첫 프레임에
+    // 항상 밟았다). 발견 시나리오 그대로 잠근다.
+    vi.spyOn(bridge, "callService").mockResolvedValue(undefined as never);
+    vi.spyOn(bridge, "subscribeBinary").mockReturnValue(() => {});
+    const { container } = render(<ScanGrowth robots={[]} focusId={null} />);
+    expect(container.innerHTML).toBe("");
+  });
 });

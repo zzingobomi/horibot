@@ -43,23 +43,83 @@ const ENTRY_DOT: Record<string, string> = {
   failed: "bg-red-400",
 };
 
-export function TaskProgressPanel() {
-  // task 참여 robot (계약 조회) — 로드 전 undefined = 스트림 미확장 (데이터 없음).
-  const robotId = useTaskRobots(ServiceKey.PICKANDPLACE_LIST_ROBOTS)[0];
-  const state = useStream(Topic.PICKANDPLACE_STATE, { robotId });
-  const trace = useStream(Topic.PICKANDPLACE_TRACE, { robotId });
+// ─── task 표면 키 (task 무관 코어의 파라미터) ────────────────────────
+// task 모듈 표준 표면(PnP 동형 — task.md §3)의 wire 키 묶음 — 명시적 리터럴
+// 유니온 (shape-매핑은 pydantic default → optional 필드 탓에 구조적으로
+// 과매칭돼 기각). 새 task = 각 유니온에 키 한 개 + 아래 KEYS 상수 한 항목.
+export interface TaskProgressKeys {
+  listRobots: Parameters<typeof useTaskRobots>[0];
+  state: typeof Topic.PICKANDPLACE_STATE | typeof Topic.HANDOVER_STATE;
+  trace: typeof Topic.PICKANDPLACE_TRACE | typeof Topic.HANDOVER_TRACE;
+  pause: typeof ServiceKey.PICKANDPLACE_PAUSE | typeof ServiceKey.HANDOVER_PAUSE;
+  resume:
+    | typeof ServiceKey.PICKANDPLACE_RESUME
+    | typeof ServiceKey.HANDOVER_RESUME;
+  stepOnce:
+    | typeof ServiceKey.PICKANDPLACE_STEP_ONCE
+    | typeof ServiceKey.HANDOVER_STEP_ONCE;
+  runTo:
+    | typeof ServiceKey.PICKANDPLACE_RUN_TO
+    | typeof ServiceKey.HANDOVER_RUN_TO;
+  toggleBreakpoint:
+    | typeof ServiceKey.PICKANDPLACE_TOGGLE_BREAKPOINT
+    | typeof ServiceKey.HANDOVER_TOGGLE_BREAKPOINT;
+  preview:
+    | typeof ServiceKey.PICKANDPLACE_PREVIEW
+    | typeof ServiceKey.HANDOVER_PREVIEW;
+}
 
-  const pauseSvc = useService(ServiceKey.PICKANDPLACE_PAUSE, robotId);
-  const resumeSvc = useService(ServiceKey.PICKANDPLACE_RESUME, robotId);
-  const stepOnceSvc = useService(ServiceKey.PICKANDPLACE_STEP_ONCE, robotId);
-  const runToSvc = useService(ServiceKey.PICKANDPLACE_RUN_TO, robotId);
-  const toggleBpSvc = useService(ServiceKey.PICKANDPLACE_TOGGLE_BREAKPOINT, robotId);
+const PNP_KEYS: TaskProgressKeys = {
+  listRobots: ServiceKey.PICKANDPLACE_LIST_ROBOTS,
+  state: Topic.PICKANDPLACE_STATE,
+  trace: Topic.PICKANDPLACE_TRACE,
+  pause: ServiceKey.PICKANDPLACE_PAUSE,
+  resume: ServiceKey.PICKANDPLACE_RESUME,
+  stepOnce: ServiceKey.PICKANDPLACE_STEP_ONCE,
+  runTo: ServiceKey.PICKANDPLACE_RUN_TO,
+  toggleBreakpoint: ServiceKey.PICKANDPLACE_TOGGLE_BREAKPOINT,
+  preview: ServiceKey.PICKANDPLACE_PREVIEW,
+};
+
+const HANDOVER_KEYS: TaskProgressKeys = {
+  listRobots: ServiceKey.HANDOVER_LIST_ROBOTS,
+  state: Topic.HANDOVER_STATE,
+  trace: Topic.HANDOVER_TRACE,
+  pause: ServiceKey.HANDOVER_PAUSE,
+  resume: ServiceKey.HANDOVER_RESUME,
+  stepOnce: ServiceKey.HANDOVER_STEP_ONCE,
+  runTo: ServiceKey.HANDOVER_RUN_TO,
+  toggleBreakpoint: ServiceKey.HANDOVER_TOGGLE_BREAKPOINT,
+  preview: ServiceKey.HANDOVER_PREVIEW,
+};
+
+/** PnP 기본 (기존 등록 키 "taskProgress" 의 의미 보존). */
+export function TaskProgressPanel() {
+  return <TaskProgressCore keys={PNP_KEYS} />;
+}
+
+/** handover 판 — 같은 코어, 키 묶음만 교체. */
+export function HandoverProgressPanel() {
+  return <TaskProgressCore keys={HANDOVER_KEYS} />;
+}
+
+function TaskProgressCore({ keys }: { keys: TaskProgressKeys }) {
+  // task 참여 robot (계약 조회) — 로드 전 undefined = 스트림 미확장 (데이터 없음).
+  const robotId = useTaskRobots(keys.listRobots)[0];
+  const state = useStream(keys.state, { robotId });
+  const trace = useStream(keys.trace, { robotId });
+
+  const pauseSvc = useService(keys.pause, robotId);
+  const resumeSvc = useService(keys.resume, robotId);
+  const stepOnceSvc = useService(keys.stepOnce, robotId);
+  const runToSvc = useService(keys.runTo, robotId);
+  const toggleBpSvc = useService(keys.toggleBreakpoint, robotId);
 
   // 정적 프리뷰 — mount 시 1회 fetch (시나리오는 backend 재시작 전까지 불변,
   // 캐시에 있으면 재호출 없음). timestamp 로 "시도 완료" 를 판정해 실패 시
   // 자동 재시도 폭주를 막고, 실패는 사유 + [재시도] 로 표시 (침묵 금지).
   const connected = useBridgeConnected();
-  const previewSvc = useService(ServiceKey.PICKANDPLACE_PREVIEW);
+  const previewSvc = useService(keys.preview);
   const previewCall = previewSvc.call;
   useEffect(() => {
     if (!connected || previewSvc.pending || previewSvc.timestamp !== 0) return;

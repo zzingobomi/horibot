@@ -1,5 +1,9 @@
 # omx handover 실물 테스트 핸드오프 (2026-07-25)
 
+> ⚠️⚠️ **2026-07-27 재전환: 큐브 → 8×2×2cm 파란 각봉 + B/down 수직 제시** —
+> **§T.7 이 최신 상태다 (여기부터 읽어라).** §T.5 의 "펜 아키텍처 부활(수평
+> 제시)" 계획은 probe 로 **뒤집혔다** (수평 봉은 so101 공중 수취 도달 0).
+>
 > ⚠️ **2026-07-26 물체 전환: 펜 → 2cm 큐브** (사용자 지시 — 동그란 펜은 omx
 > 평행조로 안정 파지 어려움). 아래 본문의 "펜" 서술은 대부분 **큐브로 대체**됐다:
 > omx 가 큐브 중심을 top-down 으로 집어 제시 → so101 이 omx 가 문 면이 **아닌
@@ -106,6 +110,88 @@ prefer_point 도입). **그런데 이게 M3 와 정면 충돌:**
 - 관측/파지가 얽힌 기하는 offline probe 로 좁히는 게 유효했다(높이·저각·robust
   지점 다 probe 로 잡음) — **단 모델이 실물과 같을 때만.** 카메라 누락이 그 전제를
   깼다.
+
+---
+
+## §T.7. 2026-07-27 — 봉(8×2×2) 전환 구현 완료 + **B/down 수직 제시 채택** (§T.5 계획 뒤집힘)
+
+> 사용자가 8×2×2cm 파란 각봉을 3D 프린트하기로 확정 → 큐브 코드를 봉으로 전면
+> 전환 + frontend /tasks/handover 페이지 신설. **sim/probe 로 증명된 상태로 집
+> 실물 테스트 대기.** 실행 절차 = §T.7.4.
+
+### T.7.1 §T.5 의 "펜 아키텍처 부활(수평 제시)" 은 probe 가 기각했다
+
+M1 수정(omx 카메라를 URDF 근사 box 로 추가 — `robot/omx_f/urdf/omx_f.urdf`
+`camera` link, origin=hand_eye T_tcp←cam) **후에** 결합 probe
+([backend/scripts/handover_block_probe.py](../backend/scripts/handover_block_probe.py) —
+omx 제시 도달 × so101 수취 도달([pre,grasp]) × cross 충돌(margin 8mm) × 관측
+rayTest 비가림, production IK/checker/캘 DB 그대로) 를 돌린 결과:
+
+| 제시 자세족 | omx 도달 | so101 수취 | 충돌 클리어 | 관측 비가림 |
+| --- | --- | --- | --- | --- |
+| A 수평(접선 +t) | 171 | **0** | 0 | 0 |
+| A 수평(접선 −t) | 167 | 5 | **0** | 0 |
+| **B/down (수직, 노출 끝 ↓)** | 62 | 38 | **23** | **23** |
+| B/up (수직, 노출 끝 ↑) | 53 | 7 | 5 | 5 |
+
+- **수평 봉이 죽는 이유** = 큐브 시대 실측과 같은 뿌리: so101 공중 수취 도달해는
+  전부 **수직 조축** — 수평 봉은 조축 수평을 강제해서 so101 이 못 받는다.
+- **B/down**: omx 가 봉을 수직으로 세워 **아래로 늘어뜨려** 제시 → so101 이
+  아래 노출부를 수평 접근·수직 조축으로 받는다. 보너스: ① 매달림 = 중력 모멘트
+  0 (조 안 회전력 없음) ② 수직 봉 = 방위 대칭 → "so101 로 조준"/yaw 180° 모호성
+  소멸 ③ omx 그리퍼+카메라가 E 위 ~4.5cm 라 저각 시선과 구조적 비겹침.
+- robust 밴드: omx TCP **xy (0.18~0.24, 0.16) 이 z 3단(0.28/0.30/0.32) 전부
+  통과** (큐브 3~5/192 와 자릿수 다름). 수직 봉은 omx TCP 와 so101 파지점 E 가
+  같은 xy — 두 팔이 동시에 편한 지점이 존재하게 된 것 (M2/M3 소멸의 실체).
+- ⚠ probe 방법 교훈: 자세 후보는 omx 5DOF **도달 다양체 위에서 구성**해야
+  (임의 방위에 IK 를 요구하면 5DOF 에선 measure-zero 라 전멸 — 1차 probe 실수).
+
+### T.7.2 구현 (전부 sim green — backend 456+16, frontend 188)
+
+- **backend**: `cube.py` 삭제 → [block.py](../backend/modules/tasks/handover/block.py)
+  (양 끝 파지 후보/노출 오프셋/짧음 명시 실패). steps.py: 검출 게이트(긴 변
+  5~12cm + 종횡비 ≥2), 끝 파지(tool z ∥ u — 양 끝 동등 후보 × Z 사다리), 제시
+  = B/down 단일 자세(`_present_quat_down`, prefer (0.21,0.16) z 0.30/0.32/0.28),
+  E = TCP − (0,0,tcp_to_e≈4.5cm) = 재검출 겨냥점, 수취 = 수직 조축 spin 사다리
+  (`_recv_orients`, base→E 방위 진입 선호). 골무 오프셋을 floor 게이트에 실제
+  배선 (그전엔 주석만 있는 죽은 노브 — +2mm 보수).
+- **frontend**: FRONTEND_EXPOSED 에 handover 12키 노출 + `/tasks/handover`
+  페이지 (Sidebar Tasks 링크) — HandoverPanel(pick/place/**stop_before_receive
+  토글, 기본 ON**) + HandoverProgressPanel(TaskProgressPanel 코어를 task 키
+  묶음으로 파라미터화 — PnP 와 공용) + 검출 오버레이 카메라.
+- **관측성**: knob_snapshot 이 봉 노브 전체를 trace summary 에 각인, 각 계획
+  step 이 봉 기하(ends/length/exposed/chosen_dz/chosen_u/alpha/tcp_to_e)를
+  trace 에 기록 — 첫 실물 런이 깨져도 trace.jsonl 만으로 원인분석 가능.
+
+### T.7.3 실물 미지수 (sim 이 못 준 것 — 첫 런에서 데이터로 확인)
+
+1. **픽(봉 수평)→제시(봉 수직) 재배향 스윙 중 봉 끝 책상 스침** — move_j 관절
+   보간 경로는 봉을 모델링하지 않는다. stop_before_receive 런에서 눈 확인,
+   긁으면 `_PRESENT_Z_WORLD` 상향/경유 자세 추가 (steps.py docstring 가정 ⑤).
+2. 파란 봉의 실 GDINO score (게이트 0.45/0.25 는 큐브 실측 기반 — trace 로 확인).
+3. omx 조가 8cm 봉을 실제로 유지하나 (계산상 모멘트 ~0.01Nm 로 여유).
+4. **M1(omx 카메라 충돌/가림 모델) 미반영** — 2026-07-27 URDF 에 넣었다가 되돌림
+   (공유 URDF 오염: visual 박스가 전 3D 뷰에 뜸 + omx self-collision·IK 영향).
+   제대로 된 자리 = CrossRobotChecker 가 로드 후 wrist 에 collision-only box 를
+   붙이기 (URDF 불침범). **미구현 — 현재 probe/충돌 게이트는 카메라를 안 본다.**
+   B/down 은 봉 이격(~4.5cm)으로 카메라와 구조적 여유가 있어 첫 런은 진행 가능
+   하나, so101 이 omx 카메라에 닿는지는 **눈으로 확인** 필수 (M1 사고 재발 주의).
+5. §3 의 기존 미지수 유지: held 임계(characterize 미실행) / motors.yaml
+   current_position+500 배포 상태 / J5 리밋 여유.
+
+### T.7.4 집 실행 절차
+
+1. `git pull` → **PC 재시작 필수** (handover 봉 코드는 PC 에서 돎 — §4). omx
+   URDF 는 안 바뀌었다(카메라 추가는 되돌림, T.7.3-4) — pi_hori3 는 dynamixel
+   assert 사소 변경뿐이라 재부팅은 선택. motors.yaml current_position+500 이
+   아직 미배포면 이번에 같이 재부팅(§4). frontend 는 재빌드/새로고침.
+2. 파란 봉(8×2×2cm)을 omx 도달영역 중심 근처(관측 look=(0.21,0) 부근)에 눕혀 둠.
+3. frontend `/tasks/handover` → **stop_before_receive ON** 으로 [실행] — omx
+   집기+수직 제시를 눈으로 확인 (봉 끝 책상 스침/파지 유지/제시 자세).
+   실패 시 `debug/handover/<ts>/trace.jsonl` + summary.json 분석.
+4. 통과하면 토글 OFF → so101 수취까지. place 를 채우면 적치까지.
+5. (선택) 위치를 옮겨가며 재현성 확인. 필요 시
+   `uv run --no-sync python scripts/handover_block_probe.py` 로 재특성화.
 
 ---
 

@@ -9,6 +9,7 @@ import { RobotCalibrateMode } from "@/pages/robotModes/RobotCalibrateMode";
 import { RobotScanMode } from "@/pages/robotModes/RobotScanMode";
 import { RobotAssetsMode } from "@/pages/robotModes/RobotAssetsMode";
 import { PickAndPlacePage } from "@/pages/PickAndPlacePage";
+import { HandoverPage } from "@/pages/HandoverPage";
 import { useFrameworkBootstrap } from "@/framework";
 
 // contract viewer = dev 도구 (§6.1) — lazy import 로 React Flow 번들 code-split
@@ -42,6 +43,7 @@ export function App() {
           {/* task 페이지 = task 별 전용 (최상위 — 로봇 하위 mode 아님). 새 task
               = 페이지 추가 + 라우트 한 줄 (Sidebar Tasks 섹션에도 링크). */}
           <Route path="/tasks/pick_and_place" element={<PickAndPlacePage />} />
+          <Route path="/tasks/handover" element={<HandoverPage />} />
           <Route
             path="/contract"
             element={

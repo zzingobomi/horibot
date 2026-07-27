@@ -178,6 +178,12 @@ export function ScanGrowth({ robots, focusId }: SceneObjectProps) {
     return unsub;
   }, [running, robotId, geom]);
 
+  // robots 로드 전(빈 목록 + focus null)엔 미마운트 — robotId="" 를 RobotFrame
+  // 에 넘기면 throw 로 **앱 전체가 죽는다** (2026-07-27 실사고: task 페이지는
+  // focusId 가 계약 조회 응답 전 null 이라 첫 프레임에 항상 이 경로를 밟았다.
+  // World.tsx 는 같은 가드가 있었고 여기만 빠짐 — "로드 전 빈 상태" 클래스).
+  if (!robotId) return null;
+
   // 누적 point 는 geom.drawRange 로 관리 (running=false 면 위 effect 가 0 으로
   // 리셋 → World mesh 가 담당). points 노드는 항상 렌더, draw range 가 gate.
   return (

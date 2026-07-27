@@ -29,6 +29,7 @@ from modules.motor.contract import Motor
 from modules.scan.contract import Scan
 from modules.scene3d.contract import Scene3d
 from modules.shared_config.contract import SharedConfig
+from modules.tasks.handover.contract import Handover
 from modules.tasks.pick_and_place.contract import PickAndPlace
 from modules.tasks.world_scan.contract import WorldScan
 from modules.waypoint.contract import Waypoint
@@ -120,6 +121,19 @@ FRONTEND_EXPOSED: set[str] = {
         PickAndPlace.Stream.STATE,
         PickAndPlace.Stream.TRACE,
         PickAndPlace.Stream.MARKERS,
+        # Handover (task 모듈 표준 표면 — PnP 동형. 2026-07-27 봉 전환판 노출)
+        Handover.Service.RUN,
+        Handover.Service.STOP,
+        Handover.Service.PAUSE,
+        Handover.Service.RESUME,
+        Handover.Service.STEP_ONCE,
+        Handover.Service.RUN_TO,
+        Handover.Service.TOGGLE_BREAKPOINT,
+        Handover.Service.LIST_ROBOTS,  # 참여 robot 명부 — 프론트 {robot_id} 채움
+        Handover.Service.PREVIEW,
+        Handover.Stream.STATE,
+        Handover.Stream.TRACE,
+        Handover.Stream.MARKERS,
         # World 스캔 (task 모듈 — 3D 배경 메시 전용 스캔, 스캔 패널의 "자동 스캔")
         WorldScan.Service.RUN,
         WorldScan.Service.STOP,

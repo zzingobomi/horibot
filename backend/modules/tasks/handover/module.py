@@ -254,7 +254,7 @@ class HandoverModule:
             marks.show_grasp(g_world)
             await steps.omx_pick_block(ctx, omx, pick, trace)
 
-            # 5) D. 제시 — B/down 수직 (봉을 늘어뜨림), so101 은 home 에 있음
+            # 5) D. 제시 — hang(z↑) 매달기 (봉을 늘어뜨림), so101 은 home 에 있음
             present = await steps.plan_omx_present(
                 ctx, omx, roi_so, roi_omx, base_omx, pick,
                 list(home_so.joint_values), self._checker, trace,

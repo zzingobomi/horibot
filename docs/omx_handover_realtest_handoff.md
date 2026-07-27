@@ -246,6 +246,42 @@ GraspFailed (test_handover.py, test_pick_and_place.py). fast pytest 79 + vitest
 4. 파지점이 봉 끝 1.6cm 안쪽인지 (눈 + `plan_omx_pick_block` trace).
 5. §T.7.3 의 기존 미지수 유지 (재배향 스윙 스침 / M1 카메라 충돌 모델).
 
+### T.8.4 같은 날 밤 — **hang(z↑) 손목중립 개정** (케이블 감김 근본 수정, 사용자 데모 기반)
+
+사용자 실물 관찰: 제시로 갈 때 손목이 통째로 뒤집혀 **웹캠 USB 케이블 장력**.
+offline IK 재현 = 집기 J5 +9° → 제시 **−180°** (−189° 롤). 원인은 기구학 강제:
+ZYYYX 에서 tool z 정확히 ↓(B/down) = **J5=±180 이 유일해**. 그리고 옛 tool z ∥ u
+규약이 자연손목에선 노출을 +radial 로만 허용해 **가까운 끝**을 물게 했었다.
+사용자 토크오프 데모 2개(라이브 tcp_snapshot 실측 — J5 -0.8°/-6°)가 답:
+**먼 끝을 물고 그리퍼를 위로 젖혀 매달기**.
+
+개정 (steps.py):
+- pick **tool z ∥ −u** + ends 자연손목(dot(u,g)<0) 우선 정렬 → 먼 끝 자연해.
+- 제시 `_present_quat_down` 폐기 → **`_present_quat_hang`** (tool z ↑ = Rz(α),
+  θ=0/J5=0). 봉-수직/E=TCP−tcp_to_e 기하는 B/down 과 동일 — 수취 설계 불변.
+- **`_WRIST_NATURAL_MAX_RAD`(90°) 케이블 안전 불변식** — pick(alive-loop)/present
+  채택안의 |J5| 게이트 (offline probe: 가까운 끝이 J5≈−173° 뒤집힌 해로도
+  도달해 첫 그룹 채택될 뻔한 구멍을 막음).
+- offline 전 시퀀스 검증 = `scripts/handover_hang_verify.py` (pick 먼끝 J5 6.5°
+  / 제시 후보 7/8 전부 J5=0 / E 수취 도달·비충돌). **J5 여정 0→6.5→0**.
+
+**23:04 실물 런 (신 코드) 판정 — 4단계 전진, 수취 계획 1개 남음:**
+- ✅ 윗면 투영 footprint 98×26 (109→98, 잔여 번짐은 known 앵커가 무해화)
+- ✅ pick **먼 끝 (0.190) 자연손목 채택** (wrist_rejects 0)
+- ✅ verify_grasp **진짜 물림**: achieved 2085 / close 1975 / gap 110 / load −346
+  (빈손이면 ~1977·gap≈2 — 어제 false-HELD 와 판별력 확보. 물림 실측 데이터 확보)
+- ✅ hang 제시 채택 (rejects 0) + ✅ 공중 재검출 성공 (score 0.83, 45pts)
+- ❌ **plan_receive 전멸**: "위치 16/16, 자세 IK 실패 15, 직선 1". 뿌리 =
+  재검출 centroid **z=0.304** 를 그대로 수취 겨냥점으로 씀 — 0.304 는 봉
+  꼭대기/omx 그리퍼 자리 (봉 span 0.236~0.316, E 계획 0.2549). 아래 노출부가
+  아니라 위쪽 몸통 centroid 를 잡으러 가서 so101 수직조축 IK 밴드 밖 + omx
+  그리퍼 코앞.
+- **다음 수정 (내일)**: 수취 겨냥 z 는 검출이 아니라 **기하 앵커** — E_z =
+  omx 실 TCP(FK) − tcp_to_e (봉은 강체 수직, z 는 FK 가 depth centroid 보다
+  훨씬 정확). 검출은 **xy 보정만** 공급 (omx 그립 오차 흡수 = closed-loop 의
+  본래 몫), det z 는 sanity 게이트로 강등. "파지 Z 단면 앵커/길이 known 앵커"
+  와 같은 클래스 — 아는 기하는 앵커, 검출은 보정.
+
 ---
 
 ## 0. 어떻게 이어받나 (30초)

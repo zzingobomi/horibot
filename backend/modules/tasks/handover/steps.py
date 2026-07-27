@@ -13,12 +13,14 @@ docstring + scripts/handover_block_probe.py 결합 스윕. 2cm 큐브는 두 그
      Z 사다리(depth 없어 크기 가정 — 봉 단면 2cm = 큐브와 동일 사다리).
   C. omx 집기 — 파지 해로 move_j 스윙인 → close (top-down 은 책상면 전용 관절
      리밋이라 위에서 수직 접근·refine 불가 — omx=best-effort, 정밀은 so101).
-  D. omx 제시 — **B/down 수직 제시** (probe 2026-07-27: 수평(접선)족은 so101
-     수취 도달 0, 수직-아래만 23개 전 게이트 통과): 랑데부 TCP 에서 tool z ↓
-     (봉이 수직 매달림 — 중력 모멘트 0, 방위 대칭이라 조준 불요). so101 파지점
-     E = TCP − (0,0,tcp_to_e). ⚠ 자세는 omx 5DOF **도달 다양체 위에서 구성**
-     (tool x = 팔 평면 방위 α 의 수평 radial — 임의 방위 열거는 5DOF 에서
-     measure-zero 라 전멸한다. probe 1차 교훈).
+  D. omx 제시 — **hang(z↑) 매달기 제시** (2026-07-27 밤 개정 — 사용자 토크오프
+     데모 실측 2개): pick 이 tool z ∥ −u 로 물었으므로 랑데부 TCP 에서 tool z ↑
+     로 젖히면 봉이 그리퍼 아래로 수직 매달림 (중력 모멘트 0, 방위 대칭이라
+     조준 불요). 봉-수직 기하는 옛 B/down 과 동일하나 **J5=0 손목 중립** —
+     B/down(tool z ↓)은 J5=±180 뒤집기가 유일해라 웹캠 USB 케이블이 감겼다
+     (실물 1차 런). so101 파지점 E = TCP − (0,0,tcp_to_e). ⚠ 자세는 omx 5DOF
+     **도달 다양체 위에서 구성** (tool x = 팔 평면 방위 α 의 수평 radial —
+     임의 방위 열거는 5DOF 에서 measure-zero 라 전멸한다. probe 1차 교훈).
   E. so101 수취 — closed-loop 재검출 (공중 대역) + **수직 조축**(tool z ∥ 봉
      축 = 수직, 수평 접근 spin 사다리 — 큐브 시대 실측 "도달해는 전부 수직
      조축" 과 정합) + refine 1 tick + 수취 순서 불변식(so101 held 뒤에만 omx
@@ -166,6 +168,10 @@ _BLOCK_ASPECT_MIN = 2.0  # 긴 변/짧은 변 하한 (미달 = 봉 아님 — �
 # 물체 스펙을 앵커, 검출 footprint 는 신뢰 게이트 전용.
 _BLOCK_LEN_M = 0.080  # known 봉 길이 — 파지점/노출(E) 기하의 앵커
 _BLOCK_CROSS_M = 0.020  # known 봉 단면 — 검출 투영 평면(윗면) + 파지 Z 가정
+# 손목(J5) 자연해 상한 — **케이블 안전 불변식** (2026-07-27 실물: J5 ±180
+# 뒤집기 해가 웹캠 USB 케이블을 감음). pick/present 채택안이 이걸 넘으면 기각
+# — 뒤집힌 픽은 제시 hang 에서 봉이 위로 솟아 수취도 조용히 깨진다.
+_WRIST_NATURAL_MAX_RAD = math.radians(90.0)
 _BLOCK_GRASP_FRAC = 0.20  # 파지점 = 잡는 끝에서 20% (1.6cm — 조 접촉폭 확보)
 _OMX_JAW_ALONG_M = 0.020  # omx 조가 봉 축 방향으로 차지하는 폭 (실물 실측 대상)
 # so101 파지점 E = 노출 세그먼트의 조-쪽 끝에서 65% 지점 (probe 기준치 —
@@ -207,14 +213,14 @@ _RENDEZVOUS_PREFER_XY = (0.21, 0.16)  # robust 밴드 중심 (world xy, probe)
 _PRESENT_LIMIT = 8  # 랑데부 후보 상한 (resolve+충돌 게이트 시도 수)
 
 # ── E. so101 수취 ──
-# ⚠ **수취는 수직 조축 (tool z ∥ 봉 축 = 수직)** — B/down 제시로 봉 축이
+# ⚠ **수취는 수직 조축 (tool z ∥ 봉 축 = 수직)** — hang 제시로 봉 축이
 # 수직임을 계획이 안다 (검출 yaw 불요 — 수직 봉의 평면 OBB yaw 는 무의미).
 # 수평 접근(tool x 수평) spin 사다리를 base→E 방위 근접순으로 정렬 — so101
 # 쪽에서 진입하는 해 선호 (omx 를 감아 도는 해 회피). 큐브 시대 실측
 # "도달·비관통 해가 전부 수직 조축" 과 정합 (2026-07-26 스윕).
 # ⚠ 관측 사다리 — omx 가림 회피가 지배 (2026-07-26 실물: omx 그리퍼가 물체를
 # 가려 검출 실패 + 높은 관측 자세라 J2 떨림). **저각(elev 25~30°) + so101 측
-# 방위** 밴드 (큐브 시대 occlusion probe). B/down 은 omx 그리퍼/카메라가 E 위
+# 방위** 밴드 (큐브 시대 occlusion probe). hang 은 omx 그리퍼/카메라가 E 위
 # ~4.5cm 라 저각 측면 시선과 구조적으로 안 겹침 — block_probe rayTest 23/23
 # 비가림. ⚠ 봉 위치가 크게 바뀌면 재-probe.
 _RECV_OBS_DIST_M = (0.18, 0.15)  # 재검출 카메라-봉 거리 (probe: 0.18 최적)
@@ -234,7 +240,7 @@ _RECV_SPIN_STEP_DEG = 45.0
 _RECV_PRE_CLEAR_M = 0.07
 _RECV_WITHDRAW_M = 0.08
 _RECV_COLLISION_RETRY = 5
-# 핸드오프 근접 국면 margin — B/down 은 두 그리퍼가 봉 축으로 ~2.5cm 이격
+# 핸드오프 근접 국면 margin — 매달기 기하는 두 그리퍼가 봉 축으로 ~2.5cm 이격
 # (probe 충돌 게이트 23/23 통과). margin 8mm 게이트 (크로스캘 σ_t ~8mm 수준 —
 # 실물 첫 수취에서 재확인).
 _RECV_COLLISION_MARGIN_M = 0.008
@@ -304,16 +310,23 @@ def _approach_of(yaw: float, tilt_deg: float) -> Vec3:
     return (float(a[0]), float(a[1]), float(a[2]))
 
 
-def _present_quat_down(alpha: float) -> Quat:
-    """B/down 제시 quat (omx frame) — tool z ↓ (봉 수직 매달림), tool x = 팔
-    평면 방위 α 의 수평 radial.
+def _present_quat_hang(alpha: float) -> Quat:
+    """매달기 제시 quat (omx frame) — **tool z ↑**, tool x = 팔 평면 방위 α 의
+    수평 radial. pick 이 tool z ∥ −u 로 물었으므로 (노출 = −tool z) tool z 를
+    하늘로 돌리면 봉이 그리퍼 아래로 수직 매달린다.
+
+    ⚠ 옛 B/down(tool z ↓, _present_quat_down)은 ZYYYX 기구학상 **J5=±180
+    뒤집기가 유일해** (tool z 정확히 아래 = cosθ·cosJ5=−1) — 실물 1차 런에서
+    집기 J5=+9°→제시 −180° 롤로 웹캠 USB 케이블이 감겼다 (2026-07-27 사용자
+    보고 + 토크오프 데모 실측 2개가 이 hang 족: J5=-0.8°/-6°). hang 은
+    R=Rz(α) 그대로 = **θ=0, J5=0 손목 중립** — 케이블 여정 0.
 
     ⚠ omx 5DOF(ZYYYX) 도달 다양체 위 구성: TCP 가 정하는 팔 평면에서 tool x 는
     평면 내 방향만, tool z 는 J5 roll 로 그 둘레만 가능하다. 임의 방위 열거는
     measure-zero 라 전멸 (handover_block_probe 1차 교훈 — 그래서 큐브 시대의
     일반 grasp 샘플러(_grasp_family)를 폐기하고 다양체 위 단일 구성으로 교체)."""
     x = np.array([math.cos(alpha), math.sin(alpha), 0.0])
-    z = np.array([0.0, 0.0, -1.0])
+    z = np.array([0.0, 0.0, 1.0])
     y = np.cross(z, x)
     q = Rotation.from_matrix(np.column_stack([x, y, z])).as_quat()
     return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
@@ -322,7 +335,7 @@ def _present_quat_down(alpha: float) -> Quat:
 def _recv_orients(e: Vec3) -> list[tuple[str, Quat, Vec3]]:
     """수취 자세 후보 (선호순) — (라벨, quat(so101=world frame), 접근 tool x).
 
-    tool z ∥ ±수직(봉 축 — B/down 제시로 계획이 안다) × 수평 접근 spin 사다리.
+    tool z ∥ ±수직(봉 축 — hang 제시로 계획이 안다) × 수평 접근 spin 사다리.
     선호순 = 접근 방향이 base→E 방위(so101 쪽 진입)에 가까운 순 — omx 를 감아
     도는 해 회피. so101 은 6DOF 라 임의 spin 이 성립 (omx 와 다름)."""
     az_pref = math.atan2(e[1], e[0])
@@ -632,8 +645,8 @@ def plan_block_grasp_from(det: OrientedDetection, base_omx: BasePose) -> BlockGr
 class BlockPick:
     """omx 봉 파지 계획 산출 — 실행(집기)과 제시(present)가 공유.
 
-    tool z ∥ u(노출 방향) 규약 — 제시 B/down 이 tool z 를 아래로 돌리면
-    노출부(긴 자유부)가 자동으로 아래를 향한다."""
+    tool z ∥ **−u**(노출 반대) 규약 — 제시 hang 이 tool z 를 하늘로 젖히면
+    노출부(긴 자유부)가 자동으로 아래를 향한다 (J5=0 손목 중립, 2026-07-27)."""
 
     sols: list[list[float]]  # [grasp] 관절해 (단일 — top-down pre/lift 폐기)
     quat: Quat
@@ -657,54 +670,91 @@ async def plan_omx_pick_block(
     자세로 수행 (omx=best-effort, 정밀은 so101).
 
     양 끝 후보(축대칭 — 도달성이 채택) × Z 사다리(낮은→높은, 첫 도달 채택).
-    tool z ∥ u (노출 방향) — _grasp_quat(yaw,0) 의 tool z 세계 방위각 = yaw 규약.
+    tool z ∥ **−u** (노출 반대 — loop 안 주석 참조: 자연손목에선 먼 끝이 채택돼
+    제시 hang(z↑)에서 봉이 아래로 매달린다. 2026-07-27 케이블 감김 수정).
     omx 는 depth 가 없어 높이를 못 재므로 파지 Z 는 단면 2cm 가정이 앵커 —
     사다리는 도달/바닥클리어를 위한 소폭 탐색(chosen_dz 로 실물 보정)."""
     z_ladder = [_OMX_TABLE_Z_M + dz for dz in _PICK_DZ_LADDER]
+    # 자연손목 끝 먼저 — tool z ∥ −u 라 노출(u)이 base 쪽인 끝(dot(u,g)<0 =
+    # 대체로 먼 끝)이 J5≈0. 반대 끝은 J5≈±180 뒤집힌 해로도 도달은 하므로
+    # (offline probe 2026-07-27) 순서+아래 손목 게이트 둘 다 필요.
+    ends = sorted(
+        grasp.ends, key=lambda eu: eu[1][0] * eu[0][0] + eu[1][1] * eu[0][1]
+    )
     groups: list[list[TcpPose]] = []
     # (quat, grasp_xy, u, gz)
     metas: list[tuple[Quat, Vec2, Vec2, float]] = []
-    for (gx, gy), u in grasp.ends:  # 양 끝 동등 후보
-        yaw = math.atan2(u[1], u[0])
+    for (gx, gy), u in ends:  # 양 끝 후보 (자연손목 우선 정렬)
+        # tool z ∥ **−u** (노출 반대) — 2026-07-27 실물+사용자 데모: tool z ∥ u 는
+        # 자연손목(J5=0) top-down 에서 노출부가 팔 반대(+radial)로만 가능해
+        # 가까운 끝을 물었고, 제시(매달기)가 tool z ↓ = J5 ±180 뒤집기를 강제
+        # (USB 케이블 감김). −u 규약이면 **먼 끝**이 자연해가 되고 제시는
+        # tool z ↑(_present_quat_hang, J5=0)로 봉이 저절로 아래 매달린다.
+        yaw = math.atan2(-u[1], -u[0])
         quat = _grasp_quat(yaw, 0)
         for gz in z_ladder:
             groups.append([TcpPose(position=(gx, gy, gz), quaternion=quat)])
             metas.append((quat, (gx, gy), u, gz))
-    res = await ctx.call(
-        Motion.Service.RESOLVE_REACHABLE,
-        ResolveReachableRequest(
-            groups=groups,
-            # floor 게이트 = 여유 + 골무(URDF 미모델) — ⚠ 2026-07-27 골무 항
-            # 배선 (그전엔 주석만 선언된 죽은 노브 — 돌려도 무효였다. +2mm
-            # 만큼 07-26 실측 대비 게이트 상승: 긁힘 방지 쪽 보수)
-            floor_z=_OMX_TABLE_Z_M + _PICK_FLOOR_CLEAR_M + _GRIPPER_TIP_EXTRA_M,
-        ),
-        ResolveReachableResponse,
-        robot_id=omx,
-    )
+    floor_z = _OMX_TABLE_Z_M + _PICK_FLOOR_CLEAR_M + _GRIPPER_TIP_EXTRA_M
+    # 손목 게이트 alive-loop — 뒤집힌(J5 |>90°|) 채택안은 기각하고 그 그룹을
+    # 빼고 재-resolve (수취 충돌 게이트와 동형). 뒤집힌 픽이 통과하면 제시
+    # hang 에서 봉이 위로 솟아 수취가 조용히 깨진다 + 케이블 감김.
+    alive = list(range(len(groups)))
+    chosen = -1
+    res = None
+    wrist_rejects: list[int] = []
+    while alive:
+        res = await ctx.call(
+            Motion.Service.RESOLVE_REACHABLE,
+            ResolveReachableRequest(
+                groups=[groups[i] for i in alive],
+                # floor 게이트 = 여유 + 골무(URDF 미모델) — ⚠ 2026-07-27 골무 항
+                # 배선 (그전엔 주석만 선언된 죽은 노브 — 돌려도 무효였다. +2mm
+                # 만큼 07-26 실측 대비 게이트 상승: 긁힘 방지 쪽 보수)
+                floor_z=floor_z,
+            ),
+            ResolveReachableResponse,
+            robot_id=omx,
+        )
+        if res.index < 0:
+            break
+        gi = alive[res.index]
+        if abs(res.solutions[0][-1]) > _WRIST_NATURAL_MAX_RAD:
+            logger.warning(
+                "plan_omx_pick_block: 그룹 %d 채택안 손목 뒤집힘 (J5=%.0f°) — 기각",
+                gi,
+                math.degrees(res.solutions[0][-1]),
+            )
+            wrist_rejects.append(gi)
+            alive.remove(gi)
+            continue
+        chosen = gi
+        break
     await _emit(
         trace,
         {
             "phase": "pick",
             "event": "plan_omx_pick_block",
-            "ends": [[list(g), list(u)] for g, u in grasp.ends],
+            "ends": [[list(g), list(u)] for g, u in ends],
             "z_ladder": z_ladder,
             "length_m": grasp.length_m,
             "width_m": grasp.width_m,
             "exposed_len_m": grasp.exposed_len_m,
-            "index": res.index,
-            "chosen_dz": (metas[res.index][3] - _OMX_TABLE_Z_M) if res.index >= 0 else None,
-            "chosen_u": list(metas[res.index][2]) if res.index >= 0 else None,
-            "group_failures": res.group_failures,
+            "index": chosen,
+            "chosen_dz": (metas[chosen][3] - _OMX_TABLE_Z_M) if chosen >= 0 else None,
+            "chosen_u": list(metas[chosen][2]) if chosen >= 0 else None,
+            "wrist_rejects": wrist_rejects,
+            "group_failures": res.group_failures if res is not None else [],
         },
     )
-    if res.index < 0:
+    if chosen < 0 or res is None:
         raise NoReachableGrasp(
-            f"omx top-down 봉 끝 파지 후보 {len(groups)}개 전멸 — {res.message} "
-            f"(그룹별: {res.group_failures}). 봉을 omx 도달영역 중심 쪽으로 "
+            f"omx top-down 봉 끝 파지 후보 {len(groups)}개 전멸 — "
+            f"{res.message if res is not None else ''} (손목 뒤집힘 기각 "
+            f"{len(wrist_rejects)}개 포함). 봉을 omx 도달영역 중심 쪽으로 "
             "옮긴 후 다시 실행하세요"
         )
-    quat, g_xy, u, g_z = metas[res.index]
+    quat, g_xy, u, g_z = metas[chosen]
     g = (g_xy[0], g_xy[1], g_z)
     dz = g_z - _OMX_TABLE_Z_M
     logger.info(
@@ -772,7 +822,7 @@ async def plan_omx_present(
     trace: HandoverTrace | None = None,
 ) -> PresentPlan:
     """랑데부 후보(workcell ROI 교집합, 흉터 5 예방)를 **TCP 위치**로 순회 —
-    각 점에서 **B/down 단일 자세**(_present_quat_down — 다양체 위 구성)를
+    각 점에서 **hang(z↑) 단일 자세**(_present_quat_hang — 다양체 위 구성)를
     resolve 하고 채택안을 벽/cross-robot 충돌 게이트. 첫 통과 채택, 전멸 =
     명시 실패.
 
@@ -808,7 +858,7 @@ async def plan_omx_present(
             continue
         tcp_omx = world_to_robot(tcp_w, base_omx)
         alpha = math.atan2(tcp_omx[1], tcp_omx[0])
-        quat = _present_quat_down(alpha)
+        quat = _present_quat_hang(alpha)
         res = await ctx.call(
             Motion.Service.RESOLVE_REACHABLE,
             ResolveReachableRequest(
@@ -818,7 +868,15 @@ async def plan_omx_present(
             robot_id=omx,
         )
         if res.index < 0:
-            rejects.append(f"tcp={tcp_w}: B/down 도달 불가 ({res.message})")
+            rejects.append(f"tcp={tcp_w}: hang(z↑) 도달 불가 ({res.message})")
+            continue
+        # 손목 뒤집힘 기각 — 케이블 안전 불변식 (_WRIST_NATURAL_MAX_RAD).
+        # hang 은 구성상 J5=0 이지만 IK 가 등가 뒤집힌 branch 를 내면 차단.
+        if abs(res.solutions[0][-1]) > _WRIST_NATURAL_MAX_RAD:
+            rejects.append(
+                f"tcp={tcp_w}: 손목 뒤집힘 해 "
+                f"(J5={math.degrees(res.solutions[0][-1]):.0f}°)"
+            )
             continue
         # 벽(뒤) 침범 — omx 링크가 베이스 뒤로 넘어가면 기각 (side="b")
         if checker is not None and _behind_wall(checker, "b", res.solutions[0]):
@@ -837,7 +895,7 @@ async def plan_omx_present(
                 "phase": "present",
                 "event": "plan_omx_present",
                 "tcp_world": list(tcp_w),
-                "orientation": "B/down",
+                "orientation": "hang(z-up)",
                 "alpha_deg": round(math.degrees(alpha), 1),
                 "h_world": list(e_world),
                 "tcp_to_e_m": pick.geom.tcp_to_e_m,
@@ -845,7 +903,7 @@ async def plan_omx_present(
             },
         )
         logger.info(
-            "plan_omx_present: tcp=(%.3f,%.3f,%.3f) B/down(α=%.0f°) 채택 "
+            "plan_omx_present: tcp=(%.3f,%.3f,%.3f) hang(α=%.0f°) 채택 "
             "(기각 %d) — E=(%.3f,%.3f,%.3f)",
             tcp_w[0],
             tcp_w[1],
@@ -1080,7 +1138,7 @@ async def plan_receive(
     = 수직, 수평 접근 spin 사다리) resolve + **충돌 게이트** + **벽(뒤) 게이트**.
     채택 그룹이 충돌/벽이면 빼고 재-resolve (상한 소진 = 명시 실패).
 
-    겨냥점 = 재검출 position (아래로 늘어진 노출부의 보이는 중심 — B/down 기하상
+    겨냥점 = 재검출 position (아래로 늘어진 노출부의 보이는 중심 — 매달기 기하상
     E 근방 ≈ 수 mm). 봉 축이 수직임은 제시 계획이 보장하므로 검출 yaw 불요
     (수직 봉의 평면 OBB yaw 는 무의미). 두 그리퍼 이격(축 방향 ~2.5cm)의 물리적
     보증은 충돌 게이트가 담당."""

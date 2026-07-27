@@ -228,9 +228,9 @@ def _happy_script() -> dict:
         _SELECT: [
             # omx 관측 자세 (ψ 격자 중 첫 그룹)
             ResolveReachableResponse(index=0, solutions=[[0.1] * 5]),
-            # omx pick — 봉 끝 파지점 (양 끝 × z 사다리 중 첫 그룹)
+            # omx pick — 봉 끝 파지점 (양 끝 × z 사다리 중 첫 그룹, J5 자연해)
             ResolveReachableResponse(index=0, solutions=[[0.2] * 5]),
-            # omx 제시 자세 (B/down 단일 — 랑데부 후보 [0] 채택)
+            # omx 제시 자세 (hang(z↑) 단일 — 랑데부 후보 [0] 채택)
             ResolveReachableResponse(index=0, solutions=[[0.4] * 5]),
             # so101 수취 관측 자세
             ResolveReachableResponse(index=0, solutions=[[0.5] * 6]),
@@ -321,9 +321,10 @@ async def test_scenario_happy_path_and_release_order():
     assert len(gentle) == 2, [c["req"].speed_scale for c in ctx.calls(_MOVE_L)]
 
 
-async def test_present_is_vertical_down_and_h_below_tcp():
-    """B/down 제시 잠금 — 채택 quat 의 tool z 가 world ↓ 이고, H(재검출
-    겨냥점)는 제시 TCP 의 tcp_to_e 아래 (probe 2026-07-27 설계 회귀)."""
+async def test_present_is_hang_z_up_and_h_below_tcp():
+    """hang(z↑) 제시 잠금 — 채택 quat 의 tool z 가 world ↑ (pick 이 tool z ∥
+    −u 로 물었으므로 노출부는 아래로 매달림, J5=0 손목 중립 — 2026-07-27
+    케이블 감김 수정), H(재검출 겨냥점)는 제시 TCP 의 tcp_to_e 아래."""
     ctx = _ctx(_happy_script())
     script_pick = steps.BlockPick(
         sols=[[0.2] * 5], quat=(0.0, 0.0, 0.0, 1.0),
@@ -334,9 +335,9 @@ async def test_present_is_vertical_down_and_h_below_tcp():
         ctx, OMX, _ROI_SO, _ROI_OMX, _BASE_OMX, script_pick,
         [0.1] * 6, None,
     )
-    # tool z (omx frame) ↓ — base yaw 는 z 축 회전이라 world 에서도 ↓
+    # tool z (omx frame) ↑ — base yaw 는 z 축 회전이라 world 에서도 ↑
     tool_z = Rotation.from_quat(plan.quat).apply([0.0, 0.0, 1.0])
-    assert tool_z[2] == pytest.approx(-1.0, abs=1e-9)
+    assert tool_z[2] == pytest.approx(1.0, abs=1e-9)
     assert plan.h_world[2] == pytest.approx(
         _TCP_W[2] - _GEOM.tcp_to_e_m, abs=1e-9
     )
@@ -553,16 +554,49 @@ def test_recv_orients_vertical_axis_and_approach_preference():
         pytest.approx(1.0, abs=1e-9)
 
 
-def test_present_quat_down_is_manifold_aligned():
-    """B/down 제시 quat — tool z ↓ + tool x 가 팔 평면(방위 α) 수평 radial
-    (omx 5DOF 다양체 위 구성 — probe 1차 교훈 회귀 잠금)."""
+def test_present_quat_hang_is_wrist_neutral():
+    """hang(z↑) 제시 quat — tool z ↑ + tool x 가 팔 평면(방위 α) 수평 radial
+    = 정확히 Rz(α) (ZYYYX 다양체에서 θ=0, **J5=0 손목 중립** — 옛 B/down 의
+    J5=±180 케이블 감김 수정 회귀 잠금, 2026-07-27)."""
     alpha = math.radians(25.0)
-    q = steps._present_quat_down(alpha)
+    q = steps._present_quat_hang(alpha)
     r = Rotation.from_quat(q)
-    assert r.apply([0.0, 0.0, 1.0]) == pytest.approx([0.0, 0.0, -1.0], abs=1e-9)
+    assert r.apply([0.0, 0.0, 1.0]) == pytest.approx([0.0, 0.0, 1.0], abs=1e-9)
     assert r.apply([1.0, 0.0, 0.0]) == pytest.approx(
         [math.cos(alpha), math.sin(alpha), 0.0], abs=1e-9
     )
+    # R == Rz(α) — 잉여 회전 0 (J5=0/θ=0 의 행렬 표현)
+    expect = Rotation.from_euler("z", alpha)
+    assert (r.inv() * expect).magnitude() == pytest.approx(0.0, abs=1e-9)
+
+
+async def test_pick_prefers_natural_wrist_far_end():
+    """pick 규약 회귀 (2026-07-27 케이블 감김 수정) — ends 는 자연손목 끝
+    (노출 u 가 base 쪽 = dot(u,g)<0 = 먼 끝) 우선 정렬, quat 은 tool z ∥ −u."""
+    ctx = _ctx({
+        _SELECT: [ResolveReachableResponse(index=0, solutions=[[0.2] * 5])],
+    })
+    pick = await steps.plan_omx_pick_block(ctx, OMX, _GEOM)
+    # _GEOM 중심 (0.20, 0) 봉 ∥ x — 먼 끝(0.224)이 채택, 노출은 base 쪽(−x)
+    assert pick.u_omx[0] == pytest.approx(-1.0)
+    assert pick.grasp_omx[0] == pytest.approx(0.20 + 0.04 - 0.016)
+    tz = Rotation.from_quat(pick.quat).apply([0.0, 0.0, 1.0])
+    assert tz == pytest.approx([1.0, 0.0, 0.0], abs=1e-9)  # tool z ∥ −u
+
+
+async def test_pick_wrist_flip_gate_rejects_and_retries():
+    """손목 뒤집힘(|J5|>90°) 채택안은 기각하고 그 그룹을 빼고 재-resolve —
+    케이블 안전 불변식 (2026-07-27 offline probe: 가까운 끝이 J5≈−173° 뒤집힌
+    해로 도달해 첫 그룹으로 채택될 뻔한 구멍)."""
+    ctx = _ctx({
+        _SELECT: [
+            ResolveReachableResponse(index=0, solutions=[[0.1, 0.1, 0.1, 0.1, 3.0]]),
+            ResolveReachableResponse(index=0, solutions=[[0.1] * 5]),
+        ],
+    })
+    pick = await steps.plan_omx_pick_block(ctx, OMX, _GEOM)
+    assert len(ctx.calls(_SELECT)) == 2  # 기각 → 재-resolve
+    assert abs(pick.sols[0][-1]) <= math.radians(90.0)
 
 
 def test_rendezvous_candidates_inside_both_rois():

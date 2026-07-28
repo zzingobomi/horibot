@@ -228,7 +228,10 @@ _RECV_OBS_ELEV_DEG = (30.0, 25.0)  # 저각만 비가림 (40/55 는 omx 가림 +
 _RECV_OBS_AZOFF_DEG = (20.0, 0.0, 40.0, -20.0)  # so101 측, +20 이 비가림+최소 J2
 _RECV_OBS_PSI_DEG = (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0)
 _RECV_MATCH_RADIUS_M = 0.08  # 제시 계획점 대비 재검출 매치 반경
-_RECV_Z_BAND_M = 0.06  # 공중 대역 — 제시 z ± 이 값 (테이블 대역 게이트의 개방판)
+# 공중 대역 — 제시 z ± 이 값. ⚠ 2026-07-28 60→30mm: 겨냥점 z 가 aerial_target
+# (노출부 중간, 실측 오차 0.4mm)으로 정확해졌으므로 옛 관대한 밴드는 오검출
+# 통과창일 뿐이다 (60mm 는 48.6mm 오차를 침묵 통과시켜 수취 IK 를 전멸시켰다).
+_RECV_Z_BAND_M = 0.03
 # 공중 물체는 GDINO 신뢰도가 낮다 — 2026-07-26 실물(큐브): 위치 정확·z 1mm·
 # 점군 116 인 진짜 검출인데 score 0.327 로 0.35 문턱에 걸림. 위치/z/반경(8cm)/
 # 점군(≥20) 게이트가 오검출 방어를 하므로 score 는 낮춰도 안전. → 0.25.
@@ -237,7 +240,15 @@ _RECV_SCORE_MIN = 0.25
 _RECV_MIN_POINTS = 20  # 공중 물체 점군 하한
 # 수취 자세족 — 수직 조축 spin 사다리 (±tool z × spin 45° 스텝, _recv_orients).
 _RECV_SPIN_STEP_DEG = 45.0
-_RECV_PRE_CLEAR_M = 0.07
+# 접근 여유 **사다리** (큰 것 우선 — 긴 standoff 가 정렬/refine 에 유리).
+# ⚠ 2026-07-28 실물 실패 재현으로 확정 (debug/handover/20260727_230417):
+# 수취 자세족은 도달영역 전체에서 사실상 **단일해**(`zdown/spin0`)인데, 7cm 뒤
+# pre 지점이 특이점 근처라 pre→target 직선 **2.0cm 지점에서 관절 141° 구성
+# 플립** → 그 하나까지 기각 → 전멸(NoReachableGrasp). 같은 프레임에서 여유를
+# 5cm 로 줄이면 통과한다(재현 확인). 단일값 교체 대신 사다리 — 7cm 이 되는
+# 지점에서는 7cm 을 쓰고, 특이점에 걸릴 때만 짧아진다 (채택값은 trace
+# `pre_clear_m` + plan_receive 로그).
+_RECV_PRE_CLEAR_LADDER = (0.07, 0.05, 0.04, 0.03)
 _RECV_WITHDRAW_M = 0.08
 _RECV_COLLISION_RETRY = 5
 # 핸드오프 근접 국면 margin — 매달기 기하는 두 그리퍼가 봉 축으로 ~2.5cm 이격
@@ -1046,18 +1057,31 @@ async def plan_so_observe(
     return res.solutions[0]
 
 
+def aerial_target(det: OrientedDetection) -> Vec3:
+    """공중 매달린 봉의 **수취 겨냥점** — xy = 검출 중심, z = 노출부 z **중간**.
+
+    ⚠ 2026-07-28 확정 (실물 실패 재현). 옛 코드는 `det.position` 을 그대로 썼는데
+    그건 "윗면 중심" 의미라 매달린 봉에서는 **위쪽 끝**을 가리킨다 (조 바로 아래
+    = omx 조와 충돌하는 높이). `body_select="bottom"` 으로 노출부 군집을 받은 뒤
+    그 z 대역의 중간(base_z + height/2)을 쓰면 실물 프레임 재계산에서 계획 E 대비
+    **0.4mm** (옛 방식은 같은 프레임에서 +48.6mm 였다 — 조 안쪽 조각 채택)."""
+    return (det.position[0], det.position[1], det.base_z + det.height / 2.0)
+
+
 def _match_aerial(
     cands: list[OrientedDetection], h_world: Vec3
 ) -> OrientedDetection | None:
-    """공중 펜 매치 — 제시 계획점 반경 + 공중 z 대역 + score/점군 게이트.
-    (테이블 대역 게이트의 개방판 — base_z 가 아니라 position z 로 판정: 공중
-    물체의 base_z 는 '보이는 band 하단'이라 물리 바닥이 아니다.)"""
+    """공중 봉 매치 — 제시 계획점 반경 + 공중 z 대역 + score/점군 게이트.
+
+    z 판정은 **aerial_target 과 같은 값**(노출부 중간)으로 한다 — 게이트와 실제
+    겨냥점이 다른 양을 보면 게이트가 통과시킨 오차가 겨냥점에 그대로 실린다
+    (2026-07-27 실물: z 오차 48.6mm 가 ±60mm 게이트를 침묵 통과 → 수취 IK 전멸)."""
     trusted = [
         c
         for c in cands
         if c.score >= _RECV_SCORE_MIN
         and len(c.points or []) >= _RECV_MIN_POINTS
-        and abs(c.position[2] - h_world[2]) <= _RECV_Z_BAND_M
+        and abs(aerial_target(c)[2] - h_world[2]) <= _RECV_Z_BAND_M
         and math.hypot(c.position[0] - h_world[0], c.position[1] - h_world[1])
         <= _RECV_MATCH_RADIUS_M
     ]
@@ -1080,7 +1104,10 @@ async def so_redetect(
     await asyncio.sleep(_OBSERVE_SETTLE_S)
     res = await ctx.call(
         Detector.Service.DETECT_ORIENTED,
-        DetectRequest(robot_id=so101, prompts=[prompt], top_k=_TOP_K),
+        DetectRequest(
+            robot_id=so101, prompts=[prompt], top_k=_TOP_K,
+            body_select="bottom",  # 매달린 봉의 자유단 (조 안쪽 조각 채택 방지)
+        ),
         DetectOrientedResponse,
     )
     await _emit(
@@ -1122,6 +1149,7 @@ class ReceivePlan:
     quat: Quat
     target: Vec3  # 파지 겨냥점 (world) = 재검출 노출부 중심 (≈E)
     omx_joints: list[float]
+    pre_clear_m: float  # 채택된 접근 여유 (사다리 — 실물 보정 데이터)
 
 
 @step(title="수취 계획")
@@ -1146,23 +1174,26 @@ async def plan_receive(
         Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState, robot_id=omx
     )
     omx_joints = list(omx_tcp.joints)
-    target = (det.position[0], det.position[1], det.position[2])
+    target = aerial_target(det)
     orients = _recv_orients(target)
     groups: list[list[TcpPose]] = []
-    metas: list[Quat] = []
-    for _label, quat, a in orients:  # 접근 = base→E 방위 근접순 (so101 쪽 진입)
-        pre = (
-            target[0] - a[0] * _RECV_PRE_CLEAR_M,
-            target[1] - a[1] * _RECV_PRE_CLEAR_M,
-            target[2] - a[2] * _RECV_PRE_CLEAR_M,
-        )
-        groups.append(
-            [
-                TcpPose(position=pre, quaternion=quat),
-                TcpPose(position=target, quaternion=quat),
-            ]
-        )
-        metas.append(quat)
+    metas: list[tuple[str, Quat, float]] = []  # (라벨, quat, 접근 여유)
+    # 자세-major × 접근 여유 사다리 — 자세 품질이 standoff 길이보다 우선이라
+    # 선호 자세를 전 여유에서 먼저 소진한다 (_RECV_PRE_CLEAR_LADDER 주석).
+    for label, quat, a in orients:  # 접근 = base→E 방위 근접순 (so101 쪽 진입)
+        for clear in _RECV_PRE_CLEAR_LADDER:
+            pre = (
+                target[0] - a[0] * clear,
+                target[1] - a[1] * clear,
+                target[2] - a[2] * clear,
+            )
+            groups.append(
+                [
+                    TcpPose(position=pre, quaternion=quat),
+                    TcpPose(position=target, quaternion=quat),
+                ]
+            )
+            metas.append((label, quat, clear))
     alive = list(range(len(groups)))
     for attempt in range(_RECV_COLLISION_RETRY):
         res = await ctx.call(
@@ -1199,15 +1230,23 @@ async def plan_receive(
                     "event": "plan_receive",
                     "target": list(target),
                     "group": gi,
-                    "orientation": orients[gi][0],
+                    "orientation": metas[gi][0],
+                    "pre_clear_m": metas[gi][2],
                     "attempt": attempt,
                 },
             )
+            logger.info(
+                "plan_receive: %s 채택 (접근 여유 %.0fmm — 사다리 %s)",
+                metas[gi][0],
+                metas[gi][2] * 1000,
+                [round(c * 1000) for c in _RECV_PRE_CLEAR_LADDER],
+            )
             return ReceivePlan(
                 sols=res.solutions,
-                quat=metas[gi],
+                quat=metas[gi][1],
                 target=target,
                 omx_joints=omx_joints,
+                pre_clear_m=metas[gi][2],
             )
         logger.warning(
             "plan_receive: 그룹 %d 채택안이 omx 와 충돌 위험 (margin %.0fmm) — "
@@ -1240,7 +1279,10 @@ async def so_refine(
     await asyncio.sleep(_OBSERVE_SETTLE_S)
     res = await ctx.call(
         Detector.Service.DETECT_ORIENTED,
-        DetectRequest(robot_id=so101, prompts=[prompt], top_k=_TOP_K),
+        DetectRequest(
+            robot_id=so101, prompts=[prompt], top_k=_TOP_K,
+            body_select="bottom",  # 매달린 봉의 자유단 (조 안쪽 조각 채택 방지)
+        ),
         DetectOrientedResponse,
     )
     best = _match_aerial(res.candidates, plan.target)
@@ -1252,7 +1294,7 @@ async def so_refine(
                     "event": "refine_miss", "reason": reason}
         )
         return plan.target
-    updated = (best.position[0], best.position[1], best.position[2])  # 노출부 중심
+    updated = aerial_target(best)  # 노출부 z 중간
     jump = math.dist(updated, plan.target)
     if jump > _REFINE_JUMP_MAX_M:
         reason = (

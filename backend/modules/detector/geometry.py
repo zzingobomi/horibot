@@ -120,12 +120,25 @@ _BODY_Z_GAP_M = 0.005
 _BODY_MIN_MASS_FRAC = 0.20
 
 
-def _body_z_band(z: np.ndarray) -> tuple[float, float]:
+def _body_z_band(z: np.ndarray, select: str = "top") -> tuple[float, float]:
     """z 분포를 gap(>_BODY_Z_GAP_M) 군집으로 나눠 몸통 군집의 (top, bottom).
 
-    몸통 = 질량 비율 ≥ _BODY_MIN_MASS_FRAC 인 **최상단** 군집 (파지/적치가 보는
-    면은 윗면 — 같은 질량이면 위가 물체 표면). 자격 군집이 없으면(파편화 점군)
-    최대 질량 군집으로 폴백 — 판정은 소비자 몫, 여기서 hard fail 하지 않는다.
+    몸통 = 질량 비율 ≥ _BODY_MIN_MASS_FRAC 인 군집. `select` 가 어느 쪽을 몸통으로
+    볼지 정한다 — 검출기는 알 수 없는 정보이므로 **소비자가 의도를 선언**한다:
+
+      - `"top"` (기본, 책상 위 top-down 파지): **최상단** 자격 군집. 파지/적치가
+        보는 면은 윗면이고, 위쪽 flying-pixel 트레일은 질량 문턱이 컷한다.
+      - `"bottom"` (**매달린 물체의 자유단**): **최하단** 자격 군집. giver 가 위를
+        물고 있으면 receiver 가 잡을 곳은 아래로 늘어진 부분이다.
+
+    ⚠ `"bottom"` 신설 근거 (2026-07-28, handover 실물 실패 재현) — omx 조가 봉
+    중간을 가려 점군이 z 로 두 덩어리(위 24.4% / 아래 75.5%, 틈 12mm)로 갈렸고,
+    `"top"` 규약이 **조 안쪽 조각**을 몸통으로 채택해 겨냥점이 계획보다 48.6mm
+    위(= omx TCP 높이)로 갔다. `"bottom"` + 점군 중심이면 계획 E 대비 z 오차
+    1.9mm (같은 프레임 재계산).
+
+    자격 군집이 없으면(파편화 점군) 최대 질량 군집으로 폴백 — 판정은 소비자 몫,
+    여기서 hard fail 하지 않는다.
     """
     zs = np.sort(z)[::-1]  # 위→아래
     gaps = zs[:-1] - zs[1:]
@@ -133,14 +146,17 @@ def _body_z_band(z: np.ndarray) -> tuple[float, float]:
     starts = [0, *(int(c) + 1 for c in cuts)]
     ends = [*(int(c) + 1 for c in cuts), len(zs)]
     min_pts = max(3, math.ceil(len(zs) * _BODY_MIN_MASS_FRAC))
-    for s, e in zip(starts, ends):
+    spans = list(zip(starts, ends))
+    if select == "bottom":
+        spans = spans[::-1]  # 아래→위 순회 (군집은 z 내림차순으로 만들어짐)
+    for s, e in spans:
         if e - s >= min_pts:
             return float(zs[s]), float(zs[e - 1])
     s, e = max(zip(starts, ends), key=lambda se: se[1] - se[0])
     return float(zs[s]), float(zs[e - 1])
 
 
-def body_points(pts_base: np.ndarray) -> np.ndarray:
+def body_points(pts_base: np.ndarray, select: str = "top") -> np.ndarray:
     """점군을 몸통 z 대역(_body_z_band)으로 필터 — **export 전 소스 청소**.
 
     Fix(z 앵커 질량 군집)가 지표만 청소하고 점군은 raw 로 내보내던 구멍의 완결
@@ -153,13 +169,13 @@ def body_points(pts_base: np.ndarray) -> np.ndarray:
     """
     if pts_base is None or pts_base.ndim != 2 or len(pts_base) < 3:
         return pts_base
-    top, bottom = _body_z_band(pts_base[:, 2])
+    top, bottom = _body_z_band(pts_base[:, 2], select)
     z = pts_base[:, 2]
     return pts_base[(z >= bottom) & (z <= top)]
 
 
 def object_metrics_from_points(
-    pts_base: np.ndarray,
+    pts_base: np.ndarray, select: str = "top"
 ) -> tuple[tuple[float, float, float], float, float] | None:
     """물체 base 점군 → (윗면 중심 position, base_z(물체 바닥), height).
 
@@ -173,7 +189,7 @@ def object_metrics_from_points(
     if pts_base is None or len(pts_base) < 3:
         return None
     z = pts_base[:, 2]
-    band_top, bottom_z = _body_z_band(z)
+    band_top, bottom_z = _body_z_band(z, select)
     body = pts_base[(z >= bottom_z) & (z <= band_top)]
     top_z = float(np.percentile(body[:, 2], _Z_HI_PERCENTILE))
     # 윗면 band(중심 계산)도 몸통 안에서만 — 전체 점군에 percentile 을 걸면

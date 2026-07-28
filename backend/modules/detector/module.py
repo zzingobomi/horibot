@@ -235,7 +235,8 @@ class DetectorModule:
             self._dump_tasks.clear()
 
     async def _detect_candidates(
-        self, robot_id: str, prompts: list[str], top_k: int
+        self, robot_id: str, prompts: list[str], top_k: int,
+        body_select: str = "top",
     ) -> _DetectResult:
         """공통 파이프라인 — 캘/frame/backend 검출 → 후보별 base 투영. SSOT.
 
@@ -314,8 +315,8 @@ class DetectorModule:
             # 소스 청소 — 몸통 z 대역 밖(모서리 mask 의 먼 바닥/flying-pixel)
             # 점 제거. 이후 지표/OBB/export/소비자 전부 이 점군 기준
             # (geometry.body_points docstring — 2026-07-17 g_tcp 11.6cm 실사고).
-            base_pts = geometry.body_points(base_pts)
-            metrics = geometry.object_metrics_from_points(base_pts)
+            base_pts = geometry.body_points(base_pts, body_select)
+            metrics = geometry.object_metrics_from_points(base_pts, body_select)
             if metrics is None:
                 continue
             position, bottom_z, height = metrics
@@ -391,7 +392,9 @@ class DetectorModule:
         prompts = _req_prompts(req)
         if not prompts:
             return DetectResponse(found=False, message="prompt 필요")
-        result = await self._detect_candidates(req.robot_id, prompts, req.top_k)
+        result = await self._detect_candidates(
+            req.robot_id, prompts, req.top_k, req.body_select
+        )
         detections = [
             Detection(
                 prompt=c.prompt,
@@ -428,7 +431,9 @@ class DetectorModule:
         prompts = _req_prompts(req)
         if not prompts:
             return DetectOrientedResponse(found=False, message="prompt 필요")
-        result = await self._detect_candidates(req.robot_id, prompts, req.top_k)
+        result = await self._detect_candidates(
+            req.robot_id, prompts, req.top_k, req.body_select
+        )
         oriented: list[OrientedDetection] = []
         debug_rows: list[tuple[np.ndarray, list[tuple[float, float]] | None]] = []
         for c in result.cands:

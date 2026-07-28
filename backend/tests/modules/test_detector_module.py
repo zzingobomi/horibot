@@ -405,8 +405,8 @@ async def test_detect_roi_cuts_towering_candidate_by_base_z(monkeypatch):
 
     orig = det_mod.geometry.object_metrics_from_points
 
-    def towering(pts):
-        m = orig(pts)
+    def towering(pts, select="top"):
+        m = orig(pts, select)
         if m is None:
             return m
         position, bottom, height = m

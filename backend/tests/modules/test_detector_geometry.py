@@ -362,3 +362,69 @@ def test_align_and_merge_views_anchors_on_mean_not_single_view():
     mean_xy = np.mean([c[:2] for c in centers], axis=0)  # (0.23, 0.1033)
     assert abs(merged[:, 0].mean() - mean_xy[0]) < 1e-6
     assert abs(merged[:, 1].mean() - mean_xy[1]) < 1e-6
+
+
+# ─── body_select: 매달린 물체의 자유단 (2026-07-28 실물 회귀) ──────────
+
+
+def _hanging_bar_cloud() -> np.ndarray:
+    """2026-07-27 실물(debug/detect/20260727_230345) 점군 z 분포 재현.
+
+    omx 조가 매달린 봉 중간을 가려 점군이 두 덩어리로 갈렸다:
+      아래(노출부, so101 이 잡을 곳) z 0.233~0.276 — 9,630점 (75.5%)
+      틈(조가 가림)              z 0.276~0.288 — 0점 (12mm)
+      위(조 안쪽 stub)           z 0.288~0.311 — 3,116점 (24.4%)
+    비율/틈만 보존하고 점 수는 축소 (판정은 질량 **비율** 기준).
+    """
+    rng = np.random.default_rng(0)
+    low_z = rng.uniform(0.233, 0.276, 755)
+    up_z = rng.uniform(0.288, 0.311, 244)
+    z = np.concatenate([low_z, up_z])
+    xy = rng.uniform(-0.008, 0.008, (len(z), 2)) + np.array([0.196, 0.113])
+    return np.column_stack([xy, z])
+
+
+def test_body_select_top_picks_jaw_side_fragment_regression():
+    """기본 "top" 규약은 **조 안쪽 조각**을 물체로 채택한다 — 이게 2026-07-27
+    실물 실패의 검출측 근인이다 (겨냥점이 계획 E 보다 48.6mm 위로 감). 기본
+    동작은 책상 위 top-down 파지를 위해 유지하므로 이 성질을 명시적으로 잠근다."""
+    from modules.detector.geometry import object_metrics_from_points
+
+    pts = _hanging_bar_cloud()
+    m = object_metrics_from_points(pts)  # select 기본 = "top"
+    assert m is not None
+    position, base_z, _height = m
+    assert position[2] > 0.288, "top 규약이 아래 군집을 물면 기본 의미가 바뀐 것"
+    assert base_z > 0.285, f"몸통 바닥이 위 군집 것이어야 (got {base_z})"
+
+
+def test_body_select_bottom_recovers_exposed_segment():
+    """"bottom" 은 **아래로 늘어진 노출부**를 몸통으로 잡는다 — handover 수취가
+    쓰는 의미. z 대역 중간이 실물 계획 E(0.2549)와 mm 급으로 맞아야 한다
+    (옛 방식은 같은 프레임에서 +48.6mm)."""
+    from modules.detector.geometry import body_points, object_metrics_from_points
+
+    pts = _hanging_bar_cloud()
+    body = body_points(pts, "bottom")
+    assert body[:, 2].max() < 0.280, "위 군집이 섞였다"
+    assert len(body) > 0.6 * len(pts), "노출부 질량(75%)을 잃었다"
+    m = object_metrics_from_points(pts, "bottom")
+    assert m is not None
+    _position, base_z, height = m
+    z_mid = base_z + height / 2.0  # steps.aerial_target 과 같은 유도
+    assert abs(z_mid - 0.2549) < 0.005, f"노출부 중간이 계획 E 와 어긋남 ({z_mid})"
+
+
+def test_body_select_bottom_still_cuts_sparse_trail_below():
+    """"bottom" 이 **아래쪽 flying-pixel 트레일**까지 물면 안 된다 — 질량 문턱
+    (_BODY_MIN_MASS_FRAC)이 top 과 동일하게 걸려야 한다 (2026-07-17 아래-outlier
+    실사고의 대칭판: base_z 가 phantom 으로 끌려가는 구멍)."""
+    from modules.detector.geometry import body_points
+
+    rng = np.random.default_rng(1)
+    body_z = rng.uniform(0.24, 0.28, 400)
+    trail_z = rng.uniform(0.10, 0.12, 12)  # 3% — 자격 미달
+    z = np.concatenate([body_z, trail_z])
+    xy = rng.uniform(-0.005, 0.005, (len(z), 2)) + np.array([0.2, 0.1])
+    kept = body_points(np.column_stack([xy, z]), "bottom")
+    assert kept[:, 2].min() > 0.20, "성긴 아래 트레일을 몸통으로 물었다"

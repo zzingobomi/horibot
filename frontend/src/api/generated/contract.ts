@@ -347,6 +347,7 @@ export interface DetectRequest {
   prompts?: string[] | null;
   prompt?: string | null;
   top_k?: number;
+  body_select?: "top" | "bottom";
 }
 
 export interface Detection {

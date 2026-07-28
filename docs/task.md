@@ -449,6 +449,65 @@ PyBullet 세계에, base_pose 는 robots.yaml 크로스캘. motion 모듈 불침
   ③ 'handover' waypoint 티칭 (omx home/handover + so101 home/search 그룹 필수).
 - 충돌 margin 2cm = 보수 기본값 (미검증 — 실물 특성화로 튜닝).
 
+### 4.8 handover 실물 1차 실패 근인 (2026-07-28 — 저장 데이터로 **완전 재현**)
+
+실패 런 = `debug/handover/20260727_230417` (`NoReachableGrasp`: 수취 접근 후보
+16개 전멸). 앞선 두 런(21:51/22:27)은 `stop_before_receive` 로 제시에서 정상 종료.
+
+**재현 방법** (로봇 불필요 — 저장된 mask/depth/캘/TCP pose 만으로 검출기
+파이프라인을 오프라인 재실행하면 position/base_z/height 가 소수점까지 일치):
+`debug/detect/20260727_230345/0002_*` + `modules.detector.projection/geometry`.
+
+**사슬** (각 항이 독립 결함 — 하나만 고쳐도 이 런은 실패했다):
+
+1. **omx 조가 이미지에서 봉 중간을 가림** → 점군이 z 로 두 덩어리. 아래(노출부)
+   z 0.233~0.276 = 75.5% / 틈 12mm / 위(조 안쪽) z 0.288~0.311 = 24.4%.
+2. **검출기가 위 조각을 물체로 채택** — `geometry._body_z_band` 의 "질량 ≥20% 인
+   **최상단** 군집" 규약은 *책상 위 top-down 파지* 전제인데 **매달린 봉의 윗면은
+   omx 조 안**이다. 24.4% 가 20% 문턱을 간신히 넘어 자격을 얻었다.
+   → **수정**: `DetectRequest.body_select: top(기본) | bottom` 신설. handover
+   수취는 `bottom`(자유단). PnP 는 기본값이라 동작 무변경.
+3. **게이트가 침묵 통과** — 겨냥점이 계획 E 대비 z **+48.6mm** 인데
+   `_RECV_Z_BAND_M` 이 ±60mm. → **수정**: 30mm + 겨냥점을 `steps.aerial_target`
+   (= `base_z + height/2`, 노출부 z **중간**)으로 통일해 게이트와 겨냥점이 같은
+   양을 본다. 같은 프레임 재계산에서 계획 E 대비 **0.4mm**.
+4. **실제 전멸 원인은 자세가 아니라 `_RECV_PRE_CLEAR_M` 7cm** — ⚠ "z 가 틀려서
+   IK 가 죽었다"는 **오진**이었다 (z 를 0.28~0.31 로 바꿔도 IK 성공은 항상 1/16
+   동일). 7cm 뒤 pre 지점이 특이점 근처라 pre→target 직선 **2.0cm 지점에서 관절
+   141° 구성 플립** → 유일해까지 기각. 5cm 면 같은 프레임 통과.
+   → **수정**: `_RECV_PRE_CLEAR_LADDER = (0.07, 0.05, 0.04, 0.03)` (큰 것 우선,
+   채택값은 trace `pre_clear_m`).
+5. **수취 자세족은 사실상 단일해** — so101 도달 영역 **전체**를 production 게이트로
+   스캔하면 최대 2/16, 대부분 1/16. 조축 tilt 를 넣어 64개로 늘려도 통과는 언제나
+   `zdown/spin0`(base→E 방위 직진) 하나. **so101 기구학 성질이라 배치를 바꿔도
+   안 변한다** — "떼면/돌리면 수취가 강건해진다" 는 기각.
+6. **probe 의 가림 판정 자체가 구멍이었다** — `handover_block_probe.ray_occluded`
+   가 노출 세그먼트를 **E±25mm** 만 샘플했는데 실물 가림 띠는 **E+21~33mm** 라
+   범위 밖 → "23/23 비가림" 오판. → **수정**: 노출부 전체 11점. 고친 판정은 실물
+   차단 지점(z 0.280/0.285)을 정확히 재현 (차단률 18%).
+
+**배치**: 가림은 배치의 함수다 (수취 강건성은 아니다). 전체 관측 사다리(128개)로
+비교하면 — 현재 (0.034, 0.270, −3.33°) 통과 랑데부 9 / 최고 비가림 관측 6 vs
+**직각 (0.22, 0.27, −90°) 71 / 39**, (0.14, 0.27, −90°) 61 / 48. 두 팔 링크 간격도
+34~39mm → 41~48mm. omx 를 **책상 세로면에 so101 을 향해** 마운트하는 안 (사용자
+2026-07-28 결정). ⚠ base_pose 는 **손으로 박지 말 것** — `cross_calibrate.py` 실측.
+
+**이전 후 재특성화 = [handover_layout_tune.py](../backend/scripts/handover_layout_tune.py)**
+(robots.yaml 의 현재 base_pose 를 읽어 6게이트 스윕 → 붙여넣을
+`_RENDEZVOUS_PREFER_XY` / `_PRESENT_Z_WORLD` 출력. `--base X,Y,YAW` = 마운트 전
+what-if). 순서: 마운트 → `cross_calibrate.py` → robots.yaml 반영 →
+`handover_layout_tune.py` → steps.py 노브 반영 → `pytest tests/modules/test_handover_feasibility.py`.
+
+**남는 미지수** (sim 이 못 주는 것): ① 접근 여유를 줄였을 때 두 조가 실물에서
+안 부딪히는지 (모델 margin 8mm 는 크로스캘 σ_t 수준) ② **omx 실제 제시 위치가
+계획 대비 y 34mm 이탈** — 검출 점군의 위·아래 군집 둘 다 y≈0.112 (계획 0.146).
+출처 미확정 (omx FK / base_pose / 봉이 조 안에서 밀림) — 다음 런 최우선 확인.
+
+> ⚠ 이 절을 파다가 발견: `test_handover_feasibility.py` 가 07-27 hang 전환 때
+> 삭제된 `_present_quat_down` 을 부르고 있어 **그때부터 sim 테스트가 깨진 채
+> 방치**돼 있었다 (sim 마킹이라 fast loop 에 안 걸림 + 전환 커밋에서 full 미실행).
+> 정정 완료. **실물 handoff 전 full 1회는 이래서 필요하다.**
+
 ---
 ---
 

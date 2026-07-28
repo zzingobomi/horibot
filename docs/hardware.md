@@ -141,7 +141,9 @@ full extension 정적 토크: **shoulder ~27-30 kg·cm ≈ STS3215(30kg·cm) 정
 
 ## 5. 작업대
 
-- 책상 **가로 55 × 세로 34 cm** (보드 + 로봇 + 작업영역 공유). 로봇 base 배치는 robots.yaml `base_pose` (so101 x=0.4m).
+- 책상 **가로 55 × 세로 34 cm** (보드 + 로봇 + 작업영역 공유). 로봇 base 배치는 robots.yaml `base_pose` (so101 = world 원점).
+- **omx 배치 변경 예정 (2026-07-28 결정, 미실행)** — 옛 배치는 두 팔이 **같은 +x 를 보고 y 로 27cm 나란히** 였는데, 그 자리에서는 so101 이 omx 가 든 봉의 노출부를 볼 수 있는 관측 자세가 거의 없다 (전체 관측 사다리 128개 중 최고 6개, 두 팔 링크 간격 34~39mm). → **omx 를 세로면(34cm 변)에 so101 을 향해(yaw ≈ −90°) 마운트**: 통과 랑데부 9→71, 비가림 관측 6→39, 간격 41~48mm. 세로면 위 위치 x 는 **so101 줄에 맞추지 말고 책상 안쪽으로 14~22cm** (0.22 = 간격 우세 / 0.14 = 시야 우세). 근거·재특성화 절차 = [task.md §4.8](task.md).
+  - ⚠ 목표 좌표는 **조준점일 뿐** — 마운트 후 `scripts/cross_calibrate.py` 실측값을 robots.yaml 에 반영하고 `scripts/handover_layout_tune.py` 로 랑데부 노브를 다시 뽑는다.
 - OMX reach: stretched 500mm, 자세 다양성 영역 ≈ 350-400mm sphere.
 - 캘 보드 7×5 / 25mm 선정은 이 작업대 + reach 압박 고려 ([calibration.md](calibration.md)).
 

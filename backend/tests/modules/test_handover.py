@@ -165,12 +165,18 @@ def _block_det(
     )
 
 
-def _aerial_det(position, score=0.8) -> OrientedDetection:
-    """so101 공중 재검출 (world frame) — 수직 봉의 보이는 노출부 (평면 투영
-    footprint 는 ~단면 크기)."""
+def _aerial_det(position, score=0.8, height=0.05) -> OrientedDetection:
+    """so101 공중 재검출 (world frame) — 수직 봉의 보이는 노출부.
+
+    `position` 은 **노출부 중심**(steps.aerial_target 이 돌려주는 값) 의미로 준다:
+    detector 의 position 은 몸통 군집의 *윗면*, base_z 는 그 바닥이므로
+    윗면 = 중심 + height/2 / base_z = 중심 − height/2 로 구성한다 (그래야
+    aerial_target(det) == position 이 되어 호출부 의도와 맞는다)."""
     return OrientedDetection(
-        prompt="orange block", position=position, score=score, base_z=position[2],
-        height=0.05, grasp_yaw=0.3, footprint=(0.022, 0.020),
+        prompt="orange block",
+        position=(position[0], position[1], position[2] + height / 2.0),
+        score=score, base_z=position[2] - height / 2.0,
+        height=height, grasp_yaw=0.3, footprint=(0.022, 0.020),
         points=[(position[0], position[1], position[2])] * 60,
     )
 
@@ -642,3 +648,53 @@ async def test_module_list_robots_and_preview():
         "set_gripper", "receive", "omx_retreat",
         "place_into", "go_home",
     ]
+
+
+# ─── 수취 겨냥점 / 게이트 정합 (2026-07-28 실물 회귀) ──────────────────
+
+
+def test_aerial_target_rejects_jaw_side_fragment():
+    """2026-07-27 실물 실패의 검출측 근인을 잠근다.
+
+    omx 조 가림으로 점군이 갈렸을 때 옛 규약이 채택한 **조 안쪽 조각**
+    (base_z=0.2884 / height=0.0151 / position z=0.3035, 실측값) 은 계획 E
+    (z=0.2549) 대비 z 오차가 커서 **매치에서 기각**돼야 한다. 옛 코드는
+    position z 를 그대로 쓰고 밴드가 ±60mm 라 48.6mm 오차를 침묵 통과시켰고,
+    그 겨냥점에서 so101 수취 IK 가 전멸했다."""
+    frag = OrientedDetection(
+        prompt="orange block", position=(0.2036, 0.1118, 0.3035), score=0.834,
+        base_z=0.2884, height=0.0151, grasp_yaw=-0.46, footprint=(0.019, 0.009),
+        points=[(0.2036, 0.1118, 0.296)] * 45,
+    )
+    h_world = (0.1966, 0.1464, 0.2549)  # 실측 계획 E
+    assert steps._match_aerial([frag], h_world) is None, (
+        "조 안쪽 조각이 매치를 통과했다 — _RECV_Z_BAND_M/aerial_target 회귀"
+    )
+
+
+def test_aerial_target_accepts_exposed_cluster_and_hits_planned_e():
+    """`body_select="bottom"` 으로 받은 **노출부 군집**은 통과하고, 겨냥점 z 가
+    계획 E 와 mm 급으로 맞아야 한다 (실측 재계산: 0.4mm)."""
+    exposed = OrientedDetection(
+        prompt="orange block", position=(0.196, 0.113, 0.276), score=0.83,
+        base_z=0.233, height=0.043, grasp_yaw=0.1, footprint=(0.022, 0.020),
+        points=[(0.196, 0.113, 0.2545)] * 60,
+    )
+    h_world = (0.1966, 0.1464, 0.2549)
+    best = steps._match_aerial([exposed], h_world)
+    assert best is not None, "노출부 군집이 기각됐다"
+    tgt = steps.aerial_target(best)
+    assert abs(tgt[2] - h_world[2]) < 0.005, f"겨냥점 z 가 계획 E 와 어긋남 ({tgt})"
+    assert tgt[0] == exposed.position[0] and tgt[1] == exposed.position[1]
+
+
+def test_recv_pre_clear_ladder_prefers_long_standoff():
+    """접근 여유 사다리는 **큰 것 우선** (긴 standoff 가 정렬/refine 에 유리) —
+    특이점에 걸릴 때만 짧아진다. 순서가 뒤집히면 항상 최단으로 붙는다."""
+    ladder = steps._RECV_PRE_CLEAR_LADDER
+    assert len(ladder) >= 2
+    assert list(ladder) == sorted(ladder, reverse=True), "사다리가 내림차순이 아님"
+    assert ladder[0] == 0.07, "선호값이 옛 단일값(7cm)과 달라졌다 — 의도적 변경인가"
+    assert min(ladder) <= 0.05, (
+        "7cm pre 가 특이점 플립으로 죽는 프레임이 실물에 있었다 — 5cm 이하 단계 필수"
+    )

@@ -135,10 +135,14 @@ _BLOCK_GEOM = block.plan_block_grasp(
 
 
 def _adopt_present(env):
-    """시나리오와 같은 순서로 제시 채택 — (tcp_w, sol, h_world). B/down 단일
-    자세(_present_quat_down — 다양체 위 구성)에서 첫 도달. H(재검출 겨냥점) =
+    """시나리오와 같은 순서로 제시 채택 — (tcp_w, sol, h_world). **hang(z↑)** 단일
+    자세(_present_quat_hang — 다양체 위 구성)에서 첫 도달. H(재검출 겨냥점) =
     E = TCP − (0,0,tcp_to_e) — 봉이 수직으로 매달리므로 so101 파지점은 TCP
-    아래 봉 축 위."""
+    아래 봉 축 위.
+
+    ⚠ 2026-07-28: 옛 `_present_quat_down` 을 부르고 있어 **07-27 hang 전환 이후
+    이 sim 테스트가 AttributeError 로 깨진 채 방치**돼 있었다 (fast loop 에는 안
+    걸리는 sim 마킹 + 전환 커밋에서 full 미실행). 현행 함수로 정정."""
     cands = frames.rendezvous_candidates(
         env["roi_so"], env["roi_omx"], env["base"], steps._PRESENT_Z_WORLD,
         limit=steps._PRESENT_LIMIT, prefer_point=steps._RENDEZVOUS_PREFER_XY,
@@ -155,10 +159,13 @@ def _adopt_present(env):
             continue  # 시나리오 E-ROI 게이트와 동형
         tcp_o = frames.world_to_robot(tcp_w, env["base"])
         alpha = math.atan2(tcp_o[1], tcp_o[0])
-        sol = _ik(env["k_omx"], tcp_o, steps._present_quat_down(alpha))
-        if sol:
+        quat = steps._present_quat_hang(alpha)
+        sol = _ik(env["k_omx"], tcp_o, quat)
+        # 손목 뒤집힘 기각 — 시나리오 plan_omx_present 와 동형 (케이블 안전
+        # 불변식). hang 은 구성상 J5=0 이지만 IK 가 등가 branch 를 낼 수 있다.
+        if sol and abs(sol[-1]) <= steps._WRIST_NATURAL_MAX_RAD:
             return tcp_w, sol, e
-    pytest.fail("B/down 제시 전멸 — _present_quat_down/랑데부 밴드 회귀 "
+    pytest.fail("hang(z↑) 제시 전멸 — _present_quat_hang/랑데부 밴드 회귀 "
                 "(scripts/handover_block_probe.py 로 재특성화)")
 
 
@@ -201,10 +208,12 @@ def test_present_and_receive_feasible_with_clearance(env):
     for _label, quat, a in steps._recv_orients(tgt):
         tool_z = _R.from_quat(quat).apply([0.0, 0.0, 1.0])
         assert abs(tool_z[2]) > 0.99, "수취 자세족에 비수직 tool z — 설계 회귀"
-        pre = tuple(tgt[i] - a[i] * steps._RECV_PRE_CLEAR_M for i in range(3))
-        s_pre, s_g = _ik(env["k_so"], pre, quat), _ik(env["k_so"], tgt, quat)
-        if s_pre and s_g:
-            so_sols.append(s_g)
+        for clear_m in steps._RECV_PRE_CLEAR_LADDER:  # 접근 여유 사다리
+            pre = tuple(tgt[i] - a[i] * clear_m for i in range(3))
+            s_pre, s_g = _ik(env["k_so"], pre, quat), _ik(env["k_so"], tgt, quat)
+            if s_pre and s_g:
+                so_sols.append(s_g)
+                break
     assert so_sols, (
         f"so101 수취 가족 전멸 — 수직 조축족(_recv_orients)/E 높이 회귀 (E={h})"
     )

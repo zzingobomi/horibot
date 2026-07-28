@@ -13,6 +13,7 @@ prompt, priors)`, §17.5) 책임 — detector 는 "예상 범위" 를 모른다 
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -100,6 +101,14 @@ class DetectRequest(BaseModel):
     # **프롬프트별** 상위 후보 수 (전체 아님) — 한 prompt 가 상위를 독식해도
     # 다른 prompt 후보가 잘리지 않는다 (§17.5 Top-K). 소비자(task)가 조절.
     top_k: int = 5
+    # 점군이 z-gap 으로 갈렸을 때 **어느 군집을 물체로 볼지** — 검출기가 알 수 없는
+    # 정보라 소비자가 의도를 선언한다 (geometry._body_z_band docstring).
+    #   "top"    = 최상단 자격 군집 (기본 — 책상 위 top-down 파지)
+    #   "bottom" = 최하단 자격 군집 (**매달린 물체의 자유단** — handover 수취:
+    #              giver 가 위를 물고 있어 receiver 가 잡을 곳은 아래다)
+    # 2026-07-28 신설 — omx 조 가림으로 봉 점군이 갈리자 "top" 이 조 안쪽 조각을
+    # 물체로 채택해 겨냥점이 48.6mm 위로 갔다 (실물 재현, docs/task.md §4.8).
+    body_select: Literal["top", "bottom"] = "top"
 
 
 class DetectResponse(BaseModel):

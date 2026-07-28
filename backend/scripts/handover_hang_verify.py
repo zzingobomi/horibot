@@ -131,22 +131,25 @@ e = (present_tcp[0], present_tcp[1], present_tcp[2] - grasp.tcp_to_e_m)
 print(f"  E={tuple(round(v,3) for v in e)}")
 ok = 0
 for label, quat, a in steps._recv_orients(e)[:8]:
-    pre = tuple(e[i] - a[i] * steps._RECV_PRE_CLEAR_M for i in range(3))
-    s1 = kin_so.ik(pre, quat, home_so, 40)
-    if s1 is None:
-        continue
-    s2 = kin_so.ik(e, quat, s1, 40)
-    if s2 is None:
-        continue
-    coll = checker.path_in_collision(
-        [s1, s2], present_sol, grip_b=steps._OMX_HOLD_GRIP_FRAC,
-        margin_m=steps._RECV_COLLISION_MARGIN_M,
-    )
-    wall = steps._behind_wall(checker, "a", s2)
-    print(f"  {label}: pre+grasp 도달, 충돌={coll} 벽={wall}"
-          f"{'  ← 채택가능' if not coll and not wall else ''}")
-    if not coll and not wall:
-        ok += 1
+    for clear_m in steps._RECV_PRE_CLEAR_LADDER:  # 접근 여유 사다리
+        pre = tuple(e[i] - a[i] * clear_m for i in range(3))
+        s1 = kin_so.ik(pre, quat, home_so, 40)
+        if s1 is None:
+            continue
+        s2 = kin_so.ik(e, quat, s1, 40)
+        if s2 is None:
+            continue
+        coll = checker.path_in_collision(
+            [s1, s2], present_sol, grip_b=steps._OMX_HOLD_GRIP_FRAC,
+            margin_m=steps._RECV_COLLISION_MARGIN_M,
+        )
+        wall = steps._behind_wall(checker, "a", s2)
+        print(f"  {label} (여유 {clear_m * 100:.0f}cm): pre+grasp 도달, "
+              f"충돌={coll} 벽={wall}"
+              f"{'  ← 채택가능' if not coll and not wall else ''}")
+        if not coll and not wall:
+            ok += 1
+        break
 print(f"\n수취 가능 자세: {ok}개")
 print("\n=== 요약: J5 여정 ===")
 print(f"  home J5={deg(home_omx)[4]}° → pick J5={deg(pick_sol)[4] if pick_sol else '?'}°"

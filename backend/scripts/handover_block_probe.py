@@ -79,7 +79,7 @@ THETA_DEG = (0.0, 15.0, 30.0, 45.0, 60.0)  # tool x 평면 내 고도 (0=수평 
 SPIN_DEG = tuple(float(v) for v in range(0, 360, 45))  # so101 수취 spin
 IK_BUDGET = 40  # motion _GROUP_IK_BUDGET 동급
 WALL_MIN_X = -0.03  # steps._WALL_MIN_X_M
-RECV_PRE_CLEAR = 0.07  # steps._RECV_PRE_CLEAR_M
+RECV_PRE_CLEAR = 0.07  # steps._RECV_PRE_CLEAR_LADDER 의 최대(선호) 값
 COLLISION_MARGIN = 0.008  # steps._RECV_COLLISION_MARGIN_M
 OMX_HOLD_GRIP = 0.2  # steps._OMX_HOLD_GRIP_FRAC
 # 관측 후보 — steps._RECV_OBS_* 동일
@@ -239,17 +239,25 @@ def ray_occluded(
     e: np.ndarray,
     d: np.ndarray,
 ) -> float:
-    """관측 카메라→노출 세그먼트 5점 시선의 차단 비율 (0=완전 비가림).
+    """관측 카메라→**노출 세그먼트 전체** 시선의 차단 비율 (0=완전 비가림).
 
     checker 세계의 두 body 전부 차단원 (omx 몸통+카메라 box, so101 자기 팔).
     ray 시작을 카메라에서 2cm 전진 — 원점이 자기 wrist mesh 안이면 즉발 오탐.
+
+    ⚠ 2026-07-28 수정 — **옛 판정은 E±25mm 5점만 샘플해서 실물 가림을 놓쳤다.**
+    실물(debug/detect/20260727_230345)에서 omx 조가 가린 띠는 **E+21~33mm**
+    (점군 z-gap 0.276~0.288) 인데 옛 범위(E-25~+25mm)가 그 밖이라 "23/23
+    비가림" 오판이 나왔다. 노출부는 E 기준 −0.65·exposed ~ +0.35·exposed
+    (EXPOSED_FRAC 규약) 이므로 그 전 구간을 11점 균등 샘플한다. 고친 판정은
+    실물 차단 지점을 정확히 재현한다 (차단률 18%).
     """
     # 형상 배치 (probe 전용 — in_collision 부작용으로 config set)
     checker.in_collision(so_joints, omx_joints,
                          grip_a=1.0, grip_b=OMX_HOLD_GRIP)
     client = checker._client  # probe 한정 내부 접근 (판정 로직 재사용 목적)
     assert client is not None
-    targets = [e + d * t for t in (-0.025, -0.015, 0.0, 0.015, 0.025)]
+    lo, hi = -EXPOSED_FRAC * _exposed, (1.0 - EXPOSED_FRAC) * _exposed
+    targets = [e + d * (lo + (hi - lo) * k / 10) for k in range(11)]
     starts, ends = [], []
     for tgt in targets:
         v = tgt - np.asarray(cam)

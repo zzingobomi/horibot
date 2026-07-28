@@ -135,14 +135,14 @@ _BLOCK_GEOM = block.plan_block_grasp(
 
 
 def _adopt_present(env):
-    """시나리오와 같은 순서로 제시 채택 — (tcp_w, sol, h_world). **hang(z↑)** 단일
-    자세(_present_quat_hang — 다양체 위 구성)에서 첫 도달. H(재검출 겨냥점) =
-    E = TCP − (0,0,tcp_to_e) — 봉이 수직으로 매달리므로 so101 파지점은 TCP
-    아래 봉 축 위.
+    """시나리오와 같은 순서로 제시 채택 — (tcp_w, sol, h_world, w).
 
-    ⚠ 2026-07-28: 옛 `_present_quat_down` 을 부르고 있어 **07-27 hang 전환 이후
-    이 sim 테스트가 AttributeError 로 깨진 채 방치**돼 있었다 (fast loop 에는 안
-    걸리는 sim 마킹 + 전환 커밋에서 full 미실행). 현행 함수로 정정."""
+    축 일반형 (2026-07-28): 랑데부 TCP × **노출 방향 w 후보**(접선/radial ×
+    elevation) 를 선호순으로 돌며 첫 도달·손목정상 조합을 채택한다.
+    E = TCP + w·tcp_to_e (봉 축 위). 매달기는 w=(0,0,−1) 인 특수case.
+
+    ⚠ 2026-07-28 수평 제시 전환 근거: 매달기는 omx 그리퍼가 봉 위에 있어 so101
+    관측 시야를 구조적으로 막았다 (실물 관측 128자세 전부 가림)."""
     cands = frames.rendezvous_candidates(
         env["roi_so"], env["roi_omx"], env["base"], steps._PRESENT_Z_WORLD,
         limit=steps._PRESENT_LIMIT, prefer_point=steps._RENDEZVOUS_PREFER_XY,
@@ -150,27 +150,28 @@ def _adopt_present(env):
     assert cands, "랑데부 교집합 비어 있음 — workcell ROI z_max 회귀"
     roi_so = env["roi_so"]
     for tcp_w in cands:
-        e = (tcp_w[0], tcp_w[1], tcp_w[2] - _BLOCK_GEOM.tcp_to_e_m)
-        if not (
-            roi_so.x_min <= e[0] <= roi_so.x_max
-            and roi_so.y_min <= e[1] <= roi_so.y_max
-            and roi_so.z_min <= e[2] <= roi_so.z_max
-        ):
-            continue  # 시나리오 E-ROI 게이트와 동형
         tcp_o = frames.world_to_robot(tcp_w, env["base"])
         alpha = math.atan2(tcp_o[1], tcp_o[0])
-        quat = steps._present_quat_hang(alpha)
-        sol = _ik(env["k_omx"], tcp_o, quat)
-        # 손목 뒤집힘 기각 — 시나리오 plan_omx_present 와 동형 (케이블 안전
-        # 불변식). hang 은 구성상 J5=0 이지만 IK 가 등가 branch 를 낼 수 있다.
-        if sol and abs(sol[-1]) <= steps._WRIST_NATURAL_MAX_RAD:
-            return tcp_w, sol, e
-    pytest.fail("hang(z↑) 제시 전멸 — _present_quat_hang/랑데부 밴드 회귀 "
-                "(scripts/handover_block_probe.py 로 재특성화)")
+        for _label, w in steps._present_w_candidates(tcp_w):
+            e = tuple(tcp_w[i] + w[i] * _BLOCK_GEOM.tcp_to_e_m for i in range(3))
+            if not (
+                roi_so.x_min <= e[0] <= roi_so.x_max
+                and roi_so.y_min <= e[1] <= roi_so.y_max
+                and roi_so.z_min <= e[2] <= roi_so.z_max
+            ):
+                continue  # 시나리오 E-ROI 게이트와 동형
+            w_omx = frames.world_dir_to_robot(w, env["base"])
+            quat = steps._present_quat_axis(w_omx, alpha)
+            sol = _ik(env["k_omx"], tcp_o, quat)
+            # 손목 뒤집힘 기각 — plan_omx_present 와 동형 (케이블 안전 불변식)
+            if sol and abs(sol[-1]) <= steps._WRIST_NATURAL_MAX_RAD:
+                return tcp_w, sol, e, w
+    pytest.fail("제시 전멸 — _present_w_candidates/랑데부 밴드 회귀 "
+                "(scripts/handover_layout_tune.py 로 재특성화)")
 
 
 def test_present_and_receive_feasible_with_clearance(env):
-    _tcp_w, omx_sol, h = _adopt_present(env)
+    _tcp_w, omx_sol, h, w = _adopt_present(env)
     # so101 수취 관측 사다리 ≥1
     az0 = math.atan2(h[1], h[0])
     obs_ok = False
@@ -200,14 +201,17 @@ def test_present_and_receive_feasible_with_clearance(env):
             break
     assert obs_ok, "so101 수취 관측 사다리 전멸 — _RECV_OBS_* 회귀"
 
-    # 수취 가족 (수직 조축족 — tool z ∥ 봉 축 = 수직), 겨냥 = E (노출부).
-    # ≥1 [pre, grasp] 도달 + 벽밖 + 여유. 자세족 자체가 수직 조축임도 잠근다
-    # (probe 결론: 수평 조축은 so101 공중 도달 0 — 회귀 방지).
+    # 수취 가족 (tool z ∥ **봉 축 w**), 겨냥 = E (노출부). ≥1 [pre, grasp] 도달.
+    # 자세족이 실제로 봉 축에 정렬됨도 잠근다 (축 하드코딩 회귀 방지).
     tgt = h
+    w_unit = np.asarray(w, dtype=float)
+    w_unit = w_unit / np.linalg.norm(w_unit)
     so_sols = []
-    for _label, quat, a in steps._recv_orients(tgt):
+    for _label, quat, a in steps._recv_orients(tgt, w):
         tool_z = _R.from_quat(quat).apply([0.0, 0.0, 1.0])
-        assert abs(tool_z[2]) > 0.99, "수취 자세족에 비수직 tool z — 설계 회귀"
+        assert abs(float(np.dot(tool_z, w_unit))) > 0.99, (
+            "수취 자세족 tool z 가 봉 축에 정렬되지 않음 — 설계 회귀"
+        )
         for clear_m in steps._RECV_PRE_CLEAR_LADDER:  # 접근 여유 사다리
             pre = tuple(tgt[i] - a[i] * clear_m for i in range(3))
             s_pre, s_g = _ik(env["k_so"], pre, quat), _ik(env["k_so"], tgt, quat)
@@ -215,7 +219,7 @@ def test_present_and_receive_feasible_with_clearance(env):
                 so_sols.append(s_g)
                 break
     assert so_sols, (
-        f"so101 수취 가족 전멸 — 수직 조축족(_recv_orients)/E 높이 회귀 (E={h})"
+        f"so101 수취 가족 전멸 — _recv_orients/E 위치 회귀 (E={h}, w={w})"
     )
 
     so_t, omx_t = env["so"].type, env["omx"].type

@@ -47,7 +47,10 @@ from modules.tasks.handover.collision import (  # noqa: E402
     BasePose,
     CrossRobotChecker,
 )
-from modules.tasks.handover.frames import world_to_robot  # noqa: E402
+from modules.tasks.handover.frames import (  # noqa: E402
+    world_dir_to_robot,
+    world_to_robot,
+)
 
 _ROOT = Path(__file__).resolve().parents[2]
 _ROBOT = _ROOT / "robot"
@@ -161,6 +164,12 @@ def main() -> None:
         help="base_pose 오버라이드 — **마운트 전 what-if 용**. 실측 대신 쓰지 말 것 "
              "(실측은 cross_calibrate.py → robots.yaml).",
     )
+    ap.add_argument(
+        "--roi-so", default=None, metavar="XMIN,XMAX,YMIN,YMAX",
+        help="so101 workcell ROI 오버라이드 (what-if) — 랑데부 스윕 격자와 E 게이트가 "
+             "이 ROI 라서, 실제 도달 영역보다 좁게 선언돼 있으면 성립하는 자세를 "
+             "스윕이 못 본다. 확정하려면 instance.yaml 을 고칠 것.",
+    )
     args = ap.parse_args()
 
     if args.base:
@@ -171,6 +180,11 @@ def main() -> None:
     else:
         base = _base_omx()
     roi_so, roi_omx = _load("so101_6dof_0"), _load("omx_f_0")
+    if args.roi_so:
+        xi, xa, yi, ya = (float(v) for v in args.roi_so.split(","))
+        roi_so = dict(roi_so, x_min=xi, x_max=xa, y_min=yi, y_max=ya)
+        print(f"⚠ so101 ROI 오버라이드 (what-if — instance.yaml 아님): "
+              f"x[{xi},{xa}] y[{yi},{ya}]", flush=True)
     x_ce = _hand_eye_so()
     ks = PybulletKinematics(
         _ROBOT / "so101_6dof" / "urdf"
@@ -200,70 +214,89 @@ def main() -> None:
                         and roi_omx["z_min"] <= t_o[2] <= roi_omx["z_max"]):
                     continue
                 alpha = math.atan2(t_o[1], t_o[0])
-                q_omx = steps._present_quat_hang(alpha)
-                s_omx = ko.ik(t_o, q_omx, [0.0] * ko.dof, IK_BUDGET)
-                if s_omx is None:
-                    continue
-                if abs(s_omx[-1]) > steps._WRIST_NATURAL_MAX_RAD:
-                    continue  # ① 손목 뒤집힘 (케이블 안전)
-                if ck.min_link_world_x(
-                        "b", s_omx, grip=steps._OMX_HOLD_GRIP_FRAC
-                ) < steps._WALL_MIN_X_M:
-                    continue  # ② 벽(뒤)
-                e = np.array([t_w[0], t_w[1], t_w[2] - _GEOM.tcp_to_e_m])
-                if not (roi_so["x_min"] <= e[0] <= roi_so["x_max"]
-                        and roi_so["y_min"] <= e[1] <= roi_so["y_max"]
-                        and roi_so["z_min"] <= e[2] <= roi_so["z_max"]):
-                    continue  # ③ E ∈ so101 ROI
-                # ④ so101 수취 (자세족 × 접근 여유 사다리) — 통과 개수 = 강건성
-                n_recv, s_so, best_clear = 0, None, None
-                for _label, quat, a in steps._recv_orients(tuple(e)):
-                    for clear in steps._RECV_PRE_CLEAR_LADDER:
-                        pre = tuple(e[i] - a[i] * clear for i in range(3))
-                        s1 = ks.ik(pre, quat, [0.0] * ks.dof, IK_BUDGET)
-                        if s1 is None:
-                            continue
-                        s2 = ks.ik(tuple(e), quat, s1, IK_BUDGET)
-                        if s2 is None:
-                            continue
-                        n_recv += 1
-                        if s_so is None:
-                            s_so, best_clear = s2, clear
-                        break
-                if s_so is None:
-                    continue
-                # ⑤ 충돌 여유
-                if ck.in_collision(
-                    s_so, s_omx, grip_a=1.0,
-                    grip_b=steps._OMX_HOLD_GRIP_FRAC,
-                    margin_m=steps._RECV_COLLISION_MARGIN_M,
-                ):
-                    continue
-                # ⑥ 노출부 전체 비가림 관측 자세 수
-                tg = _exposed_targets(t_w)
-                n_clear = 0
-                for tp, tq, cam in _camera_poses(e, x_ce):
-                    s_obs = ks.ik(tp, tq, [0.0] * ks.dof, 10)
-                    if s_obs is None:
-                        continue
-                    if _blocked_frac(ck, s_obs, s_omx, cam, tg) == 0.0:
-                        n_clear += 1
-                if n_clear == 0:
-                    continue
-                gap = min((c[8] for c in p.getClosestPoints(
-                    bodyA=ck._a.body, bodyB=ck._b.body, distance=0.3,
-                    physicsClientId=ck._client)), default=0.3)
-                rows.append({
-                    "tcp": [round(float(v), 4) for v in t_w],
-                    "E": [round(float(v), 4) for v in e],
-                    "n_recv": n_recv, "n_obs_clear": n_clear,
-                    "gap_mm": round(gap * 1000, 1),
-                    "pre_clear_m": best_clear,
-                })
+                # ⓪ **노출 방향 w 후보** 순회 (2026-07-28 축 일반화 — 옛 코드는
+                # 매달기 단일 자세만 봤다. 수평 제시가 새 배치의 실측족이다)
+                for w_label, w in steps._present_w_candidates(tuple(t_w)):
+                    _sweep_one(
+                        rows, ck, ks, ko, base, roi_so, t_w, t_o, alpha,
+                        w_label, w, x_ce,
+                    )
     ck.close()
     ks.close()
     ko.close()
+    _report(rows, args)
 
+
+def _sweep_one(rows, ck, ks, ko, base, roi_so, t_w, t_o, alpha, w_label, w, x_ce):
+    """랑데부 TCP × 노출 방향 w 조합 하나를 전 게이트에 통과시켜 본다.
+
+    통과하면 rows 에 한 줄 append. 게이트 순서 = production plan_omx_present /
+    plan_so_observe / plan_receive 와 동형 (스크립트 docstring 목록)."""
+    w_omx = world_dir_to_robot(tuple(w), base)
+    q_omx = steps._present_quat_axis(w_omx, alpha)
+    s_omx = ko.ik(t_o, q_omx, [0.0] * ko.dof, IK_BUDGET)
+    if s_omx is None:
+        return
+    if abs(s_omx[-1]) > steps._WRIST_NATURAL_MAX_RAD:
+        return  # ① 손목 뒤집힘 (케이블 안전)
+    if ck.min_link_world_x(
+        "b", s_omx, grip=steps._OMX_HOLD_GRIP_FRAC
+    ) < steps._WALL_MIN_X_M:
+        return  # ② 벽(뒤)
+    e = np.asarray(t_w, dtype=float) + np.asarray(w, dtype=float) * _GEOM.tcp_to_e_m
+    if not (roi_so["x_min"] <= e[0] <= roi_so["x_max"]
+            and roi_so["y_min"] <= e[1] <= roi_so["y_max"]
+            and roi_so["z_min"] <= e[2] <= roi_so["z_max"]):
+        return  # ③ E ∈ so101 ROI
+    # ④ so101 수취 (봉 축 기준 자세족 × 접근 여유 사다리) — 통과 수 = 강건성
+    n_recv, s_so, best_clear = 0, None, None
+    for _label, quat, a in steps._recv_orients(tuple(e), tuple(w)):
+        for clear in steps._RECV_PRE_CLEAR_LADDER:
+            pre = tuple(e[i] - a[i] * clear for i in range(3))
+            s1 = ks.ik(pre, quat, [0.0] * ks.dof, IK_BUDGET)
+            if s1 is None:
+                continue
+            s2 = ks.ik(tuple(e), quat, s1, IK_BUDGET)
+            if s2 is None:
+                continue
+            n_recv += 1
+            if s_so is None:
+                s_so, best_clear = s2, clear
+            break
+    if s_so is None:
+        return
+    # ⑤ 충돌 여유
+    if ck.in_collision(
+        s_so, s_omx, grip_a=1.0, grip_b=steps._OMX_HOLD_GRIP_FRAC,
+        margin_m=steps._RECV_COLLISION_MARGIN_M,
+    ):
+        return
+    # ⑥ 노출부 전체 비가림 관측 자세 수 (봉 축 방향 표본)
+    tg = steps.sight_targets(tuple(t_w), tuple(w), _GEOM)
+    n_clear = 0
+    for tp, tq, cam in _camera_poses(e, x_ce):
+        s_obs = ks.ik(tp, tq, [0.0] * ks.dof, 10)
+        if s_obs is None:
+            continue
+        if _blocked_frac(ck, s_obs, s_omx, cam, tg) == 0.0:
+            n_clear += 1
+    if n_clear == 0:
+        return
+    gap = min((c[8] for c in p.getClosestPoints(
+        bodyA=ck._a.body, bodyB=ck._b.body, distance=0.3,
+        physicsClientId=ck._client)), default=0.3)
+    rows.append({
+        "tcp": [round(float(v), 4) for v in t_w],
+        "E": [round(float(v), 4) for v in e],
+        "w": [round(float(v), 4) for v in w],
+        "w_label": w_label,
+        "n_recv": n_recv, "n_obs_clear": n_clear,
+        "gap_mm": round(gap * 1000, 1),
+        "pre_clear_m": best_clear,
+    })
+
+
+def _report(rows, args) -> None:
     if not rows:
         raise SystemExit(
             "전 후보 전멸 — base_pose/workcell ROI 를 확인하세요. omx 를 so101 "
@@ -274,14 +307,19 @@ def main() -> None:
     best = rows[0]
     print(f"\n통과 랑데부 {len(rows)}개. 상위 8개:", flush=True)
     for r in rows[:8]:
-        print(f"  TCP {r['tcp']}  E {r['E']}  비가림관측 {r['n_obs_clear']}  "
-              f"수취자세 {r['n_recv']}  간격 {r['gap_mm']}mm  "
-              f"접근여유 {r['pre_clear_m'] * 100:.0f}cm", flush=True)
+        print(f"  TCP {r['tcp']}  w {r['w_label']}{r['w']}  E {r['E']}  "
+              f"비가림관측 {r['n_obs_clear']}  수취자세 {r['n_recv']}  "
+              f"간격 {r['gap_mm']}mm  접근여유 {r['pre_clear_m'] * 100:.0f}cm",
+              flush=True)
     zs = sorted({r["tcp"][2] for r in rows},
                 key=lambda z: -sum(1 for r in rows if r["tcp"][2] == z))
+    elevs = sorted({r["w_label"].split("elev")[1] for r in rows},
+                   key=lambda s: -sum(1 for r in rows if r["w_label"].endswith(s)))
     print("\n─── steps.py 에 반영할 값 ───", flush=True)
     print(f"_PRESENT_Z_WORLD = {tuple(zs)}", flush=True)
     print(f"_RENDEZVOUS_PREFER_XY = ({best['tcp'][0]}, {best['tcp'][1]})",
+          flush=True)
+    print(f"# 채택 w 족 = {best['w_label']} — 통과 elevation 빈도순 {elevs}",
           flush=True)
     if args.json:
         args.json.write_text(json.dumps(rows, ensure_ascii=False, indent=2),

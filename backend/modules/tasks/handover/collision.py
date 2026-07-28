@@ -244,6 +244,53 @@ class CrossRobotChecker:
                 )
             return min(xs)
 
+    def sight_blocked(
+        self,
+        joints_a: list[float],
+        joints_b: list[float],
+        cam_pos: tuple[float, float, float],
+        targets: list[tuple[float, float, float]],
+        *,
+        grip_a: float = 1.0,
+        grip_b: float = 1.0,
+        self_clear_m: float = 0.02,
+        hit_frac_max: float = 0.97,
+    ) -> bool:
+        """cam_pos → targets 시선 중 **하나라도** 링크에 막히면 True.
+
+        ⚠ 2026-07-28 실물: so101 이 도달 가능한 첫 관측 자세로 갔는데 그 방향에서
+        omx 손목이 봉 정중앙을 가로질러, 봉이 두 조각으로 갈리고 아래 조각(점군
+        88, 보이는 높이 2.5cm)만 검출돼 겨냥점이 2.8cm 아래로 밀렸다 → 수취 IK
+        전멸. offline probe(handover_layout_tune 게이트 ⑥)는 "128개 중 44개
+        비가림"을 **세기만** 했고 채택 1순위가 그중 하나인지는 보장하지 않았다.
+        이 판정을 런타임 게이트로 승격한 것.
+
+        두 robot **모두**를 향해 캐스팅한다 — 카메라는 so101 손목에 달려 있어
+        자기 그리퍼도 가림원이다 (실물 이미지에 자기 조가 프레임 하단 점유).
+        시작점을 self_clear_m 앞으로 밀어 자기 wrist mesh 즉발 오탐만 회피.
+        물체(봉)는 충돌 세계에 없으므로 표본점까지 막는 것은 링크뿐이다.
+        """
+        with self._lock:
+            self._ensure_init()
+            assert self._a is not None and self._b is not None
+            self._set_config(self._a, joints_a, grip_a)
+            self._set_config(self._b, joints_b, grip_b)
+            c = np.asarray(cam_pos, dtype=float)
+            starts: list[tuple[float, float, float]] = []
+            ends: list[tuple[float, float, float]] = []
+            for t in targets:
+                v = np.asarray(t, dtype=float) - c
+                n = float(np.linalg.norm(v))
+                if n < 1e-9:
+                    continue
+                s = c + (v / n) * self_clear_m
+                starts.append((float(s[0]), float(s[1]), float(s[2])))
+                ends.append((float(t[0]), float(t[1]), float(t[2])))
+            if not starts:
+                return False
+            hits = p.rayTestBatch(starts, ends, physicsClientId=self._client)
+            return any(h[0] >= 0 and h[2] < hit_frac_max for h in hits)
+
     def path_in_collision(
         self,
         path_a: list[list[float]],

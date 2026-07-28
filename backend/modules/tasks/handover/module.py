@@ -272,16 +272,21 @@ class HandoverModule:
 
             # 6) E. so101 수취 — 재검출 → 계획(충돌 게이트) → refine → 불변식 실행
             so_obs = await steps.plan_so_observe(
-                ctx, so101, t_tcp_cam_so, present.h_world, trace
+                ctx, so101, omx, t_tcp_cam_so, present, pick.geom,
+                self._checker, trace,
             )
             det2 = await steps.so_redetect(
-                ctx, so101, pick_object, so_obs, present.h_world, trace
+                ctx, so101, pick_object, so_obs, present, pick.geom,
+                t_tcp_cam_so, trace,
             )
             plan = await steps.plan_receive(
-                ctx, so101, omx, det2, base_omx, self._checker, trace
+                ctx, so101, omx, det2, base_omx, present, pick.geom,
+                self._checker, trace,
             )
             await steps.set_gripper(ctx, so101, open_=True)
-            await steps.receive(ctx, so101, omx, plan, pick_object, trace)
+            await steps.receive(
+                ctx, so101, omx, plan, pick_object, present, pick.geom, trace
+            )
             await steps.omx_retreat(ctx, omx, so101, home_omx, self._checker)
 
             # 7) 적치 (선택) — 비우면 든 채 home (사용자 인계. 계약 주석)

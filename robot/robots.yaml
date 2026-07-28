@@ -11,7 +11,10 @@ robots:
     motor_backend: dynamixel
     camera_backend: opencv
     kinematics_backend: pybullet
-    base_pose: { x: 0.0342, y: 0.2702, z: -0.0094, yaw_deg: -3.33 }
+    # 2026-07-28 배치 변경 (직각 배치 — omx 가 책상 짧은변 중앙에서 so101 을 봄).
+    # 줄자+사진 잠정치 (x = 벽↔omx 17cm − so101 벽 이격 ~3.5cm 추정) —
+    # 실물 수취 전 cross_calibrate.py 실측으로 교체 필수 (수취 충돌 margin 8mm).
+    base_pose: { x: 0.135, y: -0.40, z: -0.0094, yaw_deg: 90.0 }
 
   so101_6dof_0:
     type: so101_6dof

@@ -41,6 +41,16 @@ def robot_to_world(p: Vec3, base: BasePose) -> Vec3:
     )
 
 
+def world_dir_to_robot(d: Vec3, base: BasePose) -> Vec3:
+    """world **방향벡터** → robot base 방향 (평행이동 없이 yaw 역회전만).
+
+    위치와 달리 방향은 base 원점 이동에 불변이다 — 봉 축(노출 방향 w)처럼
+    방향을 robot frame 자세 구성에 넘길 때 쓴다 (위치용 world_to_robot 을 쓰면
+    base 오프셋만큼 틀린 축이 된다)."""
+    c, s = math.cos(base.yaw_rad), math.sin(base.yaw_rad)
+    return (c * d[0] + s * d[1], -s * d[0] + c * d[1], d[2])
+
+
 def yaw_to_world(yaw_robot: float, base: BasePose) -> float:
     """robot frame 평면각 → world 평면각 (base yaw 가산)."""
     return yaw_robot + base.yaw_rad

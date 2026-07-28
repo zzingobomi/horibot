@@ -190,6 +190,70 @@ def _joint_state(gripper_raw: int) -> JointState:
     )
 
 
+_W_HANG = (0.0, 0.0, -1.0)  # 매달기 = 축 일반형의 특수case (노출 방향 = 아래)
+
+
+def _present(w=_W_HANG, tcp=None) -> steps.PresentPlan:
+    """PresentPlan 픽스처 — 노출 방향 w 와 제시 TCP 로 E 를 봉 축 위에 둔다."""
+    t = tuple(_TCP_W if tcp is None else tcp)
+    e = tuple(t[i] + w[i] * _GEOM.tcp_to_e_m for i in range(3))
+    return steps.PresentPlan(
+        sols=[[0.4] * 5], quat=(0.0, 0.0, 0.0, 1.0),
+        h_world=e, tcp_world=t, w=tuple(w), label="test",  # type: ignore[arg-type]
+    )
+
+
+def _observe_pose(
+    h, *, pos_off=(0.0, 0.0, 0.0)
+) -> tuple[steps.ObservePlan, TcpState]:
+    """(수취 관측 계획, 그 계획에 **도달한** TCP 상태) 쌍 — 도달 검증 통과용.
+
+    채택 그룹 = 사다리 첫 조합 (az_off/elev/dist/ψ 각 [0], _SELECT index=0).
+    hand_eye 가 identity(_hand_eye_bundle)라 카메라 pose == TCP pose.
+    `pos_off` 를 주면 어긋난 자세가 되어 미도달 실패를 재현한다."""
+    az = math.atan2(h[1], h[0]) + math.radians(steps._RECV_OBS_AZOFF_DEG[0])
+    elev = math.radians(steps._RECV_OBS_ELEV_DEG[0])
+    d = steps._RECV_OBS_DIST_M[0]
+    c = np.array([
+        h[0] - math.cos(az) * d * math.cos(elev),
+        h[1] - math.sin(az) * d * math.cos(elev),
+        h[2] + d * math.sin(elev),
+    ])
+    axis = np.asarray(h, dtype=float) - c
+    axis = axis / np.linalg.norm(axis)
+    groups, _ = steps._camera_pose_groups(
+        c, axis, (steps._RECV_OBS_PSI_DEG[0],), np.eye(4)
+    )
+    pose = groups[0][0]
+    plan = steps.ObservePlan(
+        joints=[0.5] * 6,
+        cam_pos=(float(c[0]), float(c[1]), float(c[2])),
+        cam_axis=(float(axis[0]), float(axis[1]), float(axis[2])),
+    )
+    reached = _tcp(
+        tuple(pose.position[i] + pos_off[i] for i in range(3)),
+        [0.5] * 6,
+        quat=pose.quaternion,
+    )
+    return plan, reached
+
+
+def _aerial_at(offset, *, along_axis, w, tcp, points=60, score=0.8):
+    """계획 봉 세그먼트 기준 (축 방향 along_axis, 축 수직 offset) 위치의 검출."""
+    a = np.asarray(w, dtype=float)
+    a = a / np.linalg.norm(a)
+    base = np.asarray(tcp, dtype=float) + a * (steps._OMX_JAW_ALONG_M / 2.0)
+    perp = np.asarray(offset, dtype=float)
+    perp = perp - float(np.dot(perp, a)) * a  # 축 성분 제거
+    c = base + a * along_axis + perp
+    return OrientedDetection(
+        prompt="orange block", position=tuple(float(v) for v in c), score=score,
+        base_z=float(c[2]) - 0.01, height=0.02, grasp_yaw=0.1,
+        footprint=(0.022, 0.020),
+        points=[tuple(float(v) for v in c)] * points,
+    )
+
+
 def _tcp(position, joints, quat=(0.0, 0.0, 0.0, 1.0)) -> TcpState:
     return TcpState(
         robot_id=OMX, seq=0, timestamp_unix=0.0, position=position,
@@ -214,8 +278,11 @@ def _module(checker=None) -> HandoverModule:  # noqa: ANN001
     )  # type: ignore[arg-type]
 
 
-def _happy_script() -> dict:
-    """happy path 스크립트 — place_object="" (수취까지, 적치 생략)."""
+def _happy_script(e=None) -> dict:
+    """happy path 스크립트 — place_object="" (수취까지, 적치 생략).
+
+    `e` = 채택될 제시 파지점 E (관측 도달 검증 픽스처가 이걸 겨냥한다). 기본은
+    매달기 기하의 E — 수평 제시를 돌리는 테스트는 그 w 로 계산한 E 를 준다."""
     so_home = GetWaypointByNameResponse(waypoint=_wp(SO, "home", 1))
     omx_home = GetWaypointByNameResponse(waypoint=_wp(OMX, "home", 2))
     return {
@@ -226,10 +293,12 @@ def _happy_script() -> dict:
         _DETECT_PLANAR: [
             DetectOrientedResponse(found=True, candidates=[_block_det()]),
         ],
-        # so101 재검출(1) + 수취 refine(1) — 제시점(E) 그대로
+        # so101 재검출(1) + 수취 refine(1). 겨냥점은 **제시 TCP 위**에 둔다 —
+        # 매치가 "봉 축 수직 거리 + 축 방향 세그먼트 범위" 라 TCP 점은 어느 w
+        # 후보가 채택돼도 (perp=0, along=−jaw/2) 로 통과한다 (w-무관 픽스처).
         _DETECT_ORIENTED: [
-            DetectOrientedResponse(found=True, candidates=[_aerial_det(_H)]),
-            DetectOrientedResponse(found=True, candidates=[_aerial_det(_H)]),
+            DetectOrientedResponse(found=True, candidates=[_aerial_det(_TCP_W)]),
+            DetectOrientedResponse(found=True, candidates=[_aerial_det(_TCP_W)]),
         ],
         _SELECT: [
             # omx 관측 자세 (ψ 격자 중 첫 그룹)
@@ -253,10 +322,14 @@ def _happy_script() -> dict:
         _GRIP: [SetGripperResponse()] * 5,
         # omx close후 / 제시 도달 / so close후 / so 이탈후 = 4
         _READ_STATE: [_joint_state(_HELD_RAW)] * 4,
-        # 제시 계획(omx) / 수취 계획(omx) / retreat(so, omx) = 4
+        # 제시 계획(omx) / **관측 도달 검증(so)** / 수취 계획(omx) /
+        # retreat(so, omx) = 5. checker=None 이라 plan_so_observe 의 충돌
+        # 게이트용 스냅샷(omx+so)은 호출되지 않는다. 수취 계획의 omx TCP 는
+        # 겨냥점 FK 앵커의 원천이라 제시점(_TCP_W)과 일관돼야 한다.
         _TCP_SNAP: [
             _tcp((0.25, 0.0, 0.10), [0.3] * 5),
-            _tcp((0.25, 0.0, 0.12), [0.4] * 5),
+            _observe_pose(_H if e is None else e)[1],
+            _tcp(steps.world_to_robot(_TCP_W, _BASE_OMX), [0.4] * 5),
             _tcp((0.2, 0.1, 0.1), [0.6] * 6),
             _tcp((0.25, 0.0, 0.12), [0.4] * 5),
         ],
@@ -284,8 +357,17 @@ def test_base_pose_transform_roundtrip():
 # ─── ② happy path + 수취 순서 불변식 ─────────────────────────────────
 
 
-async def test_scenario_happy_path_and_release_order():
-    ctx = _ctx(_happy_script())
+@pytest.mark.parametrize("elev", [-90.0, 15.0], ids=["매달기", "수평제시"])
+async def test_scenario_happy_path_and_release_order(monkeypatch, elev):
+    """전 시나리오 호출 경로 + 수취 순서 불변식 — **매달기/수평 두 제시족 모두**.
+
+    elevation 사다리를 한 값으로 고정해 채택 w 를 결정론적으로 만들고, 그 w 로
+    계산한 E 를 관측 도달 검증 픽스처에 준다 (w 는 production 함수에서 유도 —
+    테스트가 선택 로직을 복제하지 않는다)."""
+    monkeypatch.setattr(steps, "_PRESENT_W_ELEV_DEG", (elev,))
+    w = steps._present_w_candidates(_TCP_W)[0][1]
+    e = tuple(_TCP_W[i] + w[i] * _GEOM.tcp_to_e_m for i in range(3))
+    ctx = _ctx(_happy_script(e))
     await _module().scenario(ctx, pick_object="orange block")
     log = ctx.wire.call_log
     grip_events = [
@@ -327,10 +409,13 @@ async def test_scenario_happy_path_and_release_order():
     assert len(gentle) == 2, [c["req"].speed_scale for c in ctx.calls(_MOVE_L)]
 
 
-async def test_present_is_hang_z_up_and_h_below_tcp():
-    """hang(z↑) 제시 잠금 — 채택 quat 의 tool z 가 world ↑ (pick 이 tool z ∥
-    −u 로 물었으므로 노출부는 아래로 매달림, J5=0 손목 중립 — 2026-07-27
-    케이블 감김 수정), H(재검출 겨냥점)는 제시 TCP 의 tcp_to_e 아래."""
+async def test_present_axis_invariants_tool_z_is_minus_w_and_e_on_axis():
+    """제시 축 일반형 잠금 (2026-07-28 수평 제시 전환) — 어느 w 후보가 채택돼도:
+
+    ① 채택 quat 의 **tool z (world) == −w** (pick 이 tool z ∥ −u 로 물었으므로
+       노출 방향 = −tool z. 깨지면 봉이 반대로 뻗어 수취가 조용히 깨진다)
+    ② **E == TCP + w·tcp_to_e** (파지점은 봉 축 위 — 매달기면 옛 "TCP 아래")
+    ③ E 는 so101 workcell ROI 안 (두 팔 유효 대역 정합)"""
     ctx = _ctx(_happy_script())
     script_pick = steps.BlockPick(
         sols=[[0.2] * 5], quat=(0.0, 0.0, 0.0, 1.0),
@@ -341,15 +426,17 @@ async def test_present_is_hang_z_up_and_h_below_tcp():
         ctx, OMX, _ROI_SO, _ROI_OMX, _BASE_OMX, script_pick,
         [0.1] * 6, None,
     )
-    # tool z (omx frame) ↑ — base yaw 는 z 축 회전이라 world 에서도 ↑
-    tool_z = Rotation.from_quat(plan.quat).apply([0.0, 0.0, 1.0])
-    assert tool_z[2] == pytest.approx(1.0, abs=1e-9)
-    assert plan.h_world[2] == pytest.approx(
-        _TCP_W[2] - _GEOM.tcp_to_e_m, abs=1e-9
+    # quat 은 omx frame — base yaw 로 world 로 돌려 비교
+    to_world = Rotation.from_euler("z", _BASE_OMX.yaw_rad)
+    tool_z_w = (to_world * Rotation.from_quat(plan.quat)).apply([0.0, 0.0, 1.0])
+    assert tool_z_w == pytest.approx([-v for v in plan.w], abs=1e-6)
+    expect_e = tuple(
+        plan.tcp_world[i] + plan.w[i] * _GEOM.tcp_to_e_m for i in range(3)
     )
-    assert (plan.h_world[0], plan.h_world[1]) == pytest.approx(
-        (_TCP_W[0], _TCP_W[1]), abs=1e-9
-    )
+    assert plan.h_world == pytest.approx(expect_e, abs=1e-9)
+    assert _ROI_SO.x_min <= plan.h_world[0] <= _ROI_SO.x_max
+    assert _ROI_SO.y_min <= plan.h_world[1] <= _ROI_SO.y_max
+    assert _ROI_SO.z_min <= plan.h_world[2] <= _ROI_SO.z_max
 
 
 # ─── ③ 명시 실패 클래스 ──────────────────────────────────────────────
@@ -376,15 +463,59 @@ async def test_missing_hand_eye_fails_before_motion():
 async def test_aerial_redetect_failure_is_explicit_no_fk_fallback():
     """공중 재검출 실패 = 명시 실패 — FK 짐작으로 후퇴하지 않는다 (§8-4).
     (v1 이 갈아엎은 미검증 코드가 바로 FK 기반 plan_receive 였다.)"""
+    plan, reached = _observe_pose(_H)
     ctx = _ctx({
         _MOVE_J: [MoveJResponse()],
+        _TCP_SNAP: [reached],
         _DETECT_ORIENTED: [DetectOrientedResponse(found=False, candidates=[])],
     })
     with pytest.raises(DetectionNotFound, match="재검출"):
-        await steps.so_redetect(ctx, SO, "orange block", [0.5] * 6, _H)
-    # 실패 후 추가 모션/TCP 조회 없음 (FK 폴백 경로 부재)
+        await steps.so_redetect(
+            ctx, SO, "orange block", plan, _present(), _GEOM, np.eye(4)
+        )
+    # 실패 후 추가 모션 없음 (FK 폴백 경로 부재). TCP 조회는 도달 검증 1회뿐
     assert len(ctx.calls(_MOVE_J)) == 1
-    assert ctx.calls(_TCP_SNAP) == []
+    assert len(ctx.calls(_TCP_SNAP)) == 1
+
+
+async def test_observe_pose_not_reached_fails_before_detection():
+    """관측 자세 미도달 = **검출 전에** 명시 실패.
+
+    ⚠ 2026-07-28 실물 회귀: so101 이 계획과 위치 14cm·광축 40° 다른 자세에
+    있었는데 그대로 검출을 시도해, 시야에 있던 갈색 책상이 "orange block" 으로
+    잡히고 실패 사유가 "검출 실패"로 위장됐다. 원인이 사유에 드러나야 한다."""
+    plan, off = _observe_pose(_H, pos_off=(0.14, 0.0, 0.0))  # 14cm 어긋남
+    ctx = _ctx({
+        _MOVE_J: [MoveJResponse()],
+        _TCP_SNAP: [off],
+        _DETECT_ORIENTED: [
+            DetectOrientedResponse(found=True, candidates=[_aerial_det(_H)]),
+        ],
+    })
+    with pytest.raises(TaskError, match="도달하지 못"):
+        await steps.so_redetect(
+            ctx, SO, "orange block", plan, _present(), _GEOM, np.eye(4)
+        )
+    assert ctx.calls(_DETECT_ORIENTED) == []  # 검출 호출 자체가 없어야
+
+
+def test_camera_pose_of_inverts_camera_pose_groups():
+    """`_camera_pose_of`(TCP→카메라) 는 `_camera_pose_groups`(카메라→TCP) 의 역 —
+    **같은 X** 로 왕복해야 한다. 깨지면 도달 검증이 정상 자세를 '미도달' 로
+    오판(또는 그 반대)한다. hand_eye 를 비대각·비영으로 둬야 의미 있는 검증."""
+    x = np.eye(4)
+    x[:3, :3] = Rotation.from_euler("xyz", [20, -35, 50], degrees=True).as_matrix()
+    x[:3, 3] = [0.02, -0.05, 0.07]
+    c = np.array([0.10, -0.12, 0.33])
+    axis = np.array([0.6, -0.5, -0.62])
+    axis = axis / np.linalg.norm(axis)
+    groups, _ = steps._camera_pose_groups(c, axis, (37.0,), x)
+    pose = groups[0][0]
+    cam_pos, cam_axis = steps._camera_pose_of(
+        _tcp(pose.position, [0.0] * 6, quat=pose.quaternion), x
+    )
+    assert cam_pos == pytest.approx(tuple(c), abs=1e-9)
+    assert steps._axis_error_deg(cam_axis, tuple(axis)) < 1e-6
 
 
 async def test_block_gate_rejects_untrusted_candidates():
@@ -401,6 +532,24 @@ async def test_block_gate_rejects_untrusted_candidates():
     })
     with pytest.raises(DetectionNotFound, match="신뢰 컷"):
         await steps.omx_observe_detect(ctx, OMX, "orange block", [0.1] * 5)
+
+
+async def test_inflated_short_side_still_trusted():
+    """mono 가 부풀린 짧은 변(실물 20mm → 35mm)도 신뢰 게이트를 통과해야 한다.
+
+    ⚠ 2026-07-28 실물 회귀: 상한 35mm 가 실측 분포(29/33/33/35mm) 위에 걸터앉아
+    score 0.82·점군 421 의 **정상 검출을 컷했다**. 그리고 파지 기하는 검출
+    footprint 가 아니라 known 스펙(_BLOCK_LEN_M/_BLOCK_CROSS_M)을 써야 한다."""
+    det = _block_det(footprint=(0.102, 0.0354), score=0.82)
+    ctx = _ctx({
+        _MOVE_J: [MoveJResponse()],
+        _DETECT_PLANAR: [DetectOrientedResponse(found=True, candidates=[det])],
+    })
+    got = await steps.omx_observe_detect(ctx, OMX, "orange block", [0.1] * 5)
+    assert got.footprint[1] == pytest.approx(0.0354)
+    grasp = steps.plan_block_grasp_from(got, _BASE_OMX)
+    assert grasp.length_m == pytest.approx(steps._BLOCK_LEN_M)
+    assert grasp.width_m == pytest.approx(steps._BLOCK_CROSS_M)  # 검출값 아님
 
 
 def test_short_block_fails_explicitly():
@@ -440,7 +589,9 @@ class _FakeChecker:
 
 def _receive_script(n_resolve: int) -> dict:
     return {
-        _TCP_SNAP: [_tcp((0.25, 0.0, 0.12), [0.4] * 5)],
+        # omx TCP = 제시 자세 (omx frame) — 겨냥 z 의 **FK 앵커** 원천이라
+        # world 제시점과 일관돼야 한다 (anchor = TCP_world + w·tcp_to_e = _H)
+        _TCP_SNAP: [_tcp(steps.world_to_robot(_TCP_W, _BASE_OMX), [0.4] * 5)],
         _SELECT: [
             ResolveReachableResponse(index=0, solutions=[[0.1] * 6, [0.2] * 6]),
         ] * n_resolve,
@@ -451,7 +602,8 @@ async def test_plan_receive_retries_past_colliding_group():
     checker = _FakeChecker(hits=[True, False])
     ctx = _ctx(_receive_script(2))
     plan = await steps.plan_receive(
-        ctx, SO, OMX, _aerial_det(_H), _BASE_OMX, checker  # type: ignore[arg-type]
+        ctx, SO, OMX, _aerial_det(_H), _BASE_OMX, _present(), _GEOM,
+        checker,  # type: ignore[arg-type]
     )
     assert len(checker.calls) == 2  # 1차 충돌 → 그룹 제외 재-resolve → 2차 통과
     assert len(ctx.calls(_SELECT)) == 2
@@ -467,8 +619,30 @@ async def test_plan_receive_all_colliding_fails_explicitly():
     ctx = _ctx(_receive_script(n))
     with pytest.raises(NoReachableGrasp, match="충돌"):
         await steps.plan_receive(
-            ctx, SO, OMX, _aerial_det(_H), _BASE_OMX, checker  # type: ignore[arg-type]
+            ctx, SO, OMX, _aerial_det(_H), _BASE_OMX, _present(), _GEOM,
+            checker,  # type: ignore[arg-type]
         )
+
+
+async def test_receive_aim_axis_component_uses_fk_anchor():
+    """수취 겨냥점 = **축 성분은 FK 앵커 / 축 수직 성분은 검출**.
+
+    ⚠ 2026-07-28 실물 회귀: omx 손목이 봉을 가려 아래 조각만 잡히자(점군 88,
+    보이는 높이 2.5cm) 검출 centroid 가 축 방향 2.8cm 밀려 수취 IK 가 전멸했다.
+    봉은 강체이므로 축 위 위치는 omx FK 가 정확하다 — 축 방향 밀림은 앵커로
+    덮고, 축 수직 오차(omx 그립 오차)는 검출을 따라야 한다."""
+    checker = _FakeChecker(hits=[False])
+    ctx = _ctx(_receive_script(1))
+    w = _W_HANG
+    # 축 방향 2.8cm 밀림 + 축 수직 (xy) 로 (−24, +19)mm 어긋난 검출
+    bad = _aerial_at((-0.024, 0.019, 0.0), along_axis=0.028, w=w, tcp=_TCP_W)
+    plan = await steps.plan_receive(
+        ctx, SO, OMX, bad, _BASE_OMX, _present(w), _GEOM,
+        checker,  # type: ignore[arg-type]
+    )
+    assert plan.target[2] == pytest.approx(_H[2], abs=1e-9)  # 축 성분 = 앵커
+    assert plan.target[0] == pytest.approx(_H[0] - 0.024, abs=1e-6)
+    assert plan.target[1] == pytest.approx(_H[1] + 0.019, abs=1e-6)
 
 
 # ─── ⑤ 봉 기하 (순수) ────────────────────────────────────────────────
@@ -540,40 +714,82 @@ async def test_verify_grasp_empty_close_raises():
         await steps.verify_grasp(ctx, OMX, phase="test")
 
 
-def test_recv_orients_vertical_axis_and_approach_preference():
-    """수취 자세족 잠금 — 전부 수직 조축(tool z ∥ 봉 축 = 수직) + 수평 접근,
-    첫 후보의 접근이 base→E 방위 (so101 쪽 진입 선호). probe 2026-07-27 +
-    큐브 시대 실측("도달해는 전부 수직 조축") 회귀 잠금."""
-    e = (0.21, 0.16, 0.255)
-    orients = steps._recv_orients(e)
+@pytest.mark.parametrize(
+    "axis",
+    [(0.0, 0.0, -1.0), (-0.96, -0.064, 0.274), (1.0, 0.0, 0.0)],
+    ids=["hang-수직", "실측-수평", "수평-x축"],
+)
+def test_recv_orients_aligns_tool_z_with_given_axis(axis):
+    """수취 자세족 잠금 — **주어진 봉 축**에 tool z 를 정렬하고 축 둘레 spin.
+
+    옛 코드는 수직을 하드코딩했다 (수평 제시에선 봉을 가로로 못 문다). 축이
+    수직인 경우가 옛 "수직 조축 + 수평 접근" 족과 같아지는지도 같이 잠근다."""
+    e = (0.21, -0.16, 0.255)
+    orients = steps._recv_orients(e, axis)
     assert orients
-    for _label, q, a in orients:
-        tool_z = Rotation.from_quat(q).apply([0.0, 0.0, 1.0])
-        assert abs(tool_z[2]) == pytest.approx(1.0, abs=1e-9)  # 봉 축 정렬
-        assert abs(a[2]) < 1e-9  # 수평 접근
-        # 조축(tool y)은 수평 — 봉 단면을 가로질러 문다
-        tool_y = Rotation.from_quat(q).apply([0.0, 1.0, 0.0])
-        assert abs(tool_y[2]) < 1e-9
-    az_pref = math.atan2(e[1], e[0])
-    a0 = orients[0][2]
-    assert np.dot(a0, [math.cos(az_pref), math.sin(az_pref), 0.0]) == \
-        pytest.approx(1.0, abs=1e-9)
+    a = np.asarray(axis, dtype=float)
+    a = a / np.linalg.norm(a)
+    for _label, q, ap in orients:
+        r = Rotation.from_quat(q)
+        tool_z = r.apply([0.0, 0.0, 1.0])
+        assert abs(float(np.dot(tool_z, a))) == pytest.approx(1.0, abs=1e-6)
+        # 접근(tool x)·조축(tool y)은 축에 수직 — 봉 단면을 가로질러 문다
+        assert float(np.dot(ap, a)) == pytest.approx(0.0, abs=1e-6)
+        tool_y = r.apply([0.0, 1.0, 0.0])
+        assert float(np.dot(tool_y, a)) == pytest.approx(0.0, abs=1e-6)
+    # 첫 후보 접근 = base→E 방위를 축 수직 평면으로 투영한 것 (so101 쪽 진입)
+    rad = np.array([e[0], e[1], 0.0])
+    rad = rad / np.linalg.norm(rad)
+    expect = rad - float(np.dot(rad, a)) * a
+    expect = expect / np.linalg.norm(expect)
+    assert float(np.dot(orients[0][2], expect)) == pytest.approx(1.0, abs=1e-6)
 
 
-def test_present_quat_hang_is_wrist_neutral():
-    """hang(z↑) 제시 quat — tool z ↑ + tool x 가 팔 평면(방위 α) 수평 radial
-    = 정확히 Rz(α) (ZYYYX 다양체에서 θ=0, **J5=0 손목 중립** — 옛 B/down 의
-    J5=±180 케이블 감김 수정 회귀 잠금, 2026-07-27)."""
+def test_present_quat_axis_hang_is_wrist_neutral():
+    """매달기(w=아래)는 축 일반형의 특수case — tool z ↑ + tool x 가 방위 α 의
+    수평 radial = 정확히 Rz(α) (ZYYYX 에서 θ=0, **J5=0 손목 중립**. 옛 B/down
+    의 J5=±180 케이블 감김 수정 회귀 잠금, 2026-07-27)."""
     alpha = math.radians(25.0)
-    q = steps._present_quat_hang(alpha)
+    q = steps._present_quat_axis(_W_HANG, alpha)
     r = Rotation.from_quat(q)
     assert r.apply([0.0, 0.0, 1.0]) == pytest.approx([0.0, 0.0, 1.0], abs=1e-9)
     assert r.apply([1.0, 0.0, 0.0]) == pytest.approx(
         [math.cos(alpha), math.sin(alpha), 0.0], abs=1e-9
     )
-    # R == Rz(α) — 잉여 회전 0 (J5=0/θ=0 의 행렬 표현)
     expect = Rotation.from_euler("z", alpha)
     assert (r.inv() * expect).magnitude() == pytest.approx(0.0, abs=1e-9)
+
+
+def test_present_quat_axis_horizontal_has_vertical_jaw():
+    """수평 제시 — tool z == −w 이고 **jaw(tool y)가 수직**.
+
+    ⚠ 2026-07-28 사용자 토크오프 실측 근거: 두 로봇 조가 모두 수직(omx 18.5° /
+    so101 9.7° off)이었다. 조가 봉을 위/아래로 물어야 중력이 조를 비틀지 않고
+    so101 수취 자세족과 규약이 같아진다."""
+    w = (-0.96, -0.064, 0.274)
+    q = steps._present_quat_axis(w, alpha=0.0)
+    r = Rotation.from_quat(q)
+    wn = np.asarray(w, dtype=float)
+    wn = wn / np.linalg.norm(wn)
+    assert r.apply([0.0, 0.0, 1.0]) == pytest.approx(-wn, abs=1e-6)
+    tool_y = r.apply([0.0, 1.0, 0.0])
+    assert abs(float(tool_y[2])) > 0.95, f"jaw 가 수직이 아님 ({tool_y})"
+
+
+def test_present_w_candidates_prefer_tangent():
+    """w 후보 선호순 — **접선(±t) 우선, radial 나중** (실측족이 접선 −t).
+    접선은 base→TCP 방위에 수직이어야 한다."""
+    tcp = (0.126, -0.274, 0.204)
+    cands = steps._present_w_candidates(tcp)
+    assert cands
+    assert cands[0][0].startswith("-t")
+    r = np.array([tcp[0], tcp[1], 0.0])
+    r = r / np.linalg.norm(r)
+    horiz = np.array([cands[0][1][0], cands[0][1][1], 0.0])
+    horiz = horiz / np.linalg.norm(horiz)
+    assert float(np.dot(horiz, r)) == pytest.approx(0.0, abs=1e-6)
+    labels = [c[0] for c in cands]
+    assert labels.index("-t/elev+15") < labels.index("-r/elev+15")
 
 
 async def test_pick_prefers_natural_wrist_far_end():
@@ -653,39 +869,60 @@ async def test_module_list_robots_and_preview():
 # ─── 수취 겨냥점 / 게이트 정합 (2026-07-28 실물 회귀) ──────────────────
 
 
-def test_aerial_target_rejects_jaw_side_fragment():
-    """2026-07-27 실물 실패의 검출측 근인을 잠근다.
+async def test_jaw_side_fragment_axis_error_absorbed_by_anchor():
+    """2026-07-27 실물 실패(수취 IK 전멸)의 검출측 근인을 **앵커로 무해화**한다.
 
-    omx 조 가림으로 점군이 갈렸을 때 옛 규약이 채택한 **조 안쪽 조각**
-    (base_z=0.2884 / height=0.0151 / position z=0.3035, 실측값) 은 계획 E
-    (z=0.2549) 대비 z 오차가 커서 **매치에서 기각**돼야 한다. 옛 코드는
-    position z 를 그대로 쓰고 밴드가 ±60mm 라 48.6mm 오차를 침묵 통과시켰고,
-    그 겨냥점에서 so101 수취 IK 가 전멸했다."""
+    omx 조 가림으로 점군이 갈렸을 때 검출된 **조 안쪽 조각** (base_z=0.2884 /
+    height=0.0151 / position z=0.3035 — 실측값) 은 계획 E(z=0.2549) 대비 축
+    방향으로 41mm 위다. 옛 코드는 그 z 를 그대로 겨냥해 수취 IK 가 전멸했다.
+
+    축 일반형에서는 이 조각을 **기각하지 않는다** — 축 방향 오차는 가림에 따라
+    항상 생기는 값이므로 FK 앵커로 덮고(그러면 무해), 축 수직 성분만 보정으로
+    쓴다. 즉 잠글 것은 "기각" 이 아니라 **"겨냥점 축 성분이 앵커를 따른다"** 다."""
     frag = OrientedDetection(
         prompt="orange block", position=(0.2036, 0.1118, 0.3035), score=0.834,
         base_z=0.2884, height=0.0151, grasp_yaw=-0.46, footprint=(0.019, 0.009),
         points=[(0.2036, 0.1118, 0.296)] * 45,
     )
-    h_world = (0.1966, 0.1464, 0.2549)  # 실측 계획 E
-    assert steps._match_aerial([frag], h_world) is None, (
-        "조 안쪽 조각이 매치를 통과했다 — _RECV_Z_BAND_M/aerial_target 회귀"
+    checker = _FakeChecker(hits=[False])
+    ctx = _ctx(_receive_script(1))
+    plan = await steps.plan_receive(
+        ctx, SO, OMX, frag, _BASE_OMX, _present(_W_HANG), _GEOM,
+        checker,  # type: ignore[arg-type]
+    )
+    # 겨냥 z = FK 앵커 (검출의 41mm 축 오차가 실리지 않는다)
+    assert plan.target[2] == pytest.approx(_H[2], abs=1e-9)
+    assert abs(plan.target[2] - frag.position[2]) > 0.04, (
+        "검출 z 가 겨냥점에 실렸다 — 앵커 규약 회귀"
     )
 
 
-def test_aerial_target_accepts_exposed_cluster_and_hits_planned_e():
-    """`body_select="bottom"` 으로 받은 **노출부 군집**은 통과하고, 겨냥점 z 가
-    계획 E 와 mm 급으로 맞아야 한다 (실측 재계산: 0.4mm)."""
-    exposed = OrientedDetection(
-        prompt="orange block", position=(0.196, 0.113, 0.276), score=0.83,
-        base_z=0.233, height=0.043, grasp_yaw=0.1, footprint=(0.022, 0.020),
-        points=[(0.196, 0.113, 0.2545)] * 60,
-    )
-    h_world = (0.1966, 0.1464, 0.2549)
-    best = steps._match_aerial([exposed], h_world)
-    assert best is not None, "노출부 군집이 기각됐다"
-    tgt = steps.aerial_target(best)
-    assert abs(tgt[2] - h_world[2]) < 0.005, f"겨냥점 z 가 계획 E 와 어긋남 ({tgt})"
-    assert tgt[0] == exposed.position[0] and tgt[1] == exposed.position[1]
+@pytest.mark.parametrize(
+    "w,tcp",
+    [((0.0, 0.0, -1.0), (0.29, -0.157, 0.28)),
+     ((-0.96, -0.064, 0.274), (0.126, -0.274, 0.204))],
+    ids=["hang-수직", "실측-수평"],
+)
+def test_match_aerial_axis_general_gates(w, tcp):
+    """매치 게이트 축 일반형 — **축 수직 거리는 엄격 / 축 방향은 세그먼트 범위**.
+
+    옛 게이트는 "계획점 xy 반경 + z 대역" 이라 봉이 수직일 때만 맞는 판정이었다.
+    축 방향 밀림은 통과시켜야 하고(가림 의존 값 + 하류가 FK 앵커로 덮는다),
+    축에서 **벗어난** 후보는 기각해야 한다 (그 성분이 수취 IK 를 죽인다)."""
+    ok = _aerial_at((0, 0, 0), along_axis=0.03, w=w, tcp=tcp)
+    assert steps._match_aerial([ok], tcp, w, _GEOM) is ok
+    # 가림으로 축 방향 5.2cm 밀림 (노출 5.4cm 안) → 통과해야 (앵커가 덮는다)
+    drift = _aerial_at((0, 0, 0), along_axis=0.052, w=w, tcp=tcp)
+    assert steps._match_aerial([drift], tcp, w, _GEOM) is drift
+    # 축에서 크게 벗어남 (반경 8cm 초과) → 기각
+    off = _aerial_at((0.12, 0.05, 0.09), along_axis=0.03, w=w, tcp=tcp)
+    assert steps._match_aerial([off], tcp, w, _GEOM) is None
+    # 축 방향 세그먼트 훨씬 밖 → 기각
+    far = _aerial_at((0, 0, 0), along_axis=0.20, w=w, tcp=tcp)
+    assert steps._match_aerial([far], tcp, w, _GEOM) is None
+    # 점군 게이트 유지
+    thin = _aerial_at((0, 0, 0), along_axis=0.03, w=w, tcp=tcp, points=5)
+    assert steps._match_aerial([thin], tcp, w, _GEOM) is None
 
 
 def test_recv_pre_clear_ladder_prefers_long_standoff():

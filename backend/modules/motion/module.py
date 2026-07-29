@@ -721,9 +721,12 @@ class MotionModule:
                 if _screen(groups[gi]):
                     alive.append(gi)
                 else:
-                    fails[gi] = "위치(workspace 밖)"
+                    fails[gi] = "위치 물리 도달 불가(IK)"
             if not alive:
-                return -1, [], f"전 후보({len(groups)}) 위치가 workspace 밖", fails
+                return -1, [], (
+                    f"전 후보({len(groups)}) 위치가 팔 물리 도달 범위 밖 "
+                    "(config workspace/ROI 아님 — position-only IK 판정)"
+                ), fails
             gate_rejects = {"floor": 0, "obstacle": 0, "joint_path": 0, "path": 0}
             ik_fails = 0
             # 게이트 통과 그룹 누적 (index, 잔차mm, 해) — 잔차 선호 채택

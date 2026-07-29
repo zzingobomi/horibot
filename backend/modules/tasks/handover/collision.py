@@ -119,6 +119,7 @@ class CrossRobotChecker:
         self._client: int | None = None
         self._a: _Body | None = None
         self._b: _Body | None = None
+        self._offset_b = (0.0, 0.0, 0.0)
         self._lock = threading.Lock()
 
     # ─── lifecycle ────────────────────────────────────────────────
@@ -134,7 +135,11 @@ class CrossRobotChecker:
         qw = math.cos(self._base_b.yaw_rad / 2.0)
         body_b = p.loadURDF(
             self._urdf_b,
-            basePosition=(self._base_b.x, self._base_b.y, self._base_b.z),
+            basePosition=(
+                self._base_b.x + self._offset_b[0],
+                self._base_b.y + self._offset_b[1],
+                self._base_b.z + self._offset_b[2],
+            ),
             baseOrientation=(0.0, 0.0, qz, qw),
             useFixedBase=True,
             physicsClientId=self._client,
@@ -164,6 +169,35 @@ class CrossRobotChecker:
             body=body, movable=idx, lower=lower, upper=upper, names=names,
             mimic=_parse_mimic(urdf_path),
         )
+
+    def set_base_offset_b(self, offset: tuple[float, float, float]) -> None:
+        """b(omx) 몸체를 world 평행이동 — 재제시 보정이 실측한 세계모델 오차
+        (omx FK+base_pose+조 물림 합성, 2026-07-29 실측 ~40mm)를 충돌/시선/벽
+        판정에 반영한다. 모델만 옮기면 margin 8mm 가 실물 기준이 된다 (실물
+        "닿을랑 말랑" 근접 사고의 근본 대응). (0,0,0) = 원 base_pose 복원."""
+        with self._lock:
+            self._offset_b = (
+                float(offset[0]), float(offset[1]), float(offset[2])
+            )
+            if self._client is not None and self._b is not None:
+                qz = math.sin(self._base_b.yaw_rad / 2.0)
+                qw = math.cos(self._base_b.yaw_rad / 2.0)
+                p.resetBasePositionAndOrientation(
+                    self._b.body,
+                    (
+                        self._base_b.x + self._offset_b[0],
+                        self._base_b.y + self._offset_b[1],
+                        self._base_b.z + self._offset_b[2],
+                    ),
+                    (0.0, 0.0, qz, qw),
+                    physicsClientId=self._client,
+                )
+            logger.info(
+                "CrossRobotChecker base_b offset = (%.1f, %.1f, %.1f)mm",
+                self._offset_b[0] * 1000,
+                self._offset_b[1] * 1000,
+                self._offset_b[2] * 1000,
+            )
 
     def close(self) -> None:
         with self._lock:

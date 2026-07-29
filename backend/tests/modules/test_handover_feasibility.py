@@ -300,3 +300,75 @@ def test_present_and_receive_feasible_with_clearance(env):
         )
     finally:
         chk.close()
+
+
+def test_replan_with_measured_offset_finds_candidate(env):
+    """⑥ **재제시 재계획 (world_offset)** — 2026-07-29 21:11 실물 실측 오차
+    (봉 실물이 FK 대비 so101 쪽으로 40mm, p=(−7.6,+37.4)mm·z 앵커) 를 넣고
+    plan_omx_present 동형 스윕을 돌리면 **채택 후보가 있어야** 한다.
+
+    그날 밤 1차 구현(같은 자세 단일 평행이동)은 omx 가용 밴드를 벗어나 IK
+    전멸했고, probe 결과 이 오차 아래에선 수평 접선족 교집합이 비어 **hang
+    (매달기)** 만 남는다 — 직각 배치에서 hang 은 관측 IK 23~46/128 · 시선
+    전부 클리어라 유효한 폴백이다 (옛 배치의 "hang=가림" 은 배치의 함수,
+    §4.8). 이 테스트가 깨지면: _PRESENT_LIMIT 축소 / w 후보족 변경 /
+    workcell ROI 변경이 재제시 경로를 죽인 것이다."""
+    p = np.array([-0.0076, 0.0374, 0.0])  # 21:11 실측 (z 는 FK 앵커)
+    geom = _BLOCK_GEOM
+    chk = CrossRobotChecker(
+        _ROBOT_DIR / env["so"].type / "urdf" / f"{env['so'].type}.urdf",
+        _ROBOT_DIR / env["omx"].type / "urdf" / f"{env['omx'].type}.urdf",
+        env["base"],
+    )
+    chk.set_base_offset_b(tuple(float(v) for v in p))
+    try:
+        cands = frames.rendezvous_candidates(
+            env["roi_so"], env["roi_omx"], env["base"], steps._PRESENT_Z_WORLD,
+            limit=steps._PRESENT_LIMIT,
+            prefer_point=steps._RENDEZVOUS_PREFER_XY,
+        )
+        roi_so = env["roi_so"]
+        attempts = [
+            (t, lb, w)
+            for hang in (False, True)
+            for t in cands
+            for lb, w in steps._present_w_candidates(t, env["base"])
+            if (lb == "hang") == hang
+        ]
+        adopted = None
+        for tcp_w, label, w in attempts:
+            tcp_o = frames.world_to_robot(tcp_w, env["base"])
+            alpha = math.atan2(tcp_o[1], tcp_o[0])
+            e_real = tuple(
+                tcp_w[i] + w[i] * geom.tcp_to_e_m + float(p[i])
+                for i in range(3)
+            )
+            s_m = steps._E_ROI_SLACK_M
+            if not (
+                roi_so.x_min - s_m <= e_real[0] <= roi_so.x_max + s_m
+                and roi_so.y_min - s_m <= e_real[1] <= roi_so.y_max + s_m
+                and roi_so.z_min - s_m <= e_real[2] <= roi_so.z_max + s_m
+            ):
+                continue
+            quat = steps._present_quat_axis(
+                frames.world_dir_to_robot(w, env["base"]), alpha
+            )
+            sol = _ik(env["k_omx"], tcp_o, quat)
+            if sol is None or abs(sol[-1]) > steps._WRIST_NATURAL_MAX_RAD:
+                continue
+            if chk.min_link_world_x(
+                "b", sol, grip=steps._OMX_HOLD_GRIP_FRAC
+            ) < steps._WALL_MIN_X_M:
+                continue
+            if _receive_exists(env, chk, e_real, w, sol):
+                adopted = (label, tcp_w, e_real)
+                break
+        assert adopted is not None, (
+            "실측 오차(40mm) 재계획 전멸 — _PRESENT_LIMIT/w 후보족/ROI 회귀 "
+            "(2026-07-29 21:11 실물 오차로도 후보가 있어야 재제시가 산다)"
+        )
+        label, tcp_w, e_real = adopted
+        # 그날 probe 실증: 이 오차에선 hang 만 살았다. 수평이 살아나는 건
+        # 환영(개선)이므로 자세족 자체는 잠그지 않는다 — 존재만 잠근다.
+    finally:
+        chk.close()

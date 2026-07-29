@@ -117,6 +117,17 @@ _TCP_W = frames.rendezvous_candidates(
 _H = (_TCP_W[0], _TCP_W[1], _TCP_W[2] - _GEOM.tcp_to_e_m)
 
 
+def _e_in_roi(pt):
+    """production plan_omx_present 의 E-ROI 게이트 동형 (slack 포함)."""
+    s_m = steps._E_ROI_SLACK_M
+    return (
+        _ROI_SO.x_min - s_m <= pt[0] <= _ROI_SO.x_max + s_m
+        and _ROI_SO.y_min - s_m <= pt[1] <= _ROI_SO.y_max + s_m
+        and _ROI_SO.z_min - s_m <= pt[2] <= _ROI_SO.z_max + s_m
+    )
+
+
+
 @pytest.fixture(autouse=True)
 def _fast(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(steps, "_GRIPPER_SETTLE_S", 0.0)
@@ -376,9 +387,7 @@ async def test_scenario_happy_path_and_release_order(monkeypatch, elev):
 
     w = next(
         wv for _lb, wv in steps._present_w_candidates(_TCP_W, _BASE_OMX)
-        if _ROI_SO.x_min <= _e_of(wv)[0] <= _ROI_SO.x_max
-        and _ROI_SO.y_min <= _e_of(wv)[1] <= _ROI_SO.y_max
-        and _ROI_SO.z_min <= _e_of(wv)[2] <= _ROI_SO.z_max
+        if _e_in_roi(_e_of(wv))
     )
     e = _e_of(w)
     ctx = _ctx(_happy_script(e))
@@ -448,9 +457,7 @@ async def test_present_axis_invariants_tool_z_is_minus_w_and_e_on_axis():
         plan.tcp_world[i] + plan.w[i] * _GEOM.tcp_to_e_m for i in range(3)
     )
     assert plan.h_world == pytest.approx(expect_e, abs=1e-9)
-    assert _ROI_SO.x_min <= plan.h_world[0] <= _ROI_SO.x_max
-    assert _ROI_SO.y_min <= plan.h_world[1] <= _ROI_SO.y_max
-    assert _ROI_SO.z_min <= plan.h_world[2] <= _ROI_SO.z_max
+    assert _e_in_roi(plan.h_world), "E 가 ROI+slack 밖 — E-ROI 게이트 회귀"
 
 
 # ─── ③ 명시 실패 클래스 ──────────────────────────────────────────────
@@ -668,14 +675,16 @@ def test_plan_block_grasp_ends_and_offsets():
     assert len(g.ends) == 2  # 양 끝 동등 후보 (축대칭)
     # 끝점 = 중심 ± 4cm, 파지점 = 끝에서 frac(20% = 1.6cm) 안쪽
     (g1, u1), (g2, u2) = g.ends
-    assert g1 == pytest.approx((0.20 - 0.04 + 0.016, 0.0), abs=1e-12)
+    _g_off = steps._BLOCK_GRASP_FRAC * steps._BLOCK_LEN_M  # 잡는 끝에서 안쪽
+    assert g1 == pytest.approx((0.20 - 0.04 + _g_off, 0.0), abs=1e-12)
     assert u1 == pytest.approx((1.0, 0.0), abs=1e-12)  # 노출 = +x (반대 끝)
-    assert g2 == pytest.approx((0.20 + 0.04 - 0.016, 0.0), abs=1e-12)
+    assert g2 == pytest.approx((0.20 + 0.04 - _g_off, 0.0), abs=1e-12)
     assert u2 == pytest.approx((-1.0, 0.0), abs=1e-12)
-    # 노출 = 8 − 1.6 − 1(조 절반) = 5.4cm / E 오프셋 = 1 + 0.65·5.4 = 4.51cm
-    assert g.exposed_len_m == pytest.approx(0.054)
-    assert g.tcp_to_e_m == pytest.approx(0.01 + 0.65 * 0.054)
-    assert g.below_e_m == pytest.approx(0.35 * 0.054)
+    # 노출 = L − g − 조절반 / E 오프셋 = 조절반 + 0.65·노출 — knob 파생
+    _exp = steps._BLOCK_LEN_M - _g_off - steps._OMX_JAW_ALONG_M / 2
+    assert g.exposed_len_m == pytest.approx(_exp)
+    assert g.tcp_to_e_m == pytest.approx(0.01 + 0.65 * _exp)
+    assert g.below_e_m == pytest.approx(0.35 * _exp)
 
 
 def test_plan_block_grasp_from_anchors_known_length():
@@ -690,10 +699,12 @@ def test_plan_block_grasp_from_anchors_known_length():
     assert g.length_m == pytest.approx(steps._BLOCK_LEN_M)  # 검출 109mm 무시
     # 파지점 = 검출 center ∓ (반길이 − frac·길이) = ∓(4 − 1.6)cm = ∓2.4cm
     (g1, _u1), (g2, _u2) = g.ends
-    assert g1[0] == pytest.approx(0.171 - 0.024)
-    assert g2[0] == pytest.approx(0.171 + 0.024)
+    _off = steps._BLOCK_LEN_M / 2 - steps._BLOCK_GRASP_FRAC * steps._BLOCK_LEN_M
+    assert g1[0] == pytest.approx(0.171 - _off)
+    assert g2[0] == pytest.approx(0.171 + _off)
     # E 오프셋도 known 기하 (실물 런에선 부푼 길이로 60mm → 봉 끝 지점)
-    assert g.tcp_to_e_m == pytest.approx(0.01 + 0.65 * 0.054)
+    _exp = steps._BLOCK_LEN_M * (1 - steps._BLOCK_GRASP_FRAC) - steps._OMX_JAW_ALONG_M / 2
+    assert g.tcp_to_e_m == pytest.approx(0.01 + 0.65 * _exp)
 
 
 async def test_verify_grasp_counts_negative_load_magnitude():
@@ -897,7 +908,9 @@ async def test_pick_prefers_natural_wrist_far_end():
     pick = await steps.plan_omx_pick_block(ctx, OMX, _GEOM)
     # _GEOM 중심 (0.20, 0) 봉 ∥ x — 먼 끝(0.224)이 채택, 노출은 base 쪽(−x)
     assert pick.u_omx[0] == pytest.approx(-1.0)
-    assert pick.grasp_omx[0] == pytest.approx(0.20 + 0.04 - 0.016)
+    assert pick.grasp_omx[0] == pytest.approx(
+        0.20 + 0.04 - steps._BLOCK_GRASP_FRAC * steps._BLOCK_LEN_M
+    )
     tz = Rotation.from_quat(pick.quat).apply([0.0, 0.0, 1.0])
     assert tz == pytest.approx([1.0, 0.0, 0.0], abs=1e-9)  # tool z ∥ −u
 
@@ -955,9 +968,13 @@ async def test_module_list_robots_and_preview():
         "go_home", "go_home", "set_gripper",
         "plan_omx_observe", "omx_observe_detect",
         "plan_omx_pick_block", "omx_pick_block",
+        "set_gripper",  # 집기 재시도 except 안 open (조건부)
         "plan_omx_present", "omx_present",
-        "plan_so_observe", "so_redetect", "plan_receive",
-        "set_gripper", "receive", "omx_retreat",
+        "set_gripper",  # so101 open — 관측 전 (본인 조 가림 제거, 2026-07-29)
+        "plan_so_observe", "so_redetect",
+        # 재제시 보정 루프 = 제시 전면 재계획 (world_offset, look-then-move)
+        "plan_omx_present", "omx_present", "plan_so_observe", "so_redetect",
+        "plan_receive", "receive", "omx_retreat",
         "place_into", "go_home",
     ]
 
@@ -1031,3 +1048,190 @@ def test_recv_pre_clear_ladder_prefers_long_standoff():
     assert min(ladder) <= 0.05, (
         "7cm pre 가 특이점 플립으로 죽는 프레임이 실물에 있었다 — 5cm 이하 단계 필수"
     )
+
+# ─── 재제시 보정 (look-then-move, 2026-07-29 실물 43mm 이탈 회귀) ──────
+
+
+def test_represent_offset_perp_only_pure():
+    """보정량 = 축 수직 성분의 **수평 투영**만 — 축 방향 밀림(가림 의존)과
+    z(마스크 가장자리 depth 번짐이 centroid 를 끌어내림 — 21:11 실측)는
+    실리지 않는다."""
+    w = (0.0, 0.0, -1.0)
+    h_ref = (0.20, 0.10, 0.25)
+    det = _aerial_det((0.20 + 0.043, 0.10 - 0.02, 0.25 - 0.05))  # perp+along 혼합
+    p = steps.represent_offset(det, h_ref, w)
+    assert p[0] == pytest.approx(0.043, abs=1e-9)
+    assert p[1] == pytest.approx(-0.02, abs=1e-9)
+    assert p[2] == pytest.approx(0.0, abs=1e-9), "축(z) 성분이 보정에 실렸다"
+    # 수평 축(봉 수평 제시)에서는 perp 평면에 z 가 포함되지만 — 번짐 오염이라
+    # z 는 FK 앵커, 보정은 수평 성분만 (21:11 런: 검출 z 가 봉 바닥보다 아래)
+    w_h = (-1.0, 0.0, 0.0)
+    det2 = _aerial_det((0.20 - 0.03, 0.10 + 0.04, 0.25 - 0.013))
+    p2 = steps.represent_offset(det2, h_ref, w_h)
+    assert p2[1] == pytest.approx(0.04, abs=1e-9)
+    assert p2[2] == pytest.approx(0.0, abs=1e-9), "번짐 오염 z 가 보정에 실렸다"
+
+
+async def test_scenario_represent_loop_converges(monkeypatch):
+    """실물 20:43/21:11 런 재현 — 재검출이 계획 E 대비 축 수직 40mm 이탈이면
+    ① 오차를 world_offset 으로 **제시 전면 재계획** (so101 쪽 게이트 실물 평가)
+    ② omx 이동 + 관측 재계획 + 재검출 ③ 수렴 후 수취 진행.
+    (1차 구현 "같은 자세 단일 평행이동" 은 omx 가용 밴드 이탈로 IK 전멸 —
+    21:11 실물. 겨냥점만 옮기는 옛 코드는 razor-thin 수취 밴드 밖 전멸 — 20:43)"""
+    monkeypatch.setattr(steps, "_PRESENT_W_ELEV_DEG", (15.0,))
+
+    def _e_of(wv, off=(0.0, 0.0, 0.0)):
+        return tuple(
+            _TCP_W[i] + wv[i] * _GEOM.tcp_to_e_m + off[i] for i in range(3)
+        )
+
+    def _first_w(off=(0.0, 0.0, 0.0)):
+        return next(
+            wv for _lb, wv in steps._present_w_candidates(_TCP_W, _BASE_OMX)
+            if _e_in_roi(_e_of(wv, off))
+        )
+
+    w = _first_w()
+    e = _e_of(w)
+    # 축 수직·수평 40mm 이탈 (실물: FK 대비 so101 쪽으로 40.3mm — 21:11 trace)
+    perp = np.cross(np.asarray(w, dtype=float), [0.0, 0.0, 1.0])
+    perp = tuple(perp / np.linalg.norm(perp) * 0.04)
+    det_off = _aerial_at(
+        perp, along_axis=_GEOM.tcp_to_e_m - steps._OMX_JAW_ALONG_M / 2.0,
+        w=w, tcp=_TCP_W,
+    )
+    # 재계획에서 채택될 w/E — offset 40mm > _REPRESENT_HANG_FIRST_M 이라
+    # hang pass 가 먼저, 후보는 수취 밴드 근접순 (production 정렬과 동형)
+    w2 = (0.0, 0.0, -1.0)
+    cands = frames.rendezvous_candidates(
+        _ROI_SO, _ROI_OMX, _BASE_OMX, steps._PRESENT_Z_WORLD,
+        limit=steps._PRESENT_LIMIT, prefer_point=steps._RENDEZVOUS_PREFER_XY,
+    )
+    tcp2 = min(cands, key=lambda t: math.hypot(
+        t[0] + perp[0] - steps._RECV_SWEET_XY[0],
+        t[1] + perp[1] - steps._RECV_SWEET_XY[1],
+    ))
+    e2 = tuple(
+        tcp2[i] + w2[i] * _GEOM.tcp_to_e_m + perp[i] for i in range(3)
+    )  # h_world#2 = FK E + world_offset (실물 추정)
+    script = _happy_script(e)
+    # 재검출: ① 이탈 → ② 재계획 제시 후 실물 추정점 정착 (+ 수취 refine 1회)
+    script[_DETECT_ORIENTED] = [
+        DetectOrientedResponse(found=True, candidates=[det_off]),
+        DetectOrientedResponse(found=True, candidates=[_aerial_det(e2)]),
+        DetectOrientedResponse(found=True, candidates=[_aerial_det(e2)]),
+    ]
+    # 재계획 resolve 3건: 제시 / 수취 결합 probe / 관측 (so observe 다음에)
+    sel = list(script[_SELECT])
+    sel[5:5] = [
+        ResolveReachableResponse(index=0, solutions=[[0.45] * 5]),
+        ResolveReachableResponse(index=0, solutions=[[0.55] * 6, [0.6] * 6]),
+        ResolveReachableResponse(index=0, solutions=[[0.5] * 6]),
+    ]
+    script[_SELECT] = sel
+    script[_MOVE_J] = [MoveJResponse()] * 11  # +재제시 이동 +관측 재이동
+    script[_READ_STATE] = [_joint_state(_HELD_RAW)] * 5  # +재제시 held 재확인
+    snaps = list(script[_TCP_SNAP])
+    snaps[2:2] = [
+        _tcp(steps.world_to_robot(_TCP_W, _BASE_OMX), [0.4] * 5),  # 재계획 스냅
+        _observe_pose(e2)[1],  # 재검출 ② 의 관측 도달 검증
+    ]
+    script[_TCP_SNAP] = snaps
+    ctx = _ctx(script)
+    await _module().scenario(ctx, pick_object="orange block")
+    # 재제시 이동이 실제로 나갔다 — omx MOVE_J 가 한 번 더
+    omx_moves = [c for c in ctx.calls(_MOVE_J) if c["robot_id"] == OMX]
+    # home/observe/pick/present/**재제시**/retreat = 6
+    assert len(omx_moves) == 6, [c["robot_id"] for c in ctx.calls(_MOVE_J)]
+    assert len(ctx.calls(_DETECT_ORIENTED)) == 3
+    # 수취 순서 불변식 유지 (so close → so held 판정 → omx release)
+    grip_events = [
+        (c["robot_id"], c["req"].position_raw == _SPEC.gripper_open_raw)
+        for c in ctx.wire.call_log if c["key"] == _GRIP
+    ]
+    assert grip_events == [
+        (OMX, True), (OMX, False), (SO, True), (SO, False), (OMX, True)
+    ], grip_events
+
+
+async def test_scenario_no_represent_when_converged(monkeypatch):
+    """이탈 ≤ 임계면 재제시를 안 한다 — happy path 호출 수 불변 (비용 0 경로)."""
+    monkeypatch.setattr(steps, "_PRESENT_W_ELEV_DEG", (15.0,))
+
+    def _e_of(wv):
+        return tuple(_TCP_W[i] + wv[i] * _GEOM.tcp_to_e_m for i in range(3))
+
+    w = next(
+        wv for _lb, wv in steps._present_w_candidates(_TCP_W, _BASE_OMX)
+        if _e_in_roi(_e_of(wv))
+    )
+    ctx = _ctx(_happy_script(_e_of(w)))
+    await _module().scenario(ctx, pick_object="orange block")
+    assert len(ctx.calls(_DETECT_ORIENTED)) == 2  # 재검출 1 + refine 1
+    omx_moves = [c for c in ctx.calls(_MOVE_J) if c["robot_id"] == OMX]
+    assert len(omx_moves) == 5  # home/observe/pick/present/retreat — 재제시 없음
+# ─── 수취 servo (look-then-move 수렴, 2026-07-29 22:06 허공 물기 회귀) ──
+
+
+async def test_receive_servo_iterates_until_converged():
+    """pre 측정이 흔들리면 **보정된 pre 로 재정렬 후 재측정** — 수렴(≤eps)
+    후에만 진입한다. 옛 refine-1-tick+open-loop 진입은 연속 두 측정이
+    12.5mm 어긋나는 산포(점군 52)에서 허공을 물었다 (22:06 실물)."""
+    w = _W_HANG
+    present = _present(w)
+    e = present.h_world
+    # 측정 시퀀스: ① lateral 15mm 이탈 → ② 같은 곳 재확인(수렴) → 진입
+    off_det = _aerial_at(
+        (0.015, 0.0, 0.0), along_axis=_GEOM.tcp_to_e_m - steps._OMX_JAW_ALONG_M / 2.0,
+        w=w, tcp=_TCP_W,
+    )
+    ctx = _ctx({
+        _DETECT_ORIENTED: [
+            DetectOrientedResponse(found=True, candidates=[off_det]),
+            DetectOrientedResponse(found=True, candidates=[off_det]),
+        ],
+        _MOVE_J: [MoveJResponse()],
+        # servo 재정렬 pre / 진입 / withdraw = 3
+        _MOVE_L: [MoveLResponse()] * 3,
+        _GRIP: [SetGripperResponse()] * 2,  # so close + omx release
+        _READ_STATE: [_joint_state(_HELD_RAW)] * 2,
+    })
+    plan = steps.ReceivePlan(
+        sols=[[0.1] * 6, [0.2] * 6], quat=(0.0, 0.0, 0.0, 1.0),
+        target=e, omx_joints=[0.4] * 5, pre_clear_m=0.03,
+    )
+    await steps.receive(ctx, SO, OMX, plan, "orange block", present, _GEOM)
+    # 측정 2회 (이탈 → 수렴), 재정렬 pre 이동 1회 + 진입 + withdraw
+    assert len(ctx.calls(_DETECT_ORIENTED)) == 2
+    assert len(ctx.calls(_MOVE_L)) == 3
+    # 진입 겨냥점 = 보정된 target (두 번째 MOVE_L)
+    entry = ctx.calls(_MOVE_L)[1]["req"].target.position
+    cen = steps.detection_centroid(off_det)
+    assert entry[0] == pytest.approx(cen[0], abs=1e-6)
+    assert entry[1] == pytest.approx(cen[1], abs=1e-6)
+    assert entry[2] == pytest.approx(e[2], abs=1e-9), "z 는 FK 앵커여야"
+
+
+async def test_receive_servo_zero_cost_when_converged():
+    """첫 측정이 이미 수렴이면 재정렬 이동 없음 — 옛 happy path 와 호출 동수."""
+    w = _W_HANG
+    present = _present(w)
+    e = present.h_world
+    on_det = _aerial_at(
+        (0.0, 0.0, 0.0), along_axis=_GEOM.tcp_to_e_m - steps._OMX_JAW_ALONG_M / 2.0,
+        w=w, tcp=_TCP_W,
+    )
+    ctx = _ctx({
+        _DETECT_ORIENTED: [DetectOrientedResponse(found=True, candidates=[on_det])],
+        _MOVE_J: [MoveJResponse()],
+        _MOVE_L: [MoveLResponse()] * 2,  # 진입 + withdraw
+        _GRIP: [SetGripperResponse()] * 2,
+        _READ_STATE: [_joint_state(_HELD_RAW)] * 2,
+    })
+    plan = steps.ReceivePlan(
+        sols=[[0.1] * 6, [0.2] * 6], quat=(0.0, 0.0, 0.0, 1.0),
+        target=e, omx_joints=[0.4] * 5, pre_clear_m=0.03,
+    )
+    await steps.receive(ctx, SO, OMX, plan, "orange block", present, _GEOM)
+    assert len(ctx.calls(_DETECT_ORIENTED)) == 1
+    assert len(ctx.calls(_MOVE_L)) == 2

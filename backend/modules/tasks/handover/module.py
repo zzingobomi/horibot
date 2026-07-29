@@ -25,6 +25,7 @@ from framework.contract.publisher import publishes
 from framework.contract.service import service
 from framework.runtime.api import ModuleRuntime
 from modules.tasks.core.context import TaskContext, TaskContextFactory
+from modules.tasks.core.errors import GraspFailed
 from modules.tasks.core.contract import (
     ControlRequest,
     ControlResponse,
@@ -210,11 +211,18 @@ class HandoverModule:
                 "handover deps 투영 확인 (침묵 identity 금지)"
             )
         base_omx = self._omx_base_pose
-        if self._checker is None:
+        # 로컬 별칭 — self._checker 직접 메서드 호출은 checker=None(mock)일 때
+        # preview 정적 해석이 <동적> 구멍으로 표시한다 (지역 객체 호출은 무시 규약)
+        checker = self._checker
+        if checker is None:
             logger.warning(
                 "cross-robot 충돌 체커 미배선 — 제시/수취/복귀 충돌 게이트 생략 "
                 "(mock 테스트 전용 상태. 실물 실행 전 배선 필수)"
             )
+        else:
+            # 이전 run 의 재제시 보정 offset 이 남아 있으면 안 된다 (run 시작
+            # 시점엔 오차 미실측 — 모델 원 base_pose 로 리셋)
+            checker.set_base_offset_b((0.0, 0.0, 0.0))
         trace = HandoverTrace(pick_object)
         status, error = "success", None
         try:
@@ -237,22 +245,35 @@ class HandoverModule:
             await steps.go_home(ctx, omx, home_omx)
             await steps.set_gripper(ctx, omx, open_=True)
 
-            # 2) A. omx 가 본다 — 계산된 nadir 관측 + mono z=0 검출
-            obs_joints = await steps.plan_omx_observe(
-                ctx, omx, roi_omx, t_tcp_cam_omx, trace
-            )
-            det = await steps.omx_observe_detect(
-                ctx, omx, pick_object, obs_joints, trace
-            )
-
-            # 3) B. 파지 기하 (봉 양 끝 후보 — 짧으면 명시 실패)
-            grasp = steps.plan_block_grasp_from(det, base_omx)
-
-            # 4) B+C. 끝 파지점(책상면 top-down) 계획 → move_j 스윙인 집기
-            pick = await steps.plan_omx_pick_block(ctx, omx, grasp, trace)
-            g_world = robot_to_world(pick.grasp_omx, base_omx)
-            marks.show_grasp(g_world)
-            await steps.omx_pick_block(ctx, omx, pick, trace)
+            # 2~4) A-C. 관측→검출→계획→집기 — 얕은 물림/헛집기(GraspFailed)는
+            # run abort 대신 **그리퍼 열고 재관측부터 재시도** (검출 mask 의
+            # 축방향 번짐 바이어스가 뷰마다 다르므로 재관측이 재롤. 22:31 실물:
+            # 봉 끝 2mm 얕은 물림 → 게이트 fail → 런 전체 죽음은 과잉).
+            pick: steps.BlockPick | None = None
+            for attempt in range(steps._PICK_RETRIES + 1):
+                obs_joints = await steps.plan_omx_observe(
+                    ctx, omx, roi_omx, t_tcp_cam_omx, trace
+                )
+                det = await steps.omx_observe_detect(
+                    ctx, omx, pick_object, obs_joints, trace
+                )
+                grasp = steps.plan_block_grasp_from(det, base_omx)
+                pick = await steps.plan_omx_pick_block(ctx, omx, grasp, trace)
+                g_world = robot_to_world(pick.grasp_omx, base_omx)
+                marks.show_grasp(g_world)
+                try:
+                    await steps.omx_pick_block(ctx, omx, pick, trace)
+                    break
+                except GraspFailed:
+                    if attempt >= steps._PICK_RETRIES:
+                        raise
+                    logger.warning(
+                        "omx 집기 실패 (%d/%d) — 그리퍼 열고 재관측부터 재시도",
+                        attempt + 1,
+                        steps._PICK_RETRIES,
+                    )
+                    await steps.set_gripper(ctx, omx, open_=True)
+            assert pick is not None  # 루프는 break(성공) 아니면 raise 로만 탈출
 
             # 5) D. 제시 — omx 접선 수평 (hang 은 폴백), so101 은 home 에 있음.
             # 수취 결합 게이트가 so101 수취 IK 존재까지 확인하고 채택한다.
@@ -271,7 +292,11 @@ class HandoverModule:
                 logger.info("stop_before_receive=True — omx 제시까지만 하고 종료")
                 return
 
-            # 6) E. so101 수취 — 재검출 → 계획(충돌 게이트) → refine → 불변식 실행
+            # 6) E. so101 수취 — 재검출 → 재제시 보정 → 계획(충돌 게이트) →
+            # refine → 불변식 실행. 그리퍼는 **관측 전에** 연다 — 닫힌 조가
+            # eye-in-hand 시야 정중앙(=봉 자리)을 가려 재검출을 조각냈다
+            # (2026-07-29 실물 20:43 런, 펜 시절 §2 교훈의 so101 재발).
+            await steps.set_gripper(ctx, so101, open_=True)
             so_obs = await steps.plan_so_observe(
                 ctx, so101, omx, t_tcp_cam_so, present, pick.geom,
                 self._checker, trace,
@@ -280,11 +305,59 @@ class HandoverModule:
                 ctx, so101, pick_object, so_obs, present, pick.geom,
                 t_tcp_cam_so, trace,
             )
+            # 6b) 재제시 보정 루프 (look-then-move) — 실측 이탈이 크면 오차를
+            # world_offset 으로 **제시를 전면 재계획** (so101 쪽 게이트를 실물
+            # 좌표로 평가 — steps._REPRESENT_* 노브 주석). 같은 자세 단일
+            # 평행이동은 omx 가용 밴드 이탈로 IK 전멸 (2026-07-29 21:11 실물).
+            # 기준은 항상 현 계획의 h_world (= FK+offset 실물 추정) — 잔차만
+            # 남아 수렴한다.
+            for _ in range(steps._REPRESENT_MAX):
+                off = steps.represent_offset(det2, present.h_world, present.w)
+                off_norm = float(
+                    (off[0] ** 2 + off[1] ** 2 + off[2] ** 2) ** 0.5
+                )
+                if off_norm <= steps._REPRESENT_PERP_MIN_M:
+                    break
+                total = (
+                    present.world_offset[0] + off[0],
+                    present.world_offset[1] + off[1],
+                    present.world_offset[2] + off[2],
+                )
+                # 충돌/시선/벽 판정의 omx 몸체도 실물 위치로 (margin 실물화)
+                if checker is not None:
+                    checker.set_base_offset_b(total)
+                present = await steps.plan_omx_present(
+                    ctx, omx, so101, roi_so, roi_omx, base_omx, pick,
+                    list(so_obs.joints), self._checker, trace,
+                    world_offset=total,
+                )
+                await steps.omx_present(ctx, omx, present, trace)
+                marks.show_handover(present.h_world)
+                so_obs = await steps.plan_so_observe(
+                    ctx, so101, omx, t_tcp_cam_so, present, pick.geom,
+                    self._checker, trace,
+                )
+                det2 = await steps.so_redetect(
+                    ctx, so101, pick_object, so_obs, present, pick.geom,
+                    t_tcp_cam_so, trace,
+                )
+            else:
+                # 상한 소진 — 침묵 금지: 잔차 초과면 남기고 진행 (plan_receive
+                # 가 검출 기준으로 겨냥하므로 성립할 수 있고, 죽으면 명시 실패)
+                off = steps.represent_offset(det2, present.h_world, present.w)
+                residual = float(
+                    (off[0] ** 2 + off[1] ** 2 + off[2] ** 2) ** 0.5
+                )
+                if residual > steps._REPRESENT_PERP_MIN_M:
+                    logger.warning(
+                        "재제시 보정 %d회 후에도 잔차 %.0fmm — 그대로 수취 시도",
+                        steps._REPRESENT_MAX,
+                        residual * 1000,
+                    )
             plan = await steps.plan_receive(
                 ctx, so101, omx, det2, base_omx, present, pick.geom,
                 self._checker, trace,
             )
-            await steps.set_gripper(ctx, so101, open_=True)
             await steps.receive(
                 ctx, so101, omx, plan, pick_object, present, pick.geom, trace
             )

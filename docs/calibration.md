@@ -526,7 +526,7 @@ boot 순서: Calibration.start() 의 pull 이 성공하려면 Camera runtime 이
 
 # Calibration Workflow
 
-> ⚠️ **부분 stale (2026-07-11 문서 전수 감사)**: §1 in-UI Compute/COMMIT 절차는 폐기된 흐름 — 현행 = capture-only 세션(내부캘/핸드아이, abort 포함) + `scripts/calibrate_offline.py` offline 분석 + DB(runs/results) rollback. §2 자세 다양성·§5 ChArUco board spec 은 현행 유효.
+> ⚠️ **부분 stale (2026-07-11 문서 전수 감사)**: §1 in-UI Compute/COMMIT 절차는 폐기된 흐름 — 현행 = capture-only 세션(내부캘/핸드아이, abort 포함) + `scripts/calibrate_offline.py` offline 분석 + DB(runs/results) rollback. §2 자세 다양성·§5 ChArUco board spec 은 현행 유효 (단 §2 의 tilt 문장은 2026-07-29 정정 — 진단·개선 대기 항목은 **§2b**).
 > 본 감사에서 삭제된 v1 문서 참조가 남아있을 수 있음 — git history 에서 복원 가능.
 
 캘리브레이션 페이지의 Hand-Eye 탭을 사용하는 절차와 결과 해석 가이드. **무엇이 어떻게 적용되는가**는 [calibration_apply_flow.md](calibration_apply_flow.md), **BA 자유도/알고리즘**은 [calibration.md](calibration.md) 참조.
@@ -567,8 +567,54 @@ boot 순서: Calibration.start() 의 pull 이 성공하려면 Camera runtime 이
 - **joint 4 wrist pitch** — 위아래 끄덕임
 - **joint 5 wrist roll** — 비틀기
 - 셋을 골고루 섞기. 한 축만 위주로 돌리면 TSAI 회전 추정이 부정확.
-- 체커보드는 화면 중앙 가깝게. **tilt 30~70° 범위 안에서만 [캡처 가능]** ([backend/modules/calibration/thresholds.py](../backend/modules/calibration/thresholds.py) `TILT_MIN_DEG / TILT_MAX_DEG` SSOT). tilt<30° = 너무 정면 (PnP depth ambiguous), tilt>70° = edge-on (corner 픽셀 정확도 ↓).
+- 체커보드는 화면 중앙 가깝게. tilt(=보드 법선 vs 카메라 광축, 0°=정면) 는 **신호등 표시만** — 빨강 `<20°` / `>75°`, 노랑 `<28°` / `>67°` ([vision/thresholds.py](../backend/modules/calibration/vision/thresholds.py) `TILT_MIN_DEG / TILT_MAX_DEG` SSOT). tilt<20° = 너무 정면 (평면 PnP 자세 모호), tilt>75° = edge-on (corner 픽셀 정확도 ↓).
+  > ⚠️ 2026-07-29 정정: 옛 문구는 "tilt 30~70° 범위 안에서만 **캡처 가능**" + 경로 `modules/calibration/thresholds.py` 였는데 **셋 다 틀렸다** — 임계는 20/75, 파일은 `vision/` 아래, 그리고 **tilt 는 캡처를 막지 않는다** (실제 reject 는 보드 미검출 + PnP rms>1.5px 둘뿐 — [module.py:313-329](../backend/modules/calibration/module.py#L313-L329)). 이 임계 자체가 실측과 어긋난다는 진단 = §2b.
 - 매 자세 캡처 직전 로봇 완전 정지 (모터 명령 전송 후 ~0.5s 대기).
+
+---
+
+## 2b. 촬영 게이트 진단 — 실측 vs 현재 임계 (2026-07-29, **미적용 — 개선 대기**)
+
+> 계기: 사내 딥비전팀 촬영 가이드와 우리 신호등이 반대 방향으로 읽힌다는 사용자 지적
+> ("보드를 마주보게 두면 우리 UI 는 거의 항상 tilt 부족"). tilt 정의상 맞는 관찰이다
+> (`tilt = arccos|R[2,2]|`, 0°=정면 — [vision/processing.py:57-58](../backend/modules/calibration/vision/processing.py#L57-L58)).
+> **아래는 진단·근거 기록이고 코드는 손대지 않았다.** 다음 개선 세션이 이 절만 보고 진행 가능.
+
+### 가이드 4항목 vs 현재 구현
+
+| 사내 가이드 | 우리 구현 | 판정 |
+| --- | --- | --- |
+| 과도한 틸트 주의 (보드가 어느 정도 카메라를 마주보게) | 상한 빨강 75° / 노랑 67°, **하한도 있음**: 빨강 20°, 노랑 28° ("조금 더 기울이기") | 상한 동방향, **하한은 반대 압력** |
+| 중앙 위주, 극단 가장자리 지양 | hand-eye: "화면 중앙 가깝게" (§2). intrinsic: **3×3 grid 9칸 채우기 유도** (새 칸=GREEN, [capture_quality.py:141-151](../backend/modules/calibration/vision/capture_quality.py#L141-L151)) | hand-eye 일치 / intrinsic 은 **목적이 다름**(왜곡 모델 전역 일반화 — detector 가 프레임 가장자리 픽셀도 unproject 하므로 커버리지 자체는 유지가 맞다) |
+| 선명한 프레임 | hand-eye: PnP rms>1.5px **캡처 거부**. intrinsic: **게이트 없음** | hand-eye 는 수치 강제 / **intrinsic 은 구멍** |
+| 자세 다양하게(로봇 회전축 다르게, 8~10장+) | 회전 diff<12° "회전 더 다양하게", 관절 6° 유사+회전 부족=빨강 | 일치 |
+
+### 실측 — hand-eye 캡처 72장 (DB `calibration_captures`, run 2/4)
+
+tilt 구간별 PnP reprojection rms:
+
+| tilt | so101_6dof_0 | omx_f_0 |
+| --- | --- | --- |
+| 15~25° | **0.110** px (n=3) | — |
+| 25~35° | 0.171 (n=17) | **0.290** (n=12) |
+| 35~45° | 0.188 (n=18) | 0.345 (n=8) |
+| 45~60° | 0.182 (n=6) | 0.356 (n=8) |
+
+- corr(tilt, rms) = **so101 +0.28 / omx +0.37** — 기울일수록 코너 잔차 증가 (가이드 ①의 메커니즘이 우리 리그에서도 관측된다. σ floor 진단(§3.4)의 "mean 0.176px sub-pixel" 은 평균이라 이 경향을 가렸다).
+- tilt 분포: so101 min 21.3 / median 36.0 / max 56.7, omx min 28.5 / median 37.7 / max 55.5.
+- **tilt<20° 캡처는 0장** — 빨간불이 그 구간을 못 찍게 했으므로 "낮은 tilt 가 우리 캘에 해로운가" 의 데이터는 **존재하지 않는다**(자기실현적 맹점).
+- 두 위험은 서로 다른 지표에 나타난다: **낮은 tilt = 자세(법선) 모호 → R 오차이고 rms 로는 안 잡힌다**(오히려 rms 가 좋아짐) / **높은 tilt = 코너 정밀도 저하 → rms 에 잡힌다**. 그래서 위 표만 근거로 하한을 없애면 안 된다.
+
+### 개선 항목 (우선순위 순, 전부 미적용)
+
+1. **tilt 상한 조이기** — 75/67 → **55~60** 대. 근거 = 위 표(45~60° 구간에서 이미 열화) + 50° 초과 캡처가 양쪽 합쳐 4장뿐(잃는 표본 없음).
+2. **하한 쪽 노란불 제거/완화** — 현재 `<28°` 에서 "조금 더 기울이기"([capture_quality.py:107-108](../backend/modules/calibration/vision/capture_quality.py#L107-L108))인데 20~30° 가 rms 최良 구간이다. 하한 빨강 20° 자체는 평면 pose 모호성 근거로 **유지**, 잔소리만 제거(또는 22° 미만으로).
+3. **신호등 문구를 사유형으로** — "tilt 부족/과다" → "거의 정면 — 자세가 모호해집니다" / "너무 비스듬 — 코너가 흐려집니다". UI 가 사내 가이드와 같은 말("적당히 마주보되 완전 정면은 피하라")을 하게 된다.
+4. **intrinsic 캡처 품질 게이트 신설** — [`_capture_intrinsic`](../backend/modules/calibration/module.py#L385-L433) 은 ChArUco 검출만 통과하면 무조건 `accepted=True` 라 blur/글레어 프레임이 그대로 `calibrateCamera` 로 들어간다(3×3 grid 가 가장자리 배치를 유도하므로 품질 나쁜 프레임이 섞일 확률이 더 높다). intrinsic 단계는 PnP 를 못 쓰므로(닭-달걀) 대체 지표 필요 — 선명도(라플라시안 분산) / subpixel 수렴 실패율 / 코너 검출률. **문턱값은 추측 금지** — 기존 캡처 blob(`calib_captures/`)의 분포를 먼저 뽑아 정한다.
+
+### 하한을 데이터로 정하려면 (미실행)
+
+tilt 10~20° 를 rms 로는 판정할 수 없으므로, **IPPE 두 번째 해와의 각도 차(모호성 갭)** 를 캡처마다 계산해 갭이 붕괴하는 tilt 를 찾는다. 저장된 `corners_2d` 만으로 **재촬영 없이 offline 계산 가능**.
 
 ---
 

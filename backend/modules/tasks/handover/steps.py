@@ -177,7 +177,10 @@ _BLOCK_CROSS_M = 0.020  # known 봉 단면 — 검출 투영 평면(윗면) + �
 # 손목(J5) 자연해 상한 — **케이블 안전 불변식** (2026-07-27 실물: J5 ±180
 # 뒤집기 해가 웹캠 USB 케이블을 감음). pick/present 채택안이 이걸 넘으면 기각
 # — 뒤집힌 픽은 제시 hang 에서 봉이 위로 솟아 수취도 조용히 깨진다.
-_WRIST_NATURAL_MAX_RAD = math.radians(90.0)
+# 92°: 수평 제시(omx 접선, elev 0)의 해석해가 J5=정확히 90.000° 라 90.0 경계에
+# 두면 polish 부동소수 잡음으로 채택이 복불복이 된다 (2026-07-29 sim). 2° 여유는
+# 케이블 안전과 무관 (실측 안전 J5 80°, 감김 사고는 ±180°).
+_WRIST_NATURAL_MAX_RAD = math.radians(92.0)
 _BLOCK_GRASP_FRAC = 0.20  # 파지점 = 잡는 끝에서 20% (1.6cm — 조 접촉폭 확보)
 _OMX_JAW_ALONG_M = 0.020  # omx 조가 봉 축 방향으로 차지하는 폭 (실물 실측 대상)
 # so101 파지점 E = 노출 세그먼트의 조-쪽 끝에서 65% 지점 (probe 기준치 —
@@ -217,19 +220,26 @@ _REFINE_JUMP_MAX_M = 0.03  # 겨냥점 보정 상한 — 초과 = 관측 오염 
 # workcell ROI 격자 위에서만 도는데 그 ROI 가 실제 도달보다 좁아(y_min -0.157)
 # 성립하는 수평 자세를 아예 못 봤다 (260/260 이 매달기로 나옴). ROI 를 문서화된
 # 도달 하한으로 정정(instance.yaml)하고, 선호점은 **실물에서 두 팔로 직접 만든
-# 자세**를 쓴다: omx TCP world (0.126, -0.274, 0.204), 봉 축 ≈ 접선 -t /
-# elev +16°. 그 자세를 실 URDF·캘로 검증한 값 = 링크 여유 58.9mm(게이트 8mm) /
-# 노출부 시선 완전 클리어 / J5 80°. 선호점은 **정렬 seed 일 뿐** — 도달·손목·벽·
-# 충돌·가림 게이트가 여전히 채택을 결정한다.
+# 자세**를 쓴다: omx TCP world (0.126, -0.274, 0.204), 봉 축 (-0.96,-0.064,0.274)
+# = **omx 접선과 0.3° / elev +15.9°** (2026-07-29 정정: 옛 주석은 이걸 so101
+# 접선 "-t" 로 오귀속했고 그 프레임으로 후보를 만들어 수평 전멸 — 근인).
+# 그 자세를 실 URDF·캘로 검증한 값 = 링크 여유 58.9mm(게이트 8mm) / 노출부
+# 시선 완전 클리어 / J5 80°. 선호점은 **정렬 seed 일 뿐** — 도달·손목·벽·
+# 충돌·가림·수취결합 게이트가 채택을 결정한다.
 _PRESENT_Z_WORLD = (0.20, 0.22, 0.18)  # omx TCP 의 world z 후보 (선호순, 실측 0.204)
 _RENDEZVOUS_PREFER_XY = (0.126, -0.274)  # 실측 제시 TCP xy
 _PRESENT_LIMIT = 8  # 랑데부 후보 상한 (resolve+충돌 게이트 시도 수)
 # 노출 방향 w 의 elevation 후보 (deg, 노출 끝이 위로 들리는 쪽 +). 선호순.
-# ⚠ 2026-07-28 사용자 토크오프 실측 = **+15.9°, 접선 −t** (수평 제시). 옛
+# ⚠ 2026-07-28 사용자 토크오프 실측 = **+15.9°, omx 접선** (수평 제시). 옛
 # 매달기(수직 −90°)는 omx 그리퍼가 봉 위에 있어 so101 시야를 구조적으로 막았다
 # (관측 128자세 전부 가림 실측) — 수평이면 그리퍼가 봉 **끝**에 있어 가림이 없다.
-# −90° 를 사다리 끝에 남겨 매달기도 폴백으로 시도 가능 (축 일반형이라 코드 공통).
-_PRESENT_W_ELEV_DEG = (15.0, 0.0, 30.0, -15.0, -90.0)
+# 매달기 폴백은 −90 사다리 항목이 아니라 _present_w_candidates 가 마지막에
+# 단일 "hang" 후보로 붙인다 (옛 "family 마다 −90" 은 −t 매달기가 +t 수평보다
+# 먼저 시도되는 순서 버그 + 동일 후보 4중복 — 2026-07-29 전멸 근인 중 하나).
+# 참고: omx 접선족의 J5 해석해 = 90°±elev (2026-07-29 sim FK 실증) — +15/+30 은
+# 손목 게이트(92°) 위라 실제로는 0/−15 가 채택된다. 게이트를 넘는 항목을 남겨둔
+# 이유 = +t(반대 접선) 분기에선 부호가 뒤집혀 통과할 수 있어서 (게이트가 결정).
+_PRESENT_W_ELEV_DEG = (15.0, 0.0, 30.0, -15.0)
 # jaw 를 수직에 붙일 수 있는 최소 여유 — |ẑ − (ẑ·z)z| 가 이보다 작으면 축이
 # 수직에 너무 가까워(매달기) 수직 jaw 가 정의되지 않는다 → hang 구성으로 폴백.
 _JAW_VERTICAL_MIN = 0.20
@@ -379,8 +389,10 @@ def _present_quat_axis(w: Vec3, alpha: float) -> Quat:
     케이블이 감겼다 (2026-07-27 실물) — 그래서 매달기는 tool z ↑ 로 젖힌다.
 
     ⚠ omx 5DOF(ZYYYX) 도달 다양체: 임의 방위를 요구하면 measure-zero 라 전멸
-    한다 (probe 1차 교훈). w 후보는 그래서 **접선/radial 족 × 소각 elevation**
-    으로 제한하고 도달 판정은 resolve 에 맡긴다 (_present_w_candidates)."""
+    한다 (probe 1차 교훈). 이 구성(jaw 수직)이 다양체 위에 놓이는 수평 w 는
+    **omx 접선족뿐** — w 후보 생성이 그 족만 내놓는다 (_present_w_candidates,
+    2026-07-29 근인 수정). 접선 w 에서 jaw tilt = |elevation| 로 실측(18.5°)과
+    정합, J5 해석해 = 90°±elev (sim FK 실증)."""
     z = -_unit(np.asarray(w, dtype=float))
     up = np.array([0.0, 0.0, 1.0])
     y_raw = up - float(np.dot(up, z)) * z
@@ -395,29 +407,44 @@ def _present_quat_axis(w: Vec3, alpha: float) -> Quat:
     return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
 
 
-def _present_w_candidates(tcp_w: Vec3) -> list[tuple[str, Vec3]]:
+def _present_w_candidates(
+    tcp_w: Vec3, base_omx: BasePose
+) -> list[tuple[str, Vec3]]:
     """노출 방향 w 후보 (선호순) — (라벨, world 단위벡터).
 
-    so101(=world 원점)에서 제시 TCP 를 본 방위의 **접선 ±t 우선, radial ±r**
-    × 소각 elevation. 접선족이 실측족인 근거 (2026-07-28 사용자 토크오프): 봉이
-    so101 접근 방향을 **가로지르게** 누워야 so101 이 수직 조로 물 수 있다
-    (실측 so101 approach ⟂ 봉축 85°, w 방위 = 접선 −t 분기).
+    ⚠ 접선은 **omx base 기준** (2026-07-29 근인 수정). omx 5DOF(ZYYYX) 다양체
+    에서 jaw-수직 quat(_present_quat_axis)이 성립하는 수평 w 는 omx 팔 평면에
+    수직인 방향 = **omx 접선**뿐이다 (tool x 가 팔 평면에 갇힘 — 해석 IK
+    analytic_zyyyx 의 M=Ry·Rx 분해와 동치). 옛 코드는 접선을 so101(world 원점)
+    기준으로 계산했고, 2026-07-28 직각 재배치 후 두 접선이 랑데부 지점에서
+    20~30° 어긋나 수평 후보 전원이 자세 IK 전멸 → 매달기 폴백 → 관측 전멸
+    (20260729_054607 trace). 사용자 토크오프 실측 봉 축 (-0.96,-0.064,0.274)
+    이 omx 접선과 0.3° — 실측족 = omx 접선족이라는 물리 근거.
 
-    elevation 은 노출 끝을 살짝 들어올리는 쪽 우선 (실측 +15.9°) — 봉 끝이
-    책상을 향해 처지면 so101 접근 여유가 줄고 책상 충돌 위험이 생긴다."""
-    r = np.array([tcp_w[0], tcp_w[1], 0.0])
+    선호순: so101(world 원점)에서 **멀어지는 쪽** 접선(-t, 실측 방향 — 노출
+    끝이 omx 그리퍼 반대편이라 so101 접근/시선과 안 겹침) → 반대쪽(+t) ×
+    elevation 사다리. radial 족 삭제 — 다양체상 roll 이 기하에 종속이라 jaw 가
+    수평으로 강제돼 jaw-수직 quat 은 IK 전멸 (2026-07-29 sim). 매달기(hang)는
+    마지막 **단일** 폴백 (family 별 -90 중복 + 순서 버그 제거)."""
+    r = np.array([tcp_w[0] - base_omx.x, tcp_w[1] - base_omx.y, 0.0])
     if float(np.linalg.norm(r)) < 1e-9:
         r = np.array([1.0, 0.0, 0.0])
     r = _unit(r)
-    t = np.array([-r[1], r[0], 0.0])  # world z 둘레 +90°
+    t = np.array([-r[1], r[0], 0.0])  # omx radial 의 world z 둘레 +90°
+    r_so = np.array([tcp_w[0], tcp_w[1], 0.0])
+    if float(np.linalg.norm(r_so)) < 1e-9:
+        r_so = np.array([1.0, 0.0, 0.0])
+    r_so = _unit(r_so)
+    away = -t if float(np.dot(-t, r_so)) < float(np.dot(t, r_so)) else t
     out: list[tuple[str, Vec3]] = []
-    for name, base in (("-t", -t), ("+t", t), ("-r", -r), ("+r", r)):
+    for name, base in (("-t", away), ("+t", -away)):
         for elev in _PRESENT_W_ELEV_DEG:
             e = math.radians(elev)
             v = _unit(base * math.cos(e) + np.array([0.0, 0.0, math.sin(e)]))
             out.append(
                 (f"{name}/elev{elev:+.0f}", (float(v[0]), float(v[1]), float(v[2])))
             )
+    out.append(("hang", (0.0, 0.0, -1.0)))
     return out
 
 
@@ -919,10 +946,77 @@ class PresentPlan:
     label: str  # 채택된 w 후보 라벨 (예 "-t/elev+15") — 실물 원인분석용
 
 
+async def _receive_probe(
+    ctx: TaskContext,
+    so101: str,
+    e_world: Vec3,
+    w: Vec3,
+    omx_present_sol: list[float],
+    checker: CrossRobotChecker | None,
+) -> bool:
+    """제시 후보의 **수취 결합 판정** (모션 0) — 이 E/w 에서 so101 수취
+    [pre, grasp] 해가 사는지 채택 전에 확인한다.
+
+    2026-07-29 전멸 근인 ②의 예방: 제시가 자기 게이트만 보고 채택돼 수취
+    전멸(NoReachableGrasp)이 관측 이동 실행 후에야 드러났다. sim 스윕 실증
+    (2026-07-29): 수취 해는 랑데부 지역 전체에서 후보 16 중 1~2, 전부 spin0
+    근방 — 그래서 spin 사다리 **선호순 앞 6개(0°/±45° × ±z)** 만 probe 한다
+    (전멸 판정 비용 절감 — 실측·probe 이력상 spin0 밖 단독 성립은 없었다).
+    실제 수취는 plan_receive 가 재검출 겨냥점으로 전 사다리를 다시 돈다.
+
+    벽/충돌 게이트는 채택 해에만 건다 (plan_receive 의 alive-loop 축약판,
+    재시도 3회) — probe 는 존재 증명이 목적이라 완전 열거는 안 한다."""
+    orients = _recv_orients(e_world, w)[:6]
+    groups: list[list[TcpPose]] = []
+    for _label, quat, a in orients:
+        for clear in _RECV_PRE_CLEAR_LADDER:
+            pre = (
+                e_world[0] - a[0] * clear,
+                e_world[1] - a[1] * clear,
+                e_world[2] - a[2] * clear,
+            )
+            groups.append(
+                [
+                    TcpPose(position=pre, quaternion=quat),
+                    TcpPose(position=e_world, quaternion=quat),
+                ]
+            )
+    alive = list(range(len(groups)))
+    for _ in range(3):
+        res = await ctx.call(
+            Motion.Service.RESOLVE_REACHABLE,
+            ResolveReachableRequest(
+                groups=[groups[i] for i in alive], linear=True
+            ),
+            ResolveReachableResponse,
+            robot_id=so101,
+        )
+        if res.index < 0:
+            return False
+        gi = alive[res.index]
+        if checker is None:
+            return True
+        if not _behind_wall(checker, "a", res.solutions[-1]) and (
+            not checker.path_in_collision(
+                res.solutions,
+                omx_present_sol,
+                grip_a=1.0,
+                grip_b=_OMX_HOLD_GRIP_FRAC,
+                margin_m=_RECV_COLLISION_MARGIN_M,
+            )
+        ):
+            return True
+        alive.remove(gi)
+        if not alive:
+            return False
+    return False
+
+
 @step(title="제시 계획")
 async def plan_omx_present(
     ctx: TaskContext,
     omx: str,
+    so101: str,
     roi_so: WorkcellRoi,
     roi_omx: WorkcellRoi,
     base_omx: BasePose,
@@ -932,9 +1026,9 @@ async def plan_omx_present(
     trace: HandoverTrace | None = None,
 ) -> PresentPlan:
     """랑데부 후보(workcell ROI 교집합, 흉터 5 예방)를 **TCP 위치**로 순회하고,
-    각 점에서 **노출 방향 w 후보**(_present_w_candidates — 접선/radial × elevation)
-    를 선호순으로 resolve → 채택안을 손목/벽/cross-robot 충돌 게이트. 첫 통과
-    채택, 전멸 = 명시 실패.
+    각 점에서 **노출 방향 w 후보**(_present_w_candidates — omx 접선 × elevation
+    + hang 폴백)를 선호순으로 resolve → 채택안을 손목/벽/cross-robot 충돌 +
+    **수취 결합**(_receive_probe) 게이트. 첫 통과 채택, 전멸 = 명시 실패.
 
     E(so101 파지점 = 재검출 겨냥점) = **TCP + w·tcp_to_e** — 봉이 방향 w 로
     뻗어 있으므로 파지점은 그 축 위다 (block.py tcp_to_e_m 은 축 방향 스칼라
@@ -943,8 +1037,13 @@ async def plan_omx_present(
 
     ⚠ 2026-07-28 수평 제시로 전환: 매달기는 omx 그리퍼가 봉 **위**에 있어
     so101 관측 시야를 구조적으로 막았다 (관측 128자세 전부 가림 실측). 수평이면
-    그리퍼가 봉 **끝**에 있어 가림이 사라진다. 사용자 토크오프 실측(접선 −t,
-    elev +15.9°, 두 팔 링크 여유 58.9mm, 시선 클리어)이 이 족의 근거다."""
+    그리퍼가 봉 **끝**에 있어 가림이 사라진다. 사용자 토크오프 실측(omx 접선,
+    elev +15.9°, 두 팔 링크 여유 58.9mm, 시선 클리어)이 이 족의 근거다.
+
+    ⚠ 수취 결합 게이트 (2026-07-29): 제시 자기 게이트만 보고 채택하면 수취
+    전멸이 관측 이동까지 실행된 뒤에야 드러난다 — sim 스윕에서 수취 해는
+    랑데부 지역 전체에 1~2/16 뿐이라, 제시만 통과하는 후보가 다수다. offline
+    probe(handover_block_probe)의 결합 판정을 계획 시점으로 승격."""
     cands = frames.rendezvous_candidates(
         roi_so,
         roi_omx,
@@ -962,90 +1061,104 @@ async def plan_omx_present(
     omx_tcp = await ctx.call(
         Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState, robot_id=omx
     )
-    for tcp_w in cands:
+    # 수평(접선) 후보를 **전 랑데부 후보에서 소진한 뒤에만** hang 폴백 — hang 을
+    # 후보별 사다리 끝에 두면 앞 랑데부의 hang 이 뒤 랑데부의 수평을 가린다
+    # (2026-07-29 sim: c0 hang 이 c2 수평을 가려 관측-전멸 자세가 채택됐다).
+    attempts = [
+        (tcp_w, label, w)
+        for hang_pass in (False, True)
+        for tcp_w in cands
+        for label, w in _present_w_candidates(tcp_w, base_omx)
+        if (label == "hang") == hang_pass
+    ]
+    for tcp_w, label, w in attempts:
         tcp_omx = world_to_robot(tcp_w, base_omx)
         alpha = math.atan2(tcp_omx[1], tcp_omx[0])
-        for label, w in _present_w_candidates(tcp_w):
-            e_world = (
-                tcp_w[0] + w[0] * pick.geom.tcp_to_e_m,
-                tcp_w[1] + w[1] * pick.geom.tcp_to_e_m,
-                tcp_w[2] + w[2] * pick.geom.tcp_to_e_m,
+        e_world = (
+            tcp_w[0] + w[0] * pick.geom.tcp_to_e_m,
+            tcp_w[1] + w[1] * pick.geom.tcp_to_e_m,
+            tcp_w[2] + w[2] * pick.geom.tcp_to_e_m,
+        )
+        if not (
+            roi_so.x_min <= e_world[0] <= roi_so.x_max
+            and roi_so.y_min <= e_world[1] <= roi_so.y_max
+            and roi_so.z_min <= e_world[2] <= roi_so.z_max
+        ):
+            rejects.append(f"tcp={tcp_w} w={label}: E={e_world} so101 ROI 밖")
+            continue
+        # w 는 world 정의 — omx frame 으로 회전 (base yaw 만, 평행이동 무관)
+        w_omx = frames.world_dir_to_robot(w, base_omx)
+        quat = _present_quat_axis(w_omx, alpha)
+        res = await ctx.call(
+            Motion.Service.RESOLVE_REACHABLE,
+            ResolveReachableRequest(
+                groups=[[TcpPose(position=tcp_omx, quaternion=quat)]]
+            ),
+            ResolveReachableResponse,
+            robot_id=omx,
+        )
+        if res.index < 0:
+            rejects.append(f"tcp={tcp_w} w={label}: 도달 불가 ({res.message})")
+            continue
+        # 손목 뒤집힘 기각 — 케이블 안전 불변식 (_WRIST_NATURAL_MAX_RAD)
+        if abs(res.solutions[0][-1]) > _WRIST_NATURAL_MAX_RAD:
+            rejects.append(
+                f"tcp={tcp_w} w={label}: 손목 뒤집힘 해 "
+                f"(J5={math.degrees(res.solutions[0][-1]):.0f}°)"
             )
-            if not (
-                roi_so.x_min <= e_world[0] <= roi_so.x_max
-                and roi_so.y_min <= e_world[1] <= roi_so.y_max
-                and roi_so.z_min <= e_world[2] <= roi_so.z_max
-            ):
-                rejects.append(f"tcp={tcp_w} w={label}: E={e_world} so101 ROI 밖")
-                continue
-            # w 는 world 정의 — omx frame 으로 회전 (base yaw 만, 평행이동 무관)
-            w_omx = frames.world_dir_to_robot(w, base_omx)
-            quat = _present_quat_axis(w_omx, alpha)
-            res = await ctx.call(
-                Motion.Service.RESOLVE_REACHABLE,
-                ResolveReachableRequest(
-                    groups=[[TcpPose(position=tcp_omx, quaternion=quat)]]
-                ),
-                ResolveReachableResponse,
-                robot_id=omx,
-            )
-            if res.index < 0:
-                rejects.append(f"tcp={tcp_w} w={label}: 도달 불가 ({res.message})")
-                continue
-            # 손목 뒤집힘 기각 — 케이블 안전 불변식 (_WRIST_NATURAL_MAX_RAD)
-            if abs(res.solutions[0][-1]) > _WRIST_NATURAL_MAX_RAD:
-                rejects.append(
-                    f"tcp={tcp_w} w={label}: 손목 뒤집힘 해 "
-                    f"(J5={math.degrees(res.solutions[0][-1]):.0f}°)"
-                )
-                continue
-            # 벽(뒤) 침범 — omx 링크가 베이스 뒤로 넘어가면 기각 (side="b")
-            if checker is not None and _behind_wall(checker, "b", res.solutions[0]):
-                rejects.append(f"tcp={tcp_w} w={label}: omx 벽(뒤) 침범")
-                continue
-            if checker is not None and _omx_path_collides(
-                checker,
-                so101_joints,
-                [list(omx_tcp.joints), res.solutions[0]],
-            ):
-                rejects.append(f"tcp={tcp_w} w={label}: so101 충돌 위험")
-                continue
-            await _emit(
-                trace,
-                {
-                    "phase": "present",
-                    "event": "plan_omx_present",
-                    "tcp_world": list(tcp_w),
-                    "orientation": f"axis({label})",
-                    "w_world": [round(v, 4) for v in w],
-                    "alpha_deg": round(math.degrees(alpha), 1),
-                    "h_world": list(e_world),
-                    "tcp_to_e_m": pick.geom.tcp_to_e_m,
-                    "j5_deg": round(math.degrees(res.solutions[0][-1]), 1),
-                    "rejects": rejects,
-                },
-            )
-            logger.info(
-                "plan_omx_present: tcp=(%.3f,%.3f,%.3f) w=%s 채택 (기각 %d) — "
-                "E=(%.3f,%.3f,%.3f) J5=%.0f°",
-                tcp_w[0],
-                tcp_w[1],
-                tcp_w[2],
-                label,
-                len(rejects),
-                e_world[0],
-                e_world[1],
-                e_world[2],
-                math.degrees(res.solutions[0][-1]),
-            )
-            return PresentPlan(
-                sols=res.solutions,
-                quat=quat,
-                h_world=e_world,
-                tcp_world=tcp_w,
-                w=w,
-                label=label,
-            )
+            continue
+        # 벽(뒤) 침범 — omx 링크가 베이스 뒤로 넘어가면 기각 (side="b")
+        if checker is not None and _behind_wall(checker, "b", res.solutions[0]):
+            rejects.append(f"tcp={tcp_w} w={label}: omx 벽(뒤) 침범")
+            continue
+        if checker is not None and _omx_path_collides(
+            checker,
+            so101_joints,
+            [list(omx_tcp.joints), res.solutions[0]],
+        ):
+            rejects.append(f"tcp={tcp_w} w={label}: so101 충돌 위험")
+            continue
+        if not await _receive_probe(
+            ctx, so101, e_world, w, res.solutions[0], checker
+        ):
+            rejects.append(f"tcp={tcp_w} w={label}: 수취 결합 probe 전멸")
+            continue
+        await _emit(
+            trace,
+            {
+                "phase": "present",
+                "event": "plan_omx_present",
+                "tcp_world": list(tcp_w),
+                "orientation": f"axis({label})",
+                "w_world": [round(v, 4) for v in w],
+                "alpha_deg": round(math.degrees(alpha), 1),
+                "h_world": list(e_world),
+                "tcp_to_e_m": pick.geom.tcp_to_e_m,
+                "j5_deg": round(math.degrees(res.solutions[0][-1]), 1),
+                "rejects": rejects,
+            },
+        )
+        logger.info(
+            "plan_omx_present: tcp=(%.3f,%.3f,%.3f) w=%s 채택 (기각 %d) — "
+            "E=(%.3f,%.3f,%.3f) J5=%.0f°",
+            tcp_w[0],
+            tcp_w[1],
+            tcp_w[2],
+            label,
+            len(rejects),
+            e_world[0],
+            e_world[1],
+            e_world[2],
+            math.degrees(res.solutions[0][-1]),
+        )
+        return PresentPlan(
+            sols=res.solutions,
+            quat=quat,
+            h_world=e_world,
+            tcp_world=tcp_w,
+            w=w,
+            label=label,
+        )
     await _emit(
         trace,
         {

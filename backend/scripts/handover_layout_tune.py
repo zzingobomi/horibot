@@ -215,8 +215,9 @@ def main() -> None:
                     continue
                 alpha = math.atan2(t_o[1], t_o[0])
                 # ⓪ **노출 방향 w 후보** 순회 (2026-07-28 축 일반화 — 옛 코드는
-                # 매달기 단일 자세만 봤다. 수평 제시가 새 배치의 실측족이다)
-                for w_label, w in steps._present_w_candidates(tuple(t_w)):
+                # 매달기 단일 자세만 봤다. 수평 제시가 새 배치의 실측족이다.
+                # 2026-07-29: 접선 = omx base 기준 — production 과 동일 시그니처)
+                for w_label, w in steps._present_w_candidates(tuple(t_w), base):
                     _sweep_one(
                         rows, ck, ks, ko, base, roi_so, t_w, t_o, alpha,
                         w_label, w, x_ce,

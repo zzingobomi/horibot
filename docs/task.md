@@ -508,6 +508,50 @@ what-if). 순서: 마운트 → `cross_calibrate.py` → robots.yaml 반영 →
 > 방치**돼 있었다 (sim 마킹이라 fast loop 에 안 걸림 + 전환 커밋에서 full 미실행).
 > 정정 완료. **실물 handoff 전 full 1회는 이래서 필요하다.**
 
+### 4.9 handover 실물 3차 실패 근인 — 접선 frame 오귀속 (2026-07-29, sim 완전 재현·수정)
+
+실패 런 = `debug/handover/20260729_054607` (`NoReachableGrasp`: so101 수취 관측
+전멸 — 128 중 시선 가림 12 / 자세 IK 실패 116). trace 만으로 sim 에서 100% 재현.
+
+**근인 사슬** (전부 계획 계층 — 검출/캘/모터 무혐의):
+
+1. **접선 frame 오귀속 (기하 근인)** — `_present_w_candidates` 가 수평 봉 축
+   후보(±t)를 **so101(world 원점) 기준 접선**으로 만들었다. 그런데 omx
+   5DOF(ZYYYX) 다양체에서 jaw-수직 제시 quat 이 성립하는 수평 w 는 **omx 팔
+   평면에 수직 = omx 기준 접선**뿐 (tool x 가 팔 평면에 갇힘 —
+   `analytic_zyyyx` 의 M=Ry·Rx 분해와 동치). 07-28 직각 재배치 후 두 접선이
+   랑데부에서 20~30° 어긋나며 수평 후보 전원이 자세 IK 전멸. **사용자 토크오프
+   실측 봉 축 (-0.96,-0.064,0.274)은 omx 접선과 0.3°** — 실측족의 정체가 omx
+   접선족이었는데 07-28 주석/구현이 so101 접선으로 오귀속.
+   → 수정: 접선을 omx base 기준으로 (`_present_w_candidates(tcp_w, base_omx)`),
+   radial 족 삭제 (다양체상 jaw 수평 강제 = 항상 IK 전멸 or 파지 불안정).
+2. **hang 사다리 순서 버그** — family 마다 elev −90 이 끼어 있어 "-t 매달기"가
+   "+t 수평"보다 먼저 시도 + 동일 hang 4중복. 랑데부 후보 차원에서도 c0 의
+   hang 이 c2 의 수평을 가렸다. → hang 은 단일 후보로, **전 랑데부 후보의
+   수평 소진 후에만** (2-pass).
+3. **수취 미결합 채택 (파이프라인 근인)** — 제시가 자기 게이트만 보고 채택돼
+   수취 전멸이 관측 이동 후에야 드러났다. sim 스윕: 수취 해는 랑데부 지역
+   전체에서 16 중 1~2 (spin0 근방)뿐. → `plan_omx_present` 에 **수취 결합
+   게이트**(`_receive_probe` — spin 앞 6 × 접근 여유 사다리 [pre,grasp]
+   resolve + 벽/충돌) 추가. offline probe 의 결합 판정을 계획 시점으로 승격.
+4. (부속) J5 게이트 90.000° 경계 플래핑 — omx 접선/elev0 해석해가 정확히 90°
+   라 채택이 부동소수 복불복 → 게이트 92° (케이블 안전 무관 — 사고는 ±180°).
+
+**sim 증명** (실 URDF·캘·robots.yaml): 채택 `-t/elev+0` @ tcp(0.106,-0.259,0.20)
+J5=90°, E=(0.062,-0.268,0.20), 수취 zneg/spin0(여유 3cm), 관측 IK 10/128 —
+**10 전부 시선 클리어**. 회귀 = `test_present_candidates_on_omx_manifold`(다양체
+조건) / `test_present_w_candidates_omx_tangent_and_hang_last` /
+`test_present_rejects_candidate_when_receive_probe_dies` + feasibility sim 의
+"hang 폴백 금지" assert.
+
+**실물에서 남는 미지수**: ① 수취 해가 spin0 1~2개 razor-thin — 크로스캘/FK
+오차(§4.8 의 y 34mm 이탈 미해결)가 그 여유를 먹으면 실물 수취 IK/충돌이 다시
+갈린다. 다음 런도 trace 의 `plan_omx_present.rejects` / `plan_receive` 부터.
+② `_receive_probe` 는 계획 E 기준 — 재검출 보정(축 수직 ±수 cm) 후 실 겨냥점은
+다를 수 있음. ③ omx 실 J5 가 해석해 90° 근방을 실제로 트래킹하는지 (07-28
+실측 80° 는 근방 통과 증거). ④ 07-28 토크오프 실측 **관절값 원본은 미기록**
+(요약값만 steps.py 주석/test 에 잔존) — 다음 토크오프 땐 waypoint 로 저장할 것.
+
 ---
 ---
 

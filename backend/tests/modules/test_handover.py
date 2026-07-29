@@ -246,11 +246,12 @@ def _aerial_at(offset, *, along_axis, w, tcp, points=60, score=0.8):
     perp = np.asarray(offset, dtype=float)
     perp = perp - float(np.dot(perp, a)) * a  # 축 성분 제거
     c = base + a * along_axis + perp
+    pos = (float(c[0]), float(c[1]), float(c[2]))
     return OrientedDetection(
-        prompt="orange block", position=tuple(float(v) for v in c), score=score,
+        prompt="orange block", position=pos, score=score,
         base_z=float(c[2]) - 0.01, height=0.02, grasp_yaw=0.1,
         footprint=(0.022, 0.020),
-        points=[tuple(float(v) for v in c)] * points,
+        points=[pos] * points,
     )
 
 
@@ -305,8 +306,10 @@ def _happy_script(e=None) -> dict:
             ResolveReachableResponse(index=0, solutions=[[0.1] * 5]),
             # omx pick — 봉 끝 파지점 (양 끝 × z 사다리 중 첫 그룹, J5 자연해)
             ResolveReachableResponse(index=0, solutions=[[0.2] * 5]),
-            # omx 제시 자세 (hang(z↑) 단일 — 랑데부 후보 [0] 채택)
+            # omx 제시 자세 (w 후보 [0] — 랑데부 후보 [0] 채택)
             ResolveReachableResponse(index=0, solutions=[[0.4] * 5]),
+            # so101 수취 결합 probe (제시 채택 게이트, 2026-07-29)
+            ResolveReachableResponse(index=0, solutions=[[0.55] * 6, [0.6] * 6]),
             # so101 수취 관측 자세
             ResolveReachableResponse(index=0, solutions=[[0.5] * 6]),
             # so101 수취 [pre, grasp]
@@ -365,8 +368,19 @@ async def test_scenario_happy_path_and_release_order(monkeypatch, elev):
     계산한 E 를 관측 도달 검증 픽스처에 준다 (w 는 production 함수에서 유도 —
     테스트가 선택 로직을 복제하지 않는다)."""
     monkeypatch.setattr(steps, "_PRESENT_W_ELEV_DEG", (elev,))
-    w = steps._present_w_candidates(_TCP_W)[0][1]
-    e = tuple(_TCP_W[i] + w[i] * _GEOM.tcp_to_e_m for i in range(3))
+    # 채택될 w = E-ROI 게이트(production 과 동형)를 통과하는 첫 후보 — mock
+    # resolve 는 항상 성공하므로 이 필터가 곧 채택 순서다 (omx-접선 후보의 E 가
+    # 픽스처 ROI 밖이면 반대 접선이 채택된다 — 후보[0] 하드코딩 금지).
+    def _e_of(wv):
+        return tuple(_TCP_W[i] + wv[i] * _GEOM.tcp_to_e_m for i in range(3))
+
+    w = next(
+        wv for _lb, wv in steps._present_w_candidates(_TCP_W, _BASE_OMX)
+        if _ROI_SO.x_min <= _e_of(wv)[0] <= _ROI_SO.x_max
+        and _ROI_SO.y_min <= _e_of(wv)[1] <= _ROI_SO.y_max
+        and _ROI_SO.z_min <= _e_of(wv)[2] <= _ROI_SO.z_max
+    )
+    e = _e_of(w)
     ctx = _ctx(_happy_script(e))
     await _module().scenario(ctx, pick_object="orange block")
     log = ctx.wire.call_log
@@ -423,7 +437,7 @@ async def test_present_axis_invariants_tool_z_is_minus_w_and_e_on_axis():
         geom=_GEOM, chosen_dz=0.016,
     )
     plan = await steps.plan_omx_present(
-        ctx, OMX, _ROI_SO, _ROI_OMX, _BASE_OMX, script_pick,
+        ctx, OMX, SO, _ROI_SO, _ROI_OMX, _BASE_OMX, script_pick,
         [0.1] * 6, None,
     )
     # quat 은 omx frame — base yaw 로 world 로 돌려 비교
@@ -776,20 +790,102 @@ def test_present_quat_axis_horizontal_has_vertical_jaw():
     assert abs(float(tool_y[2])) > 0.95, f"jaw 가 수직이 아님 ({tool_y})"
 
 
-def test_present_w_candidates_prefer_tangent():
-    """w 후보 선호순 — **접선(±t) 우선, radial 나중** (실측족이 접선 −t).
-    접선은 base→TCP 방위에 수직이어야 한다."""
-    tcp = (0.126, -0.274, 0.204)
-    cands = steps._present_w_candidates(tcp)
-    assert cands
+# 실 배치 base (robots.yaml 2026-07-28 직각 재배치 미러) — 접선 frame 회귀
+# 테스트 전용. 실측 봉 축 앵커와 같은 좌표계여야 의미가 있다 (fixture
+# _BASE_OMX 는 옛 배치라 별도로 둔다). robots.yaml 배치가 바뀌면 같이 갱신.
+_BASE_OMX_20260728 = BasePose(x=0.135, y=-0.40, z=-0.0094, yaw_rad=math.pi / 2)
+
+
+def test_present_w_candidates_omx_tangent_and_hang_last():
+    """w 후보 — **omx base 기준 접선** + hang 은 마지막 단일 폴백.
+
+    2026-07-29 근인 회귀: 옛 코드는 접선을 so101(world 원점) 기준으로 계산해
+    직각 배치에서 두 접선이 ~21° 어긋났고, 수평 후보 전원이 omx 5DOF 다양체
+    밖 → 자세 IK 전멸 → 매달기 폴백이었다. 실측 봉 축 (-0.96,-0.064,0.274)
+    은 omx 접선과 0.3° — 접선의 소속 frame 이 omx 임을 잠근다."""
+    tcp = (0.126, -0.274, 0.204)  # 사용자 토크오프 실측 제시 TCP
+    base = _BASE_OMX_20260728
+    cands = steps._present_w_candidates(tcp, base)
     assert cands[0][0].startswith("-t")
-    r = np.array([tcp[0], tcp[1], 0.0])
-    r = r / np.linalg.norm(r)
+    # 접선 = omx radial 에 수직 (so101 radial 에는 수직이 아니다 — 이 배치에서
+    # 두 기준이 ~21° 어긋나는 것이 근인이었다)
+    r_omx = np.array([tcp[0] - base.x, tcp[1] - base.y, 0.0])
+    r_omx = r_omx / np.linalg.norm(r_omx)
     horiz = np.array([cands[0][1][0], cands[0][1][1], 0.0])
     horiz = horiz / np.linalg.norm(horiz)
-    assert float(np.dot(horiz, r)) == pytest.approx(0.0, abs=1e-6)
+    assert float(np.dot(horiz, r_omx)) == pytest.approx(0.0, abs=1e-6)
+    r_so = np.array([tcp[0], tcp[1], 0.0])
+    r_so = r_so / np.linalg.norm(r_so)
+    assert abs(float(np.dot(horiz, r_so))) > 0.2, (
+        "so101 radial 에도 수직 — 이 배치에선 두 접선이 달라야 회귀를 잡는다"
+    )
+    # 실측 봉 축과 같은 방향 분기(-t = so101 에서 멀어지는 쪽)가 첫 후보
+    measured_w = np.array([-0.96, -0.064, 0.274])
+    measured_w = measured_w / np.linalg.norm(measured_w)
+    first_elev15 = next(v for lb, v in cands if lb == "-t/elev+15")
+    assert float(np.dot(np.asarray(first_elev15), measured_w)) > 0.99
+    # hang 은 마지막 **단일** 후보 (family 별 -90 중복 + 순서 버그 회귀 방지)
     labels = [c[0] for c in cands]
-    assert labels.index("-t/elev+15") < labels.index("-r/elev+15")
+    assert labels[-1] == "hang"
+    assert labels.count("hang") == 1
+    assert not any("-90" in lb for lb in labels[:-1])
+    assert not any(lb.startswith(("-r", "+r")) for lb in labels)
+
+
+def test_present_candidates_on_omx_manifold():
+    """수평 w 후보 × jaw-수직 quat 이 **omx 5DOF(ZYYYX) 다양체 위**임을 잠근다
+    — tool x(omx frame) 가 팔 평면(TCP 방위 α) 안 (analytic_zyyyx 의 M=Ry·Rx
+    분해 가능 조건). 이게 깨지면 자세 IK 가 조용히 전멸하고 매달기로 후퇴한다
+    (2026-07-29 실물 전멸의 기하 근인 — 발견 시나리오 그대로)."""
+    base = _BASE_OMX_20260728
+    for tcp in [(0.138, -0.259, 0.20), (0.106, -0.259, 0.20), (0.171, -0.228, 0.22)]:
+        tcp_o = steps.world_to_robot(tcp, base)
+        alpha = math.atan2(tcp_o[1], tcp_o[0])
+        n = np.array([-math.sin(alpha), math.cos(alpha), 0.0])  # 팔 평면 법선
+        for label, w in steps._present_w_candidates(tcp, base):
+            w_omx = frames.world_dir_to_robot(w, base)
+            q = steps._present_quat_axis(w_omx, alpha)
+            x = Rotation.from_quat(q).apply([1.0, 0.0, 0.0])
+            assert abs(float(np.dot(x, n))) < 1e-6, (label, tcp)
+
+
+async def test_present_rejects_candidate_when_receive_probe_dies():
+    """수취 결합 게이트 (2026-07-29) — 제시 자기 게이트를 통과해도 so101 수취
+    probe 가 전멸이면 그 w 를 기각하고 다음 후보로 간다. 수취 해가 랑데부
+    지역에 1~2/16 뿐이라 이 게이트 없이는 '제시만 되는' 후보가 채택돼 수취
+    전멸이 실행 후에야 드러난다 (20260729 실물 전멸의 파이프라인 근인).
+
+    ROI 는 전 후보가 E-ROI 게이트를 통과하게 넓게 준다 — resolve 소비 순서가
+    w 사다리 순서와 1:1 이 되어 스크립트가 결정론적이다."""
+    wide = WorkcellRoi(
+        x_min=-1.0, x_max=1.0, y_min=-1.0, y_max=1.0, z_min=-1.0, z_max=1.0
+    )
+    script = _happy_script()
+    script[_SELECT] = [
+        # 제시 w 후보 #1 도달
+        ResolveReachableResponse(index=0, solutions=[[0.4] * 5]),
+        # 그 후보의 수취 probe 전멸 → 기각돼야 한다
+        ResolveReachableResponse(index=-1, message="전멸"),
+        # 제시 w 후보 #2 도달
+        ResolveReachableResponse(index=0, solutions=[[0.41] * 5]),
+        # 수취 probe 통과 → 채택
+        ResolveReachableResponse(index=0, solutions=[[0.6] * 6, [0.65] * 6]),
+    ]
+    ctx = _ctx(script)
+    pick = steps.BlockPick(
+        sols=[[0.2] * 5], quat=(0.0, 0.0, 0.0, 1.0),
+        grasp_omx=(0.2, 0.0, 0.016), u_omx=(1.0, 0.0),
+        geom=_GEOM, chosen_dz=0.016,
+    )
+    plan = await steps.plan_omx_present(
+        ctx, OMX, SO, wide, wide, _BASE_OMX, pick, [0.1] * 6, None,
+    )
+    assert len(ctx.calls(_SELECT)) == 4
+    # 첫 w 후보(-t/elev+15)가 아니라 둘째(-t/elev+0)가 채택됐다
+    assert plan.label == "-t/elev+0"
+    # probe resolve 는 so101 로 라우팅 (제시 resolve 는 omx)
+    probe_calls = [c for c in ctx.calls(_SELECT) if c["robot_id"] == SO]
+    assert len(probe_calls) == 2
 
 
 async def test_pick_prefers_natural_wrist_far_end():

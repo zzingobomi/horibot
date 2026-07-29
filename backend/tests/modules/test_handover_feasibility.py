@@ -5,12 +5,12 @@ offline probe 로 잡은 구멍들을 실 URDF/캘(repo horibot.db)/base_pose �
 probe = scripts/handover_block_probe.py):
   ① omx nadir 관측 ψ 격자에 도달 자세가 있다 (ψ=90° 실측)
   ② omx top-down 파지 격자 다수 도달 (§5.1 manifold)
-  ③ **B/down 제시** — 랑데부(prefer 밴드 (0.21,0.16), z 0.28~0.32)에서
-     _present_quat_down(다양체 위 구성 — tool z ↓)이 ≥1 도달해야 한다.
-     (probe 실측: 수평(접선)족은 so101 수취 도달 0 이라 기각 — 그 결론이
-     뒤집히면 여기가 아니라 probe 를 다시 돌려라.)
-  ④ **so101 수취** — 수직 조축족(_recv_orients, tool z ∥ 봉 축 = 수직)이
-     E(= 제시 TCP − tcp_to_e)에서 [pre, grasp] ≥1 도달 + 수취 관측 사다리 ≥1
+  ③ **수평(omx 접선) 제시** — 랑데부(prefer = 2026-07-28 토크오프 실측 TCP,
+     z 0.18~0.22)에서 omx 접선족 × jaw-수직 quat(다양체 위 구성)이 수취 결합
+     게이트까지 포함해 ≥1 채택돼야 하고, **hang 폴백이 아니어야** 한다
+     (2026-07-29 회귀 — 접선을 so101 기준으로 만들면 다양체 밖 → 수평 전멸).
+  ④ **so101 수취** — 봉 축 정렬족(_recv_orients, tool z ∥ w)이
+     E(= 제시 TCP + w·tcp_to_e)에서 [pre, grasp] ≥1 도달 + 수취 관측 사다리 ≥1
   ⑤ 채택 구성 쌍의 링크 최근접 ≥ _RECV_COLLISION_MARGIN_M (봉 축 방향 두
      그리퍼 이격 ~2.5cm — 노브를 흔들어 여유가 margin 밑으로 내려가면 깨진다)
 
@@ -134,44 +134,98 @@ _BLOCK_GEOM = block.plan_block_grasp(
 )
 
 
-def _adopt_present(env):
-    """시나리오와 같은 순서로 제시 채택 — (tcp_w, sol, h_world, w).
+def _receive_exists(env, chk, e, w, omx_sol) -> bool:
+    """steps._receive_probe 의 sim 동형 — spin 사다리 앞 6개 × 접근 여유
+    사다리에서 [pre, grasp] IK + 벽 + 충돌여유 통과 해가 있는가."""
+    e3 = (float(e[0]), float(e[1]), float(e[2]))
+    w3 = (float(w[0]), float(w[1]), float(w[2]))
+    for _label, quat, a in steps._recv_orients(e3, w3)[:6]:
+        for clear_m in steps._RECV_PRE_CLEAR_LADDER:
+            pre = tuple(e[i] - a[i] * clear_m for i in range(3))
+            if _ik(env["k_so"], pre, quat) is None:
+                continue
+            s_g = _ik(env["k_so"], tuple(e), quat)
+            if s_g is None:
+                continue
+            if chk.min_link_world_x("a", s_g, grip=1.0) < steps._WALL_MIN_X_M:
+                continue
+            if chk.in_collision(
+                s_g, omx_sol, grip_a=1.0,
+                grip_b=steps._OMX_HOLD_GRIP_FRAC,
+                margin_m=steps._RECV_COLLISION_MARGIN_M,
+            ):
+                continue
+            return True
+    return False
 
-    축 일반형 (2026-07-28): 랑데부 TCP × **노출 방향 w 후보**(접선/radial ×
-    elevation) 를 선호순으로 돌며 첫 도달·손목정상 조합을 채택한다.
-    E = TCP + w·tcp_to_e (봉 축 위). 매달기는 w=(0,0,−1) 인 특수case.
+
+def _adopt_present(env, chk):
+    """시나리오와 같은 순서로 제시 채택 — (tcp_w, sol, h_world, w, label).
+
+    축 일반형 (2026-07-28) + 수취 결합 게이트 (2026-07-29): 랑데부 TCP ×
+    **노출 방향 w 후보**(omx 접선 × elevation + hang 폴백)를 선호순으로 돌며
+    도달·손목·E-ROI·**수취 probe** 첫 통과 조합을 채택한다 — plan_omx_present
+    와 동형. E = TCP + w·tcp_to_e (봉 축 위).
 
     ⚠ 2026-07-28 수평 제시 전환 근거: 매달기는 omx 그리퍼가 봉 위에 있어 so101
-    관측 시야를 구조적으로 막았다 (실물 관측 128자세 전부 가림)."""
+    관측 시야를 구조적으로 막았다 (실물 관측 128자세 전부 가림).
+    ⚠ 2026-07-29 근인 회귀: 접선은 **omx base 기준** — so101 기준 접선은 이
+    직각 배치에서 다양체 밖이라 수평 전원이 자세 IK 전멸했다."""
     cands = frames.rendezvous_candidates(
         env["roi_so"], env["roi_omx"], env["base"], steps._PRESENT_Z_WORLD,
         limit=steps._PRESENT_LIMIT, prefer_point=steps._RENDEZVOUS_PREFER_XY,
     )
     assert cands, "랑데부 교집합 비어 있음 — workcell ROI z_max 회귀"
     roi_so = env["roi_so"]
-    for tcp_w in cands:
+    # 수평 전 소진 후 hang — plan_omx_present 의 2-pass 순서와 동형 (앞 랑데부
+    # hang 이 뒤 랑데부 수평을 가리는 순서 버그 회귀 방지)
+    attempts = [
+        (tcp_w, label, w)
+        for hang_pass in (False, True)
+        for tcp_w in cands
+        for label, w in steps._present_w_candidates(tcp_w, env["base"])
+        if (label == "hang") == hang_pass
+    ]
+    for tcp_w, label, w in attempts:
         tcp_o = frames.world_to_robot(tcp_w, env["base"])
         alpha = math.atan2(tcp_o[1], tcp_o[0])
-        for _label, w in steps._present_w_candidates(tcp_w):
-            e = tuple(tcp_w[i] + w[i] * _BLOCK_GEOM.tcp_to_e_m for i in range(3))
-            if not (
-                roi_so.x_min <= e[0] <= roi_so.x_max
-                and roi_so.y_min <= e[1] <= roi_so.y_max
-                and roi_so.z_min <= e[2] <= roi_so.z_max
-            ):
-                continue  # 시나리오 E-ROI 게이트와 동형
-            w_omx = frames.world_dir_to_robot(w, env["base"])
-            quat = steps._present_quat_axis(w_omx, alpha)
-            sol = _ik(env["k_omx"], tcp_o, quat)
-            # 손목 뒤집힘 기각 — plan_omx_present 와 동형 (케이블 안전 불변식)
-            if sol and abs(sol[-1]) <= steps._WRIST_NATURAL_MAX_RAD:
-                return tcp_w, sol, e, w
-    pytest.fail("제시 전멸 — _present_w_candidates/랑데부 밴드 회귀 "
+        e = (
+            tcp_w[0] + w[0] * _BLOCK_GEOM.tcp_to_e_m,
+            tcp_w[1] + w[1] * _BLOCK_GEOM.tcp_to_e_m,
+            tcp_w[2] + w[2] * _BLOCK_GEOM.tcp_to_e_m,
+        )
+        if not (
+            roi_so.x_min <= e[0] <= roi_so.x_max
+            and roi_so.y_min <= e[1] <= roi_so.y_max
+            and roi_so.z_min <= e[2] <= roi_so.z_max
+        ):
+            continue  # 시나리오 E-ROI 게이트와 동형
+        w_omx = frames.world_dir_to_robot(w, env["base"])
+        quat = steps._present_quat_axis(w_omx, alpha)
+        sol = _ik(env["k_omx"], tcp_o, quat)
+        # 손목 뒤집힘 기각 — plan_omx_present 와 동형 (케이블 안전 불변식)
+        if not (sol and abs(sol[-1]) <= steps._WRIST_NATURAL_MAX_RAD):
+            continue
+        if not _receive_exists(env, chk, e, w, sol):
+            continue  # 수취 결합 게이트와 동형
+        return tcp_w, sol, e, w, label
+    pytest.fail("제시(+수취 결합) 전멸 — _present_w_candidates/랑데부 밴드 회귀 "
                 "(scripts/handover_layout_tune.py 로 재특성화)")
 
 
 def test_present_and_receive_feasible_with_clearance(env):
-    _tcp_w, omx_sol, h, w = _adopt_present(env)
+    so_t, omx_t = env["so"].type, env["omx"].type
+    chk_adopt = CrossRobotChecker(
+        _ROBOT_DIR / so_t / "urdf" / f"{so_t}.urdf",
+        _ROBOT_DIR / omx_t / "urdf" / f"{omx_t}.urdf", env["base"],
+    )
+    try:
+        _tcp_w, omx_sol, h, w, label = _adopt_present(env, chk_adopt)
+    finally:
+        chk_adopt.close()
+    # 2026-07-29 회귀 — 수평(접선) 제시가 채택돼야 한다. hang 폴백이 뜨면
+    # 접선 frame/다양체 회귀 (hang 은 관측 시선이 구조적으로 막혀 실물 전멸).
+    assert label != "hang", "수평 제시 전멸 → hang 폴백 — 접선 frame 회귀"
     # so101 수취 관측 사다리 ≥1
     az0 = math.atan2(h[1], h[0])
     obs_ok = False

@@ -254,9 +254,10 @@ class HandoverModule:
             marks.show_grasp(g_world)
             await steps.omx_pick_block(ctx, omx, pick, trace)
 
-            # 5) D. 제시 — hang(z↑) 매달기 (봉을 늘어뜨림), so101 은 home 에 있음
+            # 5) D. 제시 — omx 접선 수평 (hang 은 폴백), so101 은 home 에 있음.
+            # 수취 결합 게이트가 so101 수취 IK 존재까지 확인하고 채택한다.
             present = await steps.plan_omx_present(
-                ctx, omx, roi_so, roi_omx, base_omx, pick,
+                ctx, omx, so101, roi_so, roi_omx, base_omx, pick,
                 list(home_so.joint_values), self._checker, trace,
             )
             await steps.omx_present(ctx, omx, present, trace)

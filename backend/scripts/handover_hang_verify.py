@@ -130,7 +130,7 @@ if present_sol is None:
 e = (present_tcp[0], present_tcp[1], present_tcp[2] - grasp.tcp_to_e_m)
 print(f"  E={tuple(round(v,3) for v in e)}")
 ok = 0
-for label, quat, a in steps._recv_orients(e)[:8]:
+for label, quat, a in steps._grasp_orients(e, (0.0, 0.0, -1.0))[:8]:
     for clear_m in steps._RECV_PRE_CLEAR_LADDER:  # 접근 여유 사다리
         pre = tuple(e[i] - a[i] * clear_m for i in range(3))
         s1 = kin_so.ik(pre, quat, home_so, 40)

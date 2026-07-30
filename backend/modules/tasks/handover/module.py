@@ -25,7 +25,7 @@ from framework.contract.publisher import publishes
 from framework.contract.service import service
 from framework.runtime.api import ModuleRuntime
 from modules.tasks.core.context import TaskContext, TaskContextFactory
-from modules.tasks.core.errors import GraspFailed
+from modules.tasks.core.errors import GraspFailed, NoReachableGrasp
 from modules.tasks.core.contract import (
     ControlRequest,
     ControlResponse,
@@ -354,10 +354,51 @@ class HandoverModule:
                         steps._REPRESENT_MAX,
                         residual * 1000,
                     )
-            plan = await steps.plan_receive(
-                ctx, so101, omx, det2, base_omx, present, pick.geom,
-                self._checker, trace,
+            # 6c) 봉 실측 → 수취 계획 → (전멸 시) **협상 루프** (2026-07-30):
+            # so101 이 "봉이 δ 만큼 옮겨지면 잡는다"(find_receive_shift)를
+            # 되받고 omx 가 δ 재배치(omx_nudge) → 재관측→재실측→재계획.
+            # 전멸=종료 폐기 — 상한(_NEGOTIATE_MAX) 소진 시에만 명시 실패.
+            meas = await steps.measure_bar(
+                ctx, omx, base_omx, det2, present, pick.geom, trace
             )
+            plan: steps.ReceivePlan | None = None
+            for _round in range(steps._NEGOTIATE_MAX + 1):
+                try:
+                    plan = await steps.plan_receive(
+                        ctx, so101, omx, meas, present, pick.geom,
+                        self._checker, trace,
+                    )
+                    break
+                except NoReachableGrasp:
+                    if _round >= steps._NEGOTIATE_MAX:
+                        raise
+                    delta = await steps.find_receive_shift(
+                        ctx, so101, meas, trace
+                    )
+                    if delta is None:
+                        raise
+                    logger.info(
+                        "수취 협상 %d/%d: omx 재배치 δ=(%+.0f,%+.0f,%+.0f)mm",
+                        _round + 1, steps._NEGOTIATE_MAX,
+                        delta[0] * 1000, delta[1] * 1000, delta[2] * 1000,
+                    )
+                    present = await steps.omx_nudge(
+                        ctx, omx, so101, base_omx, present, delta,
+                        self._checker, trace,
+                    )
+                    marks.show_handover(present.h_world)
+                    so_obs = await steps.plan_so_observe(
+                        ctx, so101, omx, t_tcp_cam_so, present, pick.geom,
+                        self._checker, trace,
+                    )
+                    det2 = await steps.so_redetect(
+                        ctx, so101, pick_object, so_obs, present, pick.geom,
+                        t_tcp_cam_so, trace,
+                    )
+                    meas = await steps.measure_bar(
+                        ctx, omx, base_omx, det2, present, pick.geom, trace
+                    )
+            assert plan is not None  # 루프는 break(성공) 아니면 raise 로만 탈출
             await steps.receive(
                 ctx, so101, omx, plan, pick_object, present, pick.geom, trace
             )

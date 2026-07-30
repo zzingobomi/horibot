@@ -9,7 +9,7 @@ probe = scripts/handover_block_probe.py):
      z 0.18~0.22)에서 omx 접선족 × jaw-수직 quat(다양체 위 구성)이 수취 결합
      게이트까지 포함해 ≥1 채택돼야 하고, **hang 폴백이 아니어야** 한다
      (2026-07-29 회귀 — 접선을 so101 기준으로 만들면 다양체 밖 → 수평 전멸).
-  ④ **so101 수취** — 봉 축 정렬족(_recv_orients, tool z ∥ w)이
+  ④ **so101 수취** — 잡기 조건 그리드(_grasp_orients, 조 닫힘축 ⊥ w)가
      E(= 제시 TCP + w·tcp_to_e)에서 [pre, grasp] ≥1 도달 + 수취 관측 사다리 ≥1
   ⑤ 채택 구성 쌍의 링크 최근접 ≥ _RECV_COLLISION_MARGIN_M (봉 축 방향 두
      그리퍼 이격 ~2.5cm — 노브를 흔들어 여유가 margin 밑으로 내려가면 깨진다)
@@ -135,12 +135,13 @@ _BLOCK_GEOM = block.plan_block_grasp(
 
 
 def _receive_exists(env, chk, e, w, omx_sol) -> bool:
-    """steps._receive_probe 의 sim 동형 — spin 사다리 앞 6개 × 접근 여유
-    사다리에서 [pre, grasp] IK + 벽 + 충돌여유 통과 해가 있는가."""
+    """steps._receive_probe 의 sim 동형 — 잡기 조건 그리드 앞 12개 × 접근 여유
+    2단에서 [pre, grasp] IK + 벽 + 충돌여유 통과 해가 있는가 (probe 슬라이스
+    동일 — 2026-07-30 잡기 조건 그리드 전환)."""
     e3 = (float(e[0]), float(e[1]), float(e[2]))
     w3 = (float(w[0]), float(w[1]), float(w[2]))
-    for _label, quat, a in steps._recv_orients(e3, w3)[:6]:
-        for clear_m in steps._RECV_PRE_CLEAR_LADDER:
+    for _label, quat, a in steps._grasp_orients(e3, w3)[:12]:
+        for clear_m in steps._RECV_PRE_CLEAR_LADDER[1::2]:
             pre = tuple(e[i] - a[i] * clear_m for i in range(3))
             if _ik(env["k_so"], pre, quat) is None:
                 continue
@@ -255,16 +256,16 @@ def test_present_and_receive_feasible_with_clearance(env):
             break
     assert obs_ok, "so101 수취 관측 사다리 전멸 — _RECV_OBS_* 회귀"
 
-    # 수취 가족 (tool z ∥ **봉 축 w**), 겨냥 = E (노출부). ≥1 [pre, grasp] 도달.
-    # 자세족이 실제로 봉 축에 정렬됨도 잠근다 (축 하드코딩 회귀 방지).
+    # 수취 가족 (잡기 조건 그리드 — 조 닫힘축 ⊥ 봉 축 w), 겨냥 = E (노출부).
+    # ≥1 [pre, grasp] 도달. 조 수직성도 잠근다 (잡기 물리 제약 회귀 방지).
     tgt = h
     w_unit = np.asarray(w, dtype=float)
     w_unit = w_unit / np.linalg.norm(w_unit)
     so_sols = []
-    for _label, quat, a in steps._recv_orients(tgt, w):
-        tool_z = _R.from_quat(quat).apply([0.0, 0.0, 1.0])
-        assert abs(float(np.dot(tool_z, w_unit))) > 0.99, (
-            "수취 자세족 tool z 가 봉 축에 정렬되지 않음 — 설계 회귀"
+    for _label, quat, a in steps._grasp_orients(tgt, w):
+        tool_y = _R.from_quat(quat).apply([0.0, 1.0, 0.0])
+        assert abs(float(np.dot(tool_y, w_unit))) < 1e-6, (
+            "수취 자세족 조 닫힘축이 봉 축에 수직이 아님 — 잡기 조건 회귀"
         )
         for clear_m in steps._RECV_PRE_CLEAR_LADDER:  # 접근 여유 사다리
             pre = tuple(tgt[i] - a[i] * clear_m for i in range(3))
@@ -273,7 +274,7 @@ def test_present_and_receive_feasible_with_clearance(env):
                 so_sols.append(s_g)
                 break
     assert so_sols, (
-        f"so101 수취 가족 전멸 — _recv_orients/E 위치 회귀 (E={h}, w={w})"
+        f"so101 수취 가족 전멸 — _grasp_orients/E 위치 회귀 (E={h}, w={w})"
     )
 
     so_t, omx_t = env["so"].type, env["omx"].type

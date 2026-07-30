@@ -21,10 +21,14 @@ docstring + scripts/handover_block_probe.py 결합 스윕. 2cm 큐브는 두 그
      (실물 1차 런). so101 파지점 E = TCP − (0,0,tcp_to_e). ⚠ 자세는 omx 5DOF
      **도달 다양체 위에서 구성** (tool x = 팔 평면 방위 α 의 수평 radial —
      임의 방위 열거는 5DOF 에서 measure-zero 라 전멸한다. probe 1차 교훈).
-  E. so101 수취 — closed-loop 재검출 (공중 대역) + **수직 조축**(tool z ∥ 봉
-     축 = 수직, 수평 접근 spin 사다리 — 큐브 시대 실측 "도달해는 전부 수직
-     조축" 과 정합) + refine 1 tick + 수취 순서 불변식(so101 held 뒤에만 omx
-     open) + cross-robot 충돌 게이트 + 벽(뒤) 게이트.
+  E. so101 수취 (2026-07-30 전면 재설계 — "IK 전멸=종료" 폐기): closed-loop
+     재검출 → **봉 실측**(measure_bar — 점군 PCA 축/자유단. 2026-07-29 근인:
+     봉이 omx 조 안에서 84°/70° 돌았는데 계획축 가정으로 전멸, 검출은 정확했다)
+     → **잡기 조건 그리드**(_grasp_orients — 조 닫힘축 ⊥ 실측축만 요구, 옛
+     "tool z ∥ 축 정확 일치"는 과잉 제약으로 해를 0~7개로 죽였다) → 전멸 시
+     **협상**(find_receive_shift 가 "잡을 수 있는 가장 가까운 봉 위치" δ 역산
+     → omx_nudge 재배치 → 재관측 재계획, 상한 _NEGOTIATE_MAX) + servo 수렴
+     + 수취 순서 불변식(so101 held 뒤에만 omx open) + 충돌/벽 게이트.
 
 실물 첫 런 전 확인 필수 가정 (omx_handover_prep.md §7 미지수 + 봉 신규):
   ① omx tcp/그리퍼 물리 조립이 URDF 규약(tool x=approach, y=jaw)과 일치 (§5.2).
@@ -295,8 +299,32 @@ _RECV_Z_BAND_M = 0.03
 # 봉은 크고(8cm) 주황색이라 큐브보다 유리할 것 — 실물 첫 런 trace 로 확인.
 _RECV_SCORE_MIN = 0.25
 _RECV_MIN_POINTS = 20  # 공중 물체 점군 하한
-# 수취 자세족 — 수직 조축 spin 사다리 (±tool z × spin 45° 스텝, _recv_orients).
-_RECV_SPIN_STEP_DEG = 45.0
+# 수취 자세족 — **잡기 조건 그리드** (_grasp_orients, 2026-07-30 전면 교체).
+# ⚠ 옛 "tool z ∥ ±봉축 정확 일치 spin 사다리"(_recv_orients)는 물리가 요구하지
+# 않는 제약이었다 — 잡는 데 필요한 건 **조 닫힘축(tool y) ⊥ 봉축** 뿐. 정확족은
+# 어제 실패 지점 실측에서 0~7해, 조건족은 10~17해 (full_diagnosis.py 2026-07-30
+# — "위치 통과 64/64 인데 자세 IK 전멸"의 근인은 관절 한계에 걸리는 과잉 자세
+# 제약). y⊥축을 정확히 유지한 채 남는 2 자유도를 격자로 전개한다:
+#   φ = 조 닫힘축의 봉축 둘레 방위 (옛 spin 등가)
+#   ψ = 접근 roll (tool z 의 봉축 이탈각) — ψ=0/180 이 옛 z∥±축 족과 동일
+_RECV_SPIN_STEP_DEG = 45.0  # φ 스텝
+# ψ 사다리 (선호순) — 0/180(옛 축 정렬족, 조 물림 깊이 최대) 먼저, 대각 →
+# 축 평행 접근(90/270, 봉 끝으로 진입) 마지막. 게이트(충돌/벽/직선)는 동일 적용.
+_RECV_APPROACH_ROLL_DEG = (0.0, 180.0, 45.0, 315.0, 135.0, 225.0, 90.0, 270.0)
+# 실측 봉축 품질 게이트 — 점군 주축 span 이 이보다 짧으면 축 추정 불신 (봉
+# 노출 46mm 전제 — 반쪽 가림이어도 25mm 는 나온다), 계획축 폴백 (trace 명시).
+_BAR_AXIS_MIN_SPAN_M = 0.025
+# 실측 봉축 vs 계획축 이탈 경고 문턱 — 초과 = "봉이 조 안에서 돌았다" 지문
+# (2026-07-29 실물: 84°/70° — 미믹 약파지 + 재배향 중력토크. 검출은 정확했다).
+_BAR_AXIS_DEV_WARN_DEG = 25.0
+# 파지 겨냥점 = 실측 자유단에서 축 방향 안쪽 inset (조 접촉폭 확보 + 끝 여백)
+_GRASP_TIP_INSET_M = 0.015
+# 수취 협상 (2026-07-30 신설) — plan_receive 전멸 시 "so101 이 잡을 수 있는
+# 가장 가까운 봉 위치"를 역산해 omx 가 봉을 옮겨 재제시. 전멸=종료 대신 양팔
+# 반복 조정 (research: handover pose optimization / capability map 계열).
+_NEGOTIATE_MAX = 2  # 협상 왕복 상한 (nudge → 재관측 → 재계획)
+_NEGOTIATE_STEP_M = 0.02  # 이동 제안 격자 스텝
+_NEGOTIATE_RANGE_M = 0.04  # 이동 제안 최대 반경 (omx 재배치 가용 밴드 내)
 # 접근 여유 **사다리** (큰 것 우선 — 긴 standoff 가 정렬/refine 에 유리).
 # ⚠ 2026-07-28 실물 실패 재현으로 확정 (debug/handover/20260727_230417):
 # 수취 자세족은 도달영역 전체에서 사실상 **단일해**(`zdown/spin0`)인데, 7cm 뒤
@@ -344,12 +372,13 @@ _RECV_SERVO_EPS_M = 0.005  # lateral 수렴 임계 — 이하면 진입 (2cm 봉
 # 수평 pass 를 먼저 돌면 기각 폭포로 재계획이 ~190s (22:49 실물) — hang pass
 # 를 먼저 돌려 수 초에 채택하고, 수평은 그 뒤 폴백으로 유지 (완전성 보존).
 _REPRESENT_HANG_FIRST_M = 0.025
-# so101 수취 E 밴드 중심 (world xy) — probe 실증 (2026-07-29: 생존 E_real 이
-# x 0.20~0.27 / y −0.20~−0.26 에 몰림, §T.9.3). hang pass 후보를 이 점 기준
-# 근접순으로 돌려 수취 probe 낭비를 제거 (probe 1개 ~2.5s × 죽은 후보 ~30개
-# = 분 단위, 23:06 실물). **순서일 뿐 게이트 아님** — 완전성 보존. 배치
-# 변경 시 handover_layout_tune 재실행으로 갱신.
-_RECV_SWEET_XY = (0.22, -0.235)
+# so101 수취 E 밴드 중심 (world xy) — 방향 자유도 히트맵 실측으로 갱신
+# (2026-07-30 full_diagnosis.py: x 0.25~0.35 / y −0.30~−0.15 밴드가 방향 도달
+# 7~11% 로 최상, 어제 수평 겨냥점 (0.06,−0.24)는 1~5% 최악 급 — 옛 값 (0.22,
+# −0.235)도 밴드 안이나 피크를 직접 겨냥). hang pass 후보를 이 점 기준
+# 근접순으로 돌려 수취 probe 낭비를 제거. **순서일 뿐 게이트 아님** — 완전성
+# 보존. 배치 변경 시 full_diagnosis 히트맵 재실행으로 갱신.
+_RECV_SWEET_XY = (0.26, -0.26)
 # 벽(뒤) 침범 게이트 — 팔 링크 world x 하한. 이보다 뒤로 넘어가는 IK 해는 기각
 # (사용자: 뒤는 벽). so101 원점 기준, omx base x≈0.034. 스윕: 앞쪽·악수높이
 # 채택해는 링크 min-x ≈ -0.007 로 안전. 실 테이블 벽 위치 보고 조정.
@@ -498,51 +527,60 @@ def _present_w_candidates(
     return out
 
 
-def _recv_orients(e: Vec3, axis: Vec3) -> list[tuple[str, Quat, Vec3]]:
+def _grasp_orients(e: Vec3, axis: Vec3) -> list[tuple[str, Quat, Vec3]]:
     """수취 자세 후보 (선호순) — (라벨, quat(so101=world frame), 접근 tool x).
 
-    **tool z ∥ ±봉 축** (축은 제시 계획이 알려준다 — 옛 코드는 수직을 하드코딩
-    했다) × 축 둘레 spin 사다리. 선호순 = 접근(tool x)이 base→E 방위(so101 쪽
-    진입)에 가까운 순 — omx 를 감아 도는 해 회피. so101 은 6DOF 라 임의 spin 성립.
-
-    축이 수직이면 옛 "수직 조축 + 수평 접근" 족과 동일해진다 (일반화의 특수case).
+    **잡기 조건 그리드** (2026-07-30 전면 교체): 봉을 잡는 데 물리가 요구하는
+    제약은 **조 닫힘축(tool y) ⊥ 봉 축** 하나뿐이다. 옛 _recv_orients 는 여기에
+    "tool z ∥ ±봉축 정확 일치"를 추가로 강제했는데, 그 과잉 제약이 어제 실패
+    지점 실측에서 해를 0~7개로 죽였다 (조건족은 10~17개 — full_diagnosis.py,
+    죽는 메커니즘은 관절 한계). y⊥축을 정확히 유지한 채 남는 2 자유도를 격자
+    전개한다:
+      φ (_RECV_SPIN_STEP_DEG): 조 닫힘축의 봉축 둘레 방위 — 옛 spin 등가.
+      ψ (_RECV_APPROACH_ROLL_DEG): 접근 roll — tool z 가 봉축에서 벗어나는 각.
+        ψ=0/180 이 옛 z∥±축 족과 정확히 동일 (superset — 옛 해는 전부 포함).
+    선호순 = 접근(tool x)이 base→E 방위(so101 쪽 진입)에 가까운 순 → ψ 사다리
+    순 — omx 를 감아 도는 해 회피는 유지, 물림 깊이 최대(축 정렬) 우선.
     """
     a = _unit(np.asarray(axis, dtype=float))
-    # 기준 접근 = base→E 방위를 축에 수직인 평면으로 투영 (spin 0)
+    # 기준 조 방위 u1 = base→E 방위의 축 수직 성분 (퇴화 시 수직/x 폴백)
     r = np.array([e[0], e[1], 0.0])
     if float(np.linalg.norm(r)) < 1e-9:
         r = np.array([1.0, 0.0, 0.0])
     r = _unit(r)
-    spins = [s * _RECV_SPIN_STEP_DEG for s in
-             range(int(360.0 / _RECV_SPIN_STEP_DEG))]
-    ranked = sorted(
-        (min(spin % 360.0, 360.0 - spin % 360.0), zi, spin, sgn)
-        for spin in spins
-        for zi, sgn in ((0, -1.0), (1, 1.0))
-    )
-    out: list[tuple[str, Quat, Vec3]] = []
-    for _d, _zi, spin, sgn in ranked:
-        z = sgn * a
-        x0_raw = r - float(np.dot(r, z)) * z
-        if float(np.linalg.norm(x0_raw)) < 1e-6:
-            # base→E 가 축과 평행 — 임의의 수직 기준
-            alt = np.array([0.0, 0.0, 1.0])
-            x0_raw = alt - float(np.dot(alt, z)) * z
-            if float(np.linalg.norm(x0_raw)) < 1e-6:
-                x0_raw = np.array([1.0, 0.0, 0.0])
-        x0 = _unit(x0_raw)
-        s = math.radians(spin)
-        x = _unit(x0 * math.cos(s) + np.cross(z, x0) * math.sin(s))
-        y = np.cross(z, x)
-        q = Rotation.from_matrix(np.column_stack([x, y, z])).as_quat()
-        out.append(
-            (
-                f"z{'neg' if sgn < 0 else 'pos'}/spin{spin:.0f}",
-                (float(q[0]), float(q[1]), float(q[2]), float(q[3])),
-                (float(x[0]), float(x[1]), float(x[2])),
+    u1_raw = r - float(np.dot(r, a)) * a
+    if float(np.linalg.norm(u1_raw)) < 1e-6:
+        alt = np.array([0.0, 0.0, 1.0])
+        u1_raw = alt - float(np.dot(alt, a)) * a
+        if float(np.linalg.norm(u1_raw)) < 1e-6:
+            u1_raw = np.array([1.0, 0.0, 0.0])
+    u1 = _unit(u1_raw)
+    u2 = np.cross(a, u1)
+    phis = [s * _RECV_SPIN_STEP_DEG for s in
+            range(int(360.0 / _RECV_SPIN_STEP_DEG))]
+    entries: list[tuple[float, int, str, Quat, Vec3]] = []
+    for phi in phis:
+        p = math.radians(phi)
+        y = _unit(u1 * math.cos(p) + u2 * math.sin(p))  # 조 닫힘축 ⊥ a (정확)
+        n = np.cross(a, y)
+        for pi, psi in enumerate(_RECV_APPROACH_ROLL_DEG):
+            s = math.radians(psi)
+            z = _unit(a * math.cos(s) + n * math.sin(s))
+            x = np.cross(y, z)
+            q = Rotation.from_matrix(np.column_stack([x, y, z])).as_quat()
+            # 선호 1순위: 접근이 base→E 진입 방위에 가까움 (옛 규약 유지)
+            align = -float(np.dot(x, r))
+            entries.append(
+                (
+                    align,
+                    pi,
+                    f"jaw{phi:.0f}/roll{psi:.0f}",
+                    (float(q[0]), float(q[1]), float(q[2]), float(q[3])),
+                    (float(x[0]), float(x[1]), float(x[2])),
+                )
             )
-        )
-    return out
+    entries.sort(key=lambda t: (t[0], t[1]))
+    return [(label, q, x) for _a, _p, label, q, x in entries]
 
 
 # ─── 0. 자산/설정 fail-fast (모션 0 시점) ─────────────────────────────
@@ -1022,18 +1060,17 @@ async def _receive_probe(
     [pre, grasp] 해가 사는지 채택 전에 확인한다.
 
     2026-07-29 전멸 근인 ②의 예방: 제시가 자기 게이트만 보고 채택돼 수취
-    전멸(NoReachableGrasp)이 관측 이동 실행 후에야 드러났다. sim 스윕 실증
-    (2026-07-29): 수취 해는 랑데부 지역 전체에서 후보 16 중 1~2, 전부 spin0
-    근방 — 그래서 spin 사다리 **선호순 앞 6개(0°/±45° × ±z)** 만 probe 한다
-    (전멸 판정 비용 절감 — 실측·probe 이력상 spin0 밖 단독 성립은 없었다).
-    실제 수취는 plan_receive 가 재검출 겨냥점으로 전 사다리를 다시 돈다.
+    전멸(NoReachableGrasp)이 관측 이동 실행 후에야 드러났다. 2026-07-30 잡기
+    조건 그리드 전환에 맞춰 probe 도 같은 족의 **선호순 앞 12개 × 여유 2단**
+    만 본다 (비용 옛 6×4 와 동일, 방위 커버리지는 ψ 확장으로 더 넓게).
+    실제 수취는 plan_receive 가 재검출 겨냥점으로 전 그리드를 다시 돈다.
 
     벽/충돌 게이트는 채택 해에만 건다 (plan_receive 의 alive-loop 축약판,
     재시도 3회) — probe 는 존재 증명이 목적이라 완전 열거는 안 한다."""
-    orients = _recv_orients(e_world, w)[:6]
+    orients = _grasp_orients(e_world, w)[:12]
     groups: list[list[TcpPose]] = []
     for _label, quat, a in orients:
-        for clear in _RECV_PRE_CLEAR_LADDER:
+        for clear in _RECV_PRE_CLEAR_LADDER[1::2]:  # (0.05, 0.03) — 존재 증명용
             pre = (
                 e_world[0] - a[0] * clear,
                 e_world[1] - a[1] * clear,
@@ -1798,12 +1835,170 @@ def represent_offset(det: OrientedDetection, h_ref: Vec3, w: Vec3) -> Vec3:
 
 
 @dataclass(frozen=True, slots=True)
+class MeasuredBar:
+    """so101 재검출 점군으로 **실측한** 봉 — 수취 계획의 기준 (계획 가정 아님).
+
+    2026-07-29 근인: 봉이 omx 조 안에서 ~90° 돌았는데 (미믹 약파지 + 재배향
+    중력토크 — 점군 주축 vs 계획축 84°/70° 실측) 수취가 계획축 w 기준 자세족
+    +겨냥점을 만들어 전멸했다. 검출은 돌아간 봉을 정확히 보고 있었다 (마스크
+    분홍 99%, 주축 span 85mm = 봉 전체). → "눈을 믿는다": 축·파지점 전부 실측.
+    """
+
+    axis: Vec3  # 실측 봉 축 (world 단위, **자유단 방향** — omx TCP 반대쪽)
+    target: Vec3  # so101 파지 겨냥점 = 실측 자유단에서 inset 안쪽
+    span_m: float  # 점군 주축 span (5~95 백분위) — 품질 지표
+    n_points: int
+    axis_dev_deg: float  # 계획축(present.w) 대비 이탈각 — "조 안 회전" 지문
+    fallback: bool  # True = 점군 빈약 → 계획축+FK 앵커 폴백 (trace 사유)
+
+
+@step(title="봉 실측")
+async def measure_bar(
+    ctx: TaskContext,
+    omx: str,
+    base_omx: BasePose,
+    det: OrientedDetection,
+    present: PresentPlan,
+    geom: BlockGrasp,
+    trace: HandoverTrace | None = None,
+) -> MeasuredBar:
+    """재검출 점군 PCA 로 봉 축/자유단/파지점 실측 (world).
+
+    - 축 방향: 주축 부호를 "omx TCP 에서 멀어지는 쪽 = 자유단" 으로 고정.
+    - 끝점: 주축 투영의 5/95 백분위 (마스크 가장자리 depth 번짐 완화).
+    - 파지점: 자유단에서 _GRASP_TIP_INSET_M 안쪽 (조 접촉폭 + 끝 여백).
+    - 품질 게이트: 점군 수/span 미달 → **계획축+FK 앵커 폴백** (옛 plan_receive
+      규약 그대로 — 축성분 앵커, 축수직 xy 만 검출 보정). 폴백 사유는 trace.
+    - sanity: 파지점-omx TCP 거리가 봉 길이 밖 → 명시 실패 (검출이 봉이 아님
+      또는 FK/base_pose 대붕괴 — 그대로 가면 허공/충돌).
+    """
+    omx_tcp = await ctx.call(
+        Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState, robot_id=omx
+    )
+    # 실물 추정 좌표 = **실측 FK**(settle/sag 반영, 명령값 아님) + world_offset
+    # — so101 눈 실측과 같은 공간 (옛 plan_receive 앵커 규약 계승)
+    fk_w = robot_to_world(omx_tcp.position, base_omx)
+    tcp_real = (
+        fk_w[0] + present.world_offset[0],
+        fk_w[1] + present.world_offset[1],
+        fk_w[2] + present.world_offset[2],
+    )
+    w_plan = np.asarray(present.w, dtype=float)
+    pts = np.asarray(det.points or [], dtype=float)
+    cen = np.asarray(detection_centroid(det), dtype=float)
+
+    fallback_reason: str | None = None
+    axis = w_plan
+    span = 0.0
+    lo = hi = 0.0  # 주축 투영 5/95 백분위 (실측 성공 시에만 의미)
+    near_free: tuple[np.ndarray, np.ndarray] | None = None
+    if len(pts) < _RECV_MIN_POINTS:
+        fallback_reason = f"점군 {len(pts)} < {_RECV_MIN_POINTS}"
+    else:
+        c = pts - pts.mean(axis=0)
+        _w, v = np.linalg.eigh(c.T @ c / len(pts))
+        main = v[:, int(np.argmax(_w))]
+        proj = c @ main
+        lo, hi = float(np.percentile(proj, 5)), float(np.percentile(proj, 95))
+        span = hi - lo
+        if span < _BAR_AXIS_MIN_SPAN_M:
+            fallback_reason = (
+                f"주축 span {span * 1000:.0f}mm < "
+                f"{_BAR_AXIS_MIN_SPAN_M * 1000:.0f}mm"
+            )
+        else:
+            # 자유단 방향 고정 — centroid 는 노출부 위라 omx TCP 반대쪽이 +
+            if float(np.dot(main, cen - np.asarray(tcp_real))) < 0:
+                main, lo, hi = -main, -hi, -lo
+            axis = main
+
+    if fallback_reason is not None:
+        # 옛 규약 폴백: 축성분은 FK 앵커, 축수직 xy 만 검출 보정
+        anchor = np.asarray(tcp_real, dtype=float) + w_plan * geom.tcp_to_e_m
+        along, perp_raw = _axis_split(
+            tuple(float(v) for v in cen - anchor),  # type: ignore[arg-type]
+            present.w,
+        )
+        target = (
+            float(anchor[0] + perp_raw[0]),
+            float(anchor[1] + perp_raw[1]),
+            float(anchor[2]),  # z 도 앵커 (depth 번짐)
+        )
+        logger.warning(
+            "measure_bar: 축 실측 불가 (%s) — 계획축+FK 앵커 폴백 "
+            "(축방향 밀림 %.0fmm 은 앵커로 덮음)", fallback_reason, along * 1000,
+        )
+        meas = MeasuredBar(
+            axis=tuple(float(v) for v in w_plan),  # type: ignore[arg-type]
+            target=target, span_m=span, n_points=len(pts),
+            axis_dev_deg=0.0, fallback=True,
+        )
+    else:
+        mean = pts.mean(axis=0)
+        free_end = mean + axis * hi
+        near_end = mean + axis * lo
+        tgt = free_end - axis * _GRASP_TIP_INSET_M
+        dev = _axis_error_deg(
+            tuple(float(v) for v in axis),  # type: ignore[arg-type]
+            present.w,
+        )
+        if dev > _BAR_AXIS_DEV_WARN_DEG:
+            logger.warning(
+                "measure_bar: 실측 봉축이 계획축에서 %.0f° 이탈 — 봉이 omx 조 "
+                "안에서 돌았습니다 (미믹 약파지 지문). 실측축 기준으로 수취 진행",
+                dev,
+            )
+        meas = MeasuredBar(
+            axis=tuple(float(v) for v in axis),  # type: ignore[arg-type]
+            target=(float(tgt[0]), float(tgt[1]), float(tgt[2])),
+            span_m=span, n_points=len(pts), axis_dev_deg=dev, fallback=False,
+        )
+        near_free = (near_end, free_end)  # trace 용
+    await _emit(
+        trace,
+        {
+            "phase": "receive",
+            "event": "measure_bar",
+            # ── 실물 원인분석 전량 (2026-07-29 "anchor 미기록" 재발 방지) ──
+            "omx_tcp_fk_world": [round(v, 4) for v in fk_w],
+            "omx_joints": [round(v, 5) for v in omx_tcp.joints],
+            "tcp_real_world": [round(v, 4) for v in tcp_real],
+            "world_offset_mm": [
+                round(v * 1000, 1) for v in present.world_offset
+            ],
+            "w_plan": [round(v, 4) for v in present.w],
+            "centroid": [round(v, 4) for v in cen] if len(pts) else None,
+            "n_points": len(pts),
+            "axis_meas": [round(v, 4) for v in meas.axis],
+            "axis_span_mm": round(span * 1000, 1),
+            "axis_dev_deg": round(meas.axis_dev_deg, 1),
+            "endpoints": [
+                [round(float(x), 4) for x in p] for p in near_free
+            ] if near_free is not None else None,
+            "target": [round(v, 4) for v in meas.target],
+            "fallback": fallback_reason,
+        },
+    )
+    # sanity — 봉은 omx TCP 에 물린 강체다: 파지점이 봉 길이 밖 = 오검출/FK 붕괴
+    d_tcp = math.dist(meas.target, tcp_real)
+    if not (0.015 <= d_tcp <= geom.length_m + 0.08):
+        raise TaskError(
+            f"실측 파지점이 omx TCP 에서 {d_tcp * 100:.1f}cm — 봉 길이"
+            f"({geom.length_m * 100:.0f}cm) 기준 비정상. 재검출이 봉이 아닌 것을 "
+            "물었거나 omx FK/base_pose 가 크게 어긋났습니다. trace 의 "
+            "measure_bar(centroid/tcp_real_world)와 detect 이미지를 대조하세요"
+        )
+    return meas
+
+
+@dataclass(frozen=True, slots=True)
 class ReceivePlan:
     sols: list[list[float]]  # [pre, grasp] 관절해
     quat: Quat
     target: Vec3  # 파지 겨냥점 (world) = 재검출 노출부 중심 (≈E)
     omx_joints: list[float]
     pre_clear_m: float  # 채택된 접근 여유 (사다리 — 실물 보정 데이터)
+    axis: Vec3 = (0.0, 0.0, -1.0)  # 봉 축 (실측 우선) — refine 의 축수직 분해 기준
 
 
 @step(title="수취 계획")
@@ -1811,86 +2006,32 @@ async def plan_receive(
     ctx: TaskContext,
     so101: str,
     omx: str,
-    det: OrientedDetection,
-    base_omx: BasePose,
+    meas: MeasuredBar,
     present: PresentPlan,
     geom: BlockGrasp,
     checker: CrossRobotChecker | None,
     trace: HandoverTrace | None = None,
 ) -> ReceivePlan:
-    """재검출 기반 수취 계획 — **수직 조축족**(_recv_orients — tool z ∥ 봉 축
-    = 수직, 수평 접근 spin 사다리) resolve + **충돌 게이트** + **벽(뒤) 게이트**.
-    채택 그룹이 충돌/벽이면 빼고 재-resolve (상한 소진 = 명시 실패).
+    """실측 봉(measure_bar) 기반 수취 계획 — **잡기 조건 그리드**(_grasp_orients
+    — 조 닫힘축 ⊥ 실측 봉축, 2 자유도 전개) resolve + **충돌 게이트** + **벽(뒤)
+    게이트**. 채택 그룹이 충돌/벽이면 빼고 재-resolve (상한 소진 = 명시 실패).
 
-    겨냥점 = **축 성분은 FK 앵커, 축에 수직인 성분은 재검출**.
-    앵커 = omx 실 TCP(FK) + w·tcp_to_e — 봉은 강체이고 방향 w 로 뻗어 있음을
-    제시 계획이 보장하므로 **축 위 위치는 FK 가 검출 centroid 보다 훨씬 정확**하다
-    (가림에 따라 centroid 가 축 방향으로 밀리는 게 정확히 그 오차다). 검출의 몫은
-    omx 그립 오차를 흡수하는 **축 수직 보정** (closed-loop 의 본래 목적).
-    매달기(w=아래)면 "z 는 앵커, xy 는 검출" 과 같아진다 — 그 규칙의 축 일반형.
-
-    ⚠ 2026-07-28 실물 근거: omx 손목이 봉을 가려 아래 조각만 검출되자(점군 88,
-    보이는 높이 2.5cm) 검출 z 가 2.8cm 아래로 밀려 수취 IK 가 전멸했다 —
-    "아는 기하는 앵커, 검출은 보정" (파지 Z 단면 앵커 / 봉 길이 known 앵커와
-    같은 클래스). 봉 축을 계획이 아니까 검출 yaw 도 불요.
-    두 그리퍼 이격(축 방향 ~2.5cm)의 물리적 보증은 충돌 게이트가 담당."""
+    2026-07-30 재설계 (사용자 지시 — "정확 자세 목록 전멸=종료" 폐기):
+    · 축/겨냥점 = **실측** (measure_bar) — 봉이 조 안에서 돌아도 돌아간 그대로
+      잡는다 (2026-07-29 근인: 계획축 가정이 실물과 84°/70° 어긋나 전멸).
+    · 자세족 = 잡기 조건만 (과잉 제약 제거 — full_diagnosis.py: 정확족 0~7해
+      지점에서 조건족 10~17해).
+    · 전멸 = 종료가 아니라 **협상** — 호출자(module)가 find_receive_shift 로
+      "잡을 수 있는 가장 가까운 봉 위치"를 역산해 omx 재배치 후 재시도.
+    · 실패 시에도 trace 에 입력/후보별 사유 전량 (anchor 미기록 재발 방지)."""
     omx_tcp = await ctx.call(
         Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState, robot_id=omx
     )
     omx_joints = list(omx_tcp.joints)
-    tcp_w = robot_to_world(omx_tcp.position, base_omx)
-    w = np.asarray(present.w, dtype=float)
-    # 앵커도 실물 좌표로 (FK + world_offset — 재제시 보정 잔차만 perp 에 남게)
-    anchor = (
-        np.asarray(tcp_w, dtype=float)
-        + w * geom.tcp_to_e_m
-        + np.asarray(present.world_offset, dtype=float)
-    )
-    cen = np.asarray(detection_centroid(det), dtype=float)
-    along, perp_raw = _axis_split(
-        tuple(float(v) for v in cen - anchor),  # type: ignore[arg-type]
-        present.w,
-    )
-    # z 도 앵커 — 검출 z 는 마스크 가장자리 depth 번짐으로 아래로 끌린다
-    # (represent_offset docstring 실측). 보정은 수평 성분만.
-    perp = (perp_raw[0], perp_raw[1], 0.0)
-    if abs(perp_raw[2]) > 0.005:
-        logger.info(
-            "plan_receive: 검출 z 이탈 %.0fmm 는 번짐 오염으로 보고 FK 앵커로 "
-            "덮음 (수평 보정만 적용)", perp_raw[2] * 1000,
-        )
-    target = (
-        float(anchor[0] + perp[0]),
-        float(anchor[1] + perp[1]),
-        float(anchor[2] + perp[2]),
-    )
-    perp_mm = float(np.linalg.norm(np.asarray(perp))) * 1000
-    if abs(along) > _RECV_Z_BAND_M:
-        # 침묵 금지 — 축 성분은 앵커로 덮되 어긋난 양을 남긴다 (가림 지문)
-        logger.warning(
-            "plan_receive: 검출 centroid 가 축 방향으로 %.0fmm 밀려 있음 "
-            "(허용 %.0fmm) — 앵커로 덮고 진행. 봉이 가려 반쪽만 검출됐을 수 "
-            "있습니다 (점군 %d)",
-            along * 1000,
-            _RECV_Z_BAND_M * 1000,
-            len(det.points or []),
-        )
-    if perp_mm > _REFINE_JUMP_MAX_M * 1000:
-        logger.warning(
-            "plan_receive: 축 수직 보정이 %.0fmm — 상한 %.0fmm 초과. 검출 오염 "
-            "의심이라 보정을 상한으로 clamp 하지 않고 그대로 진행하되 "
-            "trace/이미지를 확인하세요",
-            perp_mm,
-            _REFINE_JUMP_MAX_M * 1000,
-        )
-    logger.info(
-        "plan_receive: 겨냥점 = 앵커 (%.3f,%.3f,%.3f) + 축수직보정 %.0fmm "
-        "(축방향 밀림 %.0fmm 은 앵커로 덮음)",
-        anchor[0], anchor[1], anchor[2], perp_mm, along * 1000,
-    )
-    orients = _recv_orients(target, present.w)
+    target = meas.target
+    orients = _grasp_orients(target, meas.axis)
     groups: list[list[TcpPose]] = []
-    metas: list[tuple[str, Quat, float]] = []  # (라벨, quat, 접근 여유)
+    metas: list[tuple[str, Quat, float, Vec3]] = []  # (라벨, quat, 여유, 접근)
     # 자세-major × 접근 여유 사다리 — 자세 품질이 standoff 길이보다 우선이라
     # 선호 자세를 전 여유에서 먼저 소진한다 (_RECV_PRE_CLEAR_LADDER 주석).
     for label, quat, a in orients:  # 접근 = base→E 방위 근접순 (so101 쪽 진입)
@@ -1906,8 +2047,19 @@ async def plan_receive(
                     TcpPose(position=target, quaternion=quat),
                 ]
             )
-            metas.append((label, quat, clear))
+            metas.append((label, quat, clear, a))
+    logger.info(
+        "plan_receive: 겨냥점 (%.3f,%.3f,%.3f) 실측축 (%.2f,%.2f,%.2f) "
+        "(계획축 이탈 %.0f°%s) — 후보 %d (자세 %d × 여유 %d)",
+        target[0], target[1], target[2],
+        meas.axis[0], meas.axis[1], meas.axis[2],
+        meas.axis_dev_deg,
+        ", 폴백" if meas.fallback else "",
+        len(groups), len(orients), len(_RECV_PRE_CLEAR_LADDER),
+    )
     alive = list(range(len(groups)))
+    gate_rejects: list[str] = []  # 충돌/벽 기각 이력 (trace)
+    res = None
     for attempt in range(_RECV_COLLISION_RETRY):
         res = await ctx.call(
             Motion.Service.RESOLVE_REACHABLE,
@@ -1917,13 +2069,11 @@ async def plan_receive(
             robot_id=so101,
         )
         if res.index < 0:
-            raise NoReachableGrasp(
-                f"수취 접근 후보 전멸 ({len(alive)}개) — {res.message}. "
-                "제시 높이(_PRESENT_Z_WORLD)를 조정 후 다시 실행하세요"
-            )
+            break
         gi = alive[res.index]
         # 벽(뒤) — so101 grasp 해가 베이스 뒤로 넘어가면 기각 (side="a")
         if checker is not None and _behind_wall(checker, "a", res.solutions[-1]):
+            gate_rejects.append(f"{metas[gi][0]}/clr{metas[gi][2] * 1000:.0f}: 벽(뒤)")
             logger.warning("plan_receive: 그룹 %d 채택안 so101 벽(뒤) 침범 — 제외", gi)
             alive.remove(gi)
             if not alive:
@@ -1942,10 +2092,16 @@ async def plan_receive(
                     "phase": "receive",
                     "event": "plan_receive",
                     "target": list(target),
+                    "axis": [round(v, 4) for v in meas.axis],
+                    "axis_dev_deg": round(meas.axis_dev_deg, 1),
                     "group": gi,
                     "orientation": metas[gi][0],
                     "pre_clear_m": metas[gi][2],
                     "attempt": attempt,
+                    "gate_rejects": gate_rejects,
+                    "omx_joints": [round(v, 5) for v in omx_joints],
+                    "sol_pre": [round(v, 5) for v in res.solutions[0]],
+                    "sol_grasp": [round(v, 5) for v in res.solutions[-1]],
                 },
             )
             logger.info(
@@ -1960,7 +2116,11 @@ async def plan_receive(
                 target=target,
                 omx_joints=omx_joints,
                 pre_clear_m=metas[gi][2],
+                axis=meas.axis,
             )
+        gate_rejects.append(
+            f"{metas[gi][0]}/clr{metas[gi][2] * 1000:.0f}: omx 충돌"
+        )
         logger.warning(
             "plan_receive: 그룹 %d 채택안이 omx 와 충돌 위험 (margin %.0fmm) — "
             "제외 후 재시도 %d/%d",
@@ -1972,9 +2132,230 @@ async def plan_receive(
         alive.remove(gi)
         if not alive:
             break
+    # 전멸 — 원인분석 전량을 trace 에 (2026-07-29 "sim 7 vs 실물 0" 미스터리의
+    # 직접 재발 방지: 실패 시점의 겨냥점/축/솔버 사유가 파일로 남는다)
+    await _emit(
+        trace,
+        {
+            "phase": "receive",
+            "event": "plan_receive_dead",
+            "target": list(target),
+            "axis": [round(v, 4) for v in meas.axis],
+            "axis_dev_deg": round(meas.axis_dev_deg, 1),
+            "axis_fallback": meas.fallback,
+            "n_groups": len(groups),
+            "n_alive_last": len(alive),
+            "gate_rejects": gate_rejects,
+            "resolve_message": res.message if res is not None else None,
+            "group_failures": list(
+                zip(
+                    [f"{m[0]}/clr{m[2] * 1000:.0f}" for m in
+                     (metas[i] for i in alive)],
+                    res.group_failures,
+                )
+            )[:24] if res is not None and res.group_failures else None,
+            "omx_joints": [round(v, 5) for v in omx_joints],
+        },
+    )
     raise NoReachableGrasp(
-        "수취 접근 전부 omx 와 충돌/벽 위험 — 제시 자세를 두 로봇이 더 벌어지게 "
-        "조정(_PRESENT_Z_WORLD/랑데부)한 후 다시 실행하세요"
+        f"수취 후보 전멸 (잡기조건 그리드 {len(groups)}개"
+        f"{', 게이트 기각 ' + str(len(gate_rejects)) if gate_rejects else ''}) — "
+        f"{res.message if res is not None else '게이트 전멸'}. trace 의 "
+        "plan_receive_dead(겨냥점/실측축/후보별 사유)를 확인하세요 — 협상 상한 "
+        "소진 시 이 오류가 최종 보고됩니다"
+    )
+
+
+@step(title="협상 — 이동 제안")
+async def find_receive_shift(
+    ctx: TaskContext,
+    so101: str,
+    meas: MeasuredBar,
+    trace: HandoverTrace | None = None,
+) -> Vec3 | None:
+    """수취 전멸 시 so101 의 되받기: "봉이 δ 만큼 옮겨지면 잡을 수 있다".
+
+    2026-07-30 신설 (사용자 지시 — 전멸=종료 폐기, 양팔 협상): 현 겨냥점 주변
+    격자(δ, |δ|≤_NEGOTIATE_RANGE_M)를 작은 이동 우선으로 훑어, **잡기 조건
+    그리드 축약본**(선호 24자세 × 여유 2단)이 사는 첫 δ 를 반환. None = 주변
+    전부 죽음 (호출자가 명시 실패). 히트맵 스위트밴드(_RECV_SWEET_XY) 방향을
+    동률 우선 — 방향 자유도가 좋은 쪽으로 옮긴다 (full_diagnosis.py 실측).
+
+    충돌/벽 게이트는 여기서 안 건다 — δ 채택 후 재관측→재계획(plan_receive)이
+    풀 게이트로 다시 판정한다 (여긴 존재 증명만)."""
+    steps_1d = [0.0]
+    k = 1
+    while k * _NEGOTIATE_STEP_M <= _NEGOTIATE_RANGE_M + 1e-9:
+        steps_1d += [k * _NEGOTIATE_STEP_M, -k * _NEGOTIATE_STEP_M]
+        k += 1
+    deltas = [
+        (dx, dy, dz)
+        for dx in steps_1d
+        for dy in steps_1d
+        for dz in (0.0, _NEGOTIATE_STEP_M, -_NEGOTIATE_STEP_M)
+        if (dx, dy, dz) != (0.0, 0.0, 0.0)
+        and math.sqrt(dx * dx + dy * dy + dz * dz) <= _NEGOTIATE_RANGE_M + 1e-9
+    ]
+    deltas.sort(
+        key=lambda d: (
+            math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2),
+            math.hypot(
+                meas.target[0] + d[0] - _RECV_SWEET_XY[0],
+                meas.target[1] + d[1] - _RECV_SWEET_XY[1],
+            ),
+        )
+    )
+    tried: list[dict] = []
+    for delta in deltas:
+        t = (
+            meas.target[0] + delta[0],
+            meas.target[1] + delta[1],
+            meas.target[2] + delta[2],
+        )
+        groups = []
+        for _label, quat, a in _grasp_orients(t, meas.axis)[:24]:
+            for clear in _RECV_PRE_CLEAR_LADDER[1::2]:  # (0.05, 0.03)
+                pre = (t[0] - a[0] * clear, t[1] - a[1] * clear,
+                       t[2] - a[2] * clear)
+                groups.append([
+                    TcpPose(position=pre, quaternion=quat),
+                    TcpPose(position=t, quaternion=quat),
+                ])
+        res = await ctx.call(
+            Motion.Service.RESOLVE_REACHABLE,
+            ResolveReachableRequest(groups=groups, linear=True),
+            ResolveReachableResponse,
+            robot_id=so101,
+        )
+        tried.append({
+            "delta_mm": [round(v * 1000) for v in delta],
+            "ok": res.index >= 0,
+        })
+        if res.index >= 0:
+            logger.info(
+                "find_receive_shift: δ=(%+.0f,%+.0f,%+.0f)mm 에서 수취 해 존재 "
+                "— omx 재배치 제안 (%d개 지점 탐색)",
+                delta[0] * 1000, delta[1] * 1000, delta[2] * 1000, len(tried),
+            )
+            await _emit(
+                trace,
+                {
+                    "phase": "receive",
+                    "event": "negotiate_shift",
+                    "delta_mm": [round(v * 1000) for v in delta],
+                    "target_from": list(meas.target),
+                    "tried": tried,
+                },
+            )
+            return delta
+    await _emit(
+        trace,
+        {
+            "phase": "receive",
+            "event": "negotiate_shift_dead",
+            "target_from": list(meas.target),
+            "tried": tried,
+        },
+    )
+    logger.warning(
+        "find_receive_shift: ±%.0fcm 격자 %d개 지점 전부 수취 해 없음",
+        _NEGOTIATE_RANGE_M * 100, len(tried),
+    )
+    return None
+
+
+@step(title="omx 재배치 (협상)")
+async def omx_nudge(
+    ctx: TaskContext,
+    omx: str,
+    so101: str,
+    base_omx: BasePose,
+    present: PresentPlan,
+    delta: Vec3,
+    checker: CrossRobotChecker | None,
+    trace: HandoverTrace | None = None,
+) -> PresentPlan:
+    """협상 응답: omx 가 봉을 δ(world) 만큼 평행이동 — 자세(축) 불변.
+
+    so101 되받기(find_receive_shift)가 "여기면 잡는다" 한 지점으로 봉을 옮긴다.
+    자세가 그대로라 실측축도 그대로 유효 — 이동 후 재관측→재실측이 잔차를
+    다시 잡는다. δ 도달 불가면 δ/2 폴백 1회 (부분 접근도 다음 협상 라운드의
+    시작점을 개선), 그것도 죽으면 명시 실패."""
+    so_tcp = await ctx.call(
+        Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
+        robot_id=so101,
+    )
+    omx_tcp = await ctx.call(
+        Motion.Service.TCP_SNAPSHOT, TcpSnapshotRequest(), TcpState,
+        robot_id=omx,
+    )
+    for frac in (1.0, 0.5):
+        d = (delta[0] * frac, delta[1] * frac, delta[2] * frac)
+        new_tcp_w = (
+            present.tcp_world[0] + d[0],
+            present.tcp_world[1] + d[1],
+            present.tcp_world[2] + d[2],
+        )
+        tcp_omx = world_to_robot(new_tcp_w, base_omx)
+        res = await ctx.call(
+            Motion.Service.RESOLVE_REACHABLE,
+            ResolveReachableRequest(
+                groups=[[TcpPose(position=tcp_omx, quaternion=present.quat)]]
+            ),
+            ResolveReachableResponse,
+            robot_id=omx,
+        )
+        reason = None
+        if res.index < 0:
+            reason = f"omx IK 없음 ({res.message})"
+        elif abs(res.solutions[0][-1]) > _WRIST_NATURAL_MAX_RAD:
+            reason = f"손목 뒤집힘 (J5={math.degrees(res.solutions[0][-1]):.0f}°)"
+        elif checker is not None and _behind_wall(checker, "b", res.solutions[0]):
+            reason = "omx 벽(뒤) 침범"
+        elif checker is not None and _omx_path_collides(
+            checker, list(so_tcp.joints),
+            [list(omx_tcp.joints), res.solutions[0]],
+        ):
+            reason = "so101 충돌 위험"
+        await _emit(
+            trace,
+            {
+                "phase": "present",
+                "event": "omx_nudge",
+                "delta_mm": [round(v * 1000) for v in d],
+                "tcp_world": list(new_tcp_w),
+                "ok": reason is None,
+                "reason": reason,
+            },
+        )
+        if reason is not None:
+            logger.warning(
+                "omx_nudge: δ×%.1f=(%+.0f,%+.0f,%+.0f)mm 기각 — %s",
+                frac, d[0] * 1000, d[1] * 1000, d[2] * 1000, reason,
+            )
+            continue
+        await _move_j(ctx, omx, joints=res.solutions[0])
+        await verify_grasp(
+            ctx, omx, phase="협상 재배치 도달", trace=trace, advisory=True
+        )
+        return PresentPlan(
+            sols=res.solutions,
+            quat=present.quat,
+            h_world=(
+                present.h_world[0] + d[0],
+                present.h_world[1] + d[1],
+                present.h_world[2] + d[2],
+            ),
+            tcp_world=new_tcp_w,
+            w=present.w,
+            label=f"{present.label}+nudge",
+            world_offset=present.world_offset,
+        )
+    raise NoReachableGrasp(
+        f"협상 재배치 실패 — omx 가 δ=({delta[0] * 1000:+.0f},"
+        f"{delta[1] * 1000:+.0f},{delta[2] * 1000:+.0f})mm (및 절반) 이동 불가. "
+        "trace 의 omx_nudge 기각 사유를 확인하세요 (봉/랑데부를 물리적으로 "
+        "옮긴 후 다시 실행이 차선)"
     )
 
 
@@ -1992,9 +2373,10 @@ async def so_refine(
     자세와 실행 자세가 가까워 common-mode 상쇄). 실패 = 계획 겨냥점 유지
     (로그+trace — 침묵 금지).
 
-    갱신도 **축 수직 성분만** — plan.target 의 축 위 위치는 FK 앵커에서 온
-    값이라 검출 centroid 의 축 방향 밀림(가림 의존)으로 덮지 않는다
-    (plan_receive 와 같은 규약)."""
+    갱신도 **축 수직 성분만** — plan.target 의 축 위 위치는 실측 자유단(또는
+    FK 앵커 폴백)에서 온 값이라 검출 centroid 의 축 방향 밀림(가림 의존)으로
+    덮지 않는다. 분해 축 = **plan.axis (실측 봉축)** — 계획축이 아니라 봉이
+    실제로 뻗은 방향 기준 (2026-07-30 measure_bar 규약)."""
     await asyncio.sleep(_OBSERVE_SETTLE_S)
     res = await ctx.call(
         Detector.Service.DETECT_ORIENTED,
@@ -2018,7 +2400,7 @@ async def so_refine(
         tuple(  # type: ignore[arg-type]
             float(v) for v in cen - np.asarray(plan.target, dtype=float)
         ),
-        present.w,
+        plan.axis,
     )
     updated = (
         plan.target[0] + perp[0],
@@ -2083,6 +2465,7 @@ async def receive(
             ReceivePlan(
                 sols=plan.sols, quat=plan.quat, target=target,
                 omx_joints=plan.omx_joints, pre_clear_m=plan.pre_clear_m,
+                axis=plan.axis,
             ),
             present, geom, trace,
         )

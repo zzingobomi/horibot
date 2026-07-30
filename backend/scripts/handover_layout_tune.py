@@ -17,7 +17,7 @@ probe 산출물). 이 스크립트는 **robots.yaml 의 현재 base_pose 를 그
   ① omx hang(z↑) 제시 도달 + 손목 뒤집힘 기각 (_WRIST_NATURAL_MAX_RAD)
   ② omx 벽(뒤) — 링크 world x ≥ _WALL_MIN_X_M
   ③ E(so101 파지점) ∈ so101 workcell ROI
-  ④ so101 수취 도달 — _recv_orients × **접근 여유 사다리** [pre, grasp] IK
+  ④ so101 수취 도달 — _grasp_orients(잡기 조건 그리드) × **접근 여유 사다리** [pre, grasp] IK
   ⑤ cross-robot 충돌 여유 (_RECV_COLLISION_MARGIN_M)
   ⑥ **노출부 전체** 시선 비가림 (⚠ 옛 probe 는 E±25mm 만 봐서 실물 가림을
      놓쳤다 — handover_block_probe.ray_occluded 주석)
@@ -251,7 +251,7 @@ def _sweep_one(rows, ck, ks, ko, base, roi_so, t_w, t_o, alpha, w_label, w, x_ce
         return  # ③ E ∈ so101 ROI
     # ④ so101 수취 (봉 축 기준 자세족 × 접근 여유 사다리) — 통과 수 = 강건성
     n_recv, s_so, best_clear = 0, None, None
-    for _label, quat, a in steps._recv_orients(tuple(e), tuple(w)):
+    for _label, quat, a in steps._grasp_orients(tuple(e), tuple(w)):
         for clear in steps._RECV_PRE_CLEAR_LADDER:
             pre = tuple(e[i] - a[i] * clear for i in range(3))
             s1 = ks.ik(pre, quat, [0.0] * ks.dof, IK_BUDGET)

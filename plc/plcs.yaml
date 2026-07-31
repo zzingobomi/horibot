@@ -1,0 +1,23 @@
+# PLC 인스턴스 registry — robot/robots.yaml 의 PLC 판.
+# 소비: backend `plc` 모듈 (apps/config.py load_plcs → apps/resolve.py).
+# 설계 정본 = docs/plc_conveyor.md §9 (태그↔주소 바인딩은 여기 = 인스턴스 config —
+# Task/contract 는 의미 이름만. PLC 가 Siemens 로 바뀌어도 address 만 교체).
+#
+# address 문법 = 드라이버 소유 (modbus_tcp: coil:N / di:N / hr:N / ir:N —
+# modules/plc/drivers/modbus_tcp.py docstring). Modbus 는 무타입 → dtype 필수.
+# driver_mode=mock 배포에선 backend 무관하게 mock 드라이버로 대체된다.
+
+plcs:
+  openplc_0:
+    enabled: true
+    backend: modbus_tcp
+    host: 127.0.0.1 # OpenPLC Runtime v4 (지금 = PC 로컬). Pi 이전 시 IP 교체
+    port: 502
+    scan_hz: 10
+    tags:
+      # plc/test_plc 래더 3렁 매핑 (%QX0.0~0.2 = coil 0~2 / %IX0.0 = di 0 — 실측 확정)
+      conveyor_run: { address: "coil:0", dtype: bool }
+      object_arrived: { address: "coil:1", dtype: bool }
+      pick_done: { address: "coil:2", dtype: bool }
+      # sensor 는 Discrete Input = 마스터 읽기전용 (Phase 0 은 Editor 디버그 force 로 주입)
+      sensor: { address: "di:0", dtype: bool }

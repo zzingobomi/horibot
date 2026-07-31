@@ -243,6 +243,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "HandoverModule",  # task family (modules/tasks/handover, 2026-07-17 — 실물 미검증)
         "WorldScanModule",  # task family (modules/tasks/world_scan, 2026-07-21 — 배경 스캔)
         "HostMonitorModule",  # @publishes(METRICS) — host-level
+        "PlcModule",  # 산업 PLC 태그 read model (2026-07-31 — docs/plc_conveyor.md §9)
     }
     assert "BridgeModule" not in ids
     by_id = {m["id"]: m for m in graph["modules"]}
@@ -264,6 +265,7 @@ def test_graph_nodes_are_contentful_modules_only():
         "WorldScanModule",  # task family — robot-agnostic (host당 1, 2026-07-21)
         "MotionPreviewModule",  # plan-only 미리보기 — robot-agnostic (host당 1)
         "HostMonitorModule",  # 각 host 발행 — robot 무관 (host-level)
+        "PlcModule",  # PLC 는 robot 아님 — 대상 PLC 는 req 필드 plc_id 파생
     }
     for mid in host_level:
         assert by_id[mid]["robot_scoped"] is False, mid

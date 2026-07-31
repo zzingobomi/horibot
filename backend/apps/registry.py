@@ -21,6 +21,7 @@ MODULE_REGISTRY: dict[str, str] = {
     "scan": "modules.scan.module:ScanModule",
     "waypoint": "modules.waypoint.module:WaypointModule",
     "shared_config": "modules.shared_config.module:SharedConfigModule",
+    "plc": "modules.plc.module:PlcModule",
     "detector": "modules.detector.module:DetectorModule",
     "llm": "modules.llm.module:LlmModule",
     "pick_and_place": "modules.tasks.pick_and_place.module:PickAndPlaceModule",

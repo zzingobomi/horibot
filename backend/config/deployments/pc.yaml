@@ -27,6 +27,10 @@ modules:
   # instance.yaml R/W + Mirror snapshot). detector 앞 = 부팅 initial snapshot
   # 즉시 수렴 (늦어도 liveliness 로 자동 수렴 — 순서는 최적화일 뿐).
   - name: shared_config
+  # plc (2026-07-31 신설) — OpenPLC Runtime v4 (:502, plc/plcs.yaml) 를 Modbus TCP
+  # 마스터로 스캔. Runtime 이 안 떠 있어도 부팅은 됨 — 백그라운드 재연결 +
+  # connected=False 표면화 (docs/plc_conveyor.md §9).
+  - name: plc
   - name: detector
   - name: llm
   - name: pick_and_place

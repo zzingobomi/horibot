@@ -20,7 +20,27 @@
 > [backend.md](backend.md) (framework §1–§14 + Module catalog §16 + Task-first §17).
 > 본 문서 = "지금 어디까지 됐고 다음 뭐 할지" 만 — 설계 결정은 여기 안 둠.
 
-## 현재 상태 (2026-07-30)
+## 현재 상태 (2026-07-31)
+
+### 2026-07-31 — plc 모듈 구현 (docs/plc_conveyor.md §9 spec 그대로, 실 OpenPLC 실측 완료)
+
+산업 PLC 태그 read model + write 표면 — **정본 = [plc_conveyor.md](plc_conveyor.md)
+§9 (설계)·§10 (잠근 결정)**, 구현이 spec 을 그대로 따름 (재논의 0).
+- 구조: `modules/plc/` — contract(SNAPSHOT_TAGS Mirror + WRITE_TAG + TAGS_CHANGED) /
+  drivers(protocol `PlcBackend` + `mock` + `modbus_tcp`) / module(PLC 당 스캔 task).
+  태그↔주소 바인딩 = **plc/plcs.yaml** (신설 registry — robots.yaml 의 PLC 판).
+- quality 3층 실동작: GOOD(스캔 정상) / **STALE(연결 끊김 — 값 유지 + 강등, "PLC
+  죽음"≠"값 false")** / BAD(프로토콜 에러 응답). 단절 → backoff 재연결(1→5s cap),
+  복구 시 GOOD 재승격이 diff 로 발행. 부팅 validate 훅 = 주소 오타 fail-fast.
+- modbus_tcp: 주소 문법 `coil:N/di:N/hr:N/ir:N` + dtype 필수(무타입) + 멀티워드
+  엔디안 dtype 인코딩(`float32_be/le_swap`) + 인접 주소 coalescing (§10 전부).
+- 검증: fast 493 초록 (test_plc 20개 — 정상→변경분만 발행→단절 STALE→복구) +
+  mock 배포 부팅 확인 + **실 OpenPLC Runtime v4 (:502) 실측** — read 4태그 GOOD /
+  래더 3렁 불변식 / pick_done 펄스 핸드셰이크 / di write 거부 전부 통과.
+- 남은 것: ① sensor force 경유 렁1 SET 실측 (Editor 디버그 GUI 필요 — 사용자 손)
+  ② §8 트리거 배선 (object_arrived → pick_and_place start — task 쪽 결정,
+  PnP 실물 검증 후) ③ 워치독 heartbeat 태그 (§11 defer) ④ frontend 패널
+  (FRONTEND_EXPOSED 미등록 — UI 소비자 생기면).
 
 ### 2026-07-30 — handover 수취 전면 재설계 ("IK 전멸=종료" 폐기, 실물 대기)
 
@@ -3184,6 +3204,7 @@ framework_dogfood_plan §14.3 규칙 그대로:
 | 8 | **Scan** | Domain | robot-agnostic | pc | scan 세션/캡처 + **TSDF build** (옛 Reconstruction 흡수) | DB + ObjectStore |
 | 9 | **Waypoint** | Domain | robot-agnostic | pc | Robot Asset Layer — 티칭 joint 자세(rad) + group | DB |
 | 10 | **Bridge** | Boundary | robot-agnostic | pc | WS relay + MJPEG + HTTP (`/robots` `/system` `/contract*`) + `/robot` static | X |
+| 11 | **Plc** | Domain | robot-agnostic | pc | 산업 PLC 태그 read model (스캔+quality+재연결) + write — 바인딩 = plc/plcs.yaml, 정본 [plc_conveyor.md](plc_conveyor.md) §9 | X |
 | — | Task / Gamepad | 미래 | robot-agnostic | pc | §17 task-first / 8BitDo jog dispatch | (DB) |
 
 **합치지 / 더 잘라지 않은 근거** (한 Module = 한 정직한 책임 묶음):

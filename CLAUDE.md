@@ -69,7 +69,7 @@ pnpm gen:types    # 떠 있는 backend /contract.json → src/api/generated/cont
 - **에러 전파**: 응답 봉투 없음 — backend 예외가 `RemoteError(type, message)` 로 wire 를 건너고, bridge 가 WS error frame 으로 릴레이. (frontend `bridge.ts` shim 이 `{success, message, data}` 모양을 **클라이언트에서** 복원 — wire 규약이 아님.)
 - **robot 스코프 규칙 (backend.md §2.7)**: robot-scoped 는 `motor` / `camera` / `camera_decoded` / `motion` 4개뿐 (`{robot_id}` 키 placeholder). 나머지는 host 당 1 인스턴스 (robot-agnostic) — 대상 robot 은 req 필드 `robot_id` 또는 진행 자원 id(run_id 등)에서 파생. Bridge 자동주입 금지.
 
-### Module 12개 ([backend/modules/](backend/modules/))
+### Module 13개 ([backend/modules/](backend/modules/))
 
 | module | 역할 |
 | --- | --- |
@@ -83,6 +83,7 @@ pnpm gen:types    # 떠 있는 backend /contract.json → src/api/generated/cont
 | waypoint | waypoint/group CRUD + teach |
 | detector | prompt → base-frame 3D 후보 (GDINO/SAM2/mock driver) |
 | llm | 자연어 → pick/place 구조화 (Qwen/mock) |
+| plc | **2026-07-31 신설** — 산업 PLC 태그 read model (Modbus TCP 스캔 + quality GOOD/STALE/BAD + 재연결) + write. 바인딩 = [plc/plcs.yaml](plc/plcs.yaml), 정본 [docs/plc_conveyor.md](docs/plc_conveyor.md) §9. 드라이버 = modbus_tcp/mock (OpenPLC Runtime :502 실측 완료) |
 | tasks/pick_and_place | Pick&Place **task 모듈** (표준형 레퍼런스 — 검출→**closed-loop servo 집기** (look-then-move, 정본 [servo.py](backend/modules/tasks/pick_and_place/servo.py) docstring)→open-loop 적치). 감독은 [modules/tasks/core/](backend/modules/tasks/core/) 부품 상자 (TaskRunner=wire 무지 감독기/TaskContext/@step — 모듈 아닌 라이브러리, [docs/task.md](docs/task.md)) |
 | tasks/handover | **2026-07-17 신설, 실물 미검증** — omx 가 집어 든 물체를 so101 이 받아 상자 적치 (open-loop + cross-robot 충돌 체커 [collision.py](backend/modules/tasks/handover/collision.py)). mock 활성 / **pc.yaml 주석 TODO** (PnP 실물 검증 완료 후 해제) — [docs/task.md](docs/task.md) §4.7 |
 | bridge | FastAPI — WS 릴레이 + `/contract.json` + `/robots` + `/dev` 콘솔 + MJPEG |

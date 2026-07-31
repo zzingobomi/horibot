@@ -189,9 +189,11 @@ Python 로봇 플랫폼이 **Modbus TCP 마스터**로 OpenPLC 폴링 → backen
 
 ---
 
-## 9. `plc` 모듈 설계 spec (구현 대기 — 2026-07-23 논의 확정)
+## 9. `plc` 모듈 설계 spec (✅ **2026-07-31 구현 완료** — 2026-07-23 논의 확정)
 
-> **이 §는 다른 세션의 구현 진입점.** 아래 결정은 §10에서 잠갔으니 재논의 말고 그대로 구현. 결정 근거는 Kepware(채널/디바이스/태그 + 드라이버=프로토콜→OPC UA 번역) · OPC-UA(Node = 타입 있는 Value(Variant) + StatusCode + Subscription) · Ignition(태그 DB + 드라이버별 주소 문자열 문법)을 조사해 정렬한 것.
+> **구현됨** — [backend/modules/plc/](../backend/modules/plc/) (contract / drivers protocol·mock·modbus_tcp / module), 바인딩 registry = [plc/plcs.yaml](../plc/plcs.yaml), 배치 = mock.yaml·pc.yaml. spec 을 그대로 따름 (§9.3 시그니처 보정 1건만: read/validate 의 points 를 list 가 아니라 **dict[태그이름→PointSpec]** — 반환 dict key 가 태그 이름이려면 입력에 이름 필요, drivers/protocol.py docstring). 검증 = fast 테스트 20개(정상→변경분만 발행→단절 STALE 강등→복구) + **실 OpenPLC Runtime v4 (:502) 실측** (read 4태그 GOOD / 래더 3렁 불변식 / pick_done 펄스 / di write 거부). 남은 것: sensor force 렁1 실측(Editor GUI) / §8 트리거 배선(PnP 실물 검증 후) / 워치독 태그(§11) / frontend 패널.
+>
+> 결정 근거는 Kepware(채널/디바이스/태그 + 드라이버=프로토콜→OPC UA 번역) · OPC-UA(Node = 타입 있는 Value(Variant) + StatusCode + Subscription) · Ignition(태그 DB + 드라이버별 주소 문자열 문법)을 조사해 정렬한 것.
 
 ### 9.0 목표 / 범위
 

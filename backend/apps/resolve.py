@@ -315,6 +315,30 @@ def resolve_host_deps(
             deps["contract_provider"] = _contract_provider
             deps["graph_provider"] = _graph_provider
         return deps
+    if name == "plc":
+        # PLC 인스턴스 registry = plc/plcs.yaml (태그↔주소 바인딩 SSOT —
+        # docs/plc_conveyor.md §9.4). driver_mode=mock 이면 backend 무관 mock.
+        from apps.config import load_plcs
+        from modules.plc.drivers.protocol import PointSpec, coerce_dtype
+        from modules.plc.module import PlcUnitSpec
+
+        units: dict[str, PlcUnitSpec] = {}
+        for pid, cfg in load_plcs().items():
+            if not cfg.enabled:
+                continue
+            points = {
+                tag: PointSpec(
+                    address=binding.address,
+                    dtype=coerce_dtype(binding.dtype, tag=tag),
+                )
+                for tag, binding in cfg.tags.items()
+            }
+            units[pid] = PlcUnitSpec(
+                backend=_plc_backend(pid, cfg, deploy),
+                points=points,
+                scan_interval_s=1.0 / cfg.scan_hz,
+            )
+        return {"plcs": units}
     if name == "logcollector":
         # dep 없음 — raw transport 만 필요하고 그건 add_module 이 파라미터 이름
         # `transport` 로 자동 주입 (bridge 와 동일 경로). deployment yaml 로 배치.
@@ -433,6 +457,21 @@ def _motor_driver(robot: RobotConfig, deploy: DeploymentConfig) -> MotorBackend:
             baudrate=robot.motor_baudrate or 1_000_000,
         )
     raise NotImplementedError(f"real motor driver {robot.motor_backend!r} 미구현.")
+
+
+def _plc_backend(pid: str, cfg: Any, deploy: DeploymentConfig) -> Any:
+    if deploy.driver_mode == DriverMode.MOCK:
+        from modules.plc.drivers.mock import MockPlcBackend
+
+        return MockPlcBackend()
+    if cfg.backend == "modbus_tcp":
+        from modules.plc.drivers.modbus_tcp import ModbusTcpBackend
+
+        return ModbusTcpBackend(host=cfg.host, port=cfg.port)
+    raise NotImplementedError(
+        f"plc {pid} 의 real driver {cfg.backend!r} 미구현 — 현재 modbus_tcp 뿐 "
+        f"(s7/ab/opcua 는 두 번째 실드라이버 필요 시점에 — docs/plc_conveyor.md §10)"
+    )
 
 
 def _detector_backend(deploy: DeploymentConfig) -> DetectorBackend:

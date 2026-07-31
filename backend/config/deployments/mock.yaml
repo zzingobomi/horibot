@@ -34,6 +34,10 @@ modules:
   # instance.yaml R/W + Mirror snapshot). detector 앞 = 부팅 initial snapshot
   # 즉시 수렴 (늦어도 liveliness 로 자동 수렴 — 순서는 최적화일 뿐).
   - name: shared_config
+  # plc (2026-07-31 신설) — 산업 PLC 태그 read model + write (docs/plc_conveyor.md
+  # §9). mock 배포 = mock 드라이버 (인메모리 태그) — dev 콘솔에서 write_tag 로
+  # 핸드셰이크 시뮬 가능. 실 대역 = pc.yaml (OpenPLC Runtime :502).
+  - name: plc
   - name: detector
   - name: llm
   - name: pick_and_place

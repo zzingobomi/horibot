@@ -55,6 +55,7 @@ pi-hori3 = [
 # PC
 pc = [
     "eaik>=1.2.2",
+    "pymodbus>=3.7,<4",
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
     "websockets>=13.0",

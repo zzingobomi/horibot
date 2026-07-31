@@ -29,6 +29,7 @@ from modules.motor.layout import MotorSpec
 
 
 _ROBOT_DIR = Path(__file__).resolve().parents[2] / "robot"
+_PLC_DIR = Path(__file__).resolve().parents[2] / "plc"
 
 
 # ─── robot/ 트리 — robot 데이터 SSOT ────────────────────────────
@@ -202,6 +203,41 @@ def load_robots(robot_dir: Path = _ROBOT_DIR) -> dict[str, RobotConfig]:
             sag_joint_motor_ids=_load_physical(rtype, robot_dir),
         )
     return robots
+
+
+# ─── plc/ 트리 — PLC 인스턴스 registry (plc/plcs.yaml) ─────────
+
+
+class PlcTagBinding(BaseModel):
+    """태그 1개의 주소 바인딩 — 문법/dtype 검증은 드라이버 validate (부팅 fail-fast)."""
+
+    address: str
+    dtype: str | None = None
+
+
+class PlcInstanceConfig(BaseModel):
+    """PLC 1대 — plc/plcs.yaml 의 인스턴스 항목."""
+
+    enabled: bool = True
+    backend: str  # modbus_tcp (향후 s7 / ab / opcua)
+    host: str = "127.0.0.1"
+    port: int = 502
+    scan_hz: float = 10.0
+    tags: dict[str, PlcTagBinding] = Field(default_factory=dict)
+
+
+def load_plcs(plc_dir: Path = _PLC_DIR) -> dict[str, PlcInstanceConfig]:
+    path = plc_dir / "plcs.yaml"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"plc 모듈이 deployment 에 배치됐는데 {path} 없음 — "
+            f"PLC 인스턴스 registry (plc/plcs.yaml) 를 먼저 선언하세요"
+        )
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return {
+        pid: PlcInstanceConfig.model_validate(body)
+        for pid, body in (raw.get("plcs") or {}).items()
+    }
 
 
 # ─── deployment yaml (backend/config/deployments/) ───────────
